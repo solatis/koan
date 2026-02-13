@@ -44,17 +44,13 @@ export function buildPlanDesignSystemPrompt(basePrompt: string): string {
     "",
     "You will execute a 6-step workflow.",
     "Step 1 instructions are in the user message below.",
-    "Complete the work described, then call koan_next_step.",
+    "Complete the work described, then call koan_complete_step.",
+    "Put your findings in the `thoughts` parameter of koan_complete_step.",
     "The tool result contains the next step's instructions.",
-    "In step 6, use plan mutation tools, then call koan_next_step.",
+    "In step 6, use plan mutation tools, then call koan_complete_step.",
     "",
-    // Directive prevents immediate tool call without substantive work.
-    // Failure mode: koan_next_step called with zero file reads,
-    // producing an empty step with no exploration data. The directive
-    // repeats guidance from tool descriptions to strengthen the signal.
     "CRITICAL: Do the actual work described in each step BEFORE calling",
-    "koan_next_step. Read files, explore code, analyze. Do not skip.",
-    "Do NOT produce a final text response until koan_next_step completes.",
+    "koan_complete_step. Read files, explore code, analyze. Do not skip.",
   ].join("\n");
 }
 
@@ -207,7 +203,7 @@ export function planDesignStepGuidance(step: 1 | 2 | 3 | 4 | 5 | 6, context?: st
           "  If file overlap: extract to M0 (foundation) or consolidate",
         ],
         invokeAfter: [
-          "WHEN DONE: After completing the instructions above, call koan_next_step to validate.",
+          "WHEN DONE: Call koan_complete_step to validate. Put a summary of what you built in the `thoughts` parameter.",
           "Do NOT call this tool until you have used the plan mutation tools.",
         ].join("\n"),
       };

@@ -2,10 +2,13 @@
 // Disk is single source of truth. Single-writer assumption per phase.
 // Feedback messages prevent the LLM from skipping tools (prior architecture
 // returned opaque JSON).
+//
+// Static<TParams> derives the TypeScript type from the TypeBox schema at
+// compile time, making type casts unnecessary. The registerTool generic
+// propagates the schema type through to the execute callback.
 
-import { Type } from "@sinclair/typebox";
+import { Type, type Static, type TSchema } from "@sinclair/typebox";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { TSchema } from "@sinclair/typebox";
 
 import type { PlanRef } from "./dispatch.js";
 import { loadPlan, savePlan } from "../plan/serialize.js";
@@ -41,15 +44,15 @@ import {
   setReadmeEntry,
 } from "../plan/mutate.js";
 
-function planTool<P>(
+function planTool<TParams extends TSchema>(
   pi: ExtensionAPI,
   planRef: PlanRef,
   opts: {
     name: string;
     label: string;
     description: string;
-    parameters: TSchema;
-    execute: (plan: Plan, params: P) => { plan: Plan; message: string };
+    parameters: TParams;
+    execute: (plan: Plan, params: Static<TParams>) => { plan: Plan; message: string };
   },
 ): void {
   pi.registerTool({
@@ -60,10 +63,11 @@ function planTool<P>(
     async execute(_toolCallId, params) {
       if (!planRef.dir) throw new Error("No plan directory is active.");
       const plan = await loadPlan(planRef.dir);
-      const result = opts.execute(plan, params as P);
+      const result = opts.execute(plan, params);
       await savePlan(result.plan, planRef.dir);
       return {
         content: [{ type: "text" as const, text: result.message }],
+        details: undefined,
       };
     },
   });

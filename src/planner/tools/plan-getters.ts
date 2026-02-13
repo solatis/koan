@@ -21,6 +21,7 @@ export function registerPlanGetterTools(
       const summary = formatPlanSummary(p);
       return {
         content: [{ type: "text" as const, text: summary }],
+        details: undefined,
       };
     },
   });
@@ -35,10 +36,11 @@ export function registerPlanGetterTools(
     async execute(_toolCallId, params) {
       if (!planRef.dir) throw new Error("No plan directory is active.");
       const p = await loadPlan(planRef.dir);
-      const m = p.milestones.find((x) => x.id === (params as { id: string }).id);
-      if (!m) throw new Error(`Milestone ${(params as { id: string }).id} not found`);
+      const m = p.milestones.find((x) => x.id === params.id);
+      if (!m) throw new Error(`Milestone ${params.id} not found`);
       return {
         content: [{ type: "text" as const, text: JSON.stringify(m, null, 2) }],
+        details: undefined,
       };
     },
   });
@@ -54,11 +56,12 @@ export function registerPlanGetterTools(
       if (!planRef.dir) throw new Error("No plan directory is active.");
       const p = await loadPlan(planRef.dir);
       const d = p.planning_context.decision_log.find(
-        (x) => x.id === (params as { id: string }).id,
+        (x) => x.id === params.id,
       );
-      if (!d) throw new Error(`Decision ${(params as { id: string }).id} not found`);
+      if (!d) throw new Error(`Decision ${params.id} not found`);
       return {
         content: [{ type: "text" as const, text: JSON.stringify(d, null, 2) }],
+        details: undefined,
       };
     },
   });
@@ -73,9 +76,9 @@ export function registerPlanGetterTools(
     async execute(_toolCallId, params) {
       if (!planRef.dir) throw new Error("No plan directory is active.");
       const p = await loadPlan(planRef.dir);
-      const result = findIntent(p, (params as { id: string }).id);
+      const result = findIntent(p, params.id);
       if (!result)
-        throw new Error(`Intent ${(params as { id: string }).id} not found`);
+        throw new Error(`Intent ${params.id} not found`);
       return {
         content: [
           {
@@ -87,6 +90,7 @@ export function registerPlanGetterTools(
             ),
           },
         ],
+        details: undefined,
       };
     },
   });
@@ -101,9 +105,9 @@ export function registerPlanGetterTools(
     async execute(_toolCallId, params) {
       if (!planRef.dir) throw new Error("No plan directory is active.");
       const p = await loadPlan(planRef.dir);
-      const result = findChange(p, (params as { id: string }).id);
+      const result = findChange(p, params.id);
       if (!result)
-        throw new Error(`Change ${(params as { id: string }).id} not found`);
+        throw new Error(`Change ${params.id} not found`);
       return {
         content: [
           {
@@ -115,6 +119,7 @@ export function registerPlanGetterTools(
             ),
           },
         ],
+        details: undefined,
       };
     },
   });

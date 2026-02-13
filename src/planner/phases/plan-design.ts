@@ -85,10 +85,10 @@ export class PlanDesignPhase {
     this.state.step = 1;
 
     // No koan_store_plan tool. Each mutation writes to disk immediately.
-    // Step 6 ends with koan_next_step, which runs validation. Removes
+    // Step 6 ends with koan_complete_step, which runs validation. Removes
     // the two-step 'build then finalize' pattern that caused LLM to skip
     // intermediate tools.
-    hookDispatch(this.dispatch, "onNextStep", () => this.handleStepComplete());
+    hookDispatch(this.dispatch, "onCompleteStep", () => this.handleStepComplete());
 
     this.log("Starting plan-design workflow", { step: 1 });
     await this.progress?.update(`Step 1/6: ${STEP_NAMES[1]} -- started`);
@@ -160,7 +160,7 @@ export class PlanDesignPhase {
         return { ok: false, error: result.errors?.join("; ") };
       }
       this.state.active = false;
-      unhookDispatch(this.dispatch, "onNextStep");
+      unhookDispatch(this.dispatch, "onCompleteStep");
       this.log("Plan finalized, workflow complete");
       return { ok: true, prompt: "Plan validation passed. Workflow complete." };
     }

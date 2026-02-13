@@ -25,7 +25,7 @@ export function createSession(pi: ExtensionAPI, dispatch: WorkflowDispatch, plan
   // Completion callback for context-capture phase. Runs inside the
   // koan_store_context tool call -- the tool blocks until the architect
   // subagent finishes. The LLM sees context capture + architect outcome
-  // in one tool response. No agent_end polling needed.
+  // in one tool response.
   const onContextComplete = async (ctx: ExtensionContext): Promise<string> => {
     if (!state.plan) {
       return "Context captured but no plan state available.";
@@ -83,7 +83,7 @@ export function createSession(pi: ExtensionAPI, dispatch: WorkflowDispatch, plan
 
     state.phase = "plan-design-complete";
     log("Architect plan-design complete", { planDir });
-    ctx.ui.notify("Plan-design phase complete.", "success");
+    ctx.ui.notify("Plan-design phase complete.", "info");
     return `Context captured. Plan written to ${planDir}/plan.json.`;
   };
 

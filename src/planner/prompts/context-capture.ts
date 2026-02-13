@@ -29,12 +29,14 @@ export function draftGuidance(taskDescription: string): StepGuidance {
       "- Is there any implicit design knowledge -- invariants, rationale, accepted tradeoffs -- that should be preserved for downstream work?",
       "- Are there reference documents or specs in the project that apply?",
       "",
-      "Write your analysis as a draft. For each dimension, note your confidence:",
+      "For each dimension, note your confidence:",
       "- HIGH: you have direct evidence from this session",
       "- LOW: you are extrapolating or guessing",
       "",
       "Flag any LOW-confidence point where a single targeted read would raise it to HIGH.",
       "This is a working document, not a final artifact.",
+      "",
+      "Put your full draft analysis in the `thoughts` parameter when calling koan_complete_step.",
     ],
   };
 }
@@ -50,10 +52,9 @@ export function verifyGuidance(): StepGuidance {
       "3. Phrasing: would a downstream agent understand without ambiguity?",
       "",
       "Rewrite the draft with corrections. If nothing needs changing, reproduce it as-is.",
-      // Verify phase: tool_call handler blocks all tools except koan_next_step.
-      // Instruction directs LLM to avoid exploration during review. Two-layer
-      // defense: prohibition in description, blocking in tool_call handler.
       "Do not use exploration tools during this review.",
+      "",
+      "Put your revised analysis in the `thoughts` parameter when calling koan_complete_step.",
     ],
   };
 }

@@ -11,7 +11,9 @@
     "koan"
   ],
   "pi": {
-    "extensions": ["./extensions"]
+    "extensions": [
+      "./extensions"
+    ]
   },
   "files": [
     "extensions",
@@ -19,7 +21,14 @@
     "README.md",
     "LICENSE"
   ],
+  "scripts": {
+    "check": "tsc --noEmit"
+  },
   "dependencies": {
     "@sinclair/typebox": "^0.32.30"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.52.10",
+    "typescript": "^5.9.3"
   }
 }

@@ -99,11 +99,11 @@ export const PLAN_MUTATION_TOOLS: ReadonlySet<string> = new Set([
 // updating the permissions map.
 export const PHASE_PERMISSIONS: ReadonlyMap<string, ReadonlySet<string>> =
   new Map([
-    ["context-capture", new Set(["koan_store_context", "koan_next_step"])],
+    ["context-capture", new Set(["koan_store_context", "koan_complete_step"])],
     [
       "plan-design",
       new Set([
-        "koan_next_step",
+        "koan_complete_step",
         ...PLAN_GETTER_TOOLS_LIST,
         ...PLAN_SETTER_TOOLS_LIST,
         ...PLAN_DESIGN_ENTITY_TOOLS,
@@ -112,7 +112,7 @@ export const PHASE_PERMISSIONS: ReadonlyMap<string, ReadonlySet<string>> =
     [
       "plan-code",
       new Set([
-        "koan_next_step",
+        "koan_complete_step",
         ...PLAN_GETTER_TOOLS_LIST,
         ...PLAN_CHANGE_TOOLS_LIST,
         "koan_set_intent",
@@ -121,7 +121,7 @@ export const PHASE_PERMISSIONS: ReadonlyMap<string, ReadonlySet<string>> =
     [
       "plan-docs",
       new Set([
-        "koan_next_step",
+        "koan_complete_step",
         ...PLAN_GETTER_TOOLS_LIST,
         "koan_set_change_doc_diff",
         "koan_set_change_comments",
@@ -131,12 +131,12 @@ export const PHASE_PERMISSIONS: ReadonlyMap<string, ReadonlySet<string>> =
     ],
     [
       "qr-plan-design",
-      new Set(["koan_next_step", ...PLAN_GETTER_TOOLS_LIST, ...QR_TOOLS_LIST]),
+      new Set(["koan_complete_step", ...PLAN_GETTER_TOOLS_LIST, ...QR_TOOLS_LIST]),
     ],
     [
       "qr-plan-code",
       new Set([
-        "koan_next_step",
+        "koan_complete_step",
         "koan_get_plan",
         "koan_get_milestone",
         "koan_get_intent",
@@ -147,7 +147,7 @@ export const PHASE_PERMISSIONS: ReadonlyMap<string, ReadonlySet<string>> =
     [
       "qr-plan-docs",
       new Set([
-        "koan_next_step",
+        "koan_complete_step",
         "koan_get_plan",
         "koan_get_milestone",
         "koan_get_change",

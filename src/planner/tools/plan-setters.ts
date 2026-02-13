@@ -24,13 +24,11 @@ export function registerPlanSetterTools(
     async execute(_toolCallId, params) {
       if (!planRef.dir) throw new Error("No plan directory is active.");
       const p = await loadPlan(planRef.dir);
-      const updated = setOverview(
-        p,
-        params as { problem?: string; approach?: string },
-      );
+      const updated = setOverview(p, params);
       await savePlan(updated, planRef.dir);
       return {
         content: [{ type: "text" as const, text: "Overview updated." }],
+        details: undefined,
       };
     },
   });
@@ -45,18 +43,16 @@ export function registerPlanSetterTools(
     async execute(_toolCallId, params) {
       if (!planRef.dir) throw new Error("No plan directory is active.");
       const p = await loadPlan(planRef.dir);
-      const updated = setConstraints(
-        p,
-        (params as { constraints: string[] }).constraints,
-      );
+      const updated = setConstraints(p, params.constraints);
       await savePlan(updated, planRef.dir);
       return {
         content: [
           {
             type: "text" as const,
-            text: `Constraints set (${(params as { constraints: string[] }).constraints.length} items).`,
+            text: `Constraints set (${params.constraints.length} items).`,
           },
         ],
+        details: undefined,
       };
     },
   });
@@ -73,19 +69,13 @@ export function registerPlanSetterTools(
     async execute(_toolCallId, params) {
       if (!planRef.dir) throw new Error("No plan directory is active.");
       const p = await loadPlan(planRef.dir);
-      const updated = setInvisibleKnowledge(
-        p,
-        params as {
-          system?: string;
-          invariants?: string[];
-          tradeoffs?: string[];
-        },
-      );
+      const updated = setInvisibleKnowledge(p, params);
       await savePlan(updated, planRef.dir);
       return {
         content: [
           { type: "text" as const, text: "Invisible knowledge updated." },
         ],
+        details: undefined,
       };
     },
   });
