@@ -14,8 +14,12 @@
     "extensions": ["./extensions"]
   },
   "files": [
-      "extensions",
-      "README.md",
-      "LICENSE"
-  ]
+    "extensions",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@sinclair/typebox": "^0.32.30"
+  }
 }

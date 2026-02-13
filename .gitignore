@@ -2,3 +2,11 @@ node_modules/
 dist/
 .pi/
 .DS_Store
+
+.claude/
+plans/
+.koan/
+*.tsbuildinfo
+.env
+.env.*
+*.log
