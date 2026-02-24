@@ -81,7 +81,6 @@ export class ContextCapturePhase {
     hookDispatch(this.dispatch, "onStoreContext", (p, c) => this.handleContextToolCall(p, c));
 
     this.log("Starting context capture (draft phase)", { planId: plan.id });
-    ctx.ui.notify(`Koan context capture started for plan ${plan.id}.`, "info");
 
     await this.updatePlanMetadata({
       status: "context",
@@ -211,8 +210,8 @@ export class ContextCapturePhase {
       this.log("Failed to write context file", { error: message });
       return {
         ok: false,
-        message: `Failed to write context.json: ${message}`,
-        errors: [`Failed to write context.json: ${message}`],
+        message: `Failed to store context: ${message}`,
+        errors: [`Failed to store context: ${message}`],
       };
     }
 
@@ -224,7 +223,6 @@ export class ContextCapturePhase {
     unhookDispatch(this.dispatch, "onCompleteStep");
     unhookDispatch(this.dispatch, "onStoreContext");
 
-    ctx.ui.notify("Koan context capture complete.", "info");
     this.log("Context capture succeeded", {
       planId: this.state.context.planId,
       attempt: this.state.context.attempt,

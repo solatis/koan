@@ -7,7 +7,12 @@ export type WorkflowPhase =
   | "context-failed"
   | "architect-running"
   | "architect-failed"
-  | "plan-design-complete";
+  | "plan-design-complete"
+  | "qr-decompose-running"
+  | "qr-decompose-failed"
+  | "qr-verify-running"
+  | "qr-verify-failed"
+  | "qr-complete";
 
 export interface PlanInfo {
   id: string;
@@ -54,7 +59,12 @@ export function resetContextState(state: WorkflowState): void {
     state.phase === "context-failed" ||
     state.phase === "context-complete" ||
     state.phase === "architect-failed" ||
-    state.phase === "plan-design-complete"
+    state.phase === "plan-design-complete" ||
+    state.phase === "qr-decompose-running" ||
+    state.phase === "qr-decompose-failed" ||
+    state.phase === "qr-verify-running" ||
+    state.phase === "qr-verify-failed" ||
+    state.phase === "qr-complete"
   ) {
     state.phase = "idle";
   }
