@@ -1,51 +1,60 @@
-// Plan-design phase -- 6-step architect workflow that produces plan.json
-// from captured context. Step gate: mutation tools blocked before step 6
-// (blocklist pattern). Validation runs at step-6 completion.
-
-import { promises as fs } from "node:fs";
-import * as path from "node:path";
+// Plan-design fix phase -- 3-step targeted repair for QR failures.
+//
+// Separate class from PlanDesignPhase because the workflows diverge:
+// initial = 6 steps of exploration then writing (mutations at step 6);
+// fix = 3 steps of reading failures then applying targeted fixes
+// (mutations at step 2). Conditional branching at every method
+// boundary produces worse code than two focused classes.
+//
+// The fix architect receives QR failures as XML in step 1. It reads
+// the current plan state via getter tools, applies minimal mutations
+// to address the specific findings, then validates the result. The
+// session orchestrator decides whether to re-run QR -- the fix phase
+// does not know about iterations or severity escalation.
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 import { loadAndValidatePlan } from "../../plan/validate.js";
 import {
   loadPlanDesignSystemPrompt,
-  formatContextForStep1,
   buildPlanDesignSystemPrompt,
-  planDesignStepGuidance,
-  STEP_NAMES,
 } from "./prompts.js";
+import {
+  FIX_STEP_NAMES,
+  buildFixSystemPrompt,
+  fixStepGuidance,
+  formatFailuresXml,
+  type FixStep,
+} from "./fix-prompts.js";
 import { formatStep } from "../../lib/step.js";
-import type { ContextData } from "../../types.js";
+import type { QRItem } from "../../qr/types.js";
 import { createLogger, type Logger } from "../../../utils/logger.js";
 import { EventLog } from "../../lib/audit.js";
 import { hookDispatch, unhookDispatch, type WorkflowDispatch, type PlanRef } from "../../lib/dispatch.js";
 import { checkPermission, PLAN_MUTATION_TOOLS } from "../../lib/permissions.js";
 
-type PlanDesignStep = 1 | 2 | 3 | 4 | 5 | 6;
-
-interface PlanDesignState {
+interface FixPhaseState {
   active: boolean;
-  step: PlanDesignStep;
+  step: FixStep;
   step1Prompt: string | null;
-  contextData: ContextData | null;
   systemPrompt: string | null;
 }
 
-const TOTAL_STEPS = 6;
+const TOTAL_STEPS = 3;
 
-export class PlanDesignPhase {
+export class PlanDesignFixPhase {
   private readonly pi: ExtensionAPI;
   private readonly planDir: string;
+  private readonly failures: QRItem[];
   private readonly log: Logger;
-  private readonly state: PlanDesignState;
+  private readonly state: FixPhaseState;
   private readonly eventLog: EventLog | undefined;
   private readonly dispatch: WorkflowDispatch;
   private readonly planRef: PlanRef;
 
   constructor(
     pi: ExtensionAPI,
-    config: { planDir: string },
+    config: { planDir: string; failures: QRItem[] },
     dispatch: WorkflowDispatch,
     planRef: PlanRef,
     log?: Logger,
@@ -53,16 +62,16 @@ export class PlanDesignPhase {
   ) {
     this.pi = pi;
     this.planDir = config.planDir;
+    this.failures = config.failures;
     this.dispatch = dispatch;
     this.planRef = planRef;
-    this.log = log ?? createLogger("PlanDesign");
+    this.log = log ?? createLogger("PlanDesignFix");
     this.eventLog = eventLog;
 
     this.state = {
       active: false,
       step: 1,
       step1Prompt: null,
-      contextData: null,
       systemPrompt: null,
     };
 
@@ -70,40 +79,32 @@ export class PlanDesignPhase {
   }
 
   async begin(): Promise<void> {
-    const contextPath = path.join(this.planDir, "context.json");
-    try {
-      const raw = await fs.readFile(contextPath, "utf8");
-      this.state.contextData = JSON.parse(raw) as ContextData;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.log("Failed to read context.json", { error: message });
-      return;
-    }
-
     let basePrompt: string;
     try {
       basePrompt = await loadPlanDesignSystemPrompt();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.log("Failed to load plan-design system prompt", { error: message });
+      this.log("Fix phase aborted: cannot load system prompt", { error: message });
       return;
     }
 
-    const contextXml = formatContextForStep1(this.state.contextData);
-    this.state.systemPrompt = buildPlanDesignSystemPrompt(basePrompt);
-    this.state.step1Prompt = formatStep(planDesignStepGuidance(1, contextXml));
+    const failuresXml = formatFailuresXml(this.failures);
+    this.state.systemPrompt = buildFixSystemPrompt(
+      buildPlanDesignSystemPrompt(basePrompt),
+      this.failures.length,
+    );
+    this.state.step1Prompt = formatStep(fixStepGuidance(1, failuresXml));
     this.state.active = true;
     this.state.step = 1;
 
-    // No koan_store_plan tool. Each mutation writes to disk immediately.
-    // Step 6 ends with koan_complete_step, which runs validation. Removes
-    // the two-step 'build then finalize' pattern that caused LLM to skip
-    // intermediate tools.
     hookDispatch(this.dispatch, "onCompleteStep", () => this.handleStepComplete());
 
-    this.log("Starting plan-design workflow", { step: 1 });
+    this.log("Starting plan-design fix workflow", {
+      step: 1,
+      failureCount: this.failures.length,
+    });
     await this.eventLog?.emitPhaseStart(TOTAL_STEPS);
-    await this.eventLog?.emitStepTransition(1, STEP_NAMES[1], TOTAL_STEPS);
+    await this.eventLog?.emitStepTransition(1, FIX_STEP_NAMES[1], TOTAL_STEPS);
   }
 
   private registerHandlers(): void {
@@ -112,17 +113,9 @@ export class PlanDesignPhase {
       return { systemPrompt: this.state.systemPrompt };
     });
 
-    // Step 1 prompt injection. The CLI message is a process trigger --
-    // the context event fires before each LLM call and replaces the
-    // user message with the actual step 1 instructions. Messages are
-    // structuredCloned before reaching this handler (runner.ts:660),
-    // so stored history is unaffected. Handler is a no-op once the
-    // step advances past 1.
-    //
-    // Why context event instead of sendUserMessage? Step 1 has no
-    // preceding tool call (no tool result to inject prompt into).
-    // Context event injects the prompt before the initial LLM call.
-    // pi structuredClones messages, so modifications here are isolated.
+    // Step 1 prompt injection. Same pattern as PlanDesignPhase: the CLI
+    // message is a process trigger; the context event replaces it with
+    // step 1 instructions before the initial LLM call.
     this.pi.on("context", (event) => {
       if (!this.state.active) return undefined;
       if (this.state.step !== 1 || !this.state.step1Prompt) return undefined;
@@ -144,26 +137,25 @@ export class PlanDesignPhase {
         return { block: true, reason: perm.reason };
       }
 
-      // Step gate: mutation tools are step-6-only. Blocklist (not whitelist)
-      // so read tools and future pi-native tools pass through after
-      // checkPermission approves them.
+      // Step gate: mutation tools are blocked before step 2. Blocklist
+      // (not whitelist) so read tools and future pi-native tools pass
+      // through after checkPermission approves them.
       const step = this.state.step;
-      if (step < 6 && PLAN_MUTATION_TOOLS.has(event.toolName)) {
+      if (step < 2 && PLAN_MUTATION_TOOLS.has(event.toolName)) {
         return {
           block: true,
-          reason: `${event.toolName} available in step 6 (current: ${step})`,
+          reason: `${event.toolName} available from step 2 (current: ${step})`,
         };
       }
 
       return undefined;
     });
-
   }
 
   private async handleStepComplete(): Promise<{ ok: boolean; prompt?: string; error?: string }> {
     const prev = this.state.step;
 
-    if (prev === 6) {
+    if (prev === 3) {
       const result = await this.handleFinalize();
       if (!result.ok) {
         await this.eventLog?.emitPhaseEnd("failed", result.errors?.join("; "));
@@ -172,15 +164,15 @@ export class PlanDesignPhase {
       this.state.active = false;
       unhookDispatch(this.dispatch, "onCompleteStep");
       await this.eventLog?.emitPhaseEnd("completed");
-      this.log("Plan finalized, workflow complete");
-      return { ok: true, prompt: "Plan validation passed. Workflow complete." };
+      this.log("Fix phase complete, plan validation passed");
+      return { ok: true, prompt: "Fix phase validation passed. Workflow complete." };
     }
 
-    this.state.step = (prev + 1) as PlanDesignStep;
-    const nextName = STEP_NAMES[this.state.step];
-    const prompt = formatStep(planDesignStepGuidance(this.state.step));
+    this.state.step = (prev + 1) as FixStep;
+    const nextName = FIX_STEP_NAMES[this.state.step];
+    const prompt = formatStep(fixStepGuidance(this.state.step));
 
-    this.log("Step complete, advancing", { from: prev, to: this.state.step, name: nextName });
+    this.log("Fix step complete, advancing", { from: prev, to: this.state.step, name: nextName });
     await this.eventLog?.emitStepTransition(this.state.step, nextName, TOTAL_STEPS);
 
     return { ok: true, prompt };

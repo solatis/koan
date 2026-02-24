@@ -1,3 +1,7 @@
+import { promises as fs } from "node:fs";
+import * as path from "node:path";
+
+import type { Logger } from "../../utils/logger.js";
 import type { Plan } from "./types.js";
 
 export interface ValidationResult {
@@ -130,4 +134,37 @@ export function validatePlanDocs(p: Plan): ValidationResult {
     }
   }
   return { ok: errors.length === 0, errors };
+}
+
+// Reads plan.json from planDir and runs validatePlanDesign + validateRefs.
+// Returns { ok: false, errors } on read/parse failure or any validation failure.
+export async function loadAndValidatePlan(
+  planDir: string,
+  log: Logger,
+): Promise<{ ok: boolean; errors?: string[] }> {
+  const planPath = path.join(planDir, "plan.json");
+  let plan;
+  try {
+    const raw = await fs.readFile(planPath, "utf8");
+    plan = JSON.parse(raw);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log("Failed to read plan.json for validation", { error: message });
+    return { ok: false, errors: [`Failed to read plan.json: ${message}`] };
+  }
+
+  const designValidation = validatePlanDesign(plan);
+  if (!designValidation.ok) {
+    log("Plan design validation failed", { errors: designValidation.errors });
+    return { ok: false, errors: designValidation.errors };
+  }
+
+  const refValidation = validateRefs(plan);
+  if (!refValidation.ok) {
+    log("Plan reference validation failed", { errors: refValidation.errors });
+    return { ok: false, errors: refValidation.errors };
+  }
+
+  log("Plan validation passed", { path: planPath });
+  return { ok: true };
 }

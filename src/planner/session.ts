@@ -10,13 +10,14 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@m
 import { ContextCapturePhase } from "./phases/context-capture/phase.js";
 import { createInitialState, initializePlanState, type WorkflowState } from "./state.js";
 import { createPlanInfo } from "../utils/plan.js";
-import { spawnArchitect, spawnQRDecomposer, spawnReviewer } from "./subagent.js";
+import { spawnArchitect, spawnArchitectFix, spawnQRDecomposer, spawnReviewer } from "./subagent.js";
 import { createLogger, setLogDir, type Logger } from "../utils/logger.js";
 import { createSubagentDir } from "../utils/progress.js";
 import { readProjection } from "./lib/audit.js";
 import type { WorkflowDispatch, PlanRef } from "./lib/dispatch.js";
 import { pool } from "./lib/pool.js";
 import type { QRFile } from "./qr/types.js";
+import { MAX_FIX_ITERATIONS, qrPassesAtIteration } from "./qr/severity.js";
 import { WidgetController } from "./ui/widget.js";
 
 // -- Types --
@@ -125,7 +126,7 @@ export function createSession(pi: ExtensionAPI, dispatch: WorkflowDispatch, plan
         activity: "",
       });
 
-      const qr = await runQRBlock(planDir, ctx.cwd, extensionPath, state, log, widget);
+      const qr = await runPlanDesignWithQR(planDir, ctx.cwd, extensionPath, state, log, widget);
       if (qr.passed) outcome = "PASS";
       return `Context captured. Plan design complete.\n\n${qr.summary}`;
     } finally {
@@ -297,4 +298,104 @@ async function runQRBlock(
   const passed = fail === 0 && result.failed.length === 0;
   widget?.update({ step: summary, activity: "" });
   return { summary, passed };
+}
+
+// -- Plan-design QR fix loop --
+
+// Fix loop: architect -> QR -> [pass: done | fail: fix architect -> QR -> ...]
+//
+// Re-decomposes on each iteration rather than re-verifying only. The fix
+// architect may change plan structure (add milestones, split intents, remove
+// decisions); old QR items referencing stale scopes produce incorrect verdicts.
+// Fresh decomposition generates items matched to the current plan state.
+//
+// The session's for-loop counter is the iteration source of truth. Each
+// re-decompose writes a fresh qr-plan-design.json with iteration=1 and
+// all-TODO items. The loop counter survives those resets.
+async function runPlanDesignWithQR(
+  planDir: string,
+  cwd: string,
+  extensionPath: string,
+  state: WorkflowState,
+  log: Logger,
+  widget: WidgetController | null,
+): Promise<QRBlockResult> {
+  const qrPath = path.join(planDir, "qr-plan-design.json");
+
+  // Initial QR (iteration 1)
+  let qr = await runQRBlock(planDir, cwd, extensionPath, state, log, widget);
+  if (qr.passed) return qr;
+
+  for (let iteration = 2; iteration <= MAX_FIX_ITERATIONS + 1; iteration++) {
+    // Read QR file for severity check
+    let qrFile: QRFile;
+    try {
+      const raw = await fs.readFile(qrPath, "utf8");
+      qrFile = JSON.parse(raw) as QRFile;
+    } catch {
+      log("Fix loop: failed to read QR file", { iteration });
+      return { summary: "Fix loop aborted: cannot read QR file.", passed: false };
+    }
+
+    // Severity escalation: if no blocking failures remain at this
+    // iteration, the plan passes without another fix attempt.
+    // Example: iteration 3 drops COULD -- if only COULD items fail,
+    // the plan is good enough and the loop terminates.
+    if (qrPassesAtIteration(qrFile.items, iteration)) {
+      const pass = qrFile.items.filter((i) => i.status === "PASS").length;
+      const fail = qrFile.items.filter((i) => i.status === "FAIL").length;
+      return {
+        passed: true,
+        summary: `QR passed at iteration ${iteration} after severity de-escalation: ${pass} PASS, ${fail} FAIL (non-blocking).`,
+      };
+    }
+
+    // Spawn fix-mode architect
+    const fixIndex = iteration - 1;
+    widget?.update({ step: `fix ${fixIndex}/${MAX_FIX_ITERATIONS}: spawning architect...`, activity: "" });
+
+    const fixDir = await createSubagentDir(planDir, `architect-fix-${fixIndex}`);
+
+    const fixPoll = setInterval(async () => {
+      const s = await readProjection(fixDir);
+      if (s) {
+        widget?.update({
+          step: `fix ${fixIndex}/${MAX_FIX_ITERATIONS}: ${s.stepName}`,
+          activity: s.lastAction ?? "",
+        });
+      }
+    }, 2000);
+
+    const fixResult = await spawnArchitectFix({
+      planDir,
+      subagentDir: fixDir,
+      cwd,
+      extensionPath,
+      fixPhase: "plan-design",
+      log,
+    });
+
+    clearInterval(fixPoll);
+
+    if (fixResult.exitCode !== 0) {
+      log("Fix architect failed", { iteration: fixIndex, exitCode: fixResult.exitCode, stderr: fixResult.stderr.slice(0, 500) });
+      widget?.update({ step: `fix ${fixIndex}/${MAX_FIX_ITERATIONS}: architect failed, re-running QR...`, activity: "" });
+    }
+
+    // Re-run full QR (decompose + verify)
+    widget?.update({
+      step: `fix ${fixIndex}/${MAX_FIX_ITERATIONS}: re-running QR...`,
+      activity: "",
+    });
+    qr = await runQRBlock(planDir, cwd, extensionPath, state, log, widget);
+    if (qr.passed) return qr;
+  }
+
+  // Max iterations reached. MUST failures remaining after 5 fix attempts
+  // indicate a structural problem -- silently passing would propagate a
+  // known-broken plan downstream.
+  return {
+    passed: false,
+    summary: `${qr.summary} (max ${MAX_FIX_ITERATIONS} fix iterations reached)`,
+  };
 }

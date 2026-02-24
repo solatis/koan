@@ -44,6 +44,12 @@ export default function koan(pi: ExtensionAPI): void {
     default: "",
   });
 
+  pi.registerFlag("koan-fix", {
+    description: "QR phase to fix (e.g. plan-design)",
+    type: "string",
+    default: "",
+  });
+
   // Pi snapshots tools during _buildRuntime() at init. All 44 tools
   // register here unconditionally. Phases restrict access via tool_call
   // blocking at runtime.
