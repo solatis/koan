@@ -341,17 +341,114 @@ export async function readProjection(dir: string): Promise<Projection | null> {
   }
 }
 
-// Structured log line for the widget log card. The widget applies
-// theme-aware coloring: prefix dim, highlight normal, meta dim.
+// Structured log line for the widget log card.
+// `tool` is the left-column scan anchor, `summary` is the right-column detail.
+// High-value rows may wrap to two visual lines in the widget.
 export interface LogLine {
-  prefix: string;
-  highlight: string;
-  meta: string;
+  tool: string;
+  summary: string;
+  highValue: boolean;
 }
+
+interface ToolShape {
+  keys: string[];
+  arrays?: string[];
+  freeform?: string[];
+  getter?: boolean;
+  highValue?: boolean;
+}
+
+const PREVIEW_CHARS = 40;
+const KEY_PRIORITY = ["id", "milestone", "decision_ref", "intent_ref", "file", "path", "phase"];
+
+const KOAN_SHAPES: Record<string, ToolShape> = {
+  koan_get_plan: { keys: ["phase"], getter: true },
+  koan_get_milestone: { keys: ["id"], getter: true },
+  koan_get_decision: { keys: ["id"], getter: true },
+  koan_get_intent: { keys: ["id"], getter: true },
+  koan_get_change: { keys: ["id"], getter: true },
+
+  koan_set_overview: { keys: ["problem", "approach"], freeform: ["problem", "approach"], highValue: true },
+  koan_set_constraints: { keys: ["constraints"], arrays: ["constraints"], highValue: true },
+  koan_set_invisible_knowledge: {
+    keys: ["system", "invariants", "tradeoffs"],
+    freeform: ["system"],
+    arrays: ["invariants", "tradeoffs"],
+    highValue: true,
+  },
+
+  koan_add_decision: { keys: ["decision", "reasoning"], freeform: ["decision", "reasoning"], highValue: true },
+  koan_set_decision: { keys: ["id", "decision", "reasoning"], freeform: ["decision", "reasoning"], highValue: true },
+  koan_add_rejected_alternative: {
+    keys: ["decision_ref", "alternative", "rejection_reason"],
+    freeform: ["alternative", "rejection_reason"],
+    highValue: true,
+  },
+  koan_set_rejected_alternative: {
+    keys: ["id", "decision_ref", "alternative", "rejection_reason"],
+    freeform: ["alternative", "rejection_reason"],
+    highValue: true,
+  },
+  koan_add_risk: { keys: ["decision_ref", "anchor", "risk", "mitigation"], freeform: ["risk", "mitigation"], highValue: true },
+  koan_set_risk: {
+    keys: ["id", "decision_ref", "anchor", "risk", "mitigation"],
+    freeform: ["risk", "mitigation"],
+    highValue: true,
+  },
+
+  koan_add_milestone: {
+    keys: ["name", "files", "flags", "requirements", "acceptance_criteria", "tests"],
+    arrays: ["files", "flags", "requirements", "acceptance_criteria", "tests"],
+    highValue: true,
+  },
+  koan_set_milestone_name: { keys: ["id", "name"] },
+  koan_set_milestone_files: { keys: ["id", "files"], arrays: ["files"], highValue: true },
+  koan_set_milestone_flags: { keys: ["id", "flags"], arrays: ["flags"] },
+  koan_set_milestone_requirements: { keys: ["id", "requirements"], arrays: ["requirements"], highValue: true },
+  koan_set_milestone_acceptance_criteria: { keys: ["id", "acceptance_criteria"], arrays: ["acceptance_criteria"], highValue: true },
+  koan_set_milestone_tests: { keys: ["id", "tests"], arrays: ["tests"], highValue: true },
+
+  koan_add_intent: { keys: ["milestone", "file", "function", "behavior"], freeform: ["behavior"], highValue: true },
+  koan_set_intent: { keys: ["id", "file", "function", "behavior"], freeform: ["behavior"], highValue: true },
+
+  koan_add_change: {
+    keys: ["milestone", "file", "intent_ref", "diff", "doc_diff", "comments"],
+    freeform: ["diff", "doc_diff", "comments"],
+    highValue: true,
+  },
+  koan_set_change_diff: { keys: ["id", "diff"], freeform: ["diff"], highValue: true },
+  koan_set_change_doc_diff: { keys: ["id", "doc_diff"], freeform: ["doc_diff"], highValue: true },
+  koan_set_change_comments: { keys: ["id", "comments"], freeform: ["comments"], highValue: true },
+  koan_set_change_file: { keys: ["id", "file"], highValue: true },
+  koan_set_change_intent_ref: { keys: ["id", "intent_ref"] },
+
+  koan_add_wave: { keys: ["milestones"], arrays: ["milestones"], highValue: true },
+  koan_set_wave_milestones: { keys: ["id", "milestones"], arrays: ["milestones"], highValue: true },
+
+  koan_add_diagram: { keys: ["type", "scope", "title"] },
+  koan_set_diagram: { keys: ["id", "title", "scope", "ascii_render"], freeform: ["ascii_render"], highValue: true },
+  koan_add_diagram_node: { keys: ["diagram_id", "id", "label", "type"] },
+  koan_add_diagram_edge: { keys: ["diagram_id", "source", "target", "label", "protocol"] },
+
+  koan_set_readme_entry: { keys: ["path", "content"], freeform: ["content"], highValue: true },
+
+  koan_qr_add_item: { keys: ["phase", "scope", "check", "severity"], freeform: ["check"], highValue: true },
+  koan_qr_set_item: { keys: ["phase", "id", "status", "finding"], freeform: ["finding"], highValue: true },
+  koan_qr_assign_group: { keys: ["phase", "group_id", "ids"], arrays: ["ids"], highValue: true },
+  koan_qr_get_item: { keys: ["phase", "id"], getter: true },
+  koan_qr_list_items: { keys: ["phase", "status"], getter: true },
+  koan_qr_summary: { keys: ["phase"], getter: true },
+
+  koan_store_context: {
+    keys: ["task_spec", "constraints", "entry_points", "rejected_alternatives", "current_understanding", "assumptions", "invisible_knowledge", "reference_docs"],
+    arrays: ["task_spec", "constraints", "entry_points", "rejected_alternatives", "current_understanding", "assumptions", "invisible_knowledge", "reference_docs"],
+    highValue: true,
+  },
+};
 
 // Reads the tail of events.jsonl and returns structured log entries.
 // Filters out heartbeats (noisy). Used by session.ts to feed the widget log card.
-export async function readRecentLogs(dir: string, count = 5): Promise<LogLine[]> {
+export async function readRecentLogs(dir: string, count = 8): Promise<LogLine[]> {
   try {
     const raw = await fs.readFile(path.join(dir, "events.jsonl"), "utf8");
     const events = raw
@@ -366,27 +463,146 @@ export async function readRecentLogs(dir: string, count = 5): Promise<LogLine[]>
   }
 }
 
-function sizeSuffix(e: { lines?: number; chars?: number }): string {
-  return e.lines != null ? `(${e.lines}L, ${e.chars}c)` : "";
+function formatChars(chars: number): string {
+  if (chars < 1000) return `${chars}c`;
+  const k = chars / 1000;
+  if (k >= 10) return `${Math.round(k)}k`;
+  return `${k.toFixed(1)}k`;
+}
+
+function textStats(text: string): string {
+  const lines = text.length === 0 ? 0 : text.split("\n").length;
+  return `${lines}L/${formatChars(text.length)}`;
+}
+
+function responseSize(response: string[]): string {
+  return textStats(response.join("\n"));
+}
+
+function truncateUnicode(text: string, maxChars: number): string {
+  const chars = Array.from(text);
+  if (chars.length <= maxChars) return text;
+  return `${chars.slice(0, maxChars).join("")}…`;
+}
+
+function inlineScalar(value: unknown): string {
+  if (typeof value === "string") {
+    return truncateUnicode(value.replace(/\r\n?|\n/gu, "\\n"), PREVIEW_CHARS);
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (value === null) return "null";
+  if (Array.isArray(value)) return `[${value.length}]`;
+  if (typeof value === "object") return "{…}";
+  return String(value);
+}
+
+function arrayPreview(value: unknown): string {
+  if (!Array.isArray(value) || value.length === 0) {
+    return "[]";
+  }
+  const first = inlineScalar(value[0]);
+  if (value.length === 1) {
+    return `[${first}]`;
+  }
+  return `[${first}] +${value.length - 1}`;
+}
+
+function freeformSize(value: unknown): string {
+  if (typeof value === "string") {
+    return textStats(value);
+  }
+  const json = JSON.stringify(value);
+  return textStats(json ?? String(value));
+}
+
+function hasKey(input: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(input, key);
+}
+
+function orderedShapeKeys(keys: string[]): string[] {
+  const indexed = keys.map((key, index) => ({ key, index }));
+  indexed.sort((a, b) => {
+    const pa = KEY_PRIORITY.indexOf(a.key);
+    const pb = KEY_PRIORITY.indexOf(b.key);
+    const ra = pa === -1 ? Number.MAX_SAFE_INTEGER : pa;
+    const rb = pb === -1 ? Number.MAX_SAFE_INTEGER : pb;
+    if (ra !== rb) return ra - rb;
+    return a.index - b.index;
+  });
+  return indexed.map((x) => x.key);
+}
+
+function formatKnownKoan(e: ToolKoanEvent, shape: ToolShape): LogLine {
+  const arrayKeys = new Set(shape.arrays ?? []);
+  const freeformKeys = new Set(shape.freeform ?? []);
+  const chunks: string[] = [];
+
+  for (const key of orderedShapeKeys(shape.keys)) {
+    if (!hasKey(e.input, key)) continue;
+    const value = e.input[key];
+
+    if (arrayKeys.has(key)) {
+      chunks.push(`${key}:${arrayPreview(value)}`);
+      continue;
+    }
+
+    if (freeformKeys.has(key)) {
+      chunks.push(`${key}:${freeformSize(value)}`);
+      continue;
+    }
+
+    chunks.push(`${key}=${inlineScalar(value)}`);
+  }
+
+  if (shape.getter) {
+    if (chunks.length === 0) {
+      chunks.push("scope=plan");
+    }
+    chunks.push(`resp:${responseSize(e.response)}`);
+  }
+
+  return {
+    tool: e.tool,
+    summary: chunks.join(" · "),
+    highValue: shape.highValue ?? chunks.length >= 3,
+  };
+}
+
+function formatKoanLogLine(e: ToolKoanEvent): LogLine {
+  const shape = KOAN_SHAPES[e.tool];
+  if (!shape) {
+    return { tool: e.tool, summary: "", highValue: false };
+  }
+  return formatKnownKoan(e, shape);
 }
 
 function formatLogLine(e: AuditEvent): LogLine {
   switch (e.kind) {
     case "phase_start":
-      return { prefix: "phase", highlight: e.phase, meta: `(${e.totalSteps} steps)` };
+      return { tool: "phase", summary: `${e.phase} (${e.totalSteps} steps)`, highValue: false };
     case "step_transition":
-      return { prefix: `current step ${e.step}/${e.totalSteps}:`, highlight: e.name, meta: "" };
+      return { tool: `step ${e.step}/${e.totalSteps}`, summary: e.name, highValue: false };
     case "phase_end":
-      return { prefix: "phase", highlight: e.outcome, meta: e.detail ?? "" };
+      return { tool: "phase", summary: e.detail ? `${e.outcome} · ${e.detail}` : e.outcome, highValue: false };
     case "tool_file":
-      return { prefix: e.tool, highlight: e.path, meta: sizeSuffix(e) };
+      return {
+        tool: e.tool,
+        summary: e.lines != null ? `${e.path} · ${e.lines}L/${formatChars(e.chars ?? 0)}` : e.path,
+        highValue: e.tool === "read",
+      };
     case "tool_bash":
-      return { prefix: "bash", highlight: e.bin, meta: sizeSuffix(e) };
+      return {
+        tool: "bash",
+        summary: e.lines != null ? `${e.bin} · ${e.lines}L/${formatChars(e.chars ?? 0)}` : e.bin,
+        highValue: false,
+      };
     case "tool_koan":
-      return { prefix: "koan", highlight: e.tool, meta: "" };
+      return formatKoanLogLine(e);
     case "tool_generic":
-      return { prefix: "tool", highlight: e.tool, meta: "" };
+      return { tool: e.tool, summary: "", highValue: false };
     case "heartbeat":
-      return { prefix: "", highlight: "heartbeat", meta: "" };
+      return { tool: "heartbeat", summary: "", highValue: false };
   }
 }
