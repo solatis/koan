@@ -218,6 +218,46 @@ Step 6: plan mutation tools unlocked.
 
 ---
 
+## UI Decisions
+
+### UI-1: Planning Widget Cards & Timeline Rail
+- Chosen on Feb 25 2026 via planning-widget design deck (Stacked Modular Cards + Vertical Timeline Rail).
+- Rationale: make terminal output feel like a coherent operations workspace (not plain log spam), keep active progress glanceable, and preserve enough structure to scale into future phases without redesigning the shell.
+- Implementation guardrails:
+  - Continue rendering through `canvasLine()` so the background fills full terminal width.
+  - Keep consistent card padding and solid-border framing through shared `renderBox()` helpers.
+  - Phase chips use stable semantic tokens (accent active, bold muted completed, muted pending, error failed).
+  - Vertical rail remains width-bounded (~20 cols) so the right detail pane keeps enough budget for high-signal telemetry.
+  - Detail footer (`Plan · id`) is pinned bottom via dynamic padding, independent of timeline density.
+  - Planning body and latest-log body share one outer card, separated by an internal divider for better cohesion.
+
+### UI-2: Latest Log as Deterministic Dense Grid
+- Chosen on Feb 25 2026 via follow-up deck (`Declarative Shape Table` + `Two-Column Dense Grid`).
+- Rationale: long-running sessions need more than tool names; users must see intent without reading full payloads. Deterministic ordering reduces scan friction and makes anomalies obvious over time.
+- Contract:
+  - Left column anchor is always tool name.
+  - Right column is deterministic summary from shape-table formatters (ID-first ordering for recognized tools).
+  - Unknown tools degrade to name-only output (generic fallback).
+  - Arrays render as first-item-plus-count; free-form fields render as size-only metadata.
+  - Getter tools include target metadata + response size (`resp:42L/3.1k`).
+  - Repeated events remain repeated (no collapse), preserving temporal audit fidelity.
+  - Column widths adapt to terminal width and observed tool-name lengths so detail space stays useful.
+  - In integrated mode, latest-log columns are forced to the same split as the planning body (`timelineWidth` / `detailWidth`) to keep vertical alignment stable.
+  - High-value rows may wrap to 2 lines only; deeper overflow is compacted with ellipsis to protect fixed card height.
+
+### UI-3: QR Integrated Section (Not Sidecar)
+- Chosen on Feb 25 2026 via follow-up deck (`Inline Integrated Section + Divider`).
+- Rationale: QR is the acceptance loop, not optional telemetry. Rendering it as an inline first-class section prevents the "detached widget" feel and matches how users reason about plan quality over time.
+- Contract:
+  - QR is visible during Plan design (and contractually Plan execution), hidden only for Context gathering.
+  - Iteration 1 enters `execute` immediately (same stage model as fix iterations); there is no separate `initializing` stage.
+  - Section includes: phase + iter/mode metadata, phase rail, and counters (`done/total/pass/fail/todo`) in a compact metadata block.
+  - Visual treatment uses inline sectioning + divider, not a nested bordered mini-card.
+  - Geometry is fixed for scan consistency: header + rail + counters + divider.
+  - Metadata uses a hard 64-char visible-width budget with progressive compaction (`exec/decomp/vfy`, `d/p/f/t`, `iN/M`) under narrow widths.
+  - Counter line emphasizes severity (`fail` highlighted in error color) so blocking issues pop in long sessions.
+  - Detail pane hierarchy is explicit: `Current step` label first, then step body, then QR section.
+
 ## Workflow Dispatch Architecture
 
 ### WorkflowDispatch (dispatch pattern)
