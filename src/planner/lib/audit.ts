@@ -18,6 +18,8 @@ export interface ToolFileEvent extends EventBase {
   kind: "tool_file";
   tool: "read" | "edit" | "write";
   path: string;
+  lines?: number;
+  chars?: number;
   error: boolean;
 }
 
@@ -112,8 +114,10 @@ function now(): string {
 // Derives a concise last-action string from a tool event for display.
 export function summarize(e: ToolEvent): string {
   switch (e.kind) {
-    case "tool_file":
-      return `${e.tool} ${e.path}`;
+    case "tool_file": {
+      const suffix = e.lines != null ? ` (${e.lines}L, ${e.chars}c)` : "";
+      return `${e.tool} ${e.path}${suffix}`;
+    }
     case "tool_bash":
       return `bash ${e.bin}`;
     case "tool_koan":
@@ -177,7 +181,7 @@ export function extractToolEvent(piEvent: PiToolResultEvent): ToolEvent {
   const seq = 0;
 
   if (FILE_TOOLS.has(toolName)) {
-    return {
+    const ev: ToolFileEvent = {
       kind: "tool_file",
       tool: toolName as "read" | "edit" | "write",
       path: (input["path"] as string | undefined) ?? "",
@@ -185,6 +189,12 @@ export function extractToolEvent(piEvent: PiToolResultEvent): ToolEvent {
       ts,
       seq,
     };
+    if (toolName === "read" && !isError) {
+      const text = content.find((c) => c.type === "text")?.text ?? "";
+      ev.lines = text.split("\n").length;
+      ev.chars = text.length;
+    }
+    return ev;
   }
 
   if (toolName === "bash") {
@@ -323,5 +333,45 @@ export async function readProjection(dir: string): Promise<Projection | null> {
     return JSON.parse(raw) as Projection;
   } catch {
     return null;
+  }
+}
+
+// Reads the tail of events.jsonl and returns human-readable summary lines.
+// Filters out heartbeats (noisy). Used by session.ts to feed the widget log card.
+export async function readRecentLogs(dir: string, count = 5): Promise<string[]> {
+  try {
+    const raw = await fs.readFile(path.join(dir, "events.jsonl"), "utf8");
+    const events = raw
+      .trimEnd()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as AuditEvent)
+      .filter((e) => e.kind !== "heartbeat");
+    return events.slice(-count).map(formatLogLine);
+  } catch {
+    return [];
+  }
+}
+
+function formatLogLine(e: AuditEvent): string {
+  switch (e.kind) {
+    case "phase_start":
+      return `${e.phase} started (${e.totalSteps} steps)`;
+    case "step_transition":
+      return `step ${e.step}/${e.totalSteps}: ${e.name}`;
+    case "phase_end":
+      return `${e.outcome}${e.detail ? ` -- ${e.detail}` : ""}`;
+    case "tool_file": {
+      const suffix = e.lines != null ? ` (${e.lines}L, ${e.chars}c)` : "";
+      return `${e.tool} ${e.path}${suffix}`;
+    }
+    case "tool_bash":
+      return `bash ${e.bin}`;
+    case "tool_koan":
+      return e.tool;
+    case "tool_generic":
+      return e.tool;
+    case "heartbeat":
+      return "heartbeat";
   }
 }

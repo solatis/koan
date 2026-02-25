@@ -13,7 +13,7 @@ import { createPlanInfo } from "../utils/plan.js";
 import { spawnArchitect, spawnArchitectFix, spawnQRDecomposer, spawnReviewer } from "./subagent.js";
 import { createLogger, setLogDir, type Logger } from "../utils/logger.js";
 import { createSubagentDir } from "../utils/progress.js";
-import { readProjection } from "./lib/audit.js";
+import { readProjection, readRecentLogs } from "./lib/audit.js";
 import type { WorkflowDispatch, PlanRef } from "./lib/dispatch.js";
 import { pool } from "./lib/pool.js";
 import type { QRFile } from "./qr/types.js";
@@ -68,11 +68,15 @@ export function createSession(pi: ExtensionAPI, dispatch: WorkflowDispatch, plan
       const extensionPath = path.resolve(import.meta.dirname, "../../extensions/koan.ts");
 
       const pollInterval = setInterval(async () => {
-        const s = await readProjection(subagentDir);
+        const [s, logs] = await Promise.all([
+          readProjection(subagentDir),
+          readRecentLogs(subagentDir),
+        ]);
         if (s) {
           widget?.update({
             step: s.stepName,
             activity: s.lastAction ?? "",
+            logLines: logs,
           });
         }
       }, 2000);
@@ -121,9 +125,13 @@ export function createSession(pi: ExtensionAPI, dispatch: WorkflowDispatch, plan
       state.phase = "plan-design-complete";
       log("Architect plan-design complete", { planDir });
       widget?.update({
-        phaseStatus: { index: 1, status: "completed" },
+        phaseStatus: { index: 1, status: "running" },
         step: "starting QR block...",
         activity: "",
+        qrIterationsMax: MAX_FIX_ITERATIONS + 1,
+        qrIteration: 1,
+        qrMode: "initial",
+        qrPhase: "execute",
       });
 
       const qr = await runPlanDesignWithQR(planDir, ctx.cwd, extensionPath, state, log, widget);
@@ -204,15 +212,19 @@ async function runQRBlock(
 ): Promise<QRBlockResult> {
   // 1. Spawn decomposer subagent
   state.phase = "qr-decompose-running";
-  widget?.update({ step: "qr-decompose: starting...", activity: "" });
+  widget?.update({ step: "qr-decompose: starting...", activity: "", qrPhase: "decompose" });
   const decomposeDir = await createSubagentDir(planDir, "qr-decomposer");
 
   const decomposePoll = setInterval(async () => {
-    const s = await readProjection(decomposeDir);
+    const [s, logs] = await Promise.all([
+      readProjection(decomposeDir),
+      readRecentLogs(decomposeDir),
+    ]);
     if (s) {
       widget?.update({
         step: `qr-decompose: ${s.stepName}`,
         activity: s.lastAction ?? "",
+        logLines: logs,
       });
     }
   }, 2000);
@@ -260,6 +272,7 @@ async function runQRBlock(
 
   // 3. Spawn reviewer pool
   state.phase = "qr-verify-running";
+  widget?.update({ qrPhase: "verify" });
 
   const result = await pool(
     itemIds,
@@ -324,9 +337,16 @@ async function runPlanDesignWithQR(
 
   // Initial QR (iteration 1)
   let qr = await runQRBlock(planDir, cwd, extensionPath, state, log, widget);
-  if (qr.passed) return qr;
+  if (qr.passed) {
+    widget?.update({ qrPhase: "done", qrMode: null, qrIteration: null, qrIterationsMax: null, phaseStatus: { index: 1, status: "completed" } });
+    return qr;
+  }
+
+  widget?.update({ qrPhase: "execute" });
 
   for (let iteration = 2; iteration <= MAX_FIX_ITERATIONS + 1; iteration++) {
+    widget?.update({ qrIteration: iteration, qrMode: "fix", qrPhase: "execute" });
+
     // Read QR file for severity check
     let qrFile: QRFile;
     try {
@@ -334,6 +354,7 @@ async function runPlanDesignWithQR(
       qrFile = JSON.parse(raw) as QRFile;
     } catch {
       log("Fix loop: failed to read QR file", { iteration });
+      widget?.update({ qrPhase: "done", qrMode: null, qrIteration: null, qrIterationsMax: null });
       return { summary: "Fix loop aborted: cannot read QR file.", passed: false };
     }
 
@@ -344,6 +365,7 @@ async function runPlanDesignWithQR(
     if (qrPassesAtIteration(qrFile.items, iteration)) {
       const pass = qrFile.items.filter((i) => i.status === "PASS").length;
       const fail = qrFile.items.filter((i) => i.status === "FAIL").length;
+      widget?.update({ qrPhase: "done", qrMode: null, qrIteration: null, qrIterationsMax: null, phaseStatus: { index: 1, status: "completed" } });
       return {
         passed: true,
         summary: `QR passed at iteration ${iteration} after severity de-escalation: ${pass} PASS, ${fail} FAIL (non-blocking).`,
@@ -352,16 +374,20 @@ async function runPlanDesignWithQR(
 
     // Spawn fix-mode architect
     const fixIndex = iteration - 1;
-    widget?.update({ step: `fix ${fixIndex}/${MAX_FIX_ITERATIONS}: spawning architect...`, activity: "" });
+    widget?.update({ step: `fix ${fixIndex}/${MAX_FIX_ITERATIONS}: spawning architect...`, activity: "", qrPhase: "execute" });
 
     const fixDir = await createSubagentDir(planDir, `architect-fix-${fixIndex}`);
 
     const fixPoll = setInterval(async () => {
-      const s = await readProjection(fixDir);
+      const [s, logs] = await Promise.all([
+        readProjection(fixDir),
+        readRecentLogs(fixDir),
+      ]);
       if (s) {
         widget?.update({
           step: `fix ${fixIndex}/${MAX_FIX_ITERATIONS}: ${s.stepName}`,
           activity: s.lastAction ?? "",
+          logLines: logs,
         });
       }
     }, 2000);
@@ -388,12 +414,18 @@ async function runPlanDesignWithQR(
       activity: "",
     });
     qr = await runQRBlock(planDir, cwd, extensionPath, state, log, widget);
-    if (qr.passed) return qr;
+    if (qr.passed) {
+      widget?.update({ qrPhase: "done", qrMode: null, qrIteration: null, qrIterationsMax: null, phaseStatus: { index: 1, status: "completed" } });
+      return qr;
+    }
+
+    widget?.update({ qrPhase: "execute" });
   }
 
   // Max iterations reached. MUST failures remaining after 5 fix attempts
   // indicate a structural problem -- silently passing would propagate a
   // known-broken plan downstream.
+  widget?.update({ qrPhase: "done", qrMode: null, qrIteration: null, qrIterationsMax: null });
   return {
     passed: false,
     summary: `${qr.summary} (max ${MAX_FIX_ITERATIONS} fix iterations reached)`,
