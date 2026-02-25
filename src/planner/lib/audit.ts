@@ -359,7 +359,7 @@ export async function readRecentLogs(dir: string, count = 5): Promise<LogLine[]>
       .split("\n")
       .filter(Boolean)
       .map((line) => JSON.parse(line) as AuditEvent)
-      .filter((e) => e.kind !== "heartbeat");
+      .filter((e) => e.kind !== "heartbeat" && !(e.kind === "tool_koan" && e.tool === "koan_complete_step"));
     return events.slice(-count).map(formatLogLine);
   } catch {
     return [];
@@ -375,7 +375,7 @@ function formatLogLine(e: AuditEvent): LogLine {
     case "phase_start":
       return { prefix: "phase", highlight: e.phase, meta: `(${e.totalSteps} steps)` };
     case "step_transition":
-      return { prefix: `step ${e.step}/${e.totalSteps}`, highlight: e.name, meta: "" };
+      return { prefix: `current step ${e.step}/${e.totalSteps}:`, highlight: e.name, meta: "" };
     case "phase_end":
       return { prefix: "phase", highlight: e.outcome, meta: e.detail ?? "" };
     case "tool_file":
