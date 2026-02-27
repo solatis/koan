@@ -1,6 +1,5 @@
-// QR decompose phase -- 13-step workflow that decomposes a plan into
-// verifiable QR items. Mirrors PlanDesignPhase lifecycle exactly.
-// Two-tier step gate: koan_qr_add_item unlocks at step 5,
+// QR decompose phase -- 13-step workflow that decomposes a plan phase into
+// verifiable QR items. Two-tier step gate: koan_qr_add_item unlocks at step 5,
 // koan_qr_assign_group unlocks at step 9.
 
 import { promises as fs } from "node:fs";
@@ -15,6 +14,7 @@ import {
   decomposeStepGuidance,
   DECOMPOSE_STEP_NAMES,
   type DecomposeStep,
+  type WorkPhaseKey,
 } from "./prompts.js";
 import { formatStep } from "../../lib/step.js";
 import type { ContextData } from "../../types.js";
@@ -24,17 +24,11 @@ import { hookDispatch, unhookDispatch, type WorkflowDispatch, type PlanRef } fro
 import { checkPermission } from "../../lib/permissions.js";
 import type { QRFile } from "../../qr/types.js";
 
-// -- Step gate constants --
-
-// Blocklist pattern: only restrict tools this gate owns; everything else
-// defers to checkPermission. Avoids blocking read tools or future pi tools.
 const QR_ADD_TOOLS = new Set(["koan_qr_add_item"]);
 const QR_ASSIGN_TOOLS = new Set(["koan_qr_assign_group"]);
 const ADD_ITEM_UNLOCK = 5;
 const ASSIGN_GROUP_UNLOCK = 9;
 const TOTAL_STEPS = 13;
-
-// -- State --
 
 interface DecomposeState {
   active: boolean;
@@ -43,11 +37,11 @@ interface DecomposeState {
   systemPrompt: string | null;
 }
 
-// -- Phase --
-
 export class QRDecomposePhase {
   private readonly pi: ExtensionAPI;
   private readonly planDir: string;
+  private readonly workPhase: WorkPhaseKey;
+  private readonly qrPhaseKey: `qr-${WorkPhaseKey}`;
   private readonly log: Logger;
   private readonly state: DecomposeState;
   private readonly eventLog: EventLog | undefined;
@@ -56,7 +50,7 @@ export class QRDecomposePhase {
 
   constructor(
     pi: ExtensionAPI,
-    config: { planDir: string },
+    config: { planDir: string; workPhase: WorkPhaseKey },
     dispatch: WorkflowDispatch,
     planRef: PlanRef,
     log?: Logger,
@@ -64,6 +58,8 @@ export class QRDecomposePhase {
   ) {
     this.pi = pi;
     this.planDir = config.planDir;
+    this.workPhase = config.workPhase;
+    this.qrPhaseKey = `qr-${config.workPhase}`;
     this.dispatch = dispatch;
     this.planRef = planRef;
     this.log = log ?? createLogger("QRDecompose");
@@ -101,15 +97,15 @@ export class QRDecomposePhase {
     }
 
     const contextXml = formatContextForDecompose(contextData);
-    this.state.systemPrompt = buildDecomposeSystemPrompt(basePrompt);
-    this.state.step1Prompt = formatStep(decomposeStepGuidance(1, contextXml));
+    this.state.systemPrompt = buildDecomposeSystemPrompt(basePrompt, this.workPhase);
+    this.state.step1Prompt = formatStep(decomposeStepGuidance(1, this.workPhase, contextXml));
     this.state.active = true;
     this.state.step = 1;
     this.planRef.dir = this.planDir;
 
     hookDispatch(this.dispatch, "onCompleteStep", () => this.handleStepComplete());
 
-    this.log("Starting qr-decompose workflow", { step: 1 });
+    this.log("Starting qr-decompose workflow", { step: 1, phase: this.workPhase });
     await this.eventLog?.emitPhaseStart(TOTAL_STEPS);
     await this.eventLog?.emitStepTransition(1, DECOMPOSE_STEP_NAMES[1], TOTAL_STEPS);
   }
@@ -120,18 +116,12 @@ export class QRDecomposePhase {
       return { systemPrompt: this.state.systemPrompt };
     });
 
-    // Step 1 prompt injection. The CLI message is a process trigger --
-    // the context event fires before each LLM call and replaces the
-    // user message with the actual step 1 instructions. Handler is a
-    // no-op once the step advances past 1.
     this.pi.on("context", (event) => {
       if (!this.state.active) return undefined;
       if (this.state.step !== 1 || !this.state.step1Prompt) return undefined;
 
       const messages = event.messages.map((m) => {
-        if (m.role === "user") {
-          return { ...m, content: this.state.step1Prompt! };
-        }
+        if (m.role === "user") return { ...m, content: this.state.step1Prompt! };
         return m;
       });
       return { messages };
@@ -140,13 +130,9 @@ export class QRDecomposePhase {
     this.pi.on("tool_call", (event) => {
       if (!this.state.active) return undefined;
 
-      // Outer boundary: phase permissions (default-deny).
-      const perm = checkPermission("qr-plan-design", event.toolName);
-      if (!perm.allowed) {
-        return { block: true, reason: perm.reason };
-      }
+      const perm = checkPermission(this.qrPhaseKey, event.toolName);
+      if (!perm.allowed) return { block: true, reason: perm.reason };
 
-      // Inner constraint: two-tier step gate (blocklist, not whitelist).
       const step = this.state.step;
       if (step < ADD_ITEM_UNLOCK && QR_ADD_TOOLS.has(event.toolName)) {
         return {
@@ -163,7 +149,6 @@ export class QRDecomposePhase {
 
       return undefined;
     });
-
   }
 
   private async handleStepComplete(): Promise<{ ok: boolean; prompt?: string; error?: string }> {
@@ -175,34 +160,32 @@ export class QRDecomposePhase {
         await this.eventLog?.emitPhaseEnd("failed", result.errors?.join("; "));
         return { ok: false, error: result.errors?.join("; ") };
       }
-      // Only unhook after successful finalization -- on failure the LLM
-      // receives the error as a tool result and may retry within the step.
+
       this.state.active = false;
       unhookDispatch(this.dispatch, "onCompleteStep");
       await this.eventLog?.emitPhaseEnd("completed");
-      this.log("QR decompose finalized, workflow complete");
+      this.log("QR decompose finalized, workflow complete", { phase: this.workPhase });
       return { ok: true, prompt: "QR decomposition complete." };
     }
 
     this.state.step = (prev + 1) as DecomposeStep;
     const nextName = DECOMPOSE_STEP_NAMES[this.state.step];
-    const prompt = formatStep(decomposeStepGuidance(this.state.step));
+    const prompt = formatStep(decomposeStepGuidance(this.state.step, this.workPhase));
 
-    this.log("Step complete, advancing", { from: prev, to: this.state.step, name: nextName });
+    this.log("Step complete, advancing", { from: prev, to: this.state.step, name: nextName, phase: this.workPhase });
     await this.eventLog?.emitStepTransition(this.state.step, nextName, TOTAL_STEPS);
-
     return { ok: true, prompt };
   }
 
   private async handleFinalize(): Promise<{ ok: boolean; errors?: string[] }> {
-    const qrPath = path.join(this.planDir, "qr-plan-design.json");
+    const qrPath = path.join(this.planDir, `qr-${this.workPhase}.json`);
     let qr: QRFile;
     try {
       const raw = await fs.readFile(qrPath, "utf8");
       qr = JSON.parse(raw) as QRFile;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return { ok: false, errors: [`Failed to read qr-plan-design.json: ${message}`] };
+      return { ok: false, errors: [`Failed to read qr-${this.workPhase}.json: ${message}`] };
     }
 
     const errors: string[] = [];
@@ -211,17 +194,16 @@ export class QRDecomposePhase {
     } else {
       const ungrouped = qr.items.filter((i) => i.group_id === null);
       if (ungrouped.length > 0) {
-        const ids = ungrouped.map((i) => i.id).join(", ");
-        errors.push(`Ungrouped items: ${ids}`);
+        errors.push(`Ungrouped items: ${ungrouped.map((i) => i.id).join(", ")}`);
       }
     }
 
     if (errors.length > 0) {
-      this.log("QR decompose validation failed", { errors });
+      this.log("QR decompose validation failed", { errors, phase: this.workPhase });
       return { ok: false, errors };
     }
 
-    this.log("QR decompose validation passed");
+    this.log("QR decompose validation passed", { phase: this.workPhase });
     return { ok: true };
   }
 }

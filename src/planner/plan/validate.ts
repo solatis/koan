@@ -136,35 +136,63 @@ export function validatePlanDocs(p: Plan): ValidationResult {
   return { ok: errors.length === 0, errors };
 }
 
-// Reads plan.json from planDir and runs validatePlanDesign + validateRefs.
-// Returns { ok: false, errors } on read/parse failure or any validation failure.
-export async function loadAndValidatePlan(
+export type PlanValidationPhase = "plan-design" | "plan-code" | "plan-docs";
+
+// Reads plan.json from planDir and runs phase-appropriate validation.
+// All phases require plan-design + reference integrity checks.
+// plan-code additionally requires intent->change completeness.
+// plan-docs additionally requires doc completeness.
+export async function loadAndValidatePlanForPhase(
   planDir: string,
+  phase: PlanValidationPhase,
   log: Logger,
 ): Promise<{ ok: boolean; errors?: string[] }> {
   const planPath = path.join(planDir, "plan.json");
-  let plan;
+  let plan: Plan;
   try {
     const raw = await fs.readFile(planPath, "utf8");
-    plan = JSON.parse(raw);
+    plan = JSON.parse(raw) as Plan;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    log("Failed to read plan.json for validation", { error: message });
+    log("Failed to read plan.json for validation", { error: message, phase });
     return { ok: false, errors: [`Failed to read plan.json: ${message}`] };
   }
 
   const designValidation = validatePlanDesign(plan);
   if (!designValidation.ok) {
-    log("Plan design validation failed", { errors: designValidation.errors });
+    log("Plan design validation failed", { errors: designValidation.errors, phase });
     return { ok: false, errors: designValidation.errors };
   }
 
   const refValidation = validateRefs(plan);
   if (!refValidation.ok) {
-    log("Plan reference validation failed", { errors: refValidation.errors });
+    log("Plan reference validation failed", { errors: refValidation.errors, phase });
     return { ok: false, errors: refValidation.errors };
   }
 
-  log("Plan validation passed", { path: planPath });
+  if (phase === "plan-code" || phase === "plan-docs") {
+    const codeValidation = validatePlanCode(plan);
+    if (!codeValidation.ok) {
+      log("Plan code validation failed", { errors: codeValidation.errors, phase });
+      return { ok: false, errors: codeValidation.errors };
+    }
+  }
+
+  if (phase === "plan-docs") {
+    const docsValidation = validatePlanDocs(plan);
+    if (!docsValidation.ok) {
+      log("Plan docs validation failed", { errors: docsValidation.errors, phase });
+      return { ok: false, errors: docsValidation.errors };
+    }
+  }
+
+  log("Plan validation passed", { path: planPath, phase });
   return { ok: true };
+}
+
+export async function loadAndValidatePlan(
+  planDir: string,
+  log: Logger,
+): Promise<{ ok: boolean; errors?: string[] }> {
+  return loadAndValidatePlanForPhase(planDir, "plan-design", log);
 }

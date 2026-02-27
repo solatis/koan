@@ -1,7 +1,6 @@
 // QR decompose phase prompts -- 13-step workflow for decomposing a plan into
-// verifiable QR items. Follows the same structure as plan-design/prompts.ts.
-// All tool calls reference phase='plan-design' explicitly so the decompose
-// agent always writes to the correct QR namespace.
+// verifiable QR items. Prompt text is shared across plan-design, plan-code,
+// and plan-docs via the injected phase key.
 
 import { promises as fs } from "node:fs";
 import * as os from "node:os";
@@ -10,11 +9,8 @@ import * as path from "node:path";
 import type { ContextData } from "../../types.js";
 import type { StepGuidance } from "../../lib/step.js";
 
-// -- Types --
-
 export type DecomposeStep = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13;
-
-// -- Constants --
+export type WorkPhaseKey = "plan-design" | "plan-code" | "plan-docs";
 
 export const DECOMPOSE_STEP_NAMES: Record<DecomposeStep, string> = {
   1: "Absorb Context",
@@ -32,7 +28,23 @@ export const DECOMPOSE_STEP_NAMES: Record<DecomposeStep, string> = {
   13: "Final Validation",
 };
 
-// -- Exports --
+const PHASE_SCOPE_HINTS: Record<WorkPhaseKey, string[]> = {
+  "plan-design": [
+    "decision:DL-001 -- decision reasoning quality",
+    "milestone:M-001 -- milestone structure",
+    "code_intent:CI-M-001-001 -- intent clarity",
+  ],
+  "plan-code": [
+    "milestone:M-001 -- code change coverage",
+    "code_intent:CI-M-001-001 -- intent->change linkage",
+    "change:CC-M-001-001 -- diff quality/anchor correctness",
+  ],
+  "plan-docs": [
+    "milestone:M-001 -- docs completeness",
+    "change:CC-M-001-001 -- doc_diff/comments quality",
+    "diagram:DIAG-001 -- architecture docs fidelity",
+  ],
+};
 
 export async function loadQRDecomposeSystemPrompt(): Promise<string> {
   const homeDir = os.homedir();
@@ -46,15 +58,15 @@ export async function loadQRDecomposeSystemPrompt(): Promise<string> {
   }
 }
 
-export function buildDecomposeSystemPrompt(basePrompt: string): string {
+export function buildDecomposeSystemPrompt(basePrompt: string, phase: WorkPhaseKey): string {
   return [
     basePrompt,
     "",
     "---",
     "",
-    "WORKFLOW: 13-STEP QR DECOMPOSITION (plan-design)",
+    `WORKFLOW: 13-STEP QR DECOMPOSITION (${phase})`,
     "",
-    "You will execute a 13-step workflow to decompose a plan into verifiable QR items.",
+    "You will execute a 13-step workflow to decompose the current plan phase into verifiable QR items.",
     "Step 1 instructions are in the user message below.",
     "Complete the work described, then call koan_complete_step.",
     "Put your findings in the `thoughts` parameter of koan_complete_step.",
@@ -66,26 +78,22 @@ export function buildDecomposeSystemPrompt(basePrompt: string): string {
 }
 
 export function formatContextForDecompose(ctx: ContextData): string {
-  return [
-    "<planning_context>",
-    JSON.stringify(ctx, null, 2),
-    "</planning_context>",
-  ].join("\n");
+  return ["<planning_context>", JSON.stringify(ctx, null, 2), "</planning_context>"].join("\n");
 }
 
-export function decomposeStepGuidance(step: DecomposeStep, context?: string): StepGuidance {
+export function decomposeStepGuidance(step: DecomposeStep, phase: WorkPhaseKey, context?: string): StepGuidance {
   switch (step) {
     case 1:
       return {
         title: "Step 1: Absorb Context",
         instructions: [
+          `PHASE: ${phase}`,
           "PLANNING CONTEXT (from session):",
           "",
           context ?? "",
           "",
           "Use koan_get_plan to read the full plan.",
-          "Absorb the plan structure: overview, constraints, milestones, decisions, code_intents, risks, invisible_knowledge.",
-          "Identify the key entities and relationships that will need verification.",
+          "Absorb the structures relevant to this phase and identify what needs verification.",
         ],
       };
 
@@ -93,10 +101,9 @@ export function decomposeStepGuidance(step: DecomposeStep, context?: string): St
       return {
         title: "Step 2: Holistic Concerns",
         instructions: [
-          "Identify plan-wide concerns that apply across all milestones.",
-          "Consider: structural completeness, logical consistency, risk coverage, dependency ordering.",
-          "Focus on plan-level quality -- not code correctness.",
-          "These concerns become scope='*' items in later steps.",
+          `List phase-wide concerns for ${phase}.`,
+          "Focus on quality/completeness/consistency concerns, not implementation details.",
+          "These become umbrella items (scope='*').",
         ],
       };
 
@@ -104,14 +111,9 @@ export function decomposeStepGuidance(step: DecomposeStep, context?: string): St
       return {
         title: "Step 3: Structural Enumeration",
         instructions: [
-          "Enumerate every major entity in the plan:",
-          "  - Decisions (DL-xxx)",
-          "  - Constraints",
-          "  - Risks",
-          "  - Milestones (M-xxx) and their code_intents (CI-M-xxx-xxx)",
-          "  - Invisible knowledge entries",
-          "  - Waves and ordering",
-          "Track counts for validation in step 8.",
+          `Enumerate concrete entities touched by ${phase}.`,
+          "Track IDs and counts so step 7 can validate coverage.",
+          "Use getter tools to resolve uncertain IDs.",
         ],
       };
 
@@ -119,9 +121,8 @@ export function decomposeStepGuidance(step: DecomposeStep, context?: string): St
       return {
         title: "Step 4: Gap Analysis",
         instructions: [
-          "Compare holistic concerns (step 2) against structural entities (step 3).",
-          "Identify gaps: concerns not covered by any entity, entities lacking justification.",
-          "Note areas where the plan is thin or under-specified.",
+          "Map concerns (step 2) to entities (step 3).",
+          "Identify uncovered concerns and under-specified entities.",
         ],
       };
 
@@ -129,22 +130,16 @@ export function decomposeStepGuidance(step: DecomposeStep, context?: string): St
       return {
         title: "Step 5: Generate Items",
         instructions: [
-          "Generate QR items from the analysis in steps 2-4.",
-          "Use koan_qr_add_item to create each item. Always pass phase='plan-design'.",
+          "Generate QR items with koan_qr_add_item.",
+          `Always pass phase='${phase}'.`,
           "",
-          "SCOPE VOCABULARY:",
-          "  '*' -- plan-wide check",
-          "  'milestone:M-001' -- milestone-specific check",
-          "  'decision:DL-001' -- decision-specific check",
-          "  'code_intent:CI-M-001-001' -- code intent-specific check",
+          "Scope examples for this phase:",
+          ...PHASE_SCOPE_HINTS[phase].map((hint) => `  - ${hint}`),
           "",
-          "SEVERITY:",
-          "  MUST -- blocks all iterations (critical defect)",
-          "  SHOULD -- important quality issue",
-          "  COULD -- nice-to-have improvement",
-          "",
-          "Generate items covering: structural completeness, decision reasoning chains,",
-          "risk coverage, milestone scoping, code intent clarity, constraint satisfaction.",
+          "Severity:",
+          "  MUST -- critical defect",
+          "  SHOULD -- significant quality issue",
+          "  COULD -- non-blocking improvement",
         ],
       };
 
@@ -152,11 +147,8 @@ export function decomposeStepGuidance(step: DecomposeStep, context?: string): St
       return {
         title: "Step 6: Atomicity Check",
         instructions: [
-          "Review each generated item. Each item should test exactly one concern.",
-          "If an item covers multiple concerns, split it:",
-          "  Use koan_qr_add_item for each child item.",
-          "  The original becomes the parent (parent_id on children).",
-          "Atomic items are easier to verify independently.",
+          "Ensure each item checks exactly one concern.",
+          "Split non-atomic items by adding child items when needed.",
         ],
       };
 
@@ -164,11 +156,8 @@ export function decomposeStepGuidance(step: DecomposeStep, context?: string): St
       return {
         title: "Step 7: Coverage Validation",
         instructions: [
-          "Cross-reference items against the plan structure.",
-          "Every milestone should have at least one QR item.",
-          "Every decision should have at least one QR item.",
-          "High-severity risks should have corresponding QR items.",
-          "Use koan_qr_add_item for any gaps found.",
+          "Cross-check item set against structural enumeration from step 3.",
+          "Add missing items for uncovered entities/concerns.",
         ],
       };
 
@@ -176,11 +165,9 @@ export function decomposeStepGuidance(step: DecomposeStep, context?: string): St
       return {
         title: "Step 8: Validate Items",
         instructions: [
-          "Items are already on disk (each koan_qr_add_item wrote immediately).",
-          "Use koan_qr_summary(phase='plan-design') to verify counts.",
-          "Use koan_qr_list_items(phase='plan-design') to review all items.",
-          "Check: no duplicate checks, severity levels appropriate, scopes valid.",
-          "Add missing items with koan_qr_add_item if gaps found.",
+          "Use koan_qr_summary and koan_qr_list_items to audit generated items.",
+          `Always pass phase='${phase}'.`,
+          "Fix duplicates or malformed scopes by adding/revising items.",
         ],
       };
 
@@ -188,13 +175,10 @@ export function decomposeStepGuidance(step: DecomposeStep, context?: string): St
       return {
         title: "Step 9: Structural Grouping",
         instructions: [
-          "Begin organizing items into review groups.",
-          "DETERMINISTIC RULES:",
-          "  - Parent-child items share the same group",
-          "  - Umbrella items (scope='*') get group_id='umbrella'",
-          "",
-          "Use koan_qr_list_items(phase='plan-design') to see current items.",
-          "Use koan_qr_assign_group(phase='plan-design', ids=[...], group_id='...') to assign groups.",
+          "Assign deterministic groups:",
+          "  - Parent/child items share group",
+          "  - Umbrella items (scope='*') use group_id='umbrella'",
+          `Use koan_qr_assign_group(phase='${phase}', ...)`,
         ],
       };
 
@@ -202,11 +186,8 @@ export function decomposeStepGuidance(step: DecomposeStep, context?: string): St
       return {
         title: "Step 10: Component Grouping",
         instructions: [
-          "Group remaining ungrouped items by plan component.",
-          "Group candidates: a major milestone, a major decision, a constraint category.",
-          "",
-          "Use koan_qr_list_items(phase='plan-design') to see ungrouped items.",
-          "Use koan_qr_assign_group(phase='plan-design', ids=[...], group_id='...') to assign.",
+          "Group remaining ungrouped items by component (milestone/decision/change cluster).",
+          `Use koan_qr_list_items(phase='${phase}') and koan_qr_assign_group(...)`,
         ],
       };
 
@@ -215,10 +196,7 @@ export function decomposeStepGuidance(step: DecomposeStep, context?: string): St
         title: "Step 11: Concern Grouping",
         instructions: [
           "Group remaining ungrouped items by concern type.",
-          "Group candidates: reasoning chain quality, reference integrity, risk coverage.",
-          "",
-          "Use koan_qr_list_items(phase='plan-design') to see ungrouped items.",
-          "Use koan_qr_assign_group(phase='plan-design', ids=[...], group_id='...') to assign.",
+          "Example concern groups: coverage, consistency, traceability, docs quality.",
         ],
       };
 
@@ -226,11 +204,8 @@ export function decomposeStepGuidance(step: DecomposeStep, context?: string): St
       return {
         title: "Step 12: Affinity Grouping",
         instructions: [
-          "Assign remaining ungrouped items to groups based on similarity.",
-          "Singletons are acceptable -- not every item needs a multi-member group.",
-          "",
-          "Use koan_qr_list_items(phase='plan-design') to see ungrouped items.",
-          "Use koan_qr_assign_group(phase='plan-design', ids=[...], group_id='...') to assign.",
+          "Assign any remaining ungrouped items by semantic affinity.",
+          "Singleton groups are acceptable.",
         ],
       };
 
@@ -238,14 +213,13 @@ export function decomposeStepGuidance(step: DecomposeStep, context?: string): St
       return {
         title: "Step 13: Final Validation",
         instructions: [
-          "Validate all items are grouped and well-formed.",
-          "Use koan_qr_summary(phase='plan-design') to check final counts.",
-          "Use koan_qr_list_items(phase='plan-design') to verify all items have group_id.",
-          "If any items lack group_id, assign them now.",
-          "Output 'PASS' in thoughts if all items are valid and grouped.",
+          "Validate that all items are grouped and well-formed.",
+          `Use koan_qr_summary(phase='${phase}') and koan_qr_list_items(phase='${phase}')`,
+          "Ensure no item has null group_id.",
+          "Output PASS in thoughts when complete.",
         ],
         invokeAfter: [
-          "WHEN DONE: Call koan_complete_step with 'PASS' or issues found in the `thoughts` parameter.",
+          "WHEN DONE: Call koan_complete_step with PASS or issues in `thoughts`.",
           "Do NOT call this tool until validation is complete.",
         ].join("\n"),
       };

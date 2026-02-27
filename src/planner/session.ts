@@ -1,6 +1,6 @@
-// Parent session: orchestrates the koan workflow (context capture -> architect
-// -> QR decompose -> QR verify pool). Polls subagent state.json for progress.
-// Widget displays persistent progress; destroyed on completion.
+// Parent session: orchestrates the koan planning workflow.
+// Flow: context capture -> plan-design(+QR) -> plan-code(+QR) -> plan-docs(+QR)
+// -> mechanical plan.json->plan.md rendering for manual review.
 
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
@@ -10,7 +10,17 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@m
 import { ContextCapturePhase } from "./phases/context-capture/phase.js";
 import { createInitialState, initializePlanState, type WorkflowState } from "./state.js";
 import { createPlanInfo } from "../utils/plan.js";
-import { spawnArchitect, spawnArchitectFix, spawnQRDecomposer, spawnReviewer } from "./subagent.js";
+import {
+  spawnArchitect,
+  spawnArchitectFix,
+  spawnDeveloper,
+  spawnDeveloperFix,
+  spawnTechnicalWriter,
+  spawnTechnicalWriterFix,
+  spawnQRDecomposer,
+  spawnReviewer,
+  type SubagentResult,
+} from "./subagent.js";
 import { createLogger, setLogDir, type Logger } from "../utils/logger.js";
 import { createSubagentDir } from "../utils/progress.js";
 import { readProjection, readRecentLogs, type Projection } from "./lib/audit.js";
@@ -19,8 +29,9 @@ import { pool } from "./lib/pool.js";
 import type { QRFile } from "./qr/types.js";
 import { MAX_FIX_ITERATIONS, qrPassesAtIteration } from "./qr/severity.js";
 import { WidgetController, type WidgetUpdate } from "./ui/widget.js";
+import { renderPlanMarkdownToFile } from "./plan/render.js";
 
-// -- Types --
+type WorkPhaseKey = "plan-design" | "plan-code" | "plan-docs";
 
 interface Session {
   plan(args: string, ctx: ExtensionCommandContext): Promise<void>;
@@ -31,6 +42,29 @@ interface Session {
 interface QRBlockResult {
   summary: string;
   passed: boolean;
+}
+
+interface PhaseRunConfig {
+  key: WorkPhaseKey;
+  label: string;
+  widgetIndex: number;
+  role: "architect" | "developer" | "technical-writer";
+  spawnWork: (opts: SpawnWorkRunOptions) => Promise<SubagentResult>;
+  spawnFix: (opts: SpawnFixRunOptions) => Promise<SubagentResult>;
+}
+
+interface SpawnWorkRunOptions {
+  planDir: string;
+  subagentDir: string;
+  cwd: string;
+  extensionPath: string;
+  log: Logger;
+}
+
+interface SpawnFixRunOptions extends SpawnWorkRunOptions {}
+
+function qrFilePath(planDir: string, phase: WorkPhaseKey): string {
+  return path.join(planDir, `qr-${phase}.json`);
 }
 
 function singleSubagentStart(role: string): WidgetUpdate {
@@ -55,17 +89,23 @@ function singleSubagentFromProjection(p: Projection): WidgetUpdate {
   };
 }
 
-// -- Session --
+function phaseRunningState(phase: WorkPhaseKey): WorkflowState["phase"] {
+  if (phase === "plan-design") return "architect-running";
+  if (phase === "plan-code") return "plan-code-running";
+  return "plan-docs-running";
+}
+
+function phaseCompleteState(phase: WorkPhaseKey): WorkflowState["phase"] {
+  if (phase === "plan-design") return "plan-design-complete";
+  if (phase === "plan-code") return "plan-code-complete";
+  return "plan-docs-complete";
+}
 
 export function createSession(pi: ExtensionAPI, dispatch: WorkflowDispatch, planRef: PlanRef): Session {
   const state: WorkflowState = createInitialState();
   const log = createLogger("Session");
   let widget: WidgetController | null = null;
 
-  // Completion callback for context-capture phase. Runs inside the
-  // koan_store_context tool call -- the tool blocks until the architect
-  // subagent finishes. The LLM sees context capture + architect outcome
-  // in one tool response.
   const onContextComplete = async (ctx: ExtensionContext): Promise<string> => {
     if (!state.plan) {
       return "Context captured but no plan state available.";
@@ -75,112 +115,85 @@ export function createSession(pi: ExtensionAPI, dispatch: WorkflowDispatch, plan
 
     try {
       const planDir = state.plan.directory;
-      const planJsonPath = path.join(planDir, "plan.json");
-      const subagentDir = await createSubagentDir(planDir, "architect");
+      const extensionPath = path.resolve(import.meta.dirname, "../../extensions/koan.ts");
 
-      state.phase = "architect-running";
+      const phases: PhaseRunConfig[] = [
+        {
+          key: "plan-design",
+          label: "Plan design",
+          widgetIndex: 1,
+          role: "architect",
+          spawnWork: (opts) => spawnArchitect(opts),
+          spawnFix: (opts) => spawnArchitectFix({ ...opts, fixPhase: "plan-design" }),
+        },
+        {
+          key: "plan-code",
+          label: "Plan code",
+          widgetIndex: 2,
+          role: "developer",
+          spawnWork: (opts) => spawnDeveloper(opts),
+          spawnFix: (opts) => spawnDeveloperFix({ ...opts, fixPhase: "plan-code" }),
+        },
+        {
+          key: "plan-docs",
+          label: "Plan docs",
+          widgetIndex: 3,
+          role: "technical-writer",
+          spawnWork: (opts) => spawnTechnicalWriter(opts),
+          spawnFix: (opts) => spawnTechnicalWriterFix({ ...opts, fixPhase: "plan-docs" }),
+        },
+      ];
+
       widget?.update({
         phaseStatus: { index: 0, status: "completed" },
         activeIndex: 1,
-        step: "spawning architect...",
+        step: "context captured; starting planning phases...",
         activity: "",
-        qrIterationsMax: MAX_FIX_ITERATIONS + 1,
-        qrIteration: 1,
-        qrMode: "initial",
-        qrPhase: "execute",
-        qrDone: null,
-        qrTotal: null,
-        qrPass: null,
-        qrFail: null,
-        qrTodo: null,
-        ...singleSubagentStart("architect"),
       });
-      log("Spawning architect after context capture", { planDir, subagentDir });
 
-      const extensionPath = path.resolve(import.meta.dirname, "../../extensions/koan.ts");
+      const phaseSummaries: string[] = [];
+      for (const phase of phases) {
+        const result = await runPlanningPhase(
+          phase,
+          planDir,
+          ctx.cwd,
+          extensionPath,
+          state,
+          log,
+          widget,
+        );
 
-      const pollInterval = setInterval(async () => {
-        const [s, logs] = await Promise.all([
-          readProjection(subagentDir),
-          readRecentLogs(subagentDir),
-        ]);
-        if (s) {
-          widget?.update({
-            step: s.stepName,
-            activity: s.lastAction ?? "",
-            logLines: logs,
-            ...singleSubagentFromProjection(s),
-          });
+        phaseSummaries.push(`${phase.label}: ${result.summary}`);
+        if (!result.passed) {
+          return `Context captured. ${phase.label} failed.\n\n${phaseSummaries.join("\n")}`;
         }
-      }, 2000);
-
-      const result = await spawnArchitect({
-        planDir,
-        subagentDir,
-        cwd: ctx.cwd,
-        extensionPath,
-        log,
-      });
-
-      clearInterval(pollInterval);
-
-      if (result.exitCode !== 0) {
-        state.phase = "architect-failed";
-        const detail = result.stderr.slice(0, 500);
-        log("Architect subagent failed", { exitCode: result.exitCode, stderr: detail });
-        widget?.update({
-          phaseStatus: { index: 1, status: "failed" },
-          step: "architect failed",
-          activity: "",
-          subagentActive: 0,
-          subagentDone: 1,
-        });
-        return `Context captured. Architect subagent failed (exit ${result.exitCode}).\n\nStderr:\n${detail}`;
       }
 
-      let planExists = false;
+      let planMdPath: string;
       try {
-        await fs.access(planJsonPath);
-        planExists = true;
-      } catch {
-        // plan.json not written
+        planMdPath = await renderPlanMarkdownToFile(planDir);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        log("Failed to render plan.md", { error: message, planDir });
+        return `Planning phases completed, but plan markdown rendering failed: ${message}`;
       }
 
-      if (!planExists) {
-        state.phase = "architect-failed";
-        log("Architect completed but plan.json not found", { planJsonPath });
-        widget?.update({
-          phaseStatus: { index: 1, status: "failed" },
-          step: "no plan produced",
-          activity: "",
-          subagentActive: 0,
-          subagentDone: 1,
-        });
-        return "Context captured. Architect completed but produced no plan.";
-      }
-
-      state.phase = "plan-design-complete";
-      log("Architect plan-design complete", { planDir });
+      state.phase = "plan-docs-complete";
       widget?.update({
-        phaseStatus: { index: 1, status: "running" },
-        step: "starting QR block...",
+        activeIndex: -1,
+        step: "planning complete; awaiting manual review of plan.md",
         activity: "",
-        qrIterationsMax: MAX_FIX_ITERATIONS + 1,
-        qrIteration: 1,
-        qrMode: "initial",
-        qrPhase: "execute",
-        qrDone: null,
-        qrTotal: null,
-        qrPass: null,
-        qrFail: null,
-        qrTodo: null,
-        subagentActive: 0,
-        subagentDone: 1,
       });
 
-      const qr = await runPlanDesignWithQR(planDir, ctx.cwd, extensionPath, state, log, widget);
-      if (qr.passed) outcome = "PASS";
-      return `Context captured. Plan design complete.\n\n${qr.summary}`;
+      outcome = "PASS";
+      return [
+        "Context captured. Planning complete.",
+        "",
+        ...phaseSummaries,
+        "",
+        `Plan markdown: ${planMdPath}`,
+        "PAUSE: Please review this file manually before /koan execute.",
+      ].join("\n");
     } finally {
       if (widget) {
         widget.destroy();
@@ -219,7 +232,6 @@ export function createSession(pi: ExtensionAPI, dispatch: WorkflowDispatch, plan
         planDirectory: planInfo.directory,
       });
 
-      // Destroy stale widget if re-entered
       if (widget) {
         widget.destroy();
         widget = null;
@@ -242,11 +254,10 @@ export function createSession(pi: ExtensionAPI, dispatch: WorkflowDispatch, plan
   };
 }
 
-// -- QR Block --
-
 const QR_POOL_CONCURRENCY = 6;
 
-async function runQRBlock(
+async function runPlanningPhase(
+  phase: PhaseRunConfig,
   planDir: string,
   cwd: string,
   extensionPath: string,
@@ -254,27 +265,138 @@ async function runQRBlock(
   log: Logger,
   widget: WidgetController | null,
 ): Promise<QRBlockResult> {
-  const qrPath = path.join(planDir, "qr-plan-design.json");
+  state.phase = phaseRunningState(phase.key);
+
+  widget?.update({
+    phaseStatus: { index: phase.widgetIndex, status: "running" },
+    activeIndex: phase.widgetIndex,
+    step: `${phase.key}: spawning ${phase.role}...`,
+    activity: "",
+    qrIterationsMax: MAX_FIX_ITERATIONS + 1,
+    qrIteration: 1,
+    qrMode: "initial",
+    qrPhase: "execute",
+    qrDone: null,
+    qrTotal: null,
+    qrPass: null,
+    qrFail: null,
+    qrTodo: null,
+    ...singleSubagentStart(phase.role),
+  });
+
+  const subagentDir = await createSubagentDir(planDir, `${phase.role}-${phase.key}`);
+
+  const pollInterval = setInterval(async () => {
+    const [projection, logs] = await Promise.all([readProjection(subagentDir), readRecentLogs(subagentDir)]);
+    if (!projection) return;
+    widget?.update({
+      step: `${phase.key}: ${projection.stepName}`,
+      activity: projection.lastAction ?? "",
+      logLines: logs,
+      ...singleSubagentFromProjection(projection),
+    });
+  }, 2000);
+
+  const workResult = await phase.spawnWork({
+    planDir,
+    subagentDir,
+    cwd,
+    extensionPath,
+    log,
+  });
+
+  clearInterval(pollInterval);
+
+  if (workResult.exitCode !== 0) {
+    const detail = workResult.stderr.slice(0, 500);
+    log(`${phase.key} subagent failed`, { exitCode: workResult.exitCode, stderr: detail });
+    widget?.update({
+      phaseStatus: { index: phase.widgetIndex, status: "failed" },
+      step: `${phase.key}: worker failed`,
+      activity: "",
+      subagentActive: 0,
+      subagentDone: 1,
+    });
+    return { summary: `${phase.label} subagent failed (exit ${workResult.exitCode}).\n\nStderr:\n${detail}`, passed: false };
+  }
+
+  const planJsonPath = path.join(planDir, "plan.json");
+  try {
+    await fs.access(planJsonPath);
+  } catch {
+    log(`${phase.key} completed but plan.json missing`, { planJsonPath });
+    widget?.update({
+      phaseStatus: { index: phase.widgetIndex, status: "failed" },
+      step: `${phase.key}: no plan produced`,
+      activity: "",
+      subagentActive: 0,
+      subagentDone: 1,
+    });
+    return { summary: `${phase.label} completed but produced no plan.json.`, passed: false };
+  }
+
+  state.phase = phaseCompleteState(phase.key);
+  widget?.update({
+    step: `${phase.key}: starting QR block...`,
+    activity: "",
+    qrIteration: 1,
+    qrMode: "initial",
+    qrPhase: "execute",
+    qrDone: null,
+    qrTotal: null,
+    qrPass: null,
+    qrFail: null,
+    qrTodo: null,
+    subagentActive: 0,
+    subagentDone: 1,
+  });
+
+  const qr = await runPhaseWithQR(
+    phase,
+    planDir,
+    cwd,
+    extensionPath,
+    state,
+    log,
+    widget,
+  );
+
+  if (qr.passed) {
+    state.phase = phaseCompleteState(phase.key);
+    widget?.update({ phaseStatus: { index: phase.widgetIndex, status: "completed" } });
+  } else {
+    widget?.update({ phaseStatus: { index: phase.widgetIndex, status: "failed" } });
+  }
+
+  return qr;
+}
+
+async function runQRBlock(
+  planDir: string,
+  cwd: string,
+  extensionPath: string,
+  phase: WorkPhaseKey,
+  state: WorkflowState,
+  log: Logger,
+  widget: WidgetController | null,
+): Promise<QRBlockResult> {
+  const qrPath = qrFilePath(planDir, phase);
   const keyOf = (scope: string, check: string): string => `${scope}\u0000${check}`;
 
-  // Carry forward confirmed PASS concerns across re-decompose runs.
   const previousPassKeys = new Set<string>();
   try {
     const raw = await fs.readFile(qrPath, "utf8");
     const prev = JSON.parse(raw) as QRFile;
     for (const item of prev.items) {
-      if (item.status === "PASS") {
-        previousPassKeys.add(keyOf(item.scope, item.check));
-      }
+      if (item.status === "PASS") previousPassKeys.add(keyOf(item.scope, item.check));
     }
   } catch {
-    // No previous QR file yet.
+    // First QR run for this phase.
   }
 
-  // 1. Spawn decomposer subagent
   state.phase = "qr-decompose-running";
   widget?.update({
-    step: "qr-decompose: starting...",
+    step: `${phase} qr-decompose: starting...`,
     activity: "",
     qrPhase: "decompose",
     qrDone: null,
@@ -284,21 +406,18 @@ async function runQRBlock(
     qrTodo: null,
     ...singleSubagentStart("qr-decomposer"),
   });
-  const decomposeDir = await createSubagentDir(planDir, "qr-decomposer");
+
+  const decomposeDir = await createSubagentDir(planDir, `qr-decomposer-${phase}`);
 
   const decomposePoll = setInterval(async () => {
-    const [s, logs] = await Promise.all([
-      readProjection(decomposeDir),
-      readRecentLogs(decomposeDir),
-    ]);
-    if (s) {
-      widget?.update({
-        step: `qr-decompose: ${s.stepName}`,
-        activity: s.lastAction ?? "",
-        logLines: logs,
-        ...singleSubagentFromProjection(s),
-      });
-    }
+    const [projection, logs] = await Promise.all([readProjection(decomposeDir), readRecentLogs(decomposeDir)]);
+    if (!projection) return;
+    widget?.update({
+      step: `${phase} qr-decompose: ${projection.stepName}`,
+      activity: projection.lastAction ?? "",
+      logLines: logs,
+      ...singleSubagentFromProjection(projection),
+    });
   }, 2000);
 
   const decompose = await spawnQRDecomposer({
@@ -306,6 +425,7 @@ async function runQRBlock(
     subagentDir: decomposeDir,
     cwd,
     extensionPath,
+    phase,
     log,
   });
 
@@ -314,17 +434,11 @@ async function runQRBlock(
   if (decompose.exitCode !== 0) {
     state.phase = "qr-decompose-failed";
     const detail = decompose.stderr.slice(0, 500);
-    log("QR decomposer failed", { exitCode: decompose.exitCode, stderr: detail });
-    widget?.update({
-      step: "qr-decompose: failed",
-      activity: "",
-      subagentActive: 0,
-      subagentDone: 1,
-    });
-    return { summary: `QR decompose failed (exit ${decompose.exitCode}).\n\nStderr:\n${detail}`, passed: false };
+    log("QR decomposer failed", { phase, exitCode: decompose.exitCode, stderr: detail });
+    widget?.update({ step: `${phase} qr-decompose: failed`, activity: "", subagentActive: 0, subagentDone: 1 });
+    return { summary: `${phase} QR decompose failed (exit ${decompose.exitCode}).\n\nStderr:\n${detail}`, passed: false };
   }
 
-  // 2. Read QR items
   let qr: QRFile;
   try {
     const raw = await fs.readFile(qrPath, "utf8");
@@ -332,19 +446,17 @@ async function runQRBlock(
   } catch (error) {
     state.phase = "qr-decompose-failed";
     const message = error instanceof Error ? error.message : String(error);
-    log("Failed to read qr-plan-design.json after decompose", { error: message });
-    return { summary: "QR decompose completed but produced no verifiable items.", passed: false };
+    log("Failed to read QR file after decompose", { phase, error: message });
+    return { summary: `${phase} QR decompose completed but produced no verifiable items.`, passed: false };
   }
 
   if (qr.items.length === 0) {
     state.phase = "qr-decompose-failed";
-    log("QR decompose produced no items");
-    return { summary: "QR decompose completed but produced no items.", passed: false };
+    log("QR decompose produced no items", { phase });
+    return { summary: `${phase} QR decompose completed but produced no items.`, passed: false };
   }
 
-  // Re-apply previously confirmed PASS concerns if re-decompose reset them.
-  const carriedPasses = qr.items.filter((item) =>
-    item.status !== "PASS" && previousPassKeys.has(keyOf(item.scope, item.check))).length;
+  const carriedPasses = qr.items.filter((item) => item.status !== "PASS" && previousPassKeys.has(keyOf(item.scope, item.check))).length;
   if (carriedPasses > 0) {
     qr = {
       ...qr,
@@ -359,22 +471,16 @@ async function runQRBlock(
       await fs.rename(tmpPath, qrPath);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      log("Failed to persist carried PASS statuses", { error: message });
-      return { summary: "QR verify aborted: failed to preserve PASS statuses.", passed: false };
+      log("Failed to persist carried PASS statuses", { phase, error: message });
+      return { summary: `${phase} QR verify aborted: failed to preserve PASS statuses.`, passed: false };
     }
   }
 
-  // Preserve prior PASS verdicts, but force all FAIL items back to TODO for
-  // re-verification. This keeps confirmed concerns stable while requiring
-  // explicit re-check of previously failing concerns.
   const resetFailures = qr.items.filter((i) => i.status === "FAIL").length;
   if (resetFailures > 0) {
     qr = {
       ...qr,
-      items: qr.items.map((item) =>
-        item.status === "FAIL"
-          ? { ...item, status: "TODO", finding: null }
-          : item),
+      items: qr.items.map((item) => (item.status === "FAIL" ? { ...item, status: "TODO", finding: null } : item)),
     };
     try {
       const tmpPath = `${qrPath}.tmp`;
@@ -382,8 +488,8 @@ async function runQRBlock(
       await fs.rename(tmpPath, qrPath);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      log("Failed to persist QR FAIL->TODO reset", { error: message });
-      return { summary: "QR verify aborted: failed to prepare QR item states.", passed: false };
+      log("Failed to persist QR FAIL->TODO reset", { phase, error: message });
+      return { summary: `${phase} QR verify aborted: failed to prepare QR item states.`, passed: false };
     }
   }
 
@@ -393,16 +499,8 @@ async function runQRBlock(
   const initialFail = qr.items.filter((i) => i.status === "FAIL").length;
   const initialTodo = qr.items.filter((i) => i.status === "TODO").length;
 
-  log("QR decompose complete", {
-    itemCount: totalItems,
-    verifyCount: verifyIds.length,
-    preservedPass,
-    carriedPasses,
-    resetFailures,
-  });
-
   widget?.update({
-    step: `qr-verify: 0/${verifyIds.length}`,
+    step: `${phase} qr-verify: 0/${verifyIds.length}`,
     activity: "",
     qrTotal: totalItems,
     qrDone: preservedPass,
@@ -416,7 +514,6 @@ async function runQRBlock(
     subagentDone: 0,
   });
 
-  // 3. Spawn reviewer pool (TODO-only)
   state.phase = "qr-verify-running";
   widget?.update({ qrPhase: "verify" });
 
@@ -449,12 +546,13 @@ async function runQRBlock(
         verifyIds,
         QR_POOL_CONCURRENCY,
         async (itemId) => {
-          const reviewerDir = await createSubagentDir(planDir, `qr-reviewer-${itemId}`);
+          const reviewerDir = await createSubagentDir(planDir, `qr-reviewer-${phase}-${itemId}`);
           const r = await spawnReviewer({
             planDir,
             subagentDir: reviewerDir,
             cwd,
             extensionPath,
+            phase,
             itemId,
             log,
           });
@@ -462,9 +560,7 @@ async function runQRBlock(
           if (reviewerModel === null) {
             const projection = await readProjection(reviewerDir);
             reviewerModel = projection?.model ?? null;
-            if (reviewerModel) {
-              widget?.update({ subagentModel: reviewerModel });
-            }
+            if (reviewerModel) widget?.update({ subagentModel: reviewerModel });
           }
 
           return r;
@@ -472,7 +568,7 @@ async function runQRBlock(
         (progress) => {
           verifyDone = progress.done;
           widget?.update({
-            step: `qr-verify: ${progress.done}/${progress.total}`,
+            step: `${phase} qr-verify: ${progress.done}/${progress.total}`,
             qrDone: preservedPass + progress.done,
             qrTotal: totalItems,
             subagentQueued: progress.queued,
@@ -487,7 +583,6 @@ async function runQRBlock(
     }
   }
 
-  // 4. Read final results
   state.phase = "qr-complete";
   let finalQR: QRFile;
   try {
@@ -500,9 +595,7 @@ async function runQRBlock(
   const pass = finalQR.items.filter((i) => i.status === "PASS").length;
   const fail = finalQR.items.filter((i) => i.status === "FAIL").length;
   const todo = finalQR.items.filter((i) => i.status === "TODO").length;
-  const summary = `QR complete: ${pass} PASS, ${fail} FAIL, ${todo} TODO (${failedReviewers.length} reviewers failed).`;
-
-  log("QR block complete", { pass, fail, todo, failedReviewers });
+  const summary = `${phase} QR complete: ${pass} PASS, ${fail} FAIL, ${todo} TODO (${failedReviewers.length} reviewers failed).`;
 
   const passed = fail === 0 && failedReviewers.length === 0;
   widget?.update({
@@ -520,21 +613,8 @@ async function runQRBlock(
   return { summary, passed };
 }
 
-// -- Plan-design QR fix loop --
-
-// Fix loop: architect -> QR -> [pass: done | fail: fix architect -> QR -> ...]
-//
-// Re-decomposes on each iteration rather than re-verifying only. The fix
-// architect may change plan structure (add milestones, split intents, remove
-// decisions); old QR items referencing stale scopes can produce stale verdicts.
-//
-// Verification semantics per iteration:
-// - PASS items are preserved (confirmed concerns stay confirmed).
-// - FAIL items are reset to TODO (must be re-verified after fixes).
-// - TODO items are verified.
-//
-// The session's for-loop counter remains the iteration source of truth.
-async function runPlanDesignWithQR(
+async function runPhaseWithQR(
+  phase: PhaseRunConfig,
   planDir: string,
   cwd: string,
   extensionPath: string,
@@ -542,12 +622,11 @@ async function runPlanDesignWithQR(
   log: Logger,
   widget: WidgetController | null,
 ): Promise<QRBlockResult> {
-  const qrPath = path.join(planDir, "qr-plan-design.json");
+  const qrPath = qrFilePath(planDir, phase.key);
 
-  // Initial QR (iteration 1)
-  let qr = await runQRBlock(planDir, cwd, extensionPath, state, log, widget);
+  let qr = await runQRBlock(planDir, cwd, extensionPath, phase.key, state, log, widget);
   if (qr.passed) {
-    widget?.update({ qrPhase: "done", phaseStatus: { index: 1, status: "completed" } });
+    widget?.update({ qrPhase: "done", phaseStatus: { index: phase.widgetIndex, status: "completed" } });
     return qr;
   }
 
@@ -565,21 +644,16 @@ async function runPlanDesignWithQR(
       qrTodo: null,
     });
 
-    // Read QR file for severity check
     let qrFile: QRFile;
     try {
       const raw = await fs.readFile(qrPath, "utf8");
       qrFile = JSON.parse(raw) as QRFile;
     } catch {
-      log("Fix loop: failed to read QR file", { iteration });
+      log("Fix loop: failed to read QR file", { phase: phase.key, iteration });
       widget?.update({ qrPhase: "done" });
-      return { summary: "Fix loop aborted: cannot read QR file.", passed: false };
+      return { summary: `${phase.key} fix loop aborted: cannot read QR file.`, passed: false };
     }
 
-    // Severity escalation: if no blocking failures remain at this
-    // iteration, the plan passes without another fix attempt.
-    // Example: iteration 3 drops COULD -- if only COULD items fail,
-    // the plan is good enough and the loop terminates.
     if (qrPassesAtIteration(qrFile.items, iteration)) {
       const pass = qrFile.items.filter((i) => i.status === "PASS").length;
       const fail = qrFile.items.filter((i) => i.status === "FAIL").length;
@@ -591,83 +665,79 @@ async function runPlanDesignWithQR(
         qrPass: pass,
         qrFail: fail,
         qrTodo: todo,
-        phaseStatus: { index: 1, status: "completed" },
+        phaseStatus: { index: phase.widgetIndex, status: "completed" },
       });
       return {
         passed: true,
-        summary: `QR passed at iteration ${iteration} after severity de-escalation: ${pass} PASS, ${fail} FAIL (non-blocking).`,
+        summary: `${phase.key} QR passed at iteration ${iteration} after severity de-escalation: ${pass} PASS, ${fail} FAIL (non-blocking).`,
       };
     }
 
-    // Spawn fix-mode architect
     const fixIndex = iteration - 1;
     widget?.update({
-      step: `fix ${fixIndex}/${MAX_FIX_ITERATIONS}: spawning architect...`,
+      step: `${phase.key} fix ${fixIndex}/${MAX_FIX_ITERATIONS}: spawning ${phase.role}...`,
       activity: "",
       qrPhase: "execute",
-      ...singleSubagentStart("architect"),
+      ...singleSubagentStart(phase.role),
     });
 
-    const fixDir = await createSubagentDir(planDir, `architect-fix-${fixIndex}`);
+    const fixDir = await createSubagentDir(planDir, `${phase.role}-fix-${phase.key}-${fixIndex}`);
 
     const fixPoll = setInterval(async () => {
-      const [s, logs] = await Promise.all([
-        readProjection(fixDir),
-        readRecentLogs(fixDir),
-      ]);
-      if (s) {
-        widget?.update({
-          step: `fix ${fixIndex}/${MAX_FIX_ITERATIONS}: ${s.stepName}`,
-          activity: s.lastAction ?? "",
-          logLines: logs,
-          ...singleSubagentFromProjection(s),
-        });
-      }
+      const [projection, logs] = await Promise.all([readProjection(fixDir), readRecentLogs(fixDir)]);
+      if (!projection) return;
+      widget?.update({
+        step: `${phase.key} fix ${fixIndex}/${MAX_FIX_ITERATIONS}: ${projection.stepName}`,
+        activity: projection.lastAction ?? "",
+        logLines: logs,
+        ...singleSubagentFromProjection(projection),
+      });
     }, 2000);
 
-    const fixResult = await spawnArchitectFix({
+    const fixResult = await phase.spawnFix({
       planDir,
       subagentDir: fixDir,
       cwd,
       extensionPath,
-      fixPhase: "plan-design",
       log,
     });
 
     clearInterval(fixPoll);
 
     if (fixResult.exitCode !== 0) {
-      log("Fix architect failed", { iteration: fixIndex, exitCode: fixResult.exitCode, stderr: fixResult.stderr.slice(0, 500) });
+      log("Fix worker failed", {
+        phase: phase.key,
+        iteration: fixIndex,
+        exitCode: fixResult.exitCode,
+        stderr: fixResult.stderr.slice(0, 500),
+      });
       widget?.update({
-        step: `fix ${fixIndex}/${MAX_FIX_ITERATIONS}: architect failed, re-running QR...`,
+        step: `${phase.key} fix ${fixIndex}/${MAX_FIX_ITERATIONS}: worker failed, re-running QR...`,
         activity: "",
         subagentActive: 0,
         subagentDone: 1,
       });
     }
 
-    // Re-run full QR (decompose + verify)
     widget?.update({
-      step: `fix ${fixIndex}/${MAX_FIX_ITERATIONS}: re-running QR...`,
+      step: `${phase.key} fix ${fixIndex}/${MAX_FIX_ITERATIONS}: re-running QR...`,
       activity: "",
       subagentActive: 0,
       subagentDone: 1,
     });
-    qr = await runQRBlock(planDir, cwd, extensionPath, state, log, widget);
+
+    qr = await runQRBlock(planDir, cwd, extensionPath, phase.key, state, log, widget);
     if (qr.passed) {
-      widget?.update({ qrPhase: "done", phaseStatus: { index: 1, status: "completed" } });
+      widget?.update({ qrPhase: "done", phaseStatus: { index: phase.widgetIndex, status: "completed" } });
       return qr;
     }
 
     widget?.update({ qrPhase: "execute", qrDone: null, qrTotal: null, qrPass: null, qrFail: null, qrTodo: null });
   }
 
-  // Max iterations reached. MUST failures remaining after 5 fix attempts
-  // indicate a structural problem -- silently passing would propagate a
-  // known-broken plan downstream.
   widget?.update({ qrPhase: "done" });
   return {
     passed: false,
-    summary: `${qr.summary} (max ${MAX_FIX_ITERATIONS} fix iterations reached)`,
+    summary: `${phase.key} ${qr.summary} (max ${MAX_FIX_ITERATIONS} fix iterations reached)`,
   };
 }

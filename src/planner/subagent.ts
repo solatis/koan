@@ -9,13 +9,15 @@ import * as path from "node:path";
 
 import { createLogger, type Logger } from "../utils/logger.js";
 
+type WorkPhaseKey = "plan-design" | "plan-code" | "plan-docs";
+
 export interface SubagentResult {
   exitCode: number;
   stderr: string;
   subagentDir: string;
 }
 
-export interface SpawnArchitectOptions {
+export interface SpawnWorkOptions {
   planDir: string;
   subagentDir: string;
   cwd: string;
@@ -24,12 +26,12 @@ export interface SpawnArchitectOptions {
   log?: Logger;
 }
 
-export interface SpawnArchitectFixOptions {
+export interface SpawnFixOptions {
   planDir: string;
   subagentDir: string;
   cwd: string;
   extensionPath: string;
-  fixPhase: string; // e.g. "plan-design"
+  fixPhase: WorkPhaseKey;
   log?: Logger;
 }
 
@@ -38,6 +40,7 @@ export interface SpawnQRDecomposerOptions {
   subagentDir: string;
   cwd: string;
   extensionPath: string;
+  phase: WorkPhaseKey;
   log?: Logger;
 }
 
@@ -46,11 +49,10 @@ export interface SpawnReviewerOptions {
   subagentDir: string;
   cwd: string;
   extensionPath: string;
+  phase: WorkPhaseKey;
   itemId: string;
   log?: Logger;
 }
-
-// -- Spawn helper --
 
 function spawnSubagent(
   role: string,
@@ -70,7 +72,7 @@ function spawnSubagent(
     prompt,
   ];
 
-  log(`Spawning ${role} subagent`, { planDir: opts.planDir, subagentDir: opts.subagentDir });
+  log(`Spawning ${role} subagent`, { planDir: opts.planDir, subagentDir: opts.subagentDir, phase });
 
   return new Promise((resolve) => {
     const stdoutLog = createWriteStream(path.join(opts.subagentDir, "stdout.log"), { flags: "w" });
@@ -97,33 +99,41 @@ function spawnSubagent(
       stdoutLog.end();
       stderrLog.end();
       const exitCode = code ?? 1;
-      log(`${role} subagent exited`, { exitCode });
+      log(`${role} subagent exited`, { exitCode, phase });
       resolve({ exitCode, stderr, subagentDir: opts.subagentDir });
     });
 
     proc.on("error", (error) => {
       stdoutLog.end();
       stderrLog.end();
-      log(`${role} subagent spawn error`, { error: error.message });
+      log(`${role} subagent spawn error`, { error: error.message, phase });
       resolve({ exitCode: 1, stderr: error.message, subagentDir: opts.subagentDir });
     });
   });
 }
 
-// -- Architect spawners --
-
-export function spawnArchitect(opts: SpawnArchitectOptions): Promise<SubagentResult> {
+function spawnWork(role: string, phase: WorkPhaseKey, prompt: string, opts: SpawnWorkOptions): Promise<SubagentResult> {
   const log = opts.log ?? createLogger("Subagent");
-  return spawnSubagent(
-    "architect",
-    "plan-design",
-    opts.initialPrompt ?? "Begin the plan-design phase.",
-    opts,
-    log,
-  );
+  return spawnSubagent(role, phase, prompt, opts, log);
 }
 
-export function spawnArchitectFix(opts: SpawnArchitectFixOptions): Promise<SubagentResult> {
+// -- Planning workers --
+
+export function spawnArchitect(opts: SpawnWorkOptions): Promise<SubagentResult> {
+  return spawnWork("architect", "plan-design", opts.initialPrompt ?? "Begin the plan-design phase.", opts);
+}
+
+export function spawnDeveloper(opts: SpawnWorkOptions): Promise<SubagentResult> {
+  return spawnWork("developer", "plan-code", opts.initialPrompt ?? "Begin the plan-code phase.", opts);
+}
+
+export function spawnTechnicalWriter(opts: SpawnWorkOptions): Promise<SubagentResult> {
+  return spawnWork("technical-writer", "plan-docs", opts.initialPrompt ?? "Begin the plan-docs phase.", opts);
+}
+
+// -- Fix workers --
+
+export function spawnArchitectFix(opts: SpawnFixOptions): Promise<SubagentResult> {
   const log = opts.log ?? createLogger("Subagent");
   return spawnSubagent(
     "architect",
@@ -134,18 +144,40 @@ export function spawnArchitectFix(opts: SpawnArchitectFixOptions): Promise<Subag
   );
 }
 
-// -- QR spawners --
+export function spawnDeveloperFix(opts: SpawnFixOptions): Promise<SubagentResult> {
+  const log = opts.log ?? createLogger("Subagent");
+  return spawnSubagent(
+    "developer",
+    "plan-code",
+    "Fix plan-code output based on QR failures.",
+    { ...opts, extraFlags: ["--koan-fix", opts.fixPhase] },
+    log,
+  );
+}
+
+export function spawnTechnicalWriterFix(opts: SpawnFixOptions): Promise<SubagentResult> {
+  const log = opts.log ?? createLogger("Subagent");
+  return spawnSubagent(
+    "technical-writer",
+    "plan-docs",
+    "Fix plan-docs output based on QR failures.",
+    { ...opts, extraFlags: ["--koan-fix", opts.fixPhase] },
+    log,
+  );
+}
+
+// -- QR workers --
 
 export function spawnQRDecomposer(opts: SpawnQRDecomposerOptions): Promise<SubagentResult> {
   const log = opts.log ?? createLogger("Subagent");
-  return spawnSubagent("qr-decomposer", "qr-plan-design", "Begin the QR decompose phase.", opts, log);
+  return spawnSubagent("qr-decomposer", `qr-${opts.phase}`, "Begin the QR decompose phase.", opts, log);
 }
 
 export function spawnReviewer(opts: SpawnReviewerOptions): Promise<SubagentResult> {
   const log = opts.log ?? createLogger("Subagent");
   return spawnSubagent(
     "reviewer",
-    "qr-plan-design",
+    `qr-${opts.phase}`,
     "Verify the assigned QR item.",
     { ...opts, extraFlags: ["--koan-qr-item", opts.itemId] },
     log,

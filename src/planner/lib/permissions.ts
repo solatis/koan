@@ -126,7 +126,10 @@ export const PHASE_PERMISSIONS: ReadonlyMap<string, ReadonlySet<string>> =
         "koan_set_change_doc_diff",
         "koan_set_change_comments",
         "koan_set_readme_entry",
+        "koan_add_diagram",
         "koan_set_diagram",
+        "koan_add_diagram_node",
+        "koan_add_diagram_edge",
       ]),
     ],
     [

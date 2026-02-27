@@ -1,8 +1,5 @@
 // Prompt guidance for the 3-step QR verify subagent workflow.
-//
 // Each reviewer subagent verifies exactly 1 QRItem against the plan.
-// Steps: CONTEXT (understand the check) -> ANALYZE (read plan, apply check)
-// -> CONFIRM (record verdict via koan_qr_set_item).
 
 import { promises as fs } from "node:fs";
 import * as os from "node:os";
@@ -12,11 +9,9 @@ import type { ContextData } from "../../types.js";
 import type { QRItem } from "../../qr/types.js";
 import type { StepGuidance } from "../../lib/step.js";
 
-// -- Types --
+type WorkPhaseKey = "plan-design" | "plan-code" | "plan-docs";
 
 export type VerifyStep = 1 | 2 | 3;
-
-// -- Helpers --
 
 function formatContextXml(ctx: ContextData): string {
   const fields = Object.entries(ctx)
@@ -41,14 +36,16 @@ function scopeGuidance(item: QRItem): string {
     const intentId = s.slice("code_intent:".length);
     return `CODE INTENT CHECK -- Use koan_get_intent(id='${intentId}') to read the intent.`;
   }
+  if (s.startsWith("change:")) {
+    const changeId = s.slice("change:".length);
+    return `CHANGE CHECK -- Use koan_get_change(id='${changeId}') to read the planned change.`;
+  }
   if (s.startsWith("decision:")) {
     const decisionId = s.slice("decision:".length);
     return `DECISION CHECK -- Use koan_get_decision(id='${decisionId}') to read the decision.`;
   }
   return "SCOPED CHECK -- Read the relevant section using plan getter tools.";
 }
-
-// -- Exports --
 
 export async function loadQRVerifySystemPrompt(): Promise<string> {
   const promptPath = path.join(os.homedir(), ".claude/agents/quality-reviewer.md");
@@ -60,13 +57,13 @@ export async function loadQRVerifySystemPrompt(): Promise<string> {
   }
 }
 
-export function buildVerifySystemPrompt(basePrompt: string): string {
+export function buildVerifySystemPrompt(basePrompt: string, phase: WorkPhaseKey): string {
   return [
     basePrompt,
     "",
     "---",
     "",
-    "WORKFLOW: 3-STEP QR VERIFICATION (plan-design)",
+    `WORKFLOW: 3-STEP QR VERIFICATION (${phase})`,
     "",
     "You will verify exactly 1 QR item against the plan.",
     "Step 1 instructions are in the user message below.",
@@ -78,11 +75,11 @@ export function buildVerifySystemPrompt(basePrompt: string): string {
   ].join("\n");
 }
 
-export function buildContextStep(item: QRItem, contextData: ContextData): StepGuidance {
+export function buildContextStep(item: QRItem, contextData: ContextData, phase: WorkPhaseKey): StepGuidance {
   return {
     title: "Step 1: CONTEXT",
     instructions: [
-      "PHASE: plan-design",
+      `PHASE: ${phase}`,
       "ITEM TO VERIFY:",
       "",
       "<qr_item_to_verify>",
@@ -95,9 +92,7 @@ export function buildContextStep(item: QRItem, contextData: ContextData): StepGu
       "PLANNING CONTEXT (reference for semantic validation):",
       formatContextXml(contextData),
       "",
-      "UNDERSTAND the check you need to perform.",
-      "Note the scope: '*' means plan-wide check, 'milestone:X' means specific milestone.",
-      "Severity indicates blocking behavior: MUST blocks all iterations.",
+      "Understand the check and required evidence before analyzing.",
     ],
   };
 }
@@ -109,17 +104,17 @@ export function buildAnalyzeStep(item: QRItem): StepGuidance {
       scopeGuidance(item),
       "",
       "TASK:",
-      "1. Read relevant files/sections based on scope",
+      "1. Read relevant entities based on scope",
       "2. Apply the verification check",
-      "3. Form preliminary conclusion: PASS or FAIL?",
-      "4. If FAIL, note specific evidence",
+      "3. Form preliminary PASS/FAIL conclusion",
+      "4. Gather concrete evidence",
       "",
-      "DO NOT update QR state yet. Proceed to CONFIRM step.",
+      "Do NOT update QR state yet.",
     ],
   };
 }
 
-export function buildConfirmStep(item: QRItem): StepGuidance {
+export function buildConfirmStep(item: QRItem, phase: WorkPhaseKey): StepGuidance {
   return {
     title: "Step 3: CONFIRM",
     instructions: [
@@ -128,23 +123,21 @@ export function buildConfirmStep(item: QRItem): StepGuidance {
       "",
       "CONFIDENCE CHECK:",
       "- Are you confident in your conclusion?",
-      "- Did you verify against actual plan content?",
-      "- Is your evidence specific and verifiable?",
+      "- Is evidence specific and verifiable?",
       "",
       "RECORD RESULT:",
       "",
       "If PASS:",
-      `  koan_qr_set_item(phase='plan-design', id='${item.id}', status='PASS')`,
+      `  koan_qr_set_item(phase='${phase}', id='${item.id}', status='PASS')`,
       "",
       "If FAIL:",
-      `  koan_qr_set_item(phase='plan-design', id='${item.id}', status='FAIL',`,
-      "                    finding='<one-line explanation>')",
+      `  koan_qr_set_item(phase='${phase}', id='${item.id}', status='FAIL', finding='<one-line explanation>')`,
       "",
       "RULES:",
-      "- FAIL requires finding (explains what failed)",
-      "- PASS forbids finding (finding field must not be set)",
+      "- FAIL requires finding",
+      "- PASS must not include finding",
       "",
-      "Execute ONE of the above tool calls, then call koan_complete_step.",
+      "Execute ONE verdict call, then call koan_complete_step.",
     ],
     invokeAfter: [
       "WHEN DONE: Call koan_complete_step after recording your verdict.",
