@@ -217,23 +217,84 @@ function normalizeLogLines(lines: readonly LogLine[] | undefined): LogLine[] {
   return [...lines].slice(-(LOG_LINES * 2));
 }
 
-function phaseChipLabel(phase: PhaseEntry, index: number, state: WidgetState, theme: Theme): string {
-  const label = `┃ ${phase.label} ┃`;
-  if (index === state.activeIndex) {
-    return theme.bold(theme.fg("accent", label));
-  }
-  if (phase.status === "completed") {
-    return theme.bold(theme.fg("muted", label));
-  }
-  if (phase.status === "failed") {
-    return theme.fg("error", label);
-  }
-  return theme.fg("muted", label);
+const HEADER_STATUS_SHORT: Record<string, string> = {
+  CURRENT: "CUR",
+  UPCOMING: "UP",
+  DONE: "DONE",
+  FAILED: "FAIL",
+};
+
+const HEADER_PHASE_SHORT: Record<string, string> = {
+  "Context gathering": "Ctx gather",
+  "Plan design": "Design",
+  "Plan code": "Code",
+  "Plan docs": "Docs",
+};
+
+interface PlanningHeaderVariant {
+  label: string;
+  phase: string | null;
+  status: string | null;
 }
 
-function renderPhaseChips(state: WidgetState, theme: Theme, width: number): string {
-  const chips = state.phases.map((phase, index) => phaseChipLabel(phase, index, state, theme));
-  return clampToWidth(chips.join("    "), width, "…");
+function selectPlanningHeaderVariant(phaseLabel: string, statusLabel: string, budget: number): PlanningHeaderVariant {
+  const phaseShort = HEADER_PHASE_SHORT[phaseLabel] ?? phaseLabel;
+  const statusShort = HEADER_STATUS_SHORT[statusLabel] ?? statusLabel;
+
+  const truncatedPhase = truncateToWidth(
+    phaseShort,
+    Math.max(0, budget - visibleWidth("Planning · ")),
+    "…",
+    false,
+  );
+
+  const candidates: PlanningHeaderVariant[] = [
+    { label: `Planning · ${phaseLabel} · ${statusLabel}`, phase: phaseLabel, status: statusLabel },
+    { label: `Planning · ${phaseLabel} · ${statusShort}`, phase: phaseLabel, status: statusShort },
+    { label: `Planning · ${phaseLabel}`, phase: phaseLabel, status: null },
+    { label: `Planning · ${phaseShort}`, phase: phaseShort, status: null },
+    { label: `Planning · ${truncatedPhase}`, phase: truncatedPhase, status: null },
+    { label: "Planning", phase: null, status: null },
+  ];
+
+  for (const candidate of candidates) {
+    if (visibleWidth(candidate.label) <= budget) {
+      return candidate;
+    }
+  }
+
+  return {
+    label: truncateToWidth("Planning", budget, "…", false),
+    phase: null,
+    status: null,
+  };
+}
+
+export function formatPlanningHeaderLabel(phaseLabel: string, statusLabel: string, budget: number): string {
+  return selectPlanningHeaderVariant(phaseLabel, statusLabel, budget).label;
+}
+
+function renderPlanningHeader(state: WidgetState, theme: Theme, budget: number): string {
+  const active = activePhase(state);
+  const phaseLabel = active?.label ?? "Complete";
+  const statusLabel = (active ? STATUS_TAG[active.status] : "done").toUpperCase();
+  const variant = selectPlanningHeaderVariant(phaseLabel, statusLabel, budget);
+
+  if (!variant.label.startsWith("Planning")) {
+    return theme.bold(theme.fg("accent", variant.label));
+  }
+
+  const statusColor: ThemeColor = active ? STATUS_COLOR[active.status] : "dim";
+
+  if (!variant.phase) {
+    return theme.bold(theme.fg("accent", variant.label));
+  }
+
+  let result = `${theme.bold(theme.fg("accent", "Planning"))}${theme.fg("muted", " · ")}${theme.fg("muted", variant.phase)}`;
+  if (variant.status) {
+    result += `${theme.fg("muted", " · ")}${theme.bold(theme.fg(statusColor, variant.status))}`;
+  }
+  return result;
 }
 
 function renderTimelineLines(state: WidgetState, theme: Theme, width: number): string[] {
@@ -477,8 +538,6 @@ interface IdentityView {
   model: string;
 }
 
-const IDENTITY_KEY_WIDTH = 10;
-
 function shouldShowSubagentSection(state: WidgetState): boolean {
   if (state.subagentRole) return true;
   return state.subagentQueued !== null || state.subagentActive !== null || state.subagentDone !== null;
@@ -533,16 +592,18 @@ function identityView(state: WidgetState): IdentityView {
   };
 }
 
-function renderIdentityRow(theme: Theme, width: number, key: string, value: string): string {
-  const padded = key.padEnd(IDENTITY_KEY_WIDTH, " ");
+function renderIdentityRow(theme: Theme, width: number, keyWidth: number, key: string, value: string): string {
+  const padded = key.padEnd(keyWidth, " ");
   return clampToWidth(`${theme.fg("muted", padded)} : ${theme.fg("dim", value)}`, width, "…");
 }
 
 function renderIdentitySection(view: IdentityView, theme: Theme, width: number): string[] {
+  const keys = ["Plan ID", view.agentLabel, "Model"];
+  const keyWidth = Math.max(...keys.map((key) => visibleWidth(key)));
   return [
-    renderIdentityRow(theme, width, "Plan ID", view.planId),
-    renderIdentityRow(theme, width, view.agentLabel, view.agentValue),
-    renderIdentityRow(theme, width, "Model", view.model),
+    renderIdentityRow(theme, width, keyWidth, "Plan ID", view.planId),
+    renderIdentityRow(theme, width, keyWidth, view.agentLabel, view.agentValue),
+    renderIdentityRow(theme, width, keyWidth, "Model", view.model),
   ];
 }
 
@@ -661,9 +722,31 @@ function renderBox(
   return [top, ...content, bottom];
 }
 
+function renderBoxWithHeaderRow(
+  headerLeft: string,
+  headerRight: string,
+  body: string[],
+  width: number,
+  border: BorderStyle = BORDER_SOLID,
+): string[] {
+  const innerWidth = Math.max(0, width - 2);
+  const left = visibleWidth(headerLeft) > innerWidth ? truncateToWidth(headerLeft, innerWidth, "", false) : headerLeft;
+  const right = visibleWidth(headerRight) > innerWidth ? truncateToWidth(headerRight, innerWidth, "", false) : headerRight;
+  const headerContent = rightAlign(left, right, innerWidth);
+
+  const top = `${border.topLeft}${clampToWidth(border.horizontal.repeat(innerWidth), innerWidth)}${border.topRight}`;
+  const header = `${border.vertical}${clampToWidth(headerContent, innerWidth)}${border.vertical}`;
+  const headerDivider = `${border.vertical}${clampToWidth(border.horizontal.repeat(innerWidth), innerWidth)}${border.vertical}`;
+  const content = body.map((line) => `${border.vertical}${clampToWidth(line, innerWidth)}${border.vertical}`);
+  const bottom = `${border.bottomLeft}${clampToWidth(border.horizontal.repeat(innerWidth), innerWidth)}${border.bottomRight}`;
+
+  return [top, header, headerDivider, ...content, bottom];
+}
+
 function renderPlanningCard(state: WidgetState, theme: Theme, width: number): string[] {
   const elapsed = theme.fg("dim", formatElapsed(Date.now() - state.startedAt));
   const { innerWidth, contentWidth, timelineWidth, detailWidth } = planningColumns(width);
+  const titleLeft = renderPlanningHeader(state, theme, Math.max(0, innerWidth - visibleWidth(elapsed) - 1));
 
   if (innerWidth < 60 || contentWidth < 40) {
     const fallbackContent: string[] = [
@@ -671,7 +754,6 @@ function renderPlanningCard(state: WidgetState, theme: Theme, width: number): st
       theme.fg("muted", `Plan · ${state.planId}`),
       "",
       formatStepLine(state, theme),
-      formatPhaseTrail(state, theme, contentWidth),
     ];
     const detail = formatDetail(state, theme, contentWidth);
     if (detail) fallbackContent.push(detail);
@@ -691,15 +773,13 @@ function renderPlanningCard(state: WidgetState, theme: Theme, width: number): st
 
     const body = indentLines(fallbackContent, innerWidth);
     return renderBox(
-      `${BODY_INDENT}${theme.bold(theme.fg("accent", "Planning"))}`,
+      `${BODY_INDENT}${titleLeft}`,
       elapsed,
       body,
       width,
       theme,
     );
   }
-
-  const chipsLine = renderPhaseChips(state, theme, contentWidth);
 
   const timelineLines = renderTimelineLines(state, theme, timelineWidth);
   const detailSections = buildDetailSections(state, theme, detailWidth);
@@ -717,8 +797,6 @@ function renderPlanningCard(state: WidgetState, theme: Theme, width: number): st
   const body = indentLines(
     [
       "",
-      chipsLine,
-      "",
       ...combined,
       "",
     ],
@@ -726,7 +804,7 @@ function renderPlanningCard(state: WidgetState, theme: Theme, width: number): st
   );
 
   return renderBox(
-    `${BODY_INDENT}${theme.bold(theme.fg("accent", "Planning"))}`,
+    `${BODY_INDENT}${titleLeft}`,
     elapsed,
     body,
     width,
@@ -836,17 +914,6 @@ function renderLogCard(state: WidgetState, theme: Theme, width: number, forcedCo
   );
 }
 
-function formatPhaseTrail(state: WidgetState, theme: Theme, width: number): string {
-  const parts = state.phases.map((phase, index) => {
-    const icon = STATUS_ICON[phase.status];
-    const color = STATUS_COLOR[phase.status];
-    const label = index === state.activeIndex ? theme.bold(phase.label) : phase.label;
-    return theme.fg(color, `${icon} ${label}`);
-  });
-  const trail = parts.join("    ");
-  return clampToWidth(trail, width, "…");
-}
-
 function formatDetail(state: WidgetState, theme: Theme, width: number): string {
   const step = state.step ? theme.fg("muted", state.step) : "";
   const activity = state.activity ? theme.fg("dim", ` · ${state.activity}`) : "";
@@ -904,7 +971,6 @@ function stripBoxFrame(lines: string[]): string[] {
 function renderIntegratedWorkspaceCard(state: WidgetState, theme: Theme, width: number): string[] {
   const innerWidth = Math.max(0, width - 2);
   const elapsed = theme.fg("dim", formatElapsed(Date.now() - state.startedAt));
-  const rightInset = " ".repeat(visibleWidth(BODY_INDENT));
 
   const { innerWidth: planningInnerWidth, contentWidth, timelineWidth, detailWidth } = planningColumns(width);
   const alignedColumns: LogColumns | undefined = planningInnerWidth >= 60 && contentWidth >= 40
@@ -926,12 +992,18 @@ function renderIntegratedWorkspaceCard(state: WidgetState, theme: Theme, width: 
     ...logInner,
   ];
 
-  return renderBox(
-    `${BODY_INDENT}${theme.bold(theme.fg("accent", "Planning"))}`,
+  const rightInset = " ".repeat(visibleWidth(BODY_INDENT));
+  const titleLeftBudget = Math.max(
+    0,
+    innerWidth - visibleWidth(elapsed) - visibleWidth(rightInset) - 1 - visibleWidth(BODY_INDENT),
+  );
+  const titleLeft = renderPlanningHeader(state, theme, titleLeftBudget);
+
+  return renderBoxWithHeaderRow(
+    `${BODY_INDENT}${titleLeft}`,
     `${elapsed}${rightInset}`,
     body,
     width,
-    theme,
   );
 }
 

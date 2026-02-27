@@ -226,7 +226,8 @@ Step 6: plan mutation tools unlocked.
 - Implementation guardrails:
   - Continue rendering through `canvasLine()` so the background fills full terminal width.
   - Keep consistent card padding and solid-border framing through shared `renderBox()` helpers.
-  - Phase chips use stable semantic tokens (accent active, bold muted completed, muted pending, error failed).
+  - Header metadata carries active workflow context (`Planning · <active phase> · <status>`), with timer right-aligned on the same row.
+  - The old phase-tab strip is removed (no duplicated heading context).
   - Vertical rail remains width-bounded (~20 cols) so the right detail pane keeps enough budget for high-signal telemetry.
   - Detail footer (`Plan · id`) is pinned bottom via dynamic padding, independent of timeline density.
   - Planning body and latest-log body share one outer card, separated by an internal divider for better cohesion.
@@ -257,6 +258,16 @@ Step 6: plan mutation tools unlocked.
   - Metadata uses a hard 64-char visible-width budget with progressive compaction (`exec/decomp/vfy`, `d/p/f/t`, `iN/M`) under narrow widths.
   - Counter line emphasizes severity (`fail` highlighted in error color) so blocking issues pop in long sessions.
   - Detail pane hierarchy is explicit: `Current step` label first, then step body, then QR section.
+
+### UI-4: Header-First Metadata (No Tabs Row)
+- Chosen on Feb 26 2026 via follow-up deck focused on full-widget renders (`Phase-first header`).
+- Rationale: the old title + tabs combination duplicated active-phase context and made the top of the widget feel offset from the frame. Consolidating into a full-width metadata header improves hierarchy and scan speed.
+- Contract:
+  - Keep a full top border and render one header row: `Planning · <active phase> · <status>` + right-aligned elapsed timer.
+  - Remove the dedicated tabs/chips row under the title.
+  - Keep phase progression in the left timeline rail (status history remains visible without tabs).
+  - Apply deterministic truncation in this order when width is constrained: abbreviate status -> drop status -> abbreviate phase label -> ellipsis.
+  - Footer identity table remains key/value aligned: `Plan ID`, `Agent`/`Agent pool`, `Model`.
 
 ## Workflow Dispatch Architecture
 
