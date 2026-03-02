@@ -50,13 +50,13 @@ function createWidgetHarness(): {
 
 describe("formatPlanningHeaderLabel", () => {
   it("applies compaction in deterministic order", () => {
-    const phase = "Context gathering";
+    const phase = "Plan design";
     const status = "CURRENT";
 
     const full = `Planning · ${phase} · ${status}`;
     const shortStatus = `Planning · ${phase} · CUR`;
     const noStatus = `Planning · ${phase}`;
-    const shortPhase = "Planning · Ctx gather";
+    const shortPhase = "Planning · Design";
 
     assert.equal(formatPlanningHeaderLabel(phase, status, visibleWidth(full)), full);
     assert.equal(formatPlanningHeaderLabel(phase, status, visibleWidth(full) - 1), shortStatus);
@@ -70,13 +70,14 @@ describe("formatPlanningHeaderLabel", () => {
 });
 
 describe("WidgetController rendering", () => {
-  it("renders metadata header and removes phase chips row", () => {
+  it("renders metadata header with 3-phase layout (no context gathering)", () => {
     const harness = createWidgetHarness();
     try {
       const lines = harness.render(140);
       const text = lines.join("\n");
 
-      assert.match(text, /Planning · Context gathering · CURRENT/);
+      assert.match(text, /Planning · Plan design · CURRENT/);
+      assert.doesNotMatch(text, /Context gathering/);
       assert.doesNotMatch(text, /┃ Context gathering ┃/);
     } finally {
       harness.destroy();

@@ -25,7 +25,7 @@
     "check": "tsc --noEmit",
     "build": "tsc --project tsconfig.build.json",
     "pretest": "npm run build",
-    "test": "node --test build/tests"
+    "test": "node --test --test-concurrency=1 build/tests"
   },
   "dependencies": {
     "@sinclair/typebox": "^0.32.30"
