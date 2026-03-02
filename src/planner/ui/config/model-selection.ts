@@ -75,8 +75,7 @@ class ResetConfirmComponent implements Component {
     return [
       this.theme.bold(this.theme.fg("accent", "Reset all model overrides to active model?")),
       "",
-      this.theme.fg("muted", "  This will clear all 20 phase model overrides."),
-      this.theme.fg("muted", "  Koan will use pi's current active model for all phases."),
+      this.theme.fg("muted", "  This will set all 20 phase model cells to the current active model."),
       "",
       this.theme.fg("dim", "  Enter to confirm · Escape to cancel"),
     ];
@@ -195,7 +194,8 @@ export function createModelSelectionComponent(
     overlay = new ResetConfirmComponent(
       theme,
       () => {
-        void persistAndNotify(null).finally(() => closeOverlay());
+        const resetConfig = initConfigFromActiveModel(fallbackActive);
+        void persistAndNotify(resetConfig).finally(() => closeOverlay());
       },
       () => closeOverlay(),
     );

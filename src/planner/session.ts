@@ -79,6 +79,7 @@ function qrFilePath(planDir: string, phase: WorkPhaseKey): string {
 function singleSubagentStart(role: string): WidgetUpdate {
   return {
     subagentRole: role,
+    subagentModel: null,
     subagentParallelCount: 1,
     subagentQueued: 0,
     subagentActive: 1,
@@ -557,6 +558,7 @@ async function runQRBlock(
     qrFail: initialFail,
     qrTodo: initialTodo,
     subagentRole: "reviewer",
+    subagentModel: null,
     subagentParallelCount: QR_POOL_CONCURRENCY,
     subagentQueued: verifyIds.length,
     subagentActive: 0,
