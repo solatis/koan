@@ -541,7 +541,8 @@ async function runPlanningPhase(
   return qr;
 }
 
-async function runQRBlock(
+
+async function runQRDecompose(
   planDir: string,
   cwd: string,
   extensionPath: string,
@@ -646,6 +647,31 @@ async function runQRBlock(
     }
   }
 
+  return { summary: `${phase} QR decompose complete.`, passed: true };
+}
+
+async function runQRVerify(
+  planDir: string,
+  cwd: string,
+  extensionPath: string,
+  phase: WorkPhaseKey,
+  state: WorkflowState,
+  log: Logger,
+  widget: WidgetController | null,
+): Promise<QRBlockResult> {
+  const qrPath = qrFilePath(planDir, phase);
+
+  let qr: QRFile;
+  try {
+    const raw = await fs.readFile(qrPath, "utf8");
+    qr = JSON.parse(raw) as QRFile;
+  } catch (error) {
+    state.phase = "qr-decompose-failed";
+    const message = error instanceof Error ? error.message : String(error);
+    log("Failed to read QR file for verify", { phase, error: message });
+    return { summary: `${phase} QR verify aborted: cannot read QR file.`, passed: false };
+  }
+
   const resetFailures = qr.items.filter((i) => i.status === "FAIL").length;
   if (resetFailures > 0) {
     qr = {
@@ -686,6 +712,7 @@ async function runQRBlock(
   widget?.update({
     step: `${phase} qr-verify: 0/${groupEntries.length} groups (${totalTodoItems} items)`,
     activity: "",
+    qrPhase: "verify",
     qrTotal: totalItems,
     qrDone: preservedPass,
     qrPass: preservedPass,
@@ -707,7 +734,6 @@ async function runQRBlock(
   });
 
   state.phase = "qr-verify-running";
-  widget?.update({ qrPhase: "verify" });
 
   let verifyDone = 0;
   let failedReviewers: string[] = [];
@@ -826,7 +852,13 @@ async function runPhaseWithQR(
 ): Promise<QRBlockResult> {
   const qrPath = qrFilePath(planDir, phase.key);
 
-  let qr = await runQRBlock(planDir, cwd, extensionPath, phase.key, state, log, widget);
+  const decompose = await runQRDecompose(planDir, cwd, extensionPath, phase.key, state, log, widget);
+  if (!decompose.passed) {
+    widget?.update({ phaseStatus: { index: phase.widgetIndex, status: "failed" } });
+    return decompose;
+  }
+
+  let qr = await runQRVerify(planDir, cwd, extensionPath, phase.key, state, log, widget);
   if (qr.passed) {
     widget?.update({ qrPhase: "done", phaseStatus: { index: phase.widgetIndex, status: "completed" } });
     return qr;
@@ -936,7 +968,7 @@ async function runPhaseWithQR(
       subagentDone: 1,
     });
 
-    qr = await runQRBlock(planDir, cwd, extensionPath, phase.key, state, log, widget);
+    qr = await runQRVerify(planDir, cwd, extensionPath, phase.key, state, log, widget);
     if (qr.passed) {
       widget?.update({ qrPhase: "done", phaseStatus: { index: phase.widgetIndex, status: "completed" } });
       return qr;
