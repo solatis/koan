@@ -25,10 +25,11 @@ export function createDispatch(): WorkflowDispatch {
 // indirection pattern as WorkflowDispatch.
 export interface PlanRef {
   dir: string | null;
+  qrPhase: string | null;
 }
 
 export function createPlanRef(): PlanRef {
-  return { dir: null };
+  return { dir: null, qrPhase: null };
 }
 
 // Decouples tool registration (init-time) from subagent directory

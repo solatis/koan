@@ -1,9 +1,6 @@
-import { promises as fs } from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
-
 import type { StepGuidance } from "../../lib/step.js";
 import { buildPlanDocsContextTrigger } from "../../lib/conversation-trigger.js";
+import { loadAgentPrompt } from "../../lib/agent-prompts.js";
 
 export const STEP_NAMES: Record<1 | 2 | 3 | 4 | 5 | 6, string> = {
   1: "Extract Documentation Context",
@@ -15,13 +12,7 @@ export const STEP_NAMES: Record<1 | 2 | 3 | 4 | 5 | 6, string> = {
 };
 
 export async function loadPlanDocsSystemPrompt(): Promise<string> {
-  const promptPath = path.join(os.homedir(), ".claude/agents/technical-writer.md");
-  try {
-    const content = await fs.readFile(promptPath, "utf8");
-    return content.replace(/^---\n[\s\S]*?\n---\n/, "");
-  } catch {
-    throw new Error(`Technical-writer prompt not found at ${promptPath}`);
-  }
+  return loadAgentPrompt("technical-writer");
 }
 
 export function buildPlanDocsSystemPrompt(basePrompt: string): string {

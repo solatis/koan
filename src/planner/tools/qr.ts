@@ -8,6 +8,11 @@ import type { QRFile } from "../qr/types.js";
 import { addQRItem, setQRItem, assignGroup } from "../qr/mutate.js";
 import { withFileLock } from "../../utils/lock.js";
 
+function requirePhase(planRef: PlanRef): string {
+  if (!planRef.qrPhase) throw new Error("No QR phase is active.");
+  return planRef.qrPhase;
+}
+
 function createEmptyQRFile(phase: string): QRFile {
   return {
     phase,
@@ -43,7 +48,6 @@ export function registerQRTools(pi: ExtensionAPI, planRef: PlanRef): void {
     label: "Add QR item",
     description: "Add quality review item.",
     parameters: Type.Object({
-      phase: Type.String(),
       scope: Type.String(),
       check: Type.String(),
       severity: Type.Optional(
@@ -56,11 +60,12 @@ export function registerQRTools(pi: ExtensionAPI, planRef: PlanRef): void {
     }),
     async execute(_toolCallId, params) {
       if (!planRef.dir) throw new Error("No plan directory is active.");
-      const qrPath = path.join(planRef.dir, `qr-${params.phase}.json`);
+      const phase = requirePhase(planRef);
+      const qrPath = path.join(planRef.dir, `qr-${phase}.json`);
       return withFileLock(qrPath, async () => {
-        const qr = await loadQR(planRef.dir!, params.phase);
+        const qr = await loadQR(planRef.dir!, phase);
         const r = addQRItem(qr, params);
-        await saveQR(r.qr, planRef.dir!, params.phase);
+        await saveQR(r.qr, planRef.dir!, phase);
         return {
           content: [{ type: "text" as const, text: `Added QR item ${r.id}` }],
           details: undefined,
@@ -74,7 +79,6 @@ export function registerQRTools(pi: ExtensionAPI, planRef: PlanRef): void {
     label: "Update QR item",
     description: "Update QR item status or finding.",
     parameters: Type.Object({
-      phase: Type.String(),
       id: Type.String(),
       status: Type.Optional(
         Type.Union([
@@ -95,11 +99,12 @@ export function registerQRTools(pi: ExtensionAPI, planRef: PlanRef): void {
     }),
     async execute(_toolCallId, params) {
       if (!planRef.dir) throw new Error("No plan directory is active.");
-      const qrPath = path.join(planRef.dir, `qr-${params.phase}.json`);
+      const phase = requirePhase(planRef);
+      const qrPath = path.join(planRef.dir, `qr-${phase}.json`);
       return withFileLock(qrPath, async () => {
-        const qr = await loadQR(planRef.dir!, params.phase);
+        const qr = await loadQR(planRef.dir!, phase);
         const updated = setQRItem(qr, params.id, params);
-        await saveQR(updated, planRef.dir!, params.phase);
+        await saveQR(updated, planRef.dir!, phase);
         return {
           content: [{ type: "text" as const, text: `Updated QR item ${params.id}` }],
           details: undefined,
@@ -113,17 +118,17 @@ export function registerQRTools(pi: ExtensionAPI, planRef: PlanRef): void {
     label: "Assign QR group",
     description: "Assign group ID to QR items.",
     parameters: Type.Object({
-      phase: Type.String(),
       ids: Type.Array(Type.String()),
       group_id: Type.String(),
     }),
     async execute(_toolCallId, params) {
       if (!planRef.dir) throw new Error("No plan directory is active.");
-      const qrPath = path.join(planRef.dir, `qr-${params.phase}.json`);
+      const phase = requirePhase(planRef);
+      const qrPath = path.join(planRef.dir, `qr-${phase}.json`);
       return withFileLock(qrPath, async () => {
-        const qr = await loadQR(planRef.dir!, params.phase);
+        const qr = await loadQR(planRef.dir!, phase);
         const updated = assignGroup(qr, params.ids, params.group_id);
-        await saveQR(updated, planRef.dir!, params.phase);
+        await saveQR(updated, planRef.dir!, phase);
         return {
           content: [
             {
@@ -142,12 +147,12 @@ export function registerQRTools(pi: ExtensionAPI, planRef: PlanRef): void {
     label: "Get QR item",
     description: "Get QR item by ID.",
     parameters: Type.Object({
-      phase: Type.String(),
       id: Type.String(),
     }),
     async execute(_toolCallId, params) {
       if (!planRef.dir) throw new Error("No plan directory is active.");
-      const qr = await loadQR(planRef.dir, params.phase);
+      const phase = requirePhase(planRef);
+      const qr = await loadQR(planRef.dir, phase);
       const item = qr.items.find((x) => x.id === params.id);
       if (!item) throw new Error(`QR item ${params.id} not found`);
       return {
@@ -162,7 +167,6 @@ export function registerQRTools(pi: ExtensionAPI, planRef: PlanRef): void {
     label: "List QR items",
     description: "List QR items, optionally filtered by status.",
     parameters: Type.Object({
-      phase: Type.String(),
       status: Type.Optional(
         Type.Union([
           Type.Literal("TODO"),
@@ -173,7 +177,8 @@ export function registerQRTools(pi: ExtensionAPI, planRef: PlanRef): void {
     }),
     async execute(_toolCallId, params) {
       if (!planRef.dir) throw new Error("No plan directory is active.");
-      const qr = await loadQR(planRef.dir, params.phase);
+      const phase = requirePhase(planRef);
+      const qr = await loadQR(planRef.dir, phase);
       const filtered = params.status
         ? qr.items.filter((item) => item.status === params.status)
         : qr.items;
@@ -190,12 +195,11 @@ export function registerQRTools(pi: ExtensionAPI, planRef: PlanRef): void {
     name: "koan_qr_summary",
     label: "QR summary",
     description: "Get QR summary with counts by status and severity.",
-    parameters: Type.Object({
-      phase: Type.String(),
-    }),
-    async execute(_toolCallId, params) {
+    parameters: Type.Object({}),
+    async execute() {
       if (!planRef.dir) throw new Error("No plan directory is active.");
-      const qr = await loadQR(planRef.dir, params.phase);
+      const phase = requirePhase(planRef);
+      const qr = await loadQR(planRef.dir, phase);
 
       const byStatus = {
         TODO: qr.items.filter((x) => x.status === "TODO").length,

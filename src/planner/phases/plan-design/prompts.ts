@@ -1,9 +1,7 @@
-import { promises as fs } from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
-
 import type { StepGuidance } from "../../lib/step.js";
 import { buildPlanDesignContextTrigger } from "../../lib/conversation-trigger.js";
+import { CONVENTIONS_DIR } from "../../lib/resources.js";
+import { loadAgentPrompt } from "../../lib/agent-prompts.js";
 
 export const STEP_NAMES: Record<1 | 2 | 3 | 4 | 5 | 6, string> = {
   1: "Task Analysis & Exploration Planning",
@@ -15,15 +13,7 @@ export const STEP_NAMES: Record<1 | 2 | 3 | 4 | 5 | 6, string> = {
 };
 
 export async function loadPlanDesignSystemPrompt(): Promise<string> {
-  const homeDir = os.homedir();
-  const promptPath = path.join(homeDir, ".claude/agents/architect.md");
-  try {
-    const content = await fs.readFile(promptPath, "utf8");
-    const body = content.replace(/^---\n[\s\S]*?\n---\n/, "");
-    return body;
-  } catch (error) {
-    throw new Error(`Architect prompt not found at ${promptPath}`);
-  }
+  return loadAgentPrompt("architect");
 }
 
 export function buildPlanDesignSystemPrompt(basePrompt: string): string {
@@ -91,10 +81,10 @@ export function planDesignStepGuidance(
           "  - Constraints from code structure",
           "  - Conventions to follow",
           "",
-          "Read conventions/ files as needed:",
-          "  - structural.md (architectural patterns)",
-          "  - temporal.md (comment hygiene)",
-          "  - diff-format.md (diff specification)",
+          "Read convention files as needed (use absolute paths below):",
+          `  - ${CONVENTIONS_DIR}/structural.md (architectural patterns)`,
+          `  - ${CONVENTIONS_DIR}/temporal.md (comment hygiene)`,
+          `  - ${CONVENTIONS_DIR}/diff-format.md (diff specification)`,
           "",
           "NUDGE: If you need additional context to plan well, read more files.",
           "Better to over-explore than under-explore.",
@@ -110,7 +100,7 @@ export function planDesignStepGuidance(
           "DISCOVER testing strategy from:",
           "  - User conversation hints",
           "  - Project CLAUDE.md / README.md",
-          "  - conventions/structural.md domain='testing-strategy'",
+          `  - ${CONVENTIONS_DIR}/structural.md domain='testing-strategy'`,
           "",
           "Record confirmed strategy for use in step 6.",
           "Decisions will be recorded via tools in step 6.",

@@ -1,8 +1,5 @@
-import { promises as fs } from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
-
 import type { StepGuidance } from "../../lib/step.js";
+import { loadAgentPrompt } from "../../lib/agent-prompts.js";
 
 export const STEP_NAMES: Record<1 | 2 | 3 | 4, string> = {
   1: "Intent Coverage Analysis",
@@ -12,13 +9,7 @@ export const STEP_NAMES: Record<1 | 2 | 3 | 4, string> = {
 };
 
 export async function loadPlanCodeSystemPrompt(): Promise<string> {
-  const promptPath = path.join(os.homedir(), ".claude/agents/developer.md");
-  try {
-    const content = await fs.readFile(promptPath, "utf8");
-    return content.replace(/^---\n[\s\S]*?\n---\n/, "");
-  } catch {
-    throw new Error(`Developer prompt not found at ${promptPath}`);
-  }
+  return loadAgentPrompt("developer");
 }
 
 export function buildPlanCodeSystemPrompt(basePrompt: string): string {

@@ -89,6 +89,7 @@ export class QRDecomposePhase {
     this.state.active = true;
     this.state.step = 1;
     this.planRef.dir = this.planDir;
+    this.planRef.qrPhase = this.workPhase;
 
     hookDispatch(this.dispatch, "onCompleteStep", () => this.handleStepComplete());
 

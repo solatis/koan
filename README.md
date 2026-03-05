@@ -29,6 +29,11 @@ Each phase is followed by a QR (quality review) block: decompose → parallel ve
 
 Written once at the start of `koan_plan`. Contains the full session branch as JSONL (one JSON object per line — raw pi `SessionManager` entries, not a plain-text transcript). The plan-design architect and plan-docs writer are told about this file and may `Read` it; other phases work from `plan.json` only.
 
+### Prompt + convention sources
+
+- Subagent system prompts are hard-coded in `src/planner/lib/agent-prompts.ts`.
+- Convention docs stay file-based in `resources/conventions` and are surfaced to prompts via `CONVENTIONS_DIR`.
+
 ### Slash commands
 
 | Command | Description |

@@ -18,6 +18,7 @@
   "files": [
     "extensions",
     "src",
+    "resources",
     "README.md",
     "LICENSE"
   ],

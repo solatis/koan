@@ -223,10 +223,9 @@ describe("buildAnalyzeStep", () => {
 describe("buildConfirmStep", () => {
   const item = makeItem("QR-007", "group-y");
 
-  it("includes koan_qr_set_item instructions with correct phase and id", () => {
+  it("includes koan_qr_set_item instructions with correct id", () => {
     const step = buildConfirmStep(item, 0, 3, "plan-code");
     const text = step.instructions.join("\n");
-    assert.ok(text.includes("phase='plan-code'"));
     assert.ok(text.includes("id='QR-007'"));
     assert.ok(text.includes("status='PASS'"));
     assert.ok(text.includes("status='FAIL'"));

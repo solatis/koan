@@ -5,11 +5,8 @@
 //   Step 1: CONTEXT (once, lists all items)
 //   Steps 2..2N+1: ANALYZE/CONFIRM pairs per item
 
-import { promises as fs } from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
-
 import type { QRItem } from "../../qr/types.js";
+import { loadAgentPrompt } from "../../lib/agent-prompts.js";
 import type { StepGuidance } from "../../lib/step.js";
 import {
   buildPlanDesignContextTrigger,
@@ -56,13 +53,7 @@ function phaseContextTrigger(
 }
 
 export async function loadQRVerifySystemPrompt(): Promise<string> {
-  const promptPath = path.join(os.homedir(), ".claude/agents/quality-reviewer.md");
-  try {
-    const content = await fs.readFile(promptPath, "utf8");
-    return content.replace(/^---\n[\s\S]*?\n---\n/, "");
-  } catch {
-    throw new Error(`Quality-reviewer prompt not found at ${promptPath}`);
-  }
+  return loadAgentPrompt("quality-reviewer");
 }
 
 export function buildVerifySystemPrompt(basePrompt: string, phase: WorkPhaseKey, itemCount: number): string {
@@ -165,10 +156,10 @@ export function buildConfirmStep(
       "RECORD RESULT:",
       "",
       "If PASS:",
-      `  koan_qr_set_item(phase='${phase}', id='${item.id}', status='PASS')`,
+      `  koan_qr_set_item(id='${item.id}', status='PASS')`,
       "",
       "If FAIL:",
-      `  koan_qr_set_item(phase='${phase}', id='${item.id}', status='FAIL', finding='<one-line explanation>')`,
+      `  koan_qr_set_item(id='${item.id}', status='FAIL', finding='<one-line explanation>')`,
       "",
       "RULES:",
       "- FAIL requires finding",

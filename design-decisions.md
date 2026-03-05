@@ -145,11 +145,18 @@ Structure: `<planDir>/subagents/<role>-<hex>/`
 Contains: state.json, stdout.log, stderr.log.
 ProgressReporter class manages state.json updates with trail.
 
-### AD-10: Architect System Prompt
+### AD-10: Embedded Planner Prompts + File-Based Conventions
 
-The architect's system prompt is loaded from ~/.claude/agents/architect.md
-at runtime via loadPlanDesignSystemPrompt(). Injected via
-before_agent_start returning { systemPrompt: ... }.
+Planner subagent prompts are hard-coded in TypeScript at
+`src/planner/lib/agent-prompts.ts` (architect, developer,
+quality-reviewer, technical-writer). Phase loaders call
+`loadAgentPrompt(...)`, so prompt availability does not depend on runtime
+filesystem paths.
+
+Conventions remain file-based under `resources/conventions` so the LLM can
+explore them directly with `Read`. `CONVENTIONS_DIR` is resolved at runtime
+via `src/planner/lib/resources.ts` and injected into phase guidance where
+needed.
 
 ### AD-11: Plan Schema Self-Documentation via TypeBox
 

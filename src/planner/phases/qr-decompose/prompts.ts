@@ -2,11 +2,8 @@
 // verifiable QR items. Prompt text is shared across plan-design, plan-code,
 // and plan-docs via the injected phase key.
 
-import { promises as fs } from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
-
 import type { StepGuidance } from "../../lib/step.js";
+import { loadAgentPrompt } from "../../lib/agent-prompts.js";
 import {
   buildPlanDesignContextTrigger,
   buildPlanDocsContextTrigger,
@@ -64,15 +61,7 @@ function phaseContextTrigger(
 }
 
 export async function loadQRDecomposeSystemPrompt(): Promise<string> {
-  const homeDir = os.homedir();
-  const promptPath = path.join(homeDir, ".claude/agents/quality-reviewer.md");
-  try {
-    const content = await fs.readFile(promptPath, "utf8");
-    const body = content.replace(/^---\n[\s\S]*?\n---\n/, "");
-    return body;
-  } catch {
-    throw new Error(`Quality reviewer prompt not found at ${promptPath}`);
-  }
+  return loadAgentPrompt("quality-reviewer");
 }
 
 export function buildDecomposeSystemPrompt(basePrompt: string, phase: WorkPhaseKey): string {
@@ -174,7 +163,6 @@ export function decomposeStepGuidance(
         title: "Step 5: Generate Items",
         instructions: [
           "Generate QR items with koan_qr_add_item.",
-          `Always pass phase='${phase}'.`,
           "",
           "Scope examples for this phase:",
           ...PHASE_SCOPE_HINTS[phase].map((hint) => `  - ${hint}`),
@@ -209,7 +197,6 @@ export function decomposeStepGuidance(
         title: "Step 8: Validate Items",
         instructions: [
           "Use koan_qr_summary and koan_qr_list_items to audit generated items.",
-          `Always pass phase='${phase}'.`,
           "Fix duplicates or malformed scopes by adding/revising items.",
         ],
       };
@@ -221,7 +208,7 @@ export function decomposeStepGuidance(
           "Assign deterministic groups:",
           "  - Parent/child items share group",
           "  - Umbrella items (scope='*') use group_id='umbrella'",
-          `Use koan_qr_assign_group(phase='${phase}', ...)`,
+          "Use koan_qr_assign_group to assign groups.",
         ],
       };
 
@@ -230,7 +217,7 @@ export function decomposeStepGuidance(
         title: "Step 10: Component Grouping",
         instructions: [
           "Group remaining ungrouped items by component (milestone/decision/change cluster).",
-          `Use koan_qr_list_items(phase='${phase}') and koan_qr_assign_group(...)`,
+          "Use koan_qr_list_items and koan_qr_assign_group.",
         ],
       };
 
@@ -257,7 +244,7 @@ export function decomposeStepGuidance(
         title: "Step 13: Final Validation",
         instructions: [
           "Validate that all items are grouped and well-formed.",
-          `Use koan_qr_summary(phase='${phase}') and koan_qr_list_items(phase='${phase}')`,
+          "Use koan_qr_summary and koan_qr_list_items.",
           "Ensure no item has null group_id.",
           "Output PASS in thoughts when complete.",
         ],
