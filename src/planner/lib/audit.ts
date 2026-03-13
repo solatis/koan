@@ -133,7 +133,7 @@ export function summarize(e: ToolEvent): string {
   }
 }
 
-// Pure projection update -- one case per discriminated kind.
+// Pure projection update — one case per discriminated kind.
 // All branches update updatedAt and increment eventCount.
 export function fold(s: Projection, e: AuditEvent): Projection {
   const base = { ...s, updatedAt: e.ts, eventCount: s.eventCount + 1 };
@@ -232,7 +232,7 @@ export class EventLog {
   private projection: Projection;
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   // Serializes append() calls. Heartbeat timer and tool_result handler
-  // both call append() concurrently -- without serialization, two
+  // both call append() concurrently — without serialization, two
   // writeState() calls race on the shared tmp file (ENOENT on rename).
   private pending: Promise<void> = Promise.resolve();
 
@@ -336,7 +336,7 @@ export class EventLog {
 // -- Exports --
 
 // Reads state.json as a Projection; returns null if missing or malformed.
-// Used by session.ts parent polling loop.
+// Used by driver polling loop.
 export async function readProjection(dir: string): Promise<Projection | null> {
   try {
     const raw = await fs.readFile(path.join(dir, "state.json"), "utf8");
@@ -364,90 +364,20 @@ interface ToolShape {
 }
 
 const PREVIEW_CHARS = 40;
-const KEY_PRIORITY = ["id", "milestone", "decision_ref", "intent_ref", "file", "path", "phase"];
+const KEY_PRIORITY = ["id", "story_id", "milestone", "decision_ref", "intent_ref", "file", "path", "phase"];
 
+// Tool shapes for koan_* tools. No koan_escalate (eliminated in §11.3.1).
 const KOAN_SHAPES: Record<string, ToolShape> = {
-  koan_get_plan: { keys: ["phase"], getter: true },
-  koan_get_milestone: { keys: ["id"], getter: true },
-  koan_get_decision: { keys: ["id"], getter: true },
-  koan_get_intent: { keys: ["id"], getter: true },
-  koan_get_change: { keys: ["id"], getter: true },
-
-  koan_set_overview: { keys: ["problem", "approach"], freeform: ["problem", "approach"], highValue: true },
-  koan_set_constraints: { keys: ["constraints"], arrays: ["constraints"], highValue: true },
-  koan_set_invisible_knowledge: {
-    keys: ["system", "invariants", "tradeoffs"],
-    freeform: ["system"],
-    arrays: ["invariants", "tradeoffs"],
-    highValue: true,
-  },
-
-  koan_add_decision: { keys: ["decision", "reasoning"], freeform: ["decision", "reasoning"], highValue: true },
-  koan_set_decision: { keys: ["id", "decision", "reasoning"], freeform: ["decision", "reasoning"], highValue: true },
-  koan_add_rejected_alternative: {
-    keys: ["decision_ref", "alternative", "rejection_reason"],
-    freeform: ["alternative", "rejection_reason"],
-    highValue: true,
-  },
-  koan_set_rejected_alternative: {
-    keys: ["id", "decision_ref", "alternative", "rejection_reason"],
-    freeform: ["alternative", "rejection_reason"],
-    highValue: true,
-  },
-  koan_add_risk: { keys: ["decision_ref", "anchor", "risk", "mitigation"], freeform: ["risk", "mitigation"], highValue: true },
-  koan_set_risk: {
-    keys: ["id", "decision_ref", "anchor", "risk", "mitigation"],
-    freeform: ["risk", "mitigation"],
-    highValue: true,
-  },
-
-  koan_add_milestone: {
-    keys: ["name", "files", "flags", "requirements", "acceptance_criteria", "tests"],
-    arrays: ["files", "flags", "requirements", "acceptance_criteria", "tests"],
-    highValue: true,
-  },
-  koan_set_milestone_name: { keys: ["id", "name"] },
-  koan_set_milestone_files: { keys: ["id", "files"], arrays: ["files"], highValue: true },
-  koan_set_milestone_flags: { keys: ["id", "flags"], arrays: ["flags"] },
-  koan_set_milestone_requirements: { keys: ["id", "requirements"], arrays: ["requirements"], highValue: true },
-  koan_set_milestone_acceptance_criteria: { keys: ["id", "acceptance_criteria"], arrays: ["acceptance_criteria"], highValue: true },
-  koan_set_milestone_tests: { keys: ["id", "tests"], arrays: ["tests"], highValue: true },
-
-  koan_add_intent: { keys: ["milestone", "file", "function", "behavior"], freeform: ["behavior"], highValue: true },
-  koan_set_intent: { keys: ["id", "file", "function", "behavior"], freeform: ["behavior"], highValue: true },
-
-  koan_add_change: {
-    keys: ["milestone", "file", "intent_ref", "diff", "doc_diff", "comments"],
-    freeform: ["diff", "doc_diff", "comments"],
-    highValue: true,
-  },
-  koan_set_change_diff: { keys: ["id", "diff"], freeform: ["diff"], highValue: true },
-  koan_set_change_doc_diff: { keys: ["id", "doc_diff"], freeform: ["doc_diff"], highValue: true },
-  koan_set_change_comments: { keys: ["id", "comments"], freeform: ["comments"], highValue: true },
-  koan_set_change_file: { keys: ["id", "file"], highValue: true },
-  koan_set_change_intent_ref: { keys: ["id", "intent_ref"] },
-
-  koan_add_wave: { keys: ["milestones"], arrays: ["milestones"], highValue: true },
-  koan_set_wave_milestones: { keys: ["id", "milestones"], arrays: ["milestones"], highValue: true },
-
-  koan_add_diagram: { keys: ["type", "scope", "title"] },
-  koan_set_diagram: { keys: ["id", "title", "scope", "ascii_render"], freeform: ["ascii_render"], highValue: true },
-  koan_add_diagram_node: { keys: ["diagram_id", "id", "label", "type"] },
-  koan_add_diagram_edge: { keys: ["diagram_id", "source", "target", "label", "protocol"] },
-
-  koan_set_readme_entry: { keys: ["path", "content"], freeform: ["content"], highValue: true },
-
-  koan_qr_add_item: { keys: ["phase", "scope", "check", "severity"], freeform: ["check"], highValue: true },
-  koan_qr_set_item: { keys: ["phase", "id", "status", "finding"], freeform: ["finding"], highValue: true },
-  koan_qr_assign_group: { keys: ["phase", "group_id", "ids"], arrays: ["ids"], highValue: true },
-  koan_qr_get_item: { keys: ["phase", "id"], getter: true },
-  koan_qr_list_items: { keys: ["phase", "status"], getter: true },
-  koan_qr_summary: { keys: ["phase"], getter: true },
+  koan_select_story: { keys: ["story_id"], highValue: true },
+  koan_complete_story: { keys: ["story_id"], highValue: true },
+  koan_retry_story: { keys: ["story_id", "failure_summary"], freeform: ["failure_summary"], highValue: true },
+  koan_skip_story: { keys: ["story_id", "reason"], freeform: ["reason"], highValue: true },
   koan_ask_question: { keys: ["questions"], arrays: ["questions"], highValue: true },
+  koan_request_scouts: { keys: ["scouts"], arrays: ["scouts"], highValue: true },
 };
 
 // Reads the tail of events.jsonl and returns structured log entries.
-// Filters out heartbeats (noisy). Used by session.ts to feed the widget log card.
+// Filters out heartbeats (noisy). Used by driver to feed the widget log card.
 export async function readRecentLogs(dir: string, count = 8): Promise<LogLine[]> {
   try {
     const raw = await fs.readFile(path.join(dir, "events.jsonl"), "utf8");

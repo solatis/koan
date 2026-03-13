@@ -1,16 +1,15 @@
-// Step prompt assembly for koan workflows.
+// Step prompt assembly for koan phase workflows.
 //
-// The `thoughts` parameter on koan_complete_step captures the model's
-// work output (analysis, review, findings) as a tool parameter. This
-// avoids requiring the model to produce text + tool_call in one
-// response, which some models (e.g. GPT-5-codex) cannot do.
+// The `thoughts` parameter on koan_complete_step captures the model's work output
+// (analysis, review, findings) as a tool parameter rather than text output. This
+// ensures models that can't mix text + tool_call in one response still advance
+// the workflow.
 
 export interface StepGuidance {
   title: string;
   instructions: string[];
-  // Custom invoke-after directive. When omitted, formatStep
-  // appends the default koan_complete_step directive.
-  // Terminal steps override this (e.g., step 6 plan validation).
+  // Custom invoke-after directive. When omitted, formatStep appends the default
+  // koan_complete_step directive. Terminal steps may override this.
   invokeAfter?: string;
 }
 

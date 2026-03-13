@@ -1,5 +1,5 @@
 // Bounded-parallel subagent pool using an in-process semaphore.
-// Runs all items to completion regardless of failures; callers inspect PoolResult.
+// Runs all items to completion regardless of individual failures.
 // Timeout logic belongs in the worker closure, not here.
 
 import type { SubagentResult } from "../subagent.js";
@@ -19,14 +19,10 @@ export interface PoolProgress {
   queued: number;
 }
 
-// -- Constants --
-
-export const DEFAULT_REVIEWER_TIMEOUT_MS = 10 * 60 * 1000;
-
 // -- Private helpers --
 
 class Semaphore {
-  private queue: Array<() => void> = [];
+  private readonly queue: Array<() => void> = [];
   private count: number;
 
   constructor(limit: number) {
@@ -80,8 +76,8 @@ export async function pool(
       emit();
 
       try {
-        const r = await worker(id);
-        if (r.exitCode !== 0) {
+        const result = await worker(id);
+        if (result.exitCode !== 0) {
           failed.push(id);
         }
       } finally {

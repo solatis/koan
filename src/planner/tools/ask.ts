@@ -1,22 +1,26 @@
-// koan_ask_question tool: subagent-side of the file-based IPC ask flow.
-// Writes ipc.json, polls until parent writes a response, then returns
-// formatted answers to the LLM. The entire poll loop is wrapped in a
-// try/finally that deletes ipc.json, guaranteeing cleanup on all exit paths.
+// IPC-based tools: koan_ask_question and koan_request_scouts.
+// Both tools use file-based IPC to pause subagent execution and communicate
+// with the parent session, then resume with the response.
+//
+// koan_ask_question  — ask the user a question, get answers
+// koan_request_scouts — request parallel codebase scouts, get findings paths
 
 import { Type, type Static } from "@sinclair/typebox";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
-import type { SubagentRef } from "../lib/dispatch.js";
+import type { RuntimeContext } from "../lib/runtime-context.js";
 import {
   ipcFileExists,
   writeIpcFile,
   readIpcFile,
   deleteIpcFile,
   createAskRequest,
+  createScoutRequest,
   type AskAnswerPayload,
+  type ScoutTask,
 } from "../lib/ipc.js";
 
-// -- Tool schema (mirrors pi-ask-tool-extension exactly) --
+// -- Schemas --
 
 const OptionItemSchema = Type.Object({
   label: Type.String({ description: "Display label" }),
@@ -41,7 +45,19 @@ const AskParamsSchema = Type.Object({
 
 type AskParams = Static<typeof AskParamsSchema>;
 
-// -- Result formatting --
+const ScoutTaskSchema = Type.Object({
+  id: Type.String({ description: "Scout task ID, e.g. 'auth-libs'" }),
+  role: Type.String({ description: "Custom role for the scout, e.g. 'system architect'" }),
+  prompt: Type.String({ description: "What to find, e.g. 'Find all auth-related files in src/'" }),
+});
+
+const RequestScoutsSchema = Type.Object({
+  scouts: Type.Array(ScoutTaskSchema, { description: "Scout tasks to run in parallel", minItems: 1 }),
+});
+
+type RequestScoutsParams = Static<typeof RequestScoutsSchema>;
+
+// -- Result formatting (ask) --
 
 interface QuestionResult {
   id: string;
@@ -125,6 +141,12 @@ function buildQuestionResults(
   });
 }
 
+// -- Shared poll helper --
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // -- Tool registration --
 
 const ASK_TOOL_DESCRIPTION = `
@@ -138,11 +160,21 @@ Ask the user for clarification when a choice materially affects the outcome.
 - Do NOT include an 'Other' option; UI adds it automatically.
 `.trim();
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+const SCOUTS_TOOL_DESCRIPTION = `
+Request parallel codebase scouting. Use when you need to explore specific
+areas of the codebase before making decisions or asking questions.
 
-export function registerAskTools(pi: ExtensionAPI, subagentRef: SubagentRef): void {
+Each scout answers one narrow question and writes findings to a markdown file.
+Scouts run in parallel. The tool returns the file paths to read.
+
+- id: unique identifier for this scout task (e.g., "auth-patterns")
+- role: the investigator role for the scout (e.g., "security auditor")
+- prompt: what to find (e.g., "Find all authentication middleware in src/")
+`.trim();
+
+export function registerAskTools(pi: ExtensionAPI, ctx: RuntimeContext): void {
+  // -- koan_ask_question --
+
   pi.registerTool({
     name: "koan_ask_question",
     label: "Ask question",
@@ -151,7 +183,7 @@ export function registerAskTools(pi: ExtensionAPI, subagentRef: SubagentRef): vo
 
     async execute(_toolCallId, params, signal) {
       const askParams = params as AskParams;
-      const dir = subagentRef.dir;
+      const dir = ctx.subagentDir;
 
       if (!dir) {
         return {
@@ -162,7 +194,7 @@ export function registerAskTools(pi: ExtensionAPI, subagentRef: SubagentRef): vo
 
       if (await ipcFileExists(dir)) {
         return {
-          content: [{ type: "text" as const, text: "Error: A question request is already pending." }],
+          content: [{ type: "text" as const, text: "Error: An IPC request is already pending." }],
           details: undefined,
         };
       }
@@ -172,9 +204,7 @@ export function registerAskTools(pi: ExtensionAPI, subagentRef: SubagentRef): vo
 
       let aborted = false;
       const onAbort = () => { aborted = true; };
-      if (signal) {
-        signal.addEventListener("abort", onAbort, { once: true });
-      }
+      if (signal) signal.addEventListener("abort", onAbort, { once: true });
 
       type PollResult = "answered" | "cancelled" | "aborted" | "file-gone";
       let pollResult: PollResult = "file-gone";
@@ -183,18 +213,12 @@ export function registerAskTools(pi: ExtensionAPI, subagentRef: SubagentRef): vo
       try {
         while (!aborted) {
           await sleep(500);
-          if (signal?.aborted) {
-            aborted = true;
-            break;
-          }
+          if (signal?.aborted) { aborted = true; break; }
 
           const current = await readIpcFile(dir);
-          if (current === null) {
-            pollResult = "file-gone";
-            break;
-          }
+          if (current === null) { pollResult = "file-gone"; break; }
 
-          if (current.response !== null && current.response.id === ipc.request.id) {
+          if (current.type === "ask" && current.response !== null && current.response.id === ipc.id) {
             if (current.response.cancelled) {
               pollResult = "cancelled";
             } else {
@@ -205,9 +229,7 @@ export function registerAskTools(pi: ExtensionAPI, subagentRef: SubagentRef): vo
           }
         }
 
-        if (aborted) {
-          pollResult = "aborted";
-        }
+        if (aborted) pollResult = "aborted";
       } finally {
         await deleteIpcFile(dir);
       }
@@ -233,6 +255,97 @@ export function registerAskTools(pi: ExtensionAPI, subagentRef: SubagentRef): vo
         case "file-gone":
           return {
             content: [{ type: "text" as const, text: "The question was cancelled." }],
+            details: undefined,
+          };
+      }
+    },
+  });
+
+  // -- koan_request_scouts --
+
+  pi.registerTool({
+    name: "koan_request_scouts",
+    label: "Request codebase scouts",
+    description: SCOUTS_TOOL_DESCRIPTION,
+    parameters: RequestScoutsSchema,
+
+    async execute(_toolCallId, params, signal) {
+      const { scouts } = params as RequestScoutsParams;
+      const dir = ctx.subagentDir;
+
+      if (!dir) {
+        return {
+          content: [{ type: "text" as const, text: "Error: koan_request_scouts is only available in subagent context." }],
+          details: undefined,
+        };
+      }
+
+      if (await ipcFileExists(dir)) {
+        return {
+          content: [{ type: "text" as const, text: "Error: An IPC request is already pending." }],
+          details: undefined,
+        };
+      }
+
+      const ipc = createScoutRequest(scouts as ScoutTask[]);
+      await writeIpcFile(dir, ipc);
+
+      let aborted = false;
+      const onAbort = () => { aborted = true; };
+      if (signal) signal.addEventListener("abort", onAbort, { once: true });
+
+      type PollResult = "completed" | "aborted" | "file-gone";
+      let pollResult: PollResult = "file-gone";
+      let findings: string[] = [];
+      let failures: string[] = [];
+
+      try {
+        while (!aborted) {
+          await sleep(500);
+          if (signal?.aborted) { aborted = true; break; }
+
+          const current = await readIpcFile(dir);
+          if (current === null) { pollResult = "file-gone"; break; }
+
+          if (current.type === "scout-request" && current.response !== null && current.id === ipc.id) {
+            pollResult = "completed";
+            findings = current.response.findings;
+            failures = current.response.failures;
+            break;
+          }
+        }
+
+        if (aborted) pollResult = "aborted";
+      } finally {
+        await deleteIpcFile(dir);
+      }
+
+      switch (pollResult) {
+        case "completed": {
+          const lines: string[] = [
+            `Scout findings: ${findings.length} completed, ${failures.length} failed.`,
+            "",
+          ];
+          if (findings.length > 0) {
+            lines.push("Findings files (read these for codebase context):");
+            for (const f of findings) lines.push(`  ${f}`);
+          }
+          if (failures.length > 0) {
+            lines.push(`Failed scouts (non-fatal, proceed without them): ${failures.join(", ")}`);
+          }
+          return {
+            content: [{ type: "text" as const, text: lines.join("\n") }],
+            details: undefined,
+          };
+        }
+        case "aborted":
+          return {
+            content: [{ type: "text" as const, text: "Scout request aborted. Proceed without codebase context." }],
+            details: undefined,
+          };
+        case "file-gone":
+          return {
+            content: [{ type: "text" as const, text: "Scout request cancelled. Proceed without codebase context." }],
             details: undefined,
           };
       }

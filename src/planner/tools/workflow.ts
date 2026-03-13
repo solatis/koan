@@ -1,27 +1,27 @@
 // Workflow tool registration: koan_complete_step.
 // Tools register once at init; execute callbacks read from the mutable
-// dispatch at call time, decoupling static registration from phase routing.
+// RuntimeContext at call time, decoupling static registration from phase routing.
 
 import { Type } from "@sinclair/typebox";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 import { createLogger } from "../../utils/logger.js";
-import type { WorkflowDispatch } from "../lib/dispatch.js";
+import type { RuntimeContext } from "../lib/runtime-context.js";
 
 const log = createLogger("Dispatch");
 
 // Registers workflow tools. Called once at init in koan.ts,
 // before pi's _buildRuntime() snapshot. Tool execute callbacks read
-// from the dispatch at call time -- the dispatch is mutable, the
-// tool list is not.
+// from the RuntimeContext at call time — the context is mutable,
+// the tool list is not.
 //
 // Why register all tools unconditionally? Flags are unavailable during
 // init (getFlag() returns undefined before _buildRuntime() sets flagValues),
-// so conditional registration based on role/phase is impossible. Tools
-// registered after _buildRuntime() are invisible to the LLM.
+// so conditional registration based on role is impossible. Tools registered
+// after _buildRuntime() are invisible to the LLM.
 export function registerWorkflowTools(
   pi: ExtensionAPI,
-  dispatch: WorkflowDispatch,
+  ctx: RuntimeContext,
 ): void {
   // -- koan_complete_step --
   // The `thoughts` parameter captures the model's work output (analysis,
@@ -33,7 +33,7 @@ export function registerWorkflowTools(
     label: "Complete current workflow step",
     description: [
       "Signal completion of the current workflow step.",
-      "Put your analysis, findings, or review in the `thoughts` parameter.",
+      "Put your analysis, findings, or work output in the `thoughts` parameter.",
       "DO NOT call this tool until the step instructions explicitly tell you to.",
     ].join(" "),
     parameters: Type.Object({
@@ -42,16 +42,14 @@ export function registerWorkflowTools(
       })),
     }),
     async execute(_toolCallId, params) {
-      if (!dispatch.onCompleteStep) {
+      if (!ctx.onCompleteStep) {
+        log("koan_complete_step called with no active phase");
         throw new Error("No workflow phase is active.");
       }
-      const thoughts = (params as { thoughts?: string }).thoughts;
-      const r = await dispatch.onCompleteStep(thoughts);
-      if (!r.ok) {
-        throw new Error(r.error ?? "Step transition failed.");
-      }
+      const thoughts = (params as { thoughts?: string }).thoughts ?? "";
+      const nextPrompt = await ctx.onCompleteStep(thoughts);
       return {
-        content: [{ type: "text" as const, text: r.prompt ?? "Step complete." }],
+        content: [{ type: "text" as const, text: nextPrompt ?? "Phase complete." }],
         details: undefined,
       };
     },
