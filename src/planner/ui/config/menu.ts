@@ -6,13 +6,14 @@ import type { ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import { getSettingsListTheme } from "@mariozechner/pi-coding-agent";
 import { type SettingItem, SettingsList } from "@mariozechner/pi-tui";
 
-import { ALL_PHASE_MODEL_KEYS, type PhaseModelKey } from "../../model-phase.js";
-import { loadPhaseModelConfig } from "../../model-config.js";
+import { ALL_MODEL_TIERS, type ModelTier } from "../../model-phase.js";
+import { loadModelTierConfig } from "../../model-config.js";
+import type { ModelTierConfig } from "../../model-config.js";
 import { createModelSelectionComponent } from "./model-selection.js";
 
-function configSummary(config: Record<PhaseModelKey, string> | null): string {
+function configSummary(config: ModelTierConfig | null): string {
   if (config === null) return "inheriting active model";
-  return `${ALL_PHASE_MODEL_KEYS.length} keys configured`;
+  return `${ALL_MODEL_TIERS.length} tiers configured`;
 }
 
 export async function openKoanConfig(ctx: ExtensionCommandContext): Promise<void> {
@@ -22,7 +23,7 @@ export async function openKoanConfig(ctx: ExtensionCommandContext): Promise<void
   }
 
   await ctx.ui.custom<void>(async (tui, theme, _keybindings, done) => {
-    const initialConfig = await loadPhaseModelConfig();
+    const initialConfig = await loadModelTierConfig();
     let currentConfig = initialConfig;
 
     const activeModelId = ctx.model
