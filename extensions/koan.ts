@@ -1,23 +1,32 @@
-// Entry point for the koan pi extension. Serves dual roles: parent session
-// (registers koan_plan tool and /koan commands) and subagent mode (dispatches
-// to phase workflow via CLI flags). All tools register unconditionally at init;
-// phases restrict access via tool_call blocking at runtime.
+// Entry point for the koan pi extension. Serves dual roles:
 //
-// RuntimeContext replaces the three separate mutable refs (PlanRef,
-// SubagentRef, WorkflowDispatch) used in the previous design.
+//   Parent session mode — registers the koan_plan tool and /koan commands.
+//   Subagent mode       — reads task.json from --koan-dir, dispatches to
+//                         the appropriate phase workflow.
+//
+// All tools register unconditionally at init; phases restrict access at
+// runtime via the tool_call permission fence in BasePhase.
+//
+// RuntimeContext is a mutable carrier set once during before_agent_start.
+// Tools register at init (before flags are available) and read ctx at
+// call time — the mutable-ref pattern decouples static registration from
+// dynamic phase routing.
 
 import * as path from "node:path";
 import { Type } from "@sinclair/typebox";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 
-import { detectSubagentMode, dispatchPhase } from "../src/planner/phases/dispatch.js";
+import { dispatchPhase } from "../src/planner/phases/dispatch.js";
 import { registerAllTools, createRuntimeContext } from "../src/planner/tools/index.js";
 import { createLogger, setLogDir } from "../src/utils/logger.js";
-import { EventLog, extractToolEvent } from "../src/planner/lib/audit.js";
+import { EventLog, extractToolCall, extractToolResult } from "../src/planner/lib/audit.js";
+import { readTaskFile } from "../src/planner/lib/task.js";
 import { openKoanConfig } from "../src/planner/ui/config/menu.js";
 import { createEpicDirectory } from "../src/planner/epic/state.js";
 import { exportConversation } from "../src/planner/conversation.js";
-import { runEpicPipeline } from "../src/planner/driver.js";
+import { runPipeline } from "../src/planner/driver.js";
+import { startWebServer, openBrowser } from "../src/planner/web/server.js";
+import { registerTruncationOverride } from "../src/planner/lib/truncation-override.js";
 
 function currentModelId(ctx: ExtensionContext): string | null {
   const model = ctx.model;
@@ -28,92 +37,97 @@ function currentModelId(ctx: ExtensionContext): string | null {
 export default function koan(pi: ExtensionAPI): void {
   const log = createLogger("Koan");
 
-  // -- Flags --
-  pi.registerFlag("koan-role", {
-    description: "Koan subagent role",
-    type: "string",
-    default: "",
-  });
-  pi.registerFlag("koan-epic-dir", {
-    description: "Koan epic directory path",
-    type: "string",
-    default: "",
-  });
-  pi.registerFlag("koan-subagent-dir", {
-    description: "Koan subagent working directory",
-    type: "string",
-    default: "",
-  });
-  pi.registerFlag("koan-story-id", {
-    description: "Current story ID for per-story subagents",
-    type: "string",
-    default: "",
-  });
-  pi.registerFlag("koan-step-sequence", {
-    description: "Orchestrator step sequence (pre-execution or post-execution)",
-    type: "string",
-    default: "",
-  });
-  pi.registerFlag("koan-retry-context", {
-    description: "Failure context from previous execution attempt",
+  // Single flag: the subagent directory path. The child reads task.json from
+  // this directory to discover its role and task parameters — no structured
+  // data flows through CLI flags.
+  pi.registerFlag("koan-dir", {
+    description: "Subagent working directory (internal — set by parent before spawn)",
     type: "string",
     default: "",
   });
 
-  // RuntimeContext: single mutable object that carries epicDir, subagentDir,
-  // and the active onCompleteStep handler. Replaces the old PlanRef +
-  // SubagentRef + WorkflowDispatch triple.
   const ctx = createRuntimeContext();
 
   registerAllTools(pi, ctx);
+  // Registered unconditionally — applies in both parent and subagent mode.
+  // Self-guards: no-op when bash output fits within pi's default limits.
+  // Must precede before_agent_start so the audit tool_result handler (which
+  // registers later, inside before_agent_start) sees the original event and
+  // does not interfere with the replacement content we return.
+  registerTruncationOverride(pi);
 
+  // Dispatch happens exactly once per session (guard prevents re-entry on
+  // subsequent before_agent_start calls, which pi may emit on reconnect).
   let dispatched = false;
   pi.on("before_agent_start", async (_event, extCtx) => {
     if (dispatched) return;
     dispatched = true;
 
-    const config = detectSubagentMode(pi);
-    if (config) {
-      // Populate RuntimeContext from CLI flags.
-      if (config.epicDir) {
-        ctx.epicDir = config.epicDir;
-      }
-
-      let eventLog: EventLog | undefined;
-      if (config.subagentDir) {
-        ctx.subagentDir = config.subagentDir;
-        eventLog = new EventLog(
-          config.subagentDir,
-          config.role,
-          config.role,
-          currentModelId(extCtx),
-        );
-        await eventLog.open();
-
-        pi.on("tool_result", (event) => {
-          void eventLog!.append(extractToolEvent(event as {
-            toolName: string;
-            input: Record<string, unknown>;
-            content: Array<{ type: string; text?: string }>;
-            isError: boolean;
-          }));
-        });
-
-        pi.on("session_shutdown", () => {
-          void eventLog!.close();
-        });
-      }
-
-      await dispatchPhase(pi, config, ctx, log, eventLog);
+    const dirFlag = pi.getFlag("koan-dir");
+    if (!dirFlag || typeof dirFlag !== "string" || dirFlag.trim().length === 0) {
+      // No --koan-dir flag: running as parent session, not as a subagent.
+      return;
     }
+
+    const subagentDir = dirFlag.trim();
+
+    // task.json was written by the parent before spawning this process.
+    // Throws if missing or malformed — that is a programming error, not a user error.
+    const task = await readTaskFile(subagentDir);
+
+    ctx.epicDir = task.epicDir;
+    ctx.subagentDir = subagentDir;
+
+    const eventLog = new EventLog(
+      subagentDir,
+      task.role,
+      task.role,
+      currentModelId(extCtx),
+    );
+    await eventLog.open();
+
+    pi.on("tool_call", (event) => {
+      void eventLog.append(extractToolCall(event as {
+        toolCallId: string;
+        toolName: string;
+        input: Record<string, unknown>;
+      }));
+    });
+
+    pi.on("tool_result", (event) => {
+      void eventLog.append(extractToolResult(event as {
+        toolCallId: string;
+        toolName: string;
+        input: Record<string, unknown>;
+        content: Array<{ type: string; text?: string }>;
+        isError: boolean;
+      }));
+    });
+
+    pi.on("turn_end", (event) => {
+      const msg = event.message as {
+        role: string;
+        usage?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+      };
+      if (msg.role === "assistant" && msg.usage) {
+        void eventLog.append({
+          kind: "usage",
+          input: msg.usage.input,
+          output: msg.usage.output,
+          cacheRead: msg.usage.cacheRead,
+          cacheWrite: msg.usage.cacheWrite,
+        });
+      }
+    });
+
+    pi.on("session_shutdown", () => {
+      void eventLog.close();
+    });
+
+    await dispatchPhase(pi, task, ctx, log, eventLog);
   });
 
   // -- koan_plan tool --
-  // Requires an interactive terminal session: subagents use koan_ask_question
-  // and koan_request_scouts, which are answered by the IPC responder running
-  // in the parent session. Without a UI, no IPC responder starts and any
-  // subagent calling those tools will poll ipc.json forever, hanging the
-  // pipeline permanently.
   pi.registerTool({
     name: "koan_plan",
     label: "Plan",
@@ -130,33 +144,27 @@ export default function koan(pi: ExtensionAPI): void {
     ].join("\n"),
     parameters: Type.Object({}),
     async execute(_toolCallId, _params, _signal, _onUpdate, extCtx) {
-      // koan_plan requires an interactive terminal session. Subagents use
-      // koan_ask_question and koan_request_scouts, which are answered by the
-      // IPC responder that only starts when a UI is present. Without a UI,
-      // subagents would poll ipc.json forever and the pipeline would hang.
-      if (!extCtx.hasUI) {
-        return {
-          content: [{ type: "text" as const, text: "koan_plan requires an interactive terminal session." }],
-          details: undefined,
-        };
-      }
-
       const epicInfo = await createEpicDirectory("", extCtx.cwd);
       ctx.epicDir = epicInfo.directory;
       setLogDir(epicInfo.directory);
 
-      await exportConversation(extCtx.sessionManager, epicInfo.directory);
-      log("Conversation exported", { epicDir: epicInfo.directory });
-
       const extensionPath = path.resolve(import.meta.dirname, "koan.ts");
-      const ui = extCtx.hasUI ? extCtx.ui : null;
 
-      const result = await runEpicPipeline(epicInfo.directory, extCtx.cwd, extensionPath, log, ui);
+      const server = await startWebServer(epicInfo.directory);
+      try {
+        await openBrowser(pi, server.url);
+        await exportConversation(extCtx.sessionManager, epicInfo.directory);
+        log("Conversation exported", { epicDir: epicInfo.directory });
 
-      return {
-        content: [{ type: "text" as const, text: result.summary }],
-        details: undefined,
-      };
+        const result = await runPipeline(epicInfo.directory, extCtx.cwd, extensionPath, log, server);
+
+        return {
+          content: [{ type: "text" as const, text: `Dashboard: ${server.url}\n\n${result.summary}` }],
+          details: undefined,
+        };
+      } finally {
+        server.close();
+      }
     },
   });
 
@@ -172,20 +180,6 @@ export default function koan(pi: ExtensionAPI): void {
       } else {
         extCtx.ui.notify(`Unknown koan subcommand: "${subcommand}". Usage: /koan config`, "warning");
       }
-    },
-  });
-
-  pi.registerCommand("koan-execute", {
-    description: "Execute a koan plan",
-    handler: async (_args, extCtx) => {
-      extCtx.ui.notify("Execution mode is not yet implemented.", "warning");
-    },
-  });
-
-  pi.registerCommand("koan-status", {
-    description: "Show koan workflow status",
-    handler: async (_args, extCtx) => {
-      extCtx.ui.notify("Status: idle", "info");
     },
   });
 }
