@@ -1,19 +1,27 @@
-// Subagent spawn helpers. Each public function delegates to spawnSubagent,
-// which handles process lifecycle, stdout/stderr routing to disk, and
-// exit-code normalization. When a UI context is provided, an IPC responder
-// runs concurrently so subagents can ask questions and request scouts.
+// Subagent spawn infrastructure.
+//
+// A single public function, spawnSubagent(), handles all six roles.
+// It writes task.json to the subagent directory before spawning (the
+// directory-as-contract invariant: the child reads task.json to discover
+// its role and parameters — no structured data flows through CLI flags).
+//
+// The spawn command carries only what pi needs at the OS level:
+//   pi -p -e {ext} --koan-dir {subagentDir} [--model {model}] "{bootPrompt}"
+//
+// All tools register unconditionally at init. Task-specific content is
+// intentionally absent from spawn prompts: it arrives as step 1 guidance
+// returned by the first koan_complete_step call, after the calling pattern
+// is established.
 
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import * as path from "node:path";
 
-import type { ExtensionUIContext } from "@mariozechner/pi-coding-agent";
-
 import { createLogger, type Logger } from "../utils/logger.js";
-import type { SubagentRole, StepSequence } from "./types.js";
 import { resolveModelForRole } from "./model-resolver.js";
 import { runIpcResponder, type ScoutSpawnContext } from "./lib/ipc-responder.js";
-import type { ScoutTask } from "./lib/ipc.js";
+import { writeTaskFile, type SubagentTask, type ScoutTask } from "./lib/task.js";
+import type { WebServerHandle } from "./web/server-types.js";
 
 // -- Result type --
 
@@ -23,66 +31,95 @@ export interface SubagentResult {
   subagentDir: string;
 }
 
-// -- Public spawn option types --
+// -- Spawn options --
 
 export interface SpawnOptions {
-  epicDir: string;
-  subagentDir: string;
   cwd: string;
   extensionPath: string;
   modelOverride?: string;
   log?: Logger;
-  ui?: ExtensionUIContext;
+  webServer?: WebServerHandle;
 }
 
-export interface SpawnStoryOptions extends SpawnOptions {
-  storyId: string;
+// -- Constants --
+
+// Roles that support koan_request_scouts and therefore need a ScoutSpawnContext
+// wired into their IPC responder.
+const ROLES_WITH_SCOUT_SUPPORT = new Set<SubagentTask["role"]>([
+  "intake",
+  "decomposer",
+  "planner",
+]);
+
+// -- Private helpers --
+
+// The entire spawn prompt. Kept to one sentence deliberately: the LLM must
+// call koan_complete_step before seeing any task instructions. Putting task
+// content here risks text output + immediate exit on weaker models.
+function bootPrompt(role: string): string {
+  return `You are a koan ${role} agent. Call koan_complete_step to receive your instructions.`;
 }
 
-// -- Internal spawn infrastructure --
-
-interface SpawnSubagentOpts {
-  epicDir: string;
-  subagentDir: string;
-  cwd: string;
-  extensionPath: string;
-  extraFlags?: string[];
-  modelOverride?: string;
-  ui?: ExtensionUIContext;
-  // Scout spawning context for the IPC responder. Provided for all non-scout
-  // subagents that may call koan_request_scouts.
-  scoutContext?: ScoutSpawnContext;
+// Builds the ScoutSpawnContext injected into the IPC responder. Scouts spawned
+// via this context do not receive a web server — they are narrow investigators
+// with no user interaction and no nested IPC.
+function makeScoutSpawnContext(
+  parentRole: string,
+  epicDir: string,
+  opts: SpawnOptions,
+  log: Logger,
+): ScoutSpawnContext {
+  return {
+    epicDir,
+    parentRole,
+    async spawnScout(task: ScoutTask, scoutSubagentDir: string): Promise<number> {
+      const result = await spawnSubagent(task, scoutSubagentDir, {
+        cwd: opts.cwd,
+        extensionPath: opts.extensionPath,
+        // Deliberately no webServer — scouts are narrow investigators.
+        log,
+      });
+      return result.exitCode;
+    },
+  };
 }
 
-export function buildSpawnArgs(
-  role: string,
-  prompt: string,
-  opts: SpawnSubagentOpts,
-): string[] {
-  return [
+// -- Public API --
+
+/**
+ * Spawn a koan subagent for the given task.
+ *
+ * Writes task.json to subagentDir before spawning so the child process can
+ * read its role and parameters without relying on CLI flags.
+ */
+export async function spawnSubagent(
+  task: SubagentTask,
+  subagentDir: string,
+  opts: SpawnOptions,
+): Promise<SubagentResult> {
+  const log = opts.log ?? createLogger("Subagent");
+
+  await writeTaskFile(subagentDir, task);
+
+  const modelOverride = opts.modelOverride ?? await resolveModelForRole(task.role);
+
+  const scoutContext = ROLES_WITH_SCOUT_SUPPORT.has(task.role)
+    ? makeScoutSpawnContext(task.role, task.epicDir, opts, log)
+    : undefined;
+
+  const args = [
     "-p",
     "-e", opts.extensionPath,
-    "--koan-role", role,
-    "--koan-epic-dir", opts.epicDir,
-    "--koan-subagent-dir", opts.subagentDir,
-    ...(opts.extraFlags ?? []),
-    ...(opts.modelOverride ? ["--model", opts.modelOverride] : []),
-    prompt,
+    "--koan-dir", subagentDir,
+    ...(modelOverride ? ["--model", modelOverride] : []),
+    bootPrompt(task.role),
   ];
-}
 
-function spawnSubagent(
-  role: string,
-  prompt: string,
-  opts: SpawnSubagentOpts,
-  log: Logger,
-): Promise<SubagentResult> {
-  const args = buildSpawnArgs(role, prompt, opts);
-  log(`Spawning ${role} subagent`, { epicDir: opts.epicDir, subagentDir: opts.subagentDir });
+  log(`Spawning ${task.role} subagent`, { subagentDir });
 
   return new Promise((resolve) => {
-    const stdoutLog = createWriteStream(path.join(opts.subagentDir, "stdout.log"), { flags: "w" });
-    const stderrLog = createWriteStream(path.join(opts.subagentDir, "stderr.log"), { flags: "w" });
+    const stdoutLog = createWriteStream(path.join(subagentDir, "stdout.log"), { flags: "w" });
+    const stderrLog = createWriteStream(path.join(subagentDir, "stderr.log"), { flags: "w" });
 
     const proc = spawn("pi", args, {
       cwd: opts.cwd,
@@ -90,20 +127,12 @@ function spawnSubagent(
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    // Start IPC responder concurrently when a UI context is available.
-    // The responder polls ipc.json in the subagent directory and routes
-    // ask-question requests to the ask UI and scout-request requests to
-    // the scout spawning pool.
+    // Start IPC responder concurrently when a web server handle is available.
     let abortIpc: (() => void) | undefined;
-    if (opts.ui) {
+    if (opts.webServer) {
       const ac = new AbortController();
       abortIpc = () => ac.abort();
-      void runIpcResponder(
-        opts.subagentDir,
-        opts.ui,
-        ac.signal,
-        opts.scoutContext,
-      );
+      void runIpcResponder(subagentDir, opts.webServer, ac.signal, scoutContext);
     }
 
     let stderr = "";
@@ -122,154 +151,16 @@ function spawnSubagent(
       stdoutLog.end();
       stderrLog.end();
       const exitCode = code ?? 1;
-      log(`${role} subagent exited`, { exitCode });
-      resolve({ exitCode, stderr, subagentDir: opts.subagentDir });
+      log(`${task.role} subagent exited`, { exitCode });
+      resolve({ exitCode, stderr, subagentDir });
     });
 
     proc.on("error", (error) => {
       abortIpc?.();
       stdoutLog.end();
       stderrLog.end();
-      log(`${role} subagent spawn error`, { error: error.message });
-      resolve({ exitCode: 1, stderr: error.message, subagentDir: opts.subagentDir });
+      log(`${task.role} subagent spawn error`, { error: error.message });
+      resolve({ exitCode: 1, stderr: error.message, subagentDir });
     });
   });
-}
-
-// -- Scout spawner (injected into IPC responder) --
-// Defined here to avoid circular imports: ipc-responder.ts uses a callback
-// type, not a direct import from this module.
-
-function makeScoutSpawnContext(
-  opts: SpawnOptions,
-  log: Logger,
-): ScoutSpawnContext {
-  return {
-    epicDir: opts.epicDir,
-    async spawnScout(task: ScoutTask, scoutSubagentDir: string, outputFile: string): Promise<number> {
-      const scoutModel = await resolveModelForRole("scout");
-      const prompt = `${task.prompt}\n\nWrite your findings to: ${outputFile}\nYour investigator role: ${task.role}`;
-      const result = await spawnSubagent(
-        "scout",
-        prompt,
-        {
-          epicDir: opts.epicDir,
-          subagentDir: scoutSubagentDir,
-          cwd: opts.cwd,
-          extensionPath: opts.extensionPath,
-          modelOverride: scoutModel,
-          // Scouts do not get an IPC responder — they are narrow investigators.
-        },
-        log,
-      );
-      return result.exitCode;
-    },
-  };
-}
-
-// -- Public spawn functions --
-
-// Intake: reads conversation, extracts context, requests scouts, asks user questions.
-export async function spawnIntake(opts: SpawnOptions): Promise<SubagentResult> {
-  const role: SubagentRole = "intake";
-  const log = opts.log ?? createLogger("Subagent");
-  const modelOverride = opts.modelOverride ?? await resolveModelForRole(role);
-  const scoutContext = makeScoutSpawnContext(opts, log);
-  return spawnSubagent(
-    role,
-    "Begin the intake phase.",
-    { ...opts, modelOverride, scoutContext },
-    log,
-  );
-}
-
-// Scout: answers one narrow codebase question and writes findings to outputFile.
-// Note: scouts are spawned by the IPC responder (via makeScoutSpawnContext) when
-// a subagent calls koan_request_scouts. This function is also callable directly
-// from the driver if needed.
-export async function spawnScout(
-  opts: SpawnOptions & { question: string; role?: string; outputFile: string },
-): Promise<SubagentResult> {
-  const subagentRole: SubagentRole = "scout";
-  const log = opts.log ?? createLogger("Subagent");
-  const modelOverride = opts.modelOverride ?? await resolveModelForRole(subagentRole);
-  const prompt = [
-    opts.question,
-    opts.role ? `Your investigator role: ${opts.role}` : "",
-    `Write your findings to: ${opts.outputFile}`,
-  ].filter(Boolean).join("\n");
-  return spawnSubagent(subagentRole, prompt, { ...opts, modelOverride }, log);
-}
-
-// Decomposer: splits the epic into stories.
-export async function spawnDecomposer(opts: SpawnOptions): Promise<SubagentResult> {
-  const role: SubagentRole = "decomposer";
-  const log = opts.log ?? createLogger("Subagent");
-  const modelOverride = opts.modelOverride ?? await resolveModelForRole(role);
-  const scoutContext = makeScoutSpawnContext(opts, log);
-  return spawnSubagent(
-    role,
-    "Begin the decomposition phase.",
-    { ...opts, modelOverride, scoutContext },
-    log,
-  );
-}
-
-// Orchestrator: pre-execution or post-execution decision making.
-export async function spawnOrchestrator(
-  opts: SpawnOptions & { stepSequence: StepSequence; storyId?: string },
-): Promise<SubagentResult> {
-  const role: SubagentRole = "orchestrator";
-  const log = opts.log ?? createLogger("Subagent");
-  const modelOverride = opts.modelOverride ?? await resolveModelForRole(role);
-  const extraFlags: string[] = ["--koan-step-sequence", opts.stepSequence];
-  if (opts.storyId) {
-    extraFlags.push("--koan-story-id", opts.storyId);
-  }
-  const prompt = `Begin the ${opts.stepSequence} orchestrator phase.`;
-  return spawnSubagent(
-    role,
-    prompt,
-    { ...opts, extraFlags, modelOverride },
-    log,
-  );
-}
-
-// Planner: produces a detailed plan for a story.
-export async function spawnPlanner(opts: SpawnStoryOptions): Promise<SubagentResult> {
-  const role: SubagentRole = "planner";
-  const log = opts.log ?? createLogger("Subagent");
-  const modelOverride = opts.modelOverride ?? await resolveModelForRole(role);
-  const extraFlags: string[] = ["--koan-story-id", opts.storyId];
-  const scoutContext = makeScoutSpawnContext(opts, log);
-  const prompt = `Begin the planning phase for story ${opts.storyId}.`;
-  return spawnSubagent(
-    role,
-    prompt,
-    { ...opts, extraFlags, modelOverride, scoutContext },
-    log,
-  );
-}
-
-// Executor: implements a story plan.
-export async function spawnExecutor(
-  opts: SpawnStoryOptions & { retryContext?: string },
-): Promise<SubagentResult> {
-  const role: SubagentRole = "executor";
-  const log = opts.log ?? createLogger("Subagent");
-  const modelOverride = opts.modelOverride ?? await resolveModelForRole(role);
-  const extraFlags: string[] = ["--koan-story-id", opts.storyId];
-  if (opts.retryContext) {
-    extraFlags.push("--koan-retry-context", opts.retryContext);
-  }
-  const basePrompt = `Implement the plan for story ${opts.storyId}.`;
-  const prompt = opts.retryContext
-    ? `${basePrompt}\n\nPrevious attempt failed: ${opts.retryContext}`
-    : basePrompt;
-  return spawnSubagent(
-    role,
-    prompt,
-    { ...opts, extraFlags, modelOverride },
-    log,
-  );
 }
