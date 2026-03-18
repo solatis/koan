@@ -1,0 +1,75 @@
+:root {
+  /* Background layers */
+  --bg:          #0d1117;
+  --bg-surface:  #161b22;
+  --bg-elevated: #0c0f14;
+
+  /* Borders */
+  --border:       #21262d;
+  --border-light: #161b22;
+
+  /* Text hierarchy */
+  --text:        #d6dde5;
+  --text-strong: #f0f3f6;
+  --text-muted:  #9da7b3;
+  --text-dim:    #727d8a;
+  --text-ghost:  #444d56;
+
+  /* Status colors */
+  --green:        #7ee787;
+  --green-bg:     rgba(35, 134, 54, 0.06);
+  --green-border: #238636;
+  --blue:         #58a6ff;
+  --blue-bg:      rgba(31, 111, 235, 0.06);
+  --blue-border:  #1f6feb;
+  --purple:       #d2a8ff;
+  --orange:       #ffa657;
+  --red:          #f85149;
+  --red-bg:       rgba(248, 81, 73, 0.06);
+  --red-border:   #da3633;
+  --yellow:       #e3b341;
+  --pink:         #f778ba;
+
+  /* Typography */
+  --font-mono: 'SF Mono', 'JetBrains Mono', 'Cascadia Code', 'Fira Code', monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+
+  /* Font sizes */
+  --font-size-xs: 12px;
+  --font-size-sm: 13px;
+  --font-size-md: 15px;
+  --font-size-lg: 16px;
+
+  /* Spacing */
+  --gap-xs: 4px;
+  --gap-sm: 8px;
+  --gap-md: 12px;
+  --gap-lg: 16px;
+  --gap-xl: 20px;
+
+  /* Header */
+  --header-height: 52px;
+
+  /* Monitor */
+  --monitor-min-height: 120px;
+
+  /* Radius */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-md);
+  line-height: 1.5;
+}

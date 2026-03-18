@@ -1,0 +1,212 @@
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* Progress bar — 3px at the very top */
+.progress-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--border);
+  z-index: 100;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--green), var(--blue));
+  transition: width 400ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Header */
+.header {
+  position: fixed;
+  top: 3px; /* below progress bar */
+  left: 0;
+  right: 0;
+  height: var(--header-height);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--gap-xl);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  z-index: 50;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-lg);
+}
+
+.logo {
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-strong);
+  letter-spacing: 0.05em;
+}
+
+.timer {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-md);
+  color: var(--text-muted);
+}
+
+/* Main panel — fills all remaining vertical space */
+.main-panel {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin-top: calc(3px + var(--header-height));
+}
+
+/* Subagent metadata bar */
+.subagent-meta {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--gap-lg);
+  padding: var(--gap-sm) var(--gap-xl);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-surface);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+}
+
+.meta-role {
+  color: var(--blue);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.meta-item {
+  color: var(--text-muted);
+}
+
+.meta-item::before {
+  content: '·';
+  color: var(--text-ghost);
+  margin-right: var(--gap-lg);
+}
+
+.meta-tokens {
+  margin-left: auto;
+  color: var(--text-dim);
+}
+
+/* Phase content area — scrollable, fills remaining space */
+.phase-content {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--gap-xl);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.phase-inner {
+  width: 100%;
+  max-width: 960px;
+}
+
+/* Activity feed — fills remaining space in phase-content, scrollable */
+.activity-feed-scroll {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--gap-md) var(--gap-xl);
+  /* Subtle fade at top when scrolled */
+  mask-image: linear-gradient(to bottom, transparent, black 8px, black);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, black 8px, black);
+}
+
+.activity-feed-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.activity-line {
+  display: flex;
+  gap: var(--gap-sm);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text-dim);
+  padding: 2px 0;
+  line-height: 1.4;
+}
+
+.activity-line.activity-high {
+  color: var(--text-muted);
+}
+
+.activity-tool {
+  color: var(--text-ghost);
+  min-width: 48px;
+  flex-shrink: 0;
+}
+
+.activity-high .activity-tool {
+  color: var(--blue);
+}
+
+.activity-summary {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.activity-detail {
+  color: var(--text-ghost);
+  padding-left: 12px;
+}
+
+/* Monitor — sticky bottom, sizes to content */
+.monitor {
+  flex: 0 0 auto;
+  max-height: 40vh;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+  background: var(--bg-elevated);
+  padding: var(--gap-md) var(--gap-xl);
+  /* Fade at top edge when scrollable */
+  mask-image: linear-gradient(to bottom, transparent, black 12px, black);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, black 12px, black);
+}
+
+.agent-table-header {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-md);
+  margin-bottom: var(--gap-sm);
+}
+
+.monitor-label {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.agent-badges {
+  display: flex;
+  gap: var(--gap-xs);
+}
+
+.token-totals {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+}

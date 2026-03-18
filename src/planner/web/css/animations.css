@@ -1,0 +1,40 @@
+/* CSS-only spinner */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Phase content crossfade */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.phase-content .phase-inner {
+  animation: fade-in 250ms ease-out;
+}
+
+/* Sliding text input for "Other" option */
+@keyframes slide-open {
+  from { max-height: 0; opacity: 0; }
+  to   { max-height: 80px; opacity: 1; }
+}
+
+/* Pill state transitions */
+.pill {
+  transition: background 200ms ease, color 200ms ease, border-color 200ms ease;
+}
+
+/* Progress bar fill */
+.progress-fill {
+  transition: width 400ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Notification fade-out */
+.notification.fade-out {
+  animation: fade-out 300ms ease-in forwards;
+}
+
+@keyframes fade-out {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(8px); }
+}
