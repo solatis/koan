@@ -1,8 +1,10 @@
 // Audit trail for subagent sessions: event-sourced append log (events.jsonl)
 // with an eagerly materialized projection (state.json) for parent polling.
 // fold() is pure so the projection can be replayed from the raw log for testing.
-// Graduated tool capture: full detail for koan_* tools, paths for file ops,
-// binary name for bash, name-only for everything else.
+//
+// Tool invocations are captured as two events: tool_call (request) and
+// tool_result (response), correlated by toolCallId. The flat event stream
+// can be reduced into ToolInvocation[] via correlateTools() for paired access.
 
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
@@ -14,38 +16,31 @@ export interface EventBase {
   seq: number;
 }
 
-export interface ToolFileEvent extends EventBase {
-  kind: "tool_file";
-  tool: "read" | "edit" | "write";
-  path: string;
-  lines?: number;
-  chars?: number;
-  error: boolean;
-}
+// -- Tool events --
+// Every tool invocation produces a (tool_call, tool_result) pair in the log.
+// tool_call fires when the LLM requests the tool; tool_result fires when
+// the tool returns. Both carry toolCallId for correlation.
 
-export interface ToolBashEvent extends EventBase {
-  kind: "tool_bash";
-  bin: string;
-  lines?: number;
-  chars?: number;
-  error: boolean;
-}
-
-export interface ToolKoanEvent extends EventBase {
-  kind: "tool_koan";
+export interface ToolCallEvent extends EventBase {
+  kind: "tool_call";
+  toolCallId: string;
   tool: string;
   input: Record<string, unknown>;
-  response: string[];
-  error: boolean;
 }
 
-export interface ToolGenericEvent extends EventBase {
-  kind: "tool_generic";
+export interface ToolResultEvent extends EventBase {
+  kind: "tool_result";
+  toolCallId: string;
   tool: string;
   error: boolean;
+  // Summarized output metrics (not the full content — too large for the log).
+  lines?: number;
+  chars?: number;
+  // Koan tool response text preserved for projection (completionSummary, etc.).
+  koanResponse?: string[];
 }
 
-export type ToolEvent = ToolFileEvent | ToolBashEvent | ToolKoanEvent | ToolGenericEvent;
+// -- Lifecycle events --
 
 export interface PhaseStartEvent extends EventBase {
   kind: "phase_start";
@@ -72,15 +67,31 @@ export interface HeartbeatEvent extends EventBase {
   kind: "heartbeat";
 }
 
+export interface UsageEvent extends EventBase {
+  kind: "usage";
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
 export type AuditEvent =
-  | ToolFileEvent
-  | ToolBashEvent
-  | ToolKoanEvent
-  | ToolGenericEvent
+  | ToolCallEvent
+  | ToolResultEvent
   | PhaseStartEvent
   | StepTransitionEvent
   | PhaseEndEvent
-  | HeartbeatEvent;
+  | HeartbeatEvent
+  | UsageEvent;
+
+// Distributive Omit — distributes over union members so object literals
+// with fields specific to one member are accepted.
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+export type AuditEventPartial = DistributiveOmit<AuditEvent, "ts" | "seq">;
+
+// -- Projection --
+// Eagerly materialized state summary. Written atomically to state.json
+// after every event so the parent (web server) can poll cheaply.
 
 export interface Projection {
   role: string;
@@ -91,13 +102,84 @@ export interface Projection {
   totalSteps: number;
   stepName: string;
   lastAction: string | null;
+  // toolCallId of the currently in-flight tool, null when idle.
+  // Lets the UI distinguish "doing X" from "done with X".
+  currentToolCallId: string | null;
   updatedAt: string;
   eventCount: number;
   error: string | null;
+  completionSummary: string | null;
+  tokensSent: number;
+  tokensReceived: number;
 }
 
-// Pi's ToolResultEvent shape (subset we need).
+// -- Correlated tool invocations --
+// Reduced view of paired (tool_call, tool_result) events.
+
+export interface ToolInvocation {
+  toolCallId: string;
+  tool: string;
+  input: Record<string, unknown>;
+  callTs: string;
+  resultTs: string | null;
+  error: boolean | null;
+  inFlight: boolean;
+  durationMs: number | null;
+  // Output metrics from the result event.
+  lines?: number;
+  chars?: number;
+  koanResponse?: string[];
+}
+
+// Reduces a flat event stream into paired tool invocations.
+// In-flight tools (call without result) have inFlight=true, resultTs=null.
+export function correlateTools(events: AuditEvent[]): ToolInvocation[] {
+  const byId = new Map<string, ToolInvocation>();
+  const ordered: ToolInvocation[] = [];
+
+  for (const e of events) {
+    if (e.kind === "tool_call") {
+      const inv: ToolInvocation = {
+        toolCallId: e.toolCallId,
+        tool: e.tool,
+        input: e.input,
+        callTs: e.ts,
+        resultTs: null,
+        error: null,
+        inFlight: true,
+        durationMs: null,
+      };
+      byId.set(e.toolCallId, inv);
+      ordered.push(inv);
+    } else if (e.kind === "tool_result") {
+      const inv = byId.get(e.toolCallId);
+      if (inv) {
+        inv.resultTs = e.ts;
+        inv.error = e.error;
+        inv.inFlight = false;
+        inv.durationMs = new Date(e.ts).getTime() - new Date(inv.callTs).getTime();
+        inv.lines = e.lines;
+        inv.chars = e.chars;
+        inv.koanResponse = e.koanResponse;
+      }
+      // Orphan result (no matching call) — can happen if the subagent
+      // started before tool_call hooking was added. Silently skip.
+    }
+  }
+
+  return ordered;
+}
+
+// -- Pi event shapes (subset we consume) --
+
+interface PiToolCallEvent {
+  toolCallId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+}
+
 interface PiToolResultEvent {
+  toolCallId: string;
   toolName: string;
   input: Record<string, unknown>;
   content: Array<{ type: string; text?: string }>;
@@ -115,26 +197,107 @@ function now(): string {
   return new Date().toISOString();
 }
 
-// Derives a concise last-action string from a tool event for display.
-export function summarize(e: ToolEvent): string {
-  switch (e.kind) {
-    case "tool_file": {
-      const suffix = e.lines != null ? ` (${e.lines}L, ${e.chars}c)` : "";
-      return `${e.tool} ${e.path}${suffix}`;
-    }
-    case "tool_bash": {
-      const suffix = e.lines != null ? ` (${e.lines}L, ${e.chars}c)` : "";
-      return `bash ${e.bin}${suffix}`;
-    }
-    case "tool_koan":
-      return e.tool;
-    case "tool_generic":
-      return e.tool;
-  }
+// -- Extractors --
+// Transform pi's raw hook events into our audit event types.
+// ts/seq are placeholders — EventLog.append() overwrites them.
+
+export function extractToolCall(piEvent: PiToolCallEvent): ToolCallEvent {
+  return {
+    kind: "tool_call",
+    toolCallId: piEvent.toolCallId,
+    tool: piEvent.toolName,
+    input: piEvent.input,
+    ts: now(),
+    seq: 0,
+  };
 }
 
+export function extractToolResult(piEvent: PiToolResultEvent): ToolResultEvent {
+  const { toolCallId, toolName, input, content, isError } = piEvent;
+
+  const ev: ToolResultEvent = {
+    kind: "tool_result",
+    toolCallId,
+    tool: toolName,
+    error: isError,
+    ts: now(),
+    seq: 0,
+  };
+
+  // Capture output size for file and bash tools.
+  if (FILE_TOOLS.has(toolName) && !isError) {
+    const text = content.find((c) => c.type === "text")?.text ?? "";
+    ev.lines = text.split("\n").length;
+    ev.chars = text.length;
+  } else if (toolName === "bash") {
+    const text = content.find((c) => c.type === "text")?.text ?? "";
+    ev.lines = text.split("\n").length;
+    ev.chars = text.length;
+  }
+
+  // Preserve koan tool response text for projection use (completionSummary).
+  if (toolName.startsWith("koan_")) {
+    ev.koanResponse = content
+      .filter((c) => c.type === "text" && c.text !== undefined)
+      .map((c) => c.text as string);
+  }
+
+  return ev;
+}
+
+// -- Summarize --
+// Human-readable one-liner from a tool invocation.
+// Uses input (from call) + output metrics (from result) when available.
+
+export function summarizeInvocation(inv: ToolInvocation): string {
+  const { tool, input } = inv;
+
+  // Tool name / key input identifier.
+  let label: string;
+  if (FILE_TOOLS.has(tool)) {
+    label = `${tool} ${(input["path"] as string | undefined) ?? ""}`;
+  } else if (tool === "bash") {
+    const cmd = (input["command"] as string | undefined) ?? "";
+    label = `bash ${cmd.trim().split(/\s+/)[0] ?? ""}`;
+  } else {
+    label = tool;
+  }
+
+  // Append output metrics if result has landed.
+  if (!inv.inFlight && (inv.lines != null || inv.chars != null)) {
+    const lines = inv.lines ?? 0;
+    const chars = inv.chars ?? 0;
+    label += ` · ${lines}L/${formatChars(chars)}`;
+  }
+
+  return label;
+}
+
+// Summarize from a ToolCallEvent alone (in-flight, no result yet).
+function summarizeCall(e: ToolCallEvent): string {
+  if (FILE_TOOLS.has(e.tool)) {
+    return `${e.tool} ${(e.input["path"] as string | undefined) ?? ""}`;
+  }
+  if (e.tool === "bash") {
+    const cmd = (e.input["command"] as string | undefined) ?? "";
+    return `bash ${cmd.trim().split(/\s+/)[0] ?? ""}`;
+  }
+  return e.tool;
+}
+
+// Summarize from a ToolResultEvent alone (used in fold when call was missed).
+function summarizeResult(e: ToolResultEvent): string {
+  let label = e.tool;
+  if (e.lines != null || e.chars != null) {
+    label += ` · ${e.lines ?? 0}L/${formatChars(e.chars ?? 0)}`;
+  }
+  return label;
+}
+
+// -- Fold --
 // Pure projection update — one case per discriminated kind.
 // All branches update updatedAt and increment eventCount.
+
 export function fold(s: Projection, e: AuditEvent): Projection {
   const base = { ...s, updatedAt: e.ts, eventCount: s.eventCount + 1 };
 
@@ -150,7 +313,9 @@ export function fold(s: Projection, e: AuditEvent): Projection {
         totalSteps: e.totalSteps,
         stepName: "",
         lastAction: null,
+        currentToolCallId: null,
         error: null,
+        completionSummary: null,
       };
 
     case "step_transition":
@@ -166,59 +331,42 @@ export function fold(s: Projection, e: AuditEvent): Projection {
         ...base,
         status: e.outcome,
         error: e.detail ?? null,
+        currentToolCallId: null,
       };
 
-    case "tool_file":
-    case "tool_bash":
-    case "tool_koan":
-    case "tool_generic":
-      return { ...base, lastAction: summarize(e) };
+    case "tool_call": {
+      const updated: Projection = {
+        ...base,
+        lastAction: summarizeCall(e),
+        currentToolCallId: e.toolCallId,
+      };
+      // Extract completionSummary from koan_complete_step's thoughts param.
+      // The thoughts parameter is chain-of-thought, not task output (per
+      // AGENTS.md invariant), but we capture a prefix for the projection
+      // so the web UI can show scout summaries.
+      if (e.tool === "koan_complete_step" && typeof e.input?.thoughts === "string") {
+        updated.completionSummary = e.input.thoughts.slice(0, 500) || null;
+      }
+      return updated;
+    }
+
+    case "tool_result":
+      return {
+        ...base,
+        lastAction: summarizeResult(e),
+        currentToolCallId: null,
+      };
 
     case "heartbeat":
       return base;
+
+    case "usage":
+      return {
+        ...base,
+        tokensSent: s.tokensSent + e.input,
+        tokensReceived: s.tokensReceived + e.output,
+      };
   }
-}
-
-// Transforms pi's ToolResultEvent into a graduated AuditEvent.
-export function extractToolEvent(piEvent: PiToolResultEvent): ToolEvent {
-  const { toolName, input, content, isError } = piEvent;
-  const ts = now();
-  // ts and seq are assigned by EventLog.append(); values here are
-  // placeholders overridden on write.
-  const seq = 0;
-
-  if (FILE_TOOLS.has(toolName)) {
-    const ev: ToolFileEvent = {
-      kind: "tool_file",
-      tool: toolName as "read" | "edit" | "write",
-      path: (input["path"] as string | undefined) ?? "",
-      error: isError,
-      ts,
-      seq,
-    };
-    if (toolName === "read" && !isError) {
-      const text = content.find((c) => c.type === "text")?.text ?? "";
-      ev.lines = text.split("\n").length;
-      ev.chars = text.length;
-    }
-    return ev;
-  }
-
-  if (toolName === "bash") {
-    const cmd = (input["command"] as string | undefined) ?? "";
-    const bin = cmd.trim().split(/\s+/)[0] ?? "bash";
-    const text = content.find((c) => c.type === "text")?.text ?? "";
-    return { kind: "tool_bash", bin, lines: text.split("\n").length, chars: text.length, error: isError, ts, seq };
-  }
-
-  if (toolName.startsWith("koan_")) {
-    const response = content
-      .filter((c) => c.type === "text" && c.text !== undefined)
-      .map((c) => c.text as string);
-    return { kind: "tool_koan", tool: toolName, input, response, error: isError, ts, seq };
-  }
-
-  return { kind: "tool_generic", tool: toolName, error: isError, ts, seq };
 }
 
 // -- EventLog --
@@ -249,9 +397,13 @@ export class EventLog {
       totalSteps: 0,
       stepName: "",
       lastAction: null,
+      currentToolCallId: null,
       updatedAt: now(),
       eventCount: 0,
       error: null,
+      completionSummary: null,
+      tokensSent: 0,
+      tokensReceived: 0,
     };
   }
 
@@ -266,13 +418,13 @@ export class EventLog {
 
   // Assigns ts + seq, appends JSON line, folds, writes state atomically.
   // Serialized: concurrent callers queue behind the in-flight write.
-  async append(partial: Omit<AuditEvent, "ts" | "seq">): Promise<void> {
+  async append(partial: AuditEventPartial): Promise<void> {
     const task = () => this.doAppend(partial);
     this.pending = this.pending.then(task, task);
     return this.pending;
   }
 
-  private async doAppend(partial: Omit<AuditEvent, "ts" | "seq">): Promise<void> {
+  private async doAppend(partial: AuditEventPartial): Promise<void> {
     if (!this.fd) {
       throw new Error("EventLog.append called before open()");
     }
@@ -336,7 +488,7 @@ export class EventLog {
 // -- Exports --
 
 // Reads state.json as a Projection; returns null if missing or malformed.
-// Used by driver polling loop.
+// Used by web server polling loop.
 export async function readProjection(dir: string): Promise<Projection | null> {
   try {
     const raw = await fs.readFile(path.join(dir, "state.json"), "utf8");
@@ -346,13 +498,15 @@ export async function readProjection(dir: string): Promise<Projection | null> {
   }
 }
 
-// Structured log line for the widget log card.
-// `tool` is the left-column scan anchor, `summary` is the right-column detail.
-// High-value rows may wrap to two visual lines in the widget.
+// -- Log formatting --
+// Structured log lines for the web UI activity feed.
+
 export interface LogLine {
   tool: string;
   summary: string;
   highValue: boolean;
+  inFlight: boolean;
+  details?: string[];
 }
 
 interface ToolShape {
@@ -366,7 +520,6 @@ interface ToolShape {
 const PREVIEW_CHARS = 40;
 const KEY_PRIORITY = ["id", "story_id", "milestone", "decision_ref", "intent_ref", "file", "path", "phase"];
 
-// Tool shapes for koan_* tools. No koan_escalate (eliminated in §11.3.1).
 const KOAN_SHAPES: Record<string, ToolShape> = {
   koan_select_story: { keys: ["story_id"], highValue: true },
   koan_complete_story: { keys: ["story_id"], highValue: true },
@@ -376,8 +529,8 @@ const KOAN_SHAPES: Record<string, ToolShape> = {
   koan_request_scouts: { keys: ["scouts"], arrays: ["scouts"], highValue: true },
 };
 
-// Reads the tail of events.jsonl and returns structured log entries.
-// Filters out heartbeats (noisy). Used by driver to feed the widget log card.
+// Reads events.jsonl, correlates tool pairs, and returns structured log entries.
+// Filters out heartbeats, usage, and koan_complete_step (noisy).
 export async function readRecentLogs(dir: string, count = 8): Promise<LogLine[]> {
   try {
     const raw = await fs.readFile(path.join(dir, "events.jsonl"), "utf8");
@@ -385,13 +538,87 @@ export async function readRecentLogs(dir: string, count = 8): Promise<LogLine[]>
       .trimEnd()
       .split("\n")
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as AuditEvent)
-      .filter((e) => e.kind !== "heartbeat" && !(e.kind === "tool_koan" && e.tool === "koan_complete_step"));
-    return events.slice(-count).map(formatLogLine);
+      .map((line) => JSON.parse(line) as AuditEvent);
+
+    return buildChronologicalLog(events, count);
   } catch {
     return [];
   }
 }
+
+// Builds a chronological log by walking events in order and emitting
+// one LogLine per tool invocation (at result time, or at call time if
+// still in-flight) plus lifecycle events.
+function buildChronologicalLog(events: AuditEvent[], count: number): LogLine[] {
+  const pendingCalls = new Map<string, { tool: string; input: Record<string, unknown> }>();
+  const lines: LogLine[] = [];
+
+  for (const e of events) {
+    if (e.kind === "heartbeat" || e.kind === "usage") continue;
+
+    if (e.kind === "tool_call") {
+      // Stash tool name + input for when the result arrives (or for
+      // in-flight rendering if no result appears by end of loop).
+      pendingCalls.set(e.toolCallId, { tool: e.tool, input: e.input });
+      continue;
+    }
+
+    if (e.kind === "tool_result") {
+      if (e.tool === "koan_complete_step") continue;
+      const call = pendingCalls.get(e.toolCallId);
+      lines.push(formatPairedResult(e, call?.input ?? {}));
+      pendingCalls.delete(e.toolCallId);
+      continue;
+    }
+
+    // Lifecycle event.
+    lines.push(formatLifecycleEvent(e));
+  }
+
+  // Emit remaining calls without results as in-flight lines.
+  // The ActivityFeed renders the last in-flight line with animated dots.
+  for (const [, call] of pendingCalls) {
+    if (call.tool === "koan_complete_step") continue;
+    lines.push(formatInFlightCall(call.tool, call.input));
+  }
+
+  return lines.slice(-count);
+}
+
+// Format an in-flight tool_call (no result yet). Same structure as
+// formatPairedResult but with inFlight: true and no output metrics.
+function formatInFlightCall(tool: string, input: Record<string, unknown>): LogLine {
+  if (FILE_TOOLS.has(tool)) {
+    return {
+      tool,
+      summary: (input["path"] as string | undefined) ?? "",
+      highValue: tool === "read",
+      inFlight: true,
+    };
+  }
+
+  if (tool === "bash") {
+    const cmd = (input["command"] as string | undefined) ?? "";
+    const bin = cmd.trim().split(/\s+/)[0] ?? "bash";
+    return { tool: "bash", summary: bin, highValue: false, inFlight: true };
+  }
+
+  if (tool.startsWith("koan_")) {
+    const shape = KOAN_SHAPES[tool];
+    if (shape) {
+      const inv: ToolInvocation = {
+        toolCallId: "", tool, input,
+        callTs: "", resultTs: null,
+        error: null, inFlight: true, durationMs: null,
+      };
+      return formatKoanInvocation(inv);
+    }
+  }
+
+  return { tool, summary: "", highValue: false, inFlight: true };
+}
+
+// -- Formatters --
 
 function formatChars(chars: number): string {
   if (chars < 1000) return `${chars}c`;
@@ -464,75 +691,142 @@ function orderedShapeKeys(keys: string[]): string[] {
   return indexed.map((x) => x.key);
 }
 
-function formatKnownKoan(e: ToolKoanEvent, shape: ToolShape): LogLine {
+// Format a completed tool invocation from its correlated pair.
+function formatToolInvocation(inv: ToolInvocation): LogLine {
+  if (inv.tool.startsWith("koan_")) {
+    return formatKoanInvocation(inv);
+  }
+
+  if (FILE_TOOLS.has(inv.tool)) {
+    const p = (inv.input["path"] as string | undefined) ?? "";
+    const suffix = inv.lines != null ? ` · ${inv.lines}L/${formatChars(inv.chars ?? 0)}` : "";
+    return {
+      tool: inv.tool,
+      summary: `${p}${suffix}`,
+      highValue: inv.tool === "read",
+      inFlight: inv.inFlight,
+    };
+  }
+
+  if (inv.tool === "bash") {
+    const cmd = (inv.input["command"] as string | undefined) ?? "";
+    const bin = cmd.trim().split(/\s+/)[0] ?? "bash";
+    const suffix = inv.lines != null ? ` · ${inv.lines}L/${formatChars(inv.chars ?? 0)}` : "";
+    return {
+      tool: "bash",
+      summary: `${bin}${suffix}`,
+      highValue: false,
+      inFlight: inv.inFlight,
+    };
+  }
+
+  return { tool: inv.tool, summary: "", highValue: false, inFlight: inv.inFlight };
+}
+
+function formatKoanInvocation(inv: ToolInvocation): LogLine {
+  const shape = KOAN_SHAPES[inv.tool];
+  if (!shape) {
+    return { tool: inv.tool, summary: "", highValue: false, inFlight: inv.inFlight };
+  }
+
   const arrayKeys = new Set(shape.arrays ?? []);
   const freeformKeys = new Set(shape.freeform ?? []);
   const chunks: string[] = [];
 
   for (const key of orderedShapeKeys(shape.keys)) {
-    if (!hasKey(e.input, key)) continue;
-    const value = e.input[key];
+    if (!hasKey(inv.input, key)) continue;
+    const value = inv.input[key];
 
     if (arrayKeys.has(key)) {
       chunks.push(`${key}:${arrayPreview(value)}`);
       continue;
     }
-
     if (freeformKeys.has(key)) {
       chunks.push(`${key}:${freeformSize(value)}`);
       continue;
     }
-
     chunks.push(`${key}=${inlineScalar(value)}`);
   }
 
-  if (shape.getter) {
+  if (shape.getter && inv.koanResponse) {
     if (chunks.length === 0) {
       chunks.push("scope=plan");
     }
-    chunks.push(`resp:${responseSize(e.response)}`);
+    chunks.push(`resp:${responseSize(inv.koanResponse)}`);
   }
 
-  return {
-    tool: e.tool,
+  const line: LogLine = {
+    tool: inv.tool,
     summary: chunks.join(" · "),
     highValue: shape.highValue ?? chunks.length >= 3,
+    inFlight: inv.inFlight,
   };
-}
 
-function formatKoanLogLine(e: ToolKoanEvent): LogLine {
-  const shape = KOAN_SHAPES[e.tool];
-  if (!shape) {
-    return { tool: e.tool, summary: "", highValue: false };
+  // Expand koan_request_scouts with per-scout detail lines.
+  if (inv.tool === "koan_request_scouts" && Array.isArray(inv.input["scouts"])) {
+    line.details = (inv.input["scouts"] as Array<Record<string, unknown>>).map(
+      (s) => `${s["id"] ?? "?"} (${s["role"] ?? "agent"})`,
+    );
   }
-  return formatKnownKoan(e, shape);
+
+  return line;
 }
 
-function formatLogLine(e: AuditEvent): LogLine {
+// Format a tool_result event paired with its call's input.
+function formatPairedResult(e: ToolResultEvent, input: Record<string, unknown>): LogLine {
+  if (FILE_TOOLS.has(e.tool)) {
+    const p = (input["path"] as string | undefined) ?? "";
+    const suffix = e.lines != null ? ` · ${e.lines}L/${formatChars(e.chars ?? 0)}` : "";
+    return {
+      tool: e.tool,
+      summary: `${p}${suffix}`,
+      highValue: e.tool === "read",
+      inFlight: false,
+    };
+  }
+
+  if (e.tool === "bash") {
+    const cmd = (input["command"] as string | undefined) ?? "";
+    const bin = cmd.trim().split(/\s+/)[0] ?? "bash";
+    const suffix = e.lines != null ? ` · ${e.lines}L/${formatChars(e.chars ?? 0)}` : "";
+    return {
+      tool: "bash",
+      summary: `${bin}${suffix}`,
+      highValue: false,
+      inFlight: false,
+    };
+  }
+
+  if (e.tool.startsWith("koan_")) {
+    const shape = KOAN_SHAPES[e.tool];
+    if (shape) {
+      // Rebuild invocation-like object for the koan formatter.
+      const inv: ToolInvocation = {
+        toolCallId: e.toolCallId,
+        tool: e.tool,
+        input,
+        callTs: e.ts,
+        resultTs: e.ts,
+        error: e.error,
+        inFlight: false,
+        durationMs: null,
+        koanResponse: e.koanResponse,
+      };
+      return formatKoanInvocation(inv);
+    }
+    return { tool: e.tool, summary: "", highValue: false, inFlight: false };
+  }
+
+  return { tool: e.tool, summary: "", highValue: false, inFlight: false };
+}
+
+function formatLifecycleEvent(e: PhaseStartEvent | StepTransitionEvent | PhaseEndEvent): LogLine {
   switch (e.kind) {
     case "phase_start":
-      return { tool: "phase", summary: `${e.phase} (${e.totalSteps} steps)`, highValue: false };
+      return { tool: "phase", summary: `${e.phase} (${e.totalSteps} steps)`, highValue: false, inFlight: false };
     case "step_transition":
-      return { tool: `step ${e.step}/${e.totalSteps}`, summary: e.name, highValue: false };
+      return { tool: `step ${e.step}/${e.totalSteps}`, summary: e.name, highValue: false, inFlight: false };
     case "phase_end":
-      return { tool: "phase", summary: e.detail ? `${e.outcome} · ${e.detail}` : e.outcome, highValue: false };
-    case "tool_file":
-      return {
-        tool: e.tool,
-        summary: e.lines != null ? `${e.path} · ${e.lines}L/${formatChars(e.chars ?? 0)}` : e.path,
-        highValue: e.tool === "read",
-      };
-    case "tool_bash":
-      return {
-        tool: "bash",
-        summary: e.lines != null ? `${e.bin} · ${e.lines}L/${formatChars(e.chars ?? 0)}` : e.bin,
-        highValue: false,
-      };
-    case "tool_koan":
-      return formatKoanLogLine(e);
-    case "tool_generic":
-      return { tool: e.tool, summary: "", highValue: false };
-    case "heartbeat":
-      return { tool: "heartbeat", summary: "", highValue: false };
+      return { tool: "phase", summary: e.detail ? `${e.outcome} · ${e.detail}` : e.outcome, highValue: false, inFlight: false };
   }
 }
