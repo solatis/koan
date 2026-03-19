@@ -35,7 +35,7 @@ This format is sortable and human-readable.
 
 - MUST NOT include implementation details (specific functions, algorithms, data structures).
 - MUST NOT make decisions that require user input. Those belong to intake.
-- MUST NOT invent scope not present in context.md or decisions.md.
+- MUST NOT invent scope not present in context.md.
 - MUST produce one story sketch per deliverable unit of work.
 - SHOULD keep stories small: prefer 4–8 stories over 1–2 large ones.
 - SHOULD order stories so foundational work (types, interfaces, data models) comes first.
@@ -69,8 +69,7 @@ export function decomposerStepGuidance(step: number): StepGuidance {
           "## Files to read",
           "",
           "From the epic directory:",
-          "- `context.md` — structured requirements extracted from the conversation",
-          "- `decisions.md` — user answers to clarifying questions",
+          "- `context.md` — intake analysis: conversation context, codebase findings, and user decisions",
           "",
           "If scout reports were referenced in your initial instructions above, read them now.",
           "If no scout reports were mentioned, proceed without them.",

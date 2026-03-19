@@ -33,6 +33,7 @@ export const ROLE_PERMISSIONS: ReadonlyMap<string, ReadonlySet<string>> = new Ma
       "koan_complete_step",
       "koan_ask_question",
       "koan_request_scouts",
+      "koan_set_confidence",
       "edit",
       "write",
     ]),
@@ -99,15 +100,40 @@ export const ROLE_PERMISSIONS: ReadonlyMap<string, ReadonlySet<string>> = new Ma
 // Executor has unrestricted write access (must implement stories in the codebase).
 const PLANNING_ROLES = new Set(["intake", "scout", "decomposer", "orchestrator", "planner"]);
 
+// STEP_1_BLOCKED_TOOLS: tools disallowed during the intake Extract step (step 1).
+// Step 1 is read-only comprehension. Blocking these tools here provides a
+// mechanical enforcement layer on top of the prompt-level prohibition, ensuring
+// the LLM cannot frontload scouting or question-asking before understanding
+// the conversation.
+const STEP_1_BLOCKED_TOOLS = new Set([
+  "koan_request_scouts",
+  "koan_ask_question",
+  "koan_set_confidence",
+  "write",
+  "edit",
+]);
+
 export function checkPermission(
   role: string,
   toolName: string,
   epicDir?: string,
   toolArgs?: Record<string, unknown>,
+  intakeStep?: number,
 ): { allowed: boolean; reason?: string } {
   // Read tools are always allowed — check before role map lookup.
   if (READ_TOOLS.has(toolName)) {
     return { allowed: true };
+  }
+
+  // Intake step 1 (Extract) is read-only: block all side-effecting tools so
+  // the LLM cannot frontload scouting or question-asking before it has read
+  // and understood the conversation.
+  if (role === "intake" && intakeStep === 1 && STEP_1_BLOCKED_TOOLS.has(toolName)) {
+    return {
+      allowed: false,
+      reason: `${toolName} is not available during the Extract step (step 1). ` +
+        "Complete koan_complete_step first to advance to the Scout step.",
+    };
   }
 
   // Unknown role: blocked under default-deny policy.

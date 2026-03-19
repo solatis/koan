@@ -11,11 +11,25 @@
 //   transitions 0→1 and returns step 1 guidance (just-in-time delivery).
 //   Subsequent calls advance through steps until the phase completes.
 //
+// Non-linear step progression:
+//   Subclasses may override getNextStep() to implement loops or conditional
+//   transitions. getNextStep() MUST be pure — it only returns the next step
+//   number. Side effects that accompany a loop decision (state resets, counter
+//   increments, event emission) belong in onLoopBack(), which handleStepComplete
+//   calls whenever getNextStep() returns a step number less than the current one.
+//
+//   The default implementation is strictly linear: each step advances to the
+//   next, and the final step (totalSteps) signals completion by returning null.
+//   IntakePhase overrides both getNextStep() and onLoopBack() to loop steps 2–4
+//   until the confidence gate is satisfied.
+//
 // Lifecycle:
 //   constructor → registerHandlers() (hooks event listeners)
 //   begin()     → activates phase at step 0, arms onCompleteStep, emits phase_start
 //   handleStepComplete(0) → returns step 1 guidance, emits step_transition(1)
-//   handleStepComplete(N) → returns step N+1 guidance, or null when done
+//   handleStepComplete(N) → calls getNextStep(N) to determine next step,
+//                           calls onLoopBack() on backward transitions,
+//                           returns guidance or null when done
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
@@ -50,6 +64,23 @@ export abstract class BasePhase {
     this.registerHandlers();
   }
 
+  // -- Non-linear progression hook --
+  //
+  // Returns the step number to transition to after `currentStep` completes,
+  // or null to signal phase completion. Subclasses override this to implement
+  // confidence loops, conditional branches, or any other non-linear flow.
+  //
+  // MUST be pure: do not mutate state or emit events here. Side effects that
+  // accompany a loop-back (counter increments, state resets, event emission)
+  // belong in onLoopBack(), which handleStepComplete calls after this method
+  // returns a backward step number.
+  //
+  // Default: linear progression. The step after totalSteps is null (done).
+  protected getNextStep(currentStep: number): number | null {
+    if (currentStep === this.totalSteps) return null;
+    return currentStep + 1;
+  }
+
   // -- Event handler registration --
 
   private registerHandlers(): void {
@@ -71,8 +102,15 @@ export abstract class BasePhase {
         event.toolName,
         this.ctx.epicDir ?? undefined,
         event.input as Record<string, unknown>,
+        this.ctx.intakeStep,
       );
       if (!perm.allowed) {
+        void this.eventLog?.append({
+          kind: "tool_result",
+          toolCallId: event.toolCallId,
+          tool: event.toolName,
+          error: true,
+        });
         return { block: true, reason: perm.reason };
       }
       return undefined;
@@ -113,13 +151,24 @@ export abstract class BasePhase {
       // boot prompt. Reward it with step 1 guidance. This is the critical moment
       // that establishes the call→receive→work→call pattern for the session.
       this.step = 1;
+      this.onStepUpdated(1);
       const prompt = formatStep(this.getStepGuidance(1));
       await this.eventLog?.emitStepTransition(1, this.getStepName(1), this.totalSteps);
       this.log("Boot transition", { role: this.role, to: 1 });
       return prompt;
     }
 
-    if (this.step === this.totalSteps) {
+    // Validate pre-conditions before advancing (subclasses may override).
+    const preError = await this.validateStepCompletion(this.step);
+    if (preError !== null) {
+      // Return the error as the tool result — the LLM sees it and must fix
+      // the pre-condition before calling koan_complete_step again.
+      return preError;
+    }
+
+    const nextStep = this.getNextStep(this.step);
+
+    if (nextStep === null) {
       // Phase complete — return null signals koan_complete_step to reply "Phase complete."
       this.active = false;
       this.ctx.onCompleteStep = null;
@@ -128,12 +177,49 @@ export abstract class BasePhase {
       return null;
     }
 
-    // Advance to next step.
     const prev = this.step;
-    this.step = prev + 1;
+    this.step = nextStep;
+
+    // If the step went backward (loop-back), give the subclass a chance to
+    // perform side effects before the new step's guidance is delivered:
+    // resetting state, incrementing counters, emitting events. This keeps
+    // getNextStep() pure — it only decides where to go, not what to do there.
+    if (nextStep < prev) {
+      await this.onLoopBack(prev, nextStep);
+    }
+
+    this.onStepUpdated(nextStep);
     const prompt = formatStep(this.getStepGuidance(this.step));
     await this.eventLog?.emitStepTransition(this.step, this.getStepName(this.step), this.totalSteps);
     this.log("Step transition", { role: this.role, from: prev, to: this.step });
     return prompt;
+  }
+
+  // -- Overridable hooks --
+
+  // Called whenever this.step is updated (including loop-backs). Subclasses
+  // use this to sync ctx fields (e.g., intakeStep) with the current step.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  protected onStepUpdated(_step: number): void {
+    // Default: no-op.
+  }
+
+  // Called when a loop-back occurs (nextStep < previousStep), after this.step
+  // has been updated but before onStepUpdated() and getStepGuidance() run.
+  // Subclasses use this to perform side effects that accompany the loop decision
+  // — resetting state, incrementing counters, emitting events — separate from
+  // the pure getNextStep() query. The hook is async so event emission can be
+  // properly awaited, preserving event order in events.jsonl.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  protected async onLoopBack(_from: number, _to: number): Promise<void> {
+    // Default: no-op.
+  }
+
+  // Called before advancing from the given step. Return null to allow
+  // advancement, or an error string to block it (returned as the tool
+  // result so the LLM sees the message and must fix the pre-condition).
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  protected async validateStepCompletion(_step: number): Promise<string | null> {
+    return null; // Default: no pre-conditions.
   }
 }

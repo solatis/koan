@@ -11,7 +11,7 @@ export function plannerSystemPrompt(): string {
 
 ## Your role
 
-You read stories, codebase artifacts, and scout reports, then produce three output files: a step-by-step plan, a curated code context file, and a verification checklist. You do NOT write code. You do NOT make design decisions beyond what the story and decisions log specify.
+You read stories, codebase artifacts, and scout reports, then produce three output files: a step-by-step plan, a curated code context file, and a verification checklist. You do NOT write code. You do NOT make design decisions beyond what the story and context.md specify.
 
 ## What you produce
 
@@ -74,7 +74,7 @@ export function plannerStepGuidance(step: number, storyId: string): StepGuidance
           "## What to read",
           "",
           `1. Read \`stories/${storyId}/story.md\` in the epic directory — understand exactly what this story must accomplish, its acceptance criteria, and any noted constraints or dependencies.`,
-          "2. Read `decisions.md` in the epic directory — understand the architectural decisions and open questions that apply to this story. If a decision is marked as unresolved, check whether it blocks this story.",
+          "2. Read `context.md` in the epic directory — understand the scope, codebase findings, constraints, and decisions that apply to this story. If a decision is marked as unresolved, check whether it blocks this story.",
           "3. Read the scout reports returned by `koan_request_scouts` for current codebase context.",
           "",
           "## What to analyze",
@@ -93,7 +93,7 @@ export function plannerStepGuidance(step: number, storyId: string): StepGuidance
           "- The list of files that will be modified or created",
           "- The sequence you plan for the steps (high-level)",
           "- Any risks or unresolved questions you identified",
-          "- Whether any open decisions in decisions.md block this story",
+          "- Whether any open decisions in context.md block this story",
         ],
       };
 

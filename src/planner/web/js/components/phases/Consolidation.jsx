@@ -21,7 +21,7 @@ export function Consolidation() {
         )}
         <div class="summary-item">
           <span class="icon-pending">◌</span>
-          <span>Writing decisions.md...</span>
+          <span>Writing context.md...</span>
         </div>
       </div>
       {logs.length > 0 && (

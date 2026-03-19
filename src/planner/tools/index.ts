@@ -8,6 +8,7 @@ import type { RuntimeContext } from "../lib/runtime-context.js";
 import { registerWorkflowTools } from "./workflow.js";
 import { registerOrchestratorTools } from "./orchestrator.js";
 import { registerAskTools } from "./ask.js";
+import { registerConfidenceTool } from "./confidence.js";
 
 export type { RuntimeContext } from "../lib/runtime-context.js";
 export { createRuntimeContext } from "../lib/runtime-context.js";
@@ -16,4 +17,5 @@ export function registerAllTools(pi: ExtensionAPI, ctx: RuntimeContext): void {
   registerWorkflowTools(pi, ctx);
   registerOrchestratorTools(pi, ctx);
   registerAskTools(pi, ctx);
+  registerConfidenceTool(pi, ctx);
 }

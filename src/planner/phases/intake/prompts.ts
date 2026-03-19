@@ -1,174 +1,334 @@
-// Intake phase prompts — 3-step sequence per §11.2.2:
-//   Step 1: Context extraction (read conversation → write context.md)
-//   Step 2: Codebase scouting (call koan_request_scouts with targeted questions)
-//   Step 3: Gap analysis + questions (review findings → ask user → write decisions.md)
+// Intake phase prompts — 5-step workflow with a confidence-gated loop.
+//
+//   Step 1 (Extract)    — read-only comprehension of conversation.jsonl
+//   Step 2 (Scout)      — dispatch codebase scouts for targeted exploration
+//   Step 3 (Deliberate) — enumerate knowns/unknowns, formulate & ask questions
+//   Step 4 (Reflect)    — self-verify completeness, declare confidence level
+//   Step 5 (Synthesize) — write context.md from all accumulated findings
+//
+// Steps 2–4 repeat until the LLM declares "certain" confidence (or max
+// iterations are exhausted). The iteration parameter is threaded through
+// intakeStepGuidance() to produce iteration-aware prompts for steps 2–4:
+// first-iteration guidance focuses on initial exploration; subsequent
+// iterations focus on narrowing remaining gaps from the previous reflection.
+//
+// Design note — Prompt Chaining over Stepwise:
+//   Each step has exactly one cognitive goal (scout / deliberate / reflect).
+//   This prevents the "simulated refinement" anti-pattern where a monolithic
+//   prompt causes the model to artificially downgrade its draft quality to
+//   manufacture visible improvement. Separate koan_complete_step calls enforce
+//   genuinely isolated reasoning for each phase of the loop.
 
 import type { StepGuidance } from "../../lib/step.js";
 
 export const INTAKE_STEP_NAMES: Record<number, string> = {
-  1: "Context Extraction",
-  2: "Codebase Scouting",
-  3: "Gap Analysis & Questions",
+  1: "Extract",
+  2: "Scout",
+  3: "Deliberate",
+  4: "Reflect",
+  5: "Synthesize",
 };
 
 export function intakeSystemPrompt(): string {
-  return `You are an intake analyst for a coding task planner. You read a conversation history, extract structured context, explore the codebase via scouts, and ask the user targeted clarifying questions grounded in both the conversation and what actually exists in the codebase.
+  return `You are an intake analyst for a coding task planner. You read a conversation history, explore the codebase, and ask the user targeted questions until you have complete context for planning.
+
+Your output — a single context.md file — is the sole foundation for all downstream work. Every story boundary, every implementation plan, and every line of code written downstream depends on the quality and completeness of this file. Gaps here compound into wrong plans and wrong code.
 
 ## Your role
 
-You extract and organize information. You do NOT plan, design, or implement.
+You extract, verify, and organize information. You do NOT plan, design, or implement.
 
-## Strict rules — violations invalidate your output
+## Strict rules
 
-- MUST NOT infer decisions that were not explicitly stated in the conversation.
+- MUST NOT infer decisions not explicitly stated in the conversation.
 - MUST NOT add architectural opinions or suggest approaches.
-- MUST NOT summarize, paraphrase, or analyze code beyond extracting factual references.
-- MUST NOT produce implementation recommendations of any kind.
-- MUST only capture what was explicitly said. If something is unclear, note it as an unresolved question.
-- MUST ask at most 8 questions total. Prioritize the most important gaps.
+- MUST NOT produce implementation recommendations.
+- MUST capture only what was explicitly said. If unclear, mark it as unresolved.
 - SHOULD prefer multiple-choice questions when the answer space is bounded.
-- SHOULD ask open-ended questions only when the space of valid answers is genuinely unbounded.
-- SHOULD ask questions grounded in what you found in the codebase (e.g., "the codebase uses X — should this story follow the same pattern or switch to Y?").
+- SHOULD ground questions in codebase findings.
 
-## Output files
+## Workflow
 
-You write two files, both inside the epic directory:
+You work in a loop: scout the codebase, think through what you know, ask the user questions, then verify your understanding. You repeat until you are certain the decomposer has everything it needs.
 
-1. **context.md** — structured extraction of what was said in the conversation.
-2. **decisions.md** — answers to the questions you asked the user.
+## Output
 
-## Tools available
+One file: **context.md** in the epic directory.
 
-- All read tools (read, bash, grep, glob, find, ls) — for reading the conversation and codebase.
-- \`koan_request_scouts\` — to request parallel codebase exploration.
-- \`koan_ask_question\` — to ask the user clarifying questions via IPC.
-- \`write\` / \`edit\` — for writing output files inside the epic directory only.
-- \`koan_complete_step\` — to signal step completion with your findings.`;
+## Tools
+
+- Read tools (read, bash, grep, glob, find, ls) — reading the conversation and codebase.
+- \`koan_request_scouts\` — request parallel codebase exploration.
+- \`koan_ask_question\` — ask the user clarifying questions.
+- \`koan_set_confidence\` — declare your confidence level.
+- \`write\` / \`edit\` — for writing context.md (final step only).
+- \`koan_complete_step\` — signal step completion.`;
 }
 
-export function intakeStepGuidance(step: number, conversationPath?: string): StepGuidance {
+export function intakeStepGuidance(step: number, conversationPath?: string, iteration = 1): StepGuidance {
   switch (step) {
+    // -------------------------------------------------------------------------
+    // Step 1: Extract — read the conversation, build a mental model.
+    //
+    // This step is intentionally read-only. The permission fence blocks
+    // koan_request_scouts, koan_ask_question, koan_set_confidence, write, and
+    // edit during step 1 so that comprehension cannot be short-circuited by
+    // premature action.
+    // -------------------------------------------------------------------------
     case 1:
       return {
         title: INTAKE_STEP_NAMES[1],
         instructions: [
-          "Read the conversation file and extract structured context into `context.md`.",
+          "Read the conversation file. Build a thorough mental model of what is being requested.",
           "",
           conversationPath
             ? `Conversation file: ${conversationPath}`
             : "Conversation file: locate `conversation.jsonl` in the epic directory.",
           "",
-          "The conversation file is JSONL (JSON Lines). Each line is a JSON object.",
-          "Look for entries with type 'message' and role 'user' or 'assistant' for content.",
-          "Ignore internal session entries (header, compaction, etc.).",
+          "The file is JSONL. Each line is a JSON object.",
+          "Read entries with type 'message' and role 'user' or 'assistant'.",
+          "Ignore internal entries (header, compaction, etc.).",
           "",
-          "Write `context.md` to the epic directory with these exact sections:",
+          "## What to internalize",
           "",
-          "## Topic",
-          "One paragraph describing what is being built or changed. Use only information explicitly stated in the conversation.",
+          "As you read, track these categories:",
+          "- **Topic**: What is being built or changed?",
+          "- **File references**: Every file, directory, or module mentioned.",
+          "- **Decisions already made**: Only those explicitly stated and agreed upon.",
+          "- **Constraints**: Technical, timeline, compatibility requirements.",
+          "- **Gaps**: Questions raised but unanswered. Things unclear or unstated that would affect story boundaries.",
           "",
-          "## File References",
-          "List every file, directory, or module mentioned in the conversation. One item per line.",
-          "If none were mentioned, write: (none mentioned)",
+          "## Rules for this step",
           "",
-          "## Decisions Made",
-          "List every decision that was explicitly stated and agreed upon. Format: `- [decision text]`",
-          "A decision must be explicitly stated — do not infer from context.",
-          "If none were made, write: (none recorded)",
-          "",
-          "## Constraints",
-          "List every explicit constraint: technical, timeline, compatibility, budget, etc.",
-          "If none were stated, write: (none stated)",
-          "",
-          "## Unresolved Questions",
-          "List every question raised in the conversation that was NOT answered.",
-          "Also list any gaps you observe — things that must be known before planning can proceed.",
-          "Format: `- [question or gap description]`",
-          "",
-          "Be faithful to the conversation. Do not invent context.",
+          "- Do NOT call koan_request_scouts, koan_ask_question, koan_set_confidence, write, or edit.",
+          "- This step is read-only. Understand the conversation before acting on it.",
+          "- Be faithful to what was said. Do not invent context or infer unstated decisions.",
+          "- If the conversation references specific files or systems, note them — you will scout those next.",
         ],
       };
 
+    // -------------------------------------------------------------------------
+    // Step 2: Scout — dispatch codebase investigators.
+    //
+    // Iteration-aware: first iteration explores based on the conversation;
+    // subsequent iterations follow up on gaps from the previous Reflect step.
+    // This is a focused step — do NOT ask the user questions here.
+    // -------------------------------------------------------------------------
     case 2:
       return {
         title: INTAKE_STEP_NAMES[2],
         instructions: [
-          "Based on the file references and topic in context.md, identify what needs codebase exploration.",
+          iteration === 1
+            ? "Based on your reading of the conversation, identify areas of the codebase that need exploration."
+            : "Based on gaps identified in your previous reflection, identify follow-up areas to explore.",
           "",
-          "Use `koan_request_scouts` to gather codebase context before asking the user questions.",
-          "This grounds the questions in what actually exists — preventing questions the codebase already answers.",
+          "## What to scout",
           "",
-          "## When to scout",
+          "Use `koan_request_scouts` to dispatch parallel codebase investigators.",
+          "Each scout answers one narrow question. Formulate 1–5 scout tasks.",
           "",
-          "Scout when context.md mentions:",
-          "- Specific files, modules, or packages that should be verified or understood.",
-          "- Integration points with existing code (APIs, databases, auth, etc.).",
-          "- Areas where the user's assumptions may not match the codebase (e.g., 'we use React' but you should verify).",
-          "",
-          "Formulate 1–5 focused scout tasks. Each scout answers one narrow question.",
-          "",
-          "## Scout task format",
+          "Scout when:",
+          "- The conversation references specific files, modules, or systems.",
+          "- Integration points with existing code need verification (APIs, databases, auth).",
+          "- User assumptions about the codebase might not match reality.",
+          ...(iteration > 1 ? ["- Previous scout findings raised new questions or revealed unexpected patterns."] : []),
           "",
           "Each scout needs:",
-          "- id: short kebab-case identifier (e.g., 'auth-setup', 'api-structure')",
-          "- role: a focused investigator role (e.g., 'auth system auditor', 'API structure analyst')",
-          "- prompt: exactly what to find (e.g., 'Find all auth-related files and identify which auth library is used')",
+          "- id: short kebab-case identifier (e.g., 'auth-setup')",
+          "- role: investigator focus (e.g., 'authentication auditor')",
+          "- prompt: what to find (e.g., 'Find all auth middleware in src/ and identify the auth library used')",
           "",
           "## If no scouting is needed",
           "",
-          "If context.md has no file references and the topic is purely conceptual (no codebase inspection needed),",
-          "skip scouting and call koan_complete_step with: 'Scouting skipped — no codebase references in context.'",
+          "If the topic is purely conceptual and no codebase inspection is needed, skip scouting.",
+          "Do NOT ask the user questions in this step — that happens in Deliberate.",
         ],
       };
 
+    // -------------------------------------------------------------------------
+    // Step 3: Deliberate — enumerate knowns/unknowns, ask questions.
+    //
+    // Thread-of-Thought technique: explicitly walking through each area before
+    // formulating questions prevents asking things already answered and surfaces
+    // gaps that would otherwise be missed.
+    //
+    // Iteration-aware: first iteration covers all areas; subsequent iterations
+    // focus on new information and updated understanding.
+    // -------------------------------------------------------------------------
     case 3:
       return {
         title: INTAKE_STEP_NAMES[3],
         instructions: [
-          "Review `context.md` and scout findings together. Identify gaps. Ask the user. Write `decisions.md`.",
+          "Before asking questions, explicitly enumerate what you know and what you don't.",
+          "This grounds your questions in reality and prevents asking things already answered.",
           "",
-          "## Gap identification criteria",
+          "## Phase A: Recite what you know",
           "",
-          "Ask about a gap if:",
-          "- The answer materially changes WHAT is built (scope, features, API shape).",
-          "- The answer materially changes HOW the work is sequenced (dependencies, ordering).",
-          "- Without the answer, the decomposer cannot split the work into stories.",
-          "- Scout findings reveal a contradiction with what the user described (e.g., user said 'we use Postgres' but scout found SQLite).",
+          "Walk through each area relevant to the task and state what you have learned.",
+          "Use this structure for each area:",
           "",
-          "Do NOT ask about:",
-          "- Implementation choices (those belong to the planner role).",
-          "- Things the scout findings already answered.",
-          "- Nice-to-have clarifications that don't change the plan.",
+          "  **[Area name]** (e.g., 'Authentication', 'Database schema', 'API endpoints')",
+          "  - Known: [what the conversation and/or scouts established]",
+          "  - Unknown: [what remains unclear or unverified]",
+          "  - Source: [conversation / scout findings / user answer from round N]",
           "",
-          "## Asking questions",
+          iteration === 1
+            ? "Cover every area relevant to the task. Be thorough — gaps you miss here become gaps in the final output."
+            : "Focus on areas where new information arrived since last round. Re-state updated understanding.",
           "",
-          "Use `koan_ask_question` to send questions to the user. Maximum 8 questions.",
+          "## Phase B: Formulate and ask questions",
+          "",
+          "Review your 'Unknown' items. For each, decide:",
+          "- Can a follow-up scout answer this? → Note it for the next scout round.",
+          "- Must the user decide this? → Include it in your questions.",
+          "- Is this an implementation detail the planner should decide? → Skip it.",
+          "",
+          "Ask about a gap ONLY if:",
+          "- It materially changes WHAT is built (scope, features, API shape).",
+          "- It materially changes HOW work is sequenced (dependencies, ordering).",
+          "- Without the answer, story boundaries cannot be determined.",
+          "- Scout findings contradict what the user described.",
+          "",
+          "Use `koan_ask_question`. Limit: 5 questions per round.",
           "Prefer multiple-choice when the answer space is bounded.",
-          "Reference scout findings in questions when relevant: 'The codebase uses X — should this follow the same pattern?'",
+          "Ground questions in specific findings: 'Scout found X — should this story follow the same pattern?'",
           "",
-          "## Writing decisions.md",
+          "## If no questions are needed",
           "",
-          "After the user responds, write `decisions.md` to the epic directory:",
+          "If all 'Unknown' items are either implementation details or answerable by follow-up scouts,",
+          "you may skip asking questions. Your recitation of knowns/unknowns is still required.",
+        ],
+      };
+
+    // -------------------------------------------------------------------------
+    // Step 4: Reflect — verify completeness, declare confidence.
+    //
+    // Chain-of-Verification (CoVe) technique: the LLM generates its own
+    // verification questions and answers them using only gathered evidence
+    // (not intuition). This surfaces gaps that casual self-assessment misses.
+    //
+    // Metacognitive structure: understand → judge → critique → decide → assess.
+    // The "certain" level has a contrastive definition (positive checklist +
+    // "you are NOT certain if" list) to prevent premature exits from the loop.
+    //
+    // REQUIRED: koan_set_confidence must be called before koan_complete_step.
+    // The phase handler enforces this — koan_complete_step will be rejected
+    // with an error message if confidence has not been set.
+    // -------------------------------------------------------------------------
+    case 4:
+      return {
+        title: INTAKE_STEP_NAMES[4],
+        instructions: [
+          "Verify the completeness of your understanding before deciding whether to continue or stop.",
+          "This step is pure verification — do not scout or ask questions here.",
           "",
-          "## Answers",
-          "For each question asked, record the question and the user's answer.",
-          "Format:",
-          "```",
-          "**Q: [question text]**",
-          "A: [user's answer]",
-          "```",
+          "## Step 1: Verification questions",
           "",
-          "## Remaining Unknowns",
-          "List any gaps that remain unresolved. If none: write (none)",
+          "Generate 3–5 questions that test whether your understanding is complete.",
+          "Frame them from the decomposer's perspective — the decomposer must split this work into stories.",
           "",
-          "If there were no meaningful gaps, write:",
-          "`## Answers\\n(no questions were needed — context and codebase survey were sufficient)`",
+          "Example verification questions:",
+          "- 'Could I define the boundary between story 1 and story 2 right now?'",
+          "- 'If the user's codebase uses pattern X (per scout), does our understanding account for that?'",
+          "- 'Are there any user decisions that could split one story into two or merge two into one?'",
           "",
-          "Then call `koan_complete_step` with a brief summary:",
-          "- File references found",
-          "- Scouts requested and key findings",
-          "- Questions asked and answered",
-          "- Any remaining unknowns",
+          "## Step 2: Answer each question",
+          "",
+          "Answer each verification question using ONLY evidence you have:",
+          "- Direct quotes or facts from the conversation",
+          "- Specific findings from scouts",
+          "- Explicit answers from the user",
+          "",
+          "If you cannot answer a verification question with evidence, that is a gap.",
+          "",
+          "## Step 3: Assess confidence",
+          "",
+          "Based on your verification answers, call `koan_set_confidence`.",
+          "",
+          "**certain** — all verification questions answered with evidence. The decomposer can define every story boundary.",
+          "**high** — most questions answered. Remaining unknowns would not change story structure.",
+          "**medium** — broad shape understood, but specific boundaries or sequencing decisions are unclear.",
+          "**low** — major gaps remain. Cannot define story boundaries.",
+          "**exploring** — have not yet scouted or asked questions.",
+          "",
+          "### Certain means ALL of these are true:",
+          "- Topic and scope are unambiguous.",
+          "- Codebase architecture relevant to the task is understood.",
+          "- All user decisions affecting story boundaries have been made.",
+          "- No question you could ask would change the number, order, or scope of stories.",
+          "",
+          "### You are NOT certain if:",
+          "- A scout revealed something surprising that needs follow-up.",
+          "- A user answer raised a new question you haven't explored.",
+          "- You skipped scouting an area that might affect story boundaries.",
+          "- You're unsure whether two pieces of work should be one story or two.",
+          "",
+          "## Step 4: If not certain, plan the next round",
+          "",
+          "If confidence < certain, briefly note:",
+          "- What gaps remain?",
+          "- Should the next round focus on scouting, asking, or both?",
+          "- What specific areas need follow-up?",
+          "",
+          "This plan will guide your next Scout step.",
+        ],
+        invokeAfter: [
+          "WHEN DONE: First call koan_set_confidence, then call koan_complete_step.",
+          "You MUST call koan_set_confidence before koan_complete_step — step completion will be rejected without it.",
+          "Do NOT call koan_complete_step until you have worked through all four steps above.",
+        ].join("\n"),
+      };
+
+    // -------------------------------------------------------------------------
+    // Step 5: Synthesize — write context.md.
+    //
+    // This step runs once, after the confidence loop exits. The LLM consolidates
+    // everything gathered across all iterations into a single structured file.
+    //
+    // A pre-write verification checklist ensures the output serves the
+    // decomposer's needs: if any checklist question cannot be answered, it must
+    // be noted in Open Items rather than silently omitted.
+    // -------------------------------------------------------------------------
+    case 5:
+      return {
+        title: INTAKE_STEP_NAMES[5],
+        instructions: [
+          "Write `context.md` to the epic directory.",
+          "This file is the sole input for all downstream phases. Write it carefully.",
+          "",
+          "## Required sections",
+          "",
+          "### Topic",
+          "One paragraph: what is being built or changed. Facts from the conversation only.",
+          "",
+          "### Codebase Findings",
+          "Key findings from scouts: architecture, patterns, existing code, integration points.",
+          "Organize by area, not by scout task or iteration.",
+          "If no scouts were needed: (no codebase exploration was needed)",
+          "",
+          "### Decisions",
+          "Every question asked and the user's answer, across all rounds.",
+          "Format: **Q: [question]** / A: [answer]",
+          "If no questions were needed: (no questions were needed — context was sufficient)",
+          "",
+          "### Constraints",
+          "All constraints discovered: from conversation, from codebase (scouts), from user answers.",
+          "If none: (none identified)",
+          "",
+          "### Open Items",
+          "Anything unresolved. Should be empty or near-empty if confidence was 'certain'.",
+          "If none: (none)",
+          "",
+          "## Pre-write verification",
+          "",
+          "Before writing, verify context.md answers these questions (the decomposer needs them):",
+          "- What is the top-level goal?",
+          "- What are the distinct deliverable units of work?",
+          "- What existing code does this touch and how is it structured?",
+          "- What decisions constrain how the work is split?",
+          "- Are there dependencies between work units?",
+          "",
+          "If you cannot answer any of these from what you've gathered, note it in Open Items.",
         ],
       };
 
