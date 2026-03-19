@@ -38,3 +38,25 @@
   from { opacity: 1; transform: translateY(0); }
   to   { opacity: 0; transform: translateY(8px); }
 }
+
+/* Thinking indicator */
+@keyframes thinking-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
+
+.thinking-dot {
+  animation: thinking-pulse 1.5s ease-in-out infinite;
+}
+
+.thinking-timer {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  margin-left: 0.4em;
+}
+
+.agent-doing-thinking {
+  color: var(--text-muted);
+}
+
+

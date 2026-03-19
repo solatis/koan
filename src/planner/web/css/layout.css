@@ -133,7 +133,75 @@
 .activity-feed-inner {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+/* ---- Activity cards (thinking, future: tool results) ---- */
+
+.activity-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin: var(--gap-xs) 0;
+  overflow: hidden;
+}
+
+.activity-card-active {
+  border-color: var(--blue-border);
+}
+
+.activity-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--gap-xs) var(--gap-md);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+}
+
+.activity-card-tool {
+  color: var(--text-muted);
+}
+
+.activity-card-thinking .activity-card-tool {
+  color: var(--purple);
+}
+
+.activity-card-meta {
+  color: var(--text-dim);
+  font-size: var(--font-size-xs);
+}
+
+.activity-card-body {
+  padding: 0 var(--gap-md) var(--gap-sm);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+}
+
+.activity-card-body:not(.expanded) {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.activity-card-more {
+  padding: 2px var(--gap-md) var(--gap-sm);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--blue);
+  cursor: pointer;
+  user-select: none;
+}
+
+.activity-card-more:hover {
+  color: var(--text-strong);
 }
 
 .activity-line {
