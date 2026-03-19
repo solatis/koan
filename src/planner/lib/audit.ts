@@ -75,6 +75,30 @@ export interface UsageEvent extends EventBase {
   cacheWrite: number;
 }
 
+export interface ThinkingEvent extends EventBase {
+  kind: "thinking";
+  // Truncated thinking content (first 2000 chars for log size).
+  text: string;
+  // Original length before truncation.
+  chars: number;
+}
+
+export interface ConfidenceChangeEvent extends EventBase {
+  kind: "confidence_change";
+  // The confidence level declared by the intake agent via koan_set_confidence.
+  level: "exploring" | "low" | "medium" | "high" | "certain";
+  // Which iteration of the Scout→Deliberate→Reflect loop this was declared in.
+  iteration: number;
+}
+
+export interface IterationStartEvent extends EventBase {
+  kind: "iteration_start";
+  // The new iteration number (incremented from the previous Reflect step).
+  iteration: number;
+  // Maximum allowed iterations before the loop is forced to exit.
+  maxIterations: number;
+}
+
 export type AuditEvent =
   | ToolCallEvent
   | ToolResultEvent
@@ -82,7 +106,10 @@ export type AuditEvent =
   | StepTransitionEvent
   | PhaseEndEvent
   | HeartbeatEvent
-  | UsageEvent;
+  | UsageEvent
+  | ThinkingEvent
+  | ConfidenceChangeEvent
+  | IterationStartEvent;
 
 // Distributive Omit — distributes over union members so object literals
 // with fields specific to one member are accepted.
@@ -111,6 +138,13 @@ export interface Projection {
   completionSummary: string | null;
   tokensSent: number;
   tokensReceived: number;
+  // Timestamp of the most recent tool_result event; used to track thinking gaps.
+  lastToolResultAt: string | null;
+  // Intake-specific: the most recent confidence level declared by koan_set_confidence.
+  // Null for non-intake subagents or before any confidence is declared.
+  intakeConfidence: "exploring" | "low" | "medium" | "high" | "certain" | null;
+  // Intake-specific: the current loop iteration (1-based). Zero for non-intake.
+  intakeIteration: number;
 }
 
 // -- Correlated tool invocations --
@@ -355,6 +389,7 @@ export function fold(s: Projection, e: AuditEvent): Projection {
         ...base,
         lastAction: summarizeResult(e),
         currentToolCallId: null,
+        lastToolResultAt: e.ts,
       };
 
     case "heartbeat":
@@ -365,6 +400,22 @@ export function fold(s: Projection, e: AuditEvent): Projection {
         ...base,
         tokensSent: s.tokensSent + e.input,
         tokensReceived: s.tokensReceived + e.output,
+      };
+
+    case "thinking":
+      return base;
+
+    case "confidence_change":
+      return {
+        ...base,
+        intakeConfidence: e.level,
+        intakeIteration: e.iteration,
+      };
+
+    case "iteration_start":
+      return {
+        ...base,
+        intakeIteration: e.iteration,
       };
   }
 }
@@ -404,6 +455,9 @@ export class EventLog {
       completionSummary: null,
       tokensSent: 0,
       tokensReceived: 0,
+      lastToolResultAt: null,
+      intakeConfidence: null,
+      intakeIteration: 0,
     };
   }
 
@@ -462,6 +516,22 @@ export class EventLog {
     } as Omit<PhaseEndEvent, "ts" | "seq">);
   }
 
+  async emitConfidenceChange(level: ConfidenceChangeEvent["level"], iteration: number): Promise<void> {
+    await this.append({
+      kind: "confidence_change",
+      level,
+      iteration,
+    } as Omit<ConfidenceChangeEvent, "ts" | "seq">);
+  }
+
+  async emitIterationStart(iteration: number, maxIterations: number): Promise<void> {
+    await this.append({
+      kind: "iteration_start",
+      iteration,
+      maxIterations,
+    } as Omit<IterationStartEvent, "ts" | "seq">);
+  }
+
   async close(): Promise<void> {
     if (this.heartbeat) {
       clearInterval(this.heartbeat);
@@ -507,6 +577,10 @@ export interface LogLine {
   highValue: boolean;
   inFlight: boolean;
   details?: string[];
+  // Timestamp used by thinking entries to drive the live elapsed timer.
+  ts?: string;
+  // Expandable content body: thinking text, tool output, etc.
+  body?: string;
 }
 
 interface ToolShape {
@@ -548,35 +622,101 @@ export async function readRecentLogs(dir: string, count = 8): Promise<LogLine[]>
 
 // Builds a chronological log by walking events in order and emitting
 // one LogLine per tool invocation (at result time, or at call time if
-// still in-flight) plus lifecycle events.
+// still in-flight) plus lifecycle events. Inserts thinking lines to
+// represent gaps between visible events where the LLM is reasoning.
 function buildChronologicalLog(events: AuditEvent[], count: number): LogLine[] {
   const pendingCalls = new Map<string, { tool: string; input: Record<string, unknown> }>();
   const lines: LogLine[] = [];
+  let thinkingStartTs: string | null = null;
+  // Index of the last thinking line pushed to `lines`. Thinking events fire
+  // AFTER the turn's tool_result (message_update is a post-turn event), so the
+  // text belongs to the PREVIOUS thinking gap, not the current one. We
+  // retroactively set body on the already-emitted line.
+  let lastThinkingIdx = -1;
+  let phaseEnded = false;
 
   for (const e of events) {
     if (e.kind === "heartbeat" || e.kind === "usage") continue;
+    if (e.kind === "confidence_change" || e.kind === "iteration_start") continue;
+
+    if (e.kind === "thinking") {
+      // Retroactive: this text is from the turn that just completed.
+      // Overwrite (not append) — later message_update events have more
+      // complete content, so the last one wins.
+      if (lastThinkingIdx >= 0) {
+        lines[lastThinkingIdx].body = e.text;
+      }
+      continue;
+    }
 
     if (e.kind === "tool_call") {
-      // Stash tool name + input for when the result arrives (or for
-      // in-flight rendering if no result appears by end of loop).
+      // Before a visible tool_call, insert a completed thinking line if gap ≥ 1s
+      if (e.tool !== "koan_complete_step" && thinkingStartTs) {
+        const gapMs = new Date(e.ts).getTime() - new Date(thinkingStartTs).getTime();
+        if (gapMs >= 1000) {
+          lines.push({
+            tool: "thinking",
+            summary: formatThinkingDuration(gapMs),
+            highValue: false,
+            inFlight: false,
+          });
+          lastThinkingIdx = lines.length - 1;
+        }
+        thinkingStartTs = null;
+      }
       pendingCalls.set(e.toolCallId, { tool: e.tool, input: e.input });
       continue;
     }
 
     if (e.kind === "tool_result") {
-      if (e.tool === "koan_complete_step") continue;
+      if (e.tool === "koan_complete_step") {
+        pendingCalls.delete(e.toolCallId);
+        continue;
+      }
       const call = pendingCalls.get(e.toolCallId);
       lines.push(formatPairedResult(e, call?.input ?? {}));
       pendingCalls.delete(e.toolCallId);
+      thinkingStartTs = e.ts;
       continue;
     }
 
-    // Lifecycle event.
-    lines.push(formatLifecycleEvent(e));
+    if (
+      e.kind === "phase_start" ||
+      e.kind === "step_transition" ||
+      e.kind === "phase_end"
+    ) {
+      // Flush any pending thinking gap before the lifecycle line.
+      if (thinkingStartTs) {
+        const gapMs = new Date(e.ts).getTime() - new Date(thinkingStartTs).getTime();
+        if (gapMs >= 1000) {
+          lines.push({
+            tool: "thinking",
+            summary: formatThinkingDuration(gapMs),
+            highValue: false,
+            inFlight: false,
+          });
+          lastThinkingIdx = lines.length - 1;
+        }
+        thinkingStartTs = null;
+      }
+      if (e.kind === "phase_end") phaseEnded = true;
+      lines.push(formatLifecycleEvent(e));
+      thinkingStartTs = e.ts;
+    }
+  }
+
+  // Currently-thinking indicator: all tools completed, phase still running
+  if (thinkingStartTs && pendingCalls.size === 0 && !phaseEnded) {
+    lines.push({
+      tool: "thinking",
+      summary: "",
+      highValue: false,
+      inFlight: true,
+      ts: thinkingStartTs,
+    });
   }
 
   // Emit remaining calls without results as in-flight lines.
-  // The ActivityFeed renders the last in-flight line with animated dots.
   for (const [, call] of pendingCalls) {
     if (call.tool === "koan_complete_step") continue;
     lines.push(formatInFlightCall(call.tool, call.input));
@@ -634,6 +774,14 @@ function textStats(text: string): string {
 
 function responseSize(response: string[]): string {
   return textStats(response.join("\n"));
+}
+
+function formatThinkingDuration(ms: number): string {
+  const sec = Math.round(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  const remSec = sec % 60;
+  return remSec > 0 ? `${min}m ${remSec}s` : `${min}m`;
 }
 
 function truncateUnicode(text: string, maxChars: number): string {
@@ -830,3 +978,6 @@ function formatLifecycleEvent(e: PhaseStartEvent | StepTransitionEvent | PhaseEn
       return { tool: "phase", summary: e.detail ? `${e.outcome} · ${e.detail}` : e.outcome, highValue: false, inFlight: false };
   }
 }
+
+// formatToolInvocation is kept for callers outside buildChronologicalLog.
+void formatToolInvocation;

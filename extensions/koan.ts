@@ -86,6 +86,9 @@ export default function koan(pi: ExtensionAPI): void {
     );
     await eventLog.open();
 
+    // Make the event log available to tools (e.g. koan_set_confidence) via ctx.
+    ctx.eventLog = eventLog;
+
     pi.on("tool_call", (event) => {
       void eventLog.append(extractToolCall(event as {
         toolCallId: string;
@@ -108,6 +111,7 @@ export default function koan(pi: ExtensionAPI): void {
       const msg = event.message as {
         role: string;
         usage?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+        content?: Array<{ type: string; thinking?: string }>;
       };
       if (msg.role === "assistant" && msg.usage) {
         void eventLog.append({
@@ -117,6 +121,17 @@ export default function koan(pi: ExtensionAPI): void {
           cacheRead: msg.usage.cacheRead,
           cacheWrite: msg.usage.cacheWrite,
         });
+      }
+      if (msg.role === "assistant" && Array.isArray(msg.content)) {
+        for (const block of msg.content) {
+          if (block.type === "thinking" && typeof block.thinking === "string" && block.thinking.length > 0) {
+            void eventLog.append({
+              kind: "thinking",
+              text: block.thinking,
+              chars: block.thinking.length,
+            });
+          }
+        }
       }
     });
 
