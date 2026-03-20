@@ -317,3 +317,112 @@
   font-size: var(--font-size-sm);
   color: var(--text-muted);
 }
+
+/* ---- Live layout: activity feed + status sidebar ---- */
+
+/* Row wrapper that replaces main-panel in live (non-interactive) mode.
+ * Handles the header offset so inner .main-panel does not need margin-top. */
+.live-layout {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+  margin-top: calc(3px + var(--header-height));
+}
+
+/* Left column — takes all remaining width, scroll contained within. */
+.live-main {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Cancel the top margin when main-panel lives inside live-main
+ * (the live-layout wrapper already provides the header offset). */
+.live-main > .main-panel {
+  margin-top: 0;
+}
+
+/* ---- Status sidebar ---- */
+
+.status-sidebar {
+  width: 200px;
+  flex-shrink: 0;
+  background: var(--bg-elevated);
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  padding: var(--gap-md);
+}
+
+.sidebar-heading {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: var(--gap-md);
+}
+
+.sidebar-section {
+  margin-bottom: var(--gap-md);
+}
+
+.sidebar-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-ghost);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: var(--gap-xs);
+}
+
+/* Five-segment confidence bar */
+.sidebar-segments {
+  display: flex;
+  gap: 3px;
+  margin-bottom: var(--gap-xs);
+}
+
+.sidebar-segment {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  transition: background 300ms ease;
+}
+
+/* Value line beneath a segment bar or dots */
+.sidebar-value {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+/* Four-dot iteration indicator */
+.sidebar-dots {
+  display: flex;
+  gap: 4px;
+  margin-bottom: var(--gap-xs);
+}
+
+.sidebar-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  transition: background 300ms ease;
+}
+
+.sidebar-divider {
+  height: 1px;
+  background: var(--border);
+  margin: var(--gap-md) 0;
+}
+
+.sidebar-summary {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
