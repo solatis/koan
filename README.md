@@ -1,72 +1,99 @@
-# Koan Pi Package
+# Koan
 
-## Overview
+Koan is a deterministic planning pipeline for the pi coding agent. It takes a
+conversation describing a coding task and produces working code — through a
+structured sequence of isolated LLM subagents, each with a narrow, auditable
+responsibility.
 
-Koan is an opinionated planning workflow extension for the pi coding agent. It constrains model behavior with deterministic phase orchestration, explicit tool boundaries, and durable file-backed state so planning sessions are repeatable and auditable.
+## How it works
 
-## Architecture
+```
+Conversation
+  → Intake (confidence-gated investigation loop)
+  → Decomposer (splits scope into stories)
+  → Review gate (user approves story list)
+  → Story loop:
+      Orchestrator (selects + verifies) → Planner → Executor → repeat
+  → Done
+```
 
-The runtime is split into two modes from the same extension entrypoint:
+Each stage is a separate `pi -p` subprocess. Subagents communicate through
+files in a per-session directory, not through shared memory or sockets. The
+parent driver reads JSON state and exit codes; it never parses LLM output.
 
-- **Parent session mode** registers the `koan_plan` MCP tool and the `/koan-execute`, `/koan-status` commands. The parent orchestrates the full workflow when `koan_plan` is invoked.
-- **Subagent mode** runs role/phase-specific workflows (architect, developer, technical writer, QR decomposer, reviewer, fix mode).
+## Phases
 
-The parent controls progression through plan design, plan code, plan docs, quality review, and iterative fixes. Subagents are isolated processes that communicate through persisted artifacts (`plan.json`, `qr-*.json`) and audit projections.
+| Phase | Role | What it does |
+|-------|------|-------------|
+| **Intake** | `intake` | Reads the conversation, scouts the codebase, asks clarifying questions. Iterates until confident. Writes `context.md`. |
+| **Scout** | `scout` | Narrow codebase investigator. Spawned in parallel by intake, decomposer, and planner via `koan_request_scouts`. |
+| **Decomposer** | `decomposer` | Reads `context.md`, splits work into story sketches. Each story = one pull request. |
+| **Orchestrator** | `orchestrator` | Selects the next story, verifies execution results, routes to retry/done/next. |
+| **Planner** | `planner` | Reads a story sketch, writes a step-by-step implementation plan and code context file. |
+| **Executor** | `executor` | Follows the plan, modifies the codebase, reports what changed. |
 
-## Invoking the Planner
+## Web Dashboard
 
-Call `koan_plan` as an MCP tool — the LLM invokes it when the user asks to plan a complex task. No parameters are needed: the conversation up to that point is automatically exported to `conversation.jsonl` in the plan directory and becomes planning input. The architect then persists a structured **background context** index via koan tools.
+Koan serves a local web dashboard at `http://localhost:{port}` during pipeline
+execution. The dashboard provides:
 
-The planning pipeline runs sequentially:
+- **Activity feed** — real-time tool calls, scout dispatches, thinking traces
+- **Agent monitor** — status, token counts, and recent actions for each
+  running subagent
+- **User interaction** — question forms (intake clarifications), review gates
+  (story approval), model configuration
 
-1. **plan-design** (architect) — reads `conversation.jsonl`, builds structured **background context** (previous conversation(s) + indexes), explores the codebase, writes `plan.json`.
-2. **plan-code** (developer) — reads `plan.json`, populates code intents and changes.
-3. **plan-docs** (technical writer) — reads `plan.json` plus the injected background context snippet, and optionally `conversation.jsonl` for rationale gaps; writes documentation entries.
+The dashboard uses Server-Sent Events for real-time updates. State is polled
+from each subagent's audit projection every 50ms.
 
-Each phase is followed by a QR (quality review) block: decompose → parallel verify → fix loop, up to `MAX_FIX_ITERATIONS`.
+## Key Concepts
 
-### conversation.jsonl + background context
+**Step-first workflow.** Every subagent's first action is calling
+`koan_complete_step`. This forces a tool call before any text output — critical
+because `pi -p` processes exit the moment the LLM produces text without a tool
+call. Task instructions are delivered as the return value of that first call.
 
-`conversation.jsonl` is written once at the start of `koan_plan`. It contains the full session branch as JSONL (one JSON object per line — raw pi `SessionManager` entries, not a plain-text transcript).
+**Directory-as-contract.** Each subagent gets a directory with `task.json`
+(input), `state.json` (live projection), and `events.jsonl` (audit log). The
+spawn command carries only the directory path. No structured data flows through
+CLI flags.
 
-The architect categorically analyzes this file and persists compact markdown **background context** via:
-- `koan_set_background_context`
+**Default-deny permissions.** Every tool call passes through a permission
+fence. Roles cannot use tools outside their scope. Planning roles can only
+write inside the epic directory. The intake phase's Extract step additionally
+blocks scouting and writing tools at the mechanism level.
 
-That context is then injected directly into prompts for planning and QR agents, alongside the conversation.jsonl location.
+**Driver determinism.** The driver (`driver.ts`) reads JSON and exit codes,
+applies routing rules, and spawns the next subagent. It never parses markdown
+or adapts to LLM behavior. Routing decisions are deterministic.
 
-### Prompt + convention sources
+## Configuration
 
-- Subagent system prompts are hard-coded in `src/planner/lib/agent-prompts.ts`.
-- Convention docs stay file-based in `resources/conventions` and are surfaced to prompts via `CONVENTIONS_DIR`.
+Model tiers and scout concurrency are configured via the web UI at pipeline
+start, then saved to `~/.koan/config.json`:
 
-### Slash commands
+```json
+{
+  "modelTiers": {
+    "strong": "claude-opus-4-5",
+    "standard": "claude-sonnet-4-5",
+    "cheap": "claude-haiku-4-5"
+  },
+  "scoutConcurrency": 4
+}
+```
 
-| Command | Description |
-|---|---|
-| `/koan-execute` | Execute a koan plan (not yet implemented) |
-| `/koan-status` | Show current workflow phase |
+Roles map to tiers: intake/decomposer/orchestrator/planner → strong,
+executor → standard, scout → cheap.
 
-## Design Decisions
+## Architecture Documentation
 
-Key design choices that shape implementation:
-
-- **Inversion of control**: TypeScript orchestration code drives agent behavior; models do not self-route workflow steps.
-- **Tool-call-driven transitions**: step progression happens via `koan_complete_step` tool calls, not conversational chaining.
-- **Default-deny permissions**: each phase explicitly allowlists tools; unknown tool/phase access is blocked.
-- **Disk-backed mutations**: planning mutations are immediately persisted with atomic writes instead of deferred finalize steps.
-- **Need-to-know prompts**: each subagent only receives the minimum context needed for its task.
-- **Injected background context**: each workflow step prompt prepends the same `<background_context_bundle>` snippet containing conversation path + compact markdown context.
-- **Ephemeral runtime workspace**: intermediate subagent logs/state live in a mkdtemp workspace and are removed on plan completion and session shutdown.
-
-## Invariants
-
-The workflow depends on these invariants:
-
-- Planning phases must block direct `edit`/`write` tools.
-- Tool failures must throw errors (not return soft error payloads).
-- Cross-reference integrity in the plan must validate before progression.
-- MUST-severity QR failures remain blocking even as lower-severity checks de-escalate in later fix iterations.
-
-## Boundaries
-
-Current scope focuses on planning and QR orchestration. `/koan-execute` is intentionally not implemented yet.
+- **[docs/architecture.md](./docs/architecture.md)** — core invariants,
+  design principles, pitfalls
+- **[docs/subagents.md](./docs/subagents.md)** — spawn lifecycle, step-first
+  workflow, permissions, model tiers
+- **[docs/ipc.md](./docs/ipc.md)** — file-based IPC between subagent and parent
+- **[docs/state.md](./docs/state.md)** — driver state machine, story lifecycle,
+  routing rules
+- **[docs/intake-loop.md](./docs/intake-loop.md)** — confidence-gated intake
+  loop, prompt engineering principles
