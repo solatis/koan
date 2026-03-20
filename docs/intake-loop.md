@@ -230,7 +230,7 @@ Both events are folded into the `state.json` projection:
 - `confidence_change` → `intakeConfidence`, `intakeIteration`
 - `iteration_start` → `intakeIteration`
 
-The web server polls `state.json` every 500ms for each active agent. When it
+The web server polls `state.json` every 50ms for each active agent. When it
 detects a change in `intakeConfidence` or `intakeIteration`, it pushes an
 `intake-progress` SSE event to connected browser clients. The event payload
 includes both the `confidence` string and the `iteration` number, allowing the
