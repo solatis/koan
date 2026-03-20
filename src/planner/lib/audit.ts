@@ -601,7 +601,12 @@ const KOAN_SHAPES: Record<string, ToolShape> = {
   koan_complete_story: { keys: ["story_id"], highValue: true },
   koan_retry_story: { keys: ["story_id", "failure_summary"], freeform: ["failure_summary"], highValue: true },
   koan_skip_story: { keys: ["story_id", "reason"], freeform: ["reason"], highValue: true },
-  koan_ask_question: { keys: ["questions"], arrays: ["questions"], highValue: true },
+  koan_ask_question: {
+    keys: ["id", "question", "context", "options", "multi", "recommended"],
+    arrays: ["options"],
+    freeform: ["question", "context"],
+    highValue: true,
+  },
   koan_request_scouts: { keys: [], highValue: true },
 };
 
@@ -980,6 +985,3 @@ function formatLifecycleEvent(e: PhaseStartEvent | StepTransitionEvent | PhaseEn
       return { tool: "phase", summary: e.detail ? `${e.outcome} · ${e.detail}` : e.outcome, highValue: false, inFlight: false };
   }
 }
-
-// formatToolInvocation is kept for callers outside buildChronologicalLog.
-void formatToolInvocation;

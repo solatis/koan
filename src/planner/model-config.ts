@@ -7,7 +7,7 @@ import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { ALL_MODEL_TIERS, isModelTier, type ModelTier } from "./model-phase.js";
+import { ALL_MODEL_TIERS, isModelTier, type ModelTier } from "./types.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("model-config");

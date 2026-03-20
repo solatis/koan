@@ -20,6 +20,7 @@ export interface AskOption {
 export interface AskQuestion {
   id: string;
   question: string;
+  context?: string;
   options: AskOption[];
   multi?: boolean;
   recommended?: number;
@@ -108,7 +109,7 @@ export type AnswerElement = AskSelection & { questionId: string };
 
 export interface AnswerResult {
   cancelled: boolean;
-  answers: AnswerElement[];
+  answer: AnswerElement;
 }
 
 // ---------------------------------------------------------------------------
@@ -155,7 +156,7 @@ export interface NotificationEvent {
 
 export interface AskEvent {
   requestId: string;
-  questions: AskQuestion[];
+  question: AskQuestion;
 }
 
 export interface ReviewEvent {
@@ -257,7 +258,7 @@ export interface WebServerHandle {
 
   // Blocking input methods
   requestReview(stories: ReviewStory[], signal?: AbortSignal): Promise<ReviewResult>;
-  requestAnswer(questions: AskQuestion[], signal: AbortSignal): Promise<AnswerResult>;
+  requestAnswer(question: AskQuestion, signal: AbortSignal): Promise<AnswerResult>;
   requestModelConfig(): Promise<void>;
 
   // Lifecycle

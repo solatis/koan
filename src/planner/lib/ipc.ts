@@ -12,7 +12,8 @@ import * as crypto from "node:crypto";
 
 // -- Scout types --
 
-export interface ScoutTask {
+/** IPC-level scout request: id/role/prompt fields sent by the LLM-facing tool. */
+export interface ScoutRequest {
   id: string;     // Unique task ID, e.g. "auth-libs"
   role: string;   // Custom role description for the scout
   prompt: string; // What the scout should find
@@ -26,21 +27,18 @@ export interface ScoutResponse {
 // -- Ask types --
 
 export interface AskQuestionPayload {
-  questions: Array<{
-    id: string;
-    question: string;
-    options: Array<{ label: string }>;
-    multi?: boolean;
-    recommended?: number;
-  }>;
+  id: string;
+  question: string;
+  context?: string;
+  options: Array<{ label: string }>;
+  multi?: boolean;
+  recommended?: number;
 }
 
 export interface AskAnswerPayload {
-  answers: Array<{
-    id: string;
-    selectedOptions: string[];
-    customInput?: string;
-  }>;
+  id: string;
+  selectedOptions: string[];
+  customInput?: string;
 }
 
 export interface AskResponse {
@@ -64,7 +62,7 @@ export interface ScoutIpcFile {
   type: "scout-request";
   id: string;
   createdAt: string;
-  scouts: ScoutTask[];
+  scouts: ScoutRequest[];
   response: ScoutResponse | null;
 }
 
@@ -129,7 +127,7 @@ export function createAskRequest(payload: AskQuestionPayload): AskIpcFile {
   };
 }
 
-export function createScoutRequest(scouts: ScoutTask[]): ScoutIpcFile {
+export function createScoutRequest(scouts: ScoutRequest[]): ScoutIpcFile {
   return {
     type: "scout-request",
     id: crypto.randomUUID(),

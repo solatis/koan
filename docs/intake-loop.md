@@ -43,10 +43,9 @@ Steps 1 and 5 execute exactly once.
 
 ### `getNextStep()` hook
 
-The `BasePhase` class previously used a hardcoded linear counter:
-`step+1` until `totalSteps`, then `null` (done). This was extended with a
-`getNextStep(currentStep)` hook that subclasses override to implement
-non-linear flows.
+`BasePhase` provides a default linear counter: `step+1` until `totalSteps`,
+then `null` (done). Subclasses override `getNextStep(currentStep)` to
+implement non-linear flows.
 
 ```typescript
 // Default: strictly linear.
@@ -109,8 +108,8 @@ UI can distinguish loop iterations.
 
 ### Why a separate tool, not a parameter
 
-An earlier design considered adding `confidence` as an optional parameter to
-`koan_complete_step`. This was rejected for two reasons:
+`koan_set_confidence` is a dedicated tool rather than a parameter on
+`koan_complete_step` for two reasons:
 
 1. **Optional parameters are skippable.** LLMs frequently omit optional
    parameters, especially when under token pressure. A separate tool call is
@@ -176,21 +175,42 @@ infinite loops if the LLM consistently declares non-certain confidence.
 
 ## Step-Aware Permission Gating
 
-### Why step 1 is mechanically read-only
+The permission fence accepts an optional `intakeStep` parameter and blocks
+specific tools during steps where they would undermine the workflow. Two
+steps have mechanical tool restrictions:
 
-Step 1 (Extract) should only read the conversation. Before this redesign, step
-isolation was enforced only through prompt instructions ("do NOT call
-koan_request_scouts in this step"). The LLM frequently violated this by
-frontloading all work into step 1, leading to duplicate scout requests in
-later steps.
+### Step 1 (Extract): read-only
 
-The new design adds a mechanical layer: `checkPermission()` accepts an
-optional `intakeStep` parameter and blocks a defined set of tools when
+Step 1 should only read the conversation. Without a mechanical gate, the LLM
+frontloads all work into step 1, leading to duplicate scout requests in
+later steps and bypassing the step-first workflow pattern.
+
+`checkPermission()` blocks all side-effecting tools when
 `role === "intake" && intakeStep === 1`:
 
 ```
 koan_request_scouts, koan_ask_question, koan_set_confidence, write, edit
 ```
+
+### Step 3 (Deliberate): no confidence assessment
+
+Step 3 is for enumerating knowns/unknowns and asking questions. Confidence
+assessment belongs exclusively in step 4 (Reflect), where the LLM must
+generate verification questions and answer them with evidence before declaring
+confidence.
+
+Without this gate, the LLM calls `koan_set_confidence("high")` during
+Deliberate — mentally committing to completion before entering verification.
+This anchors the subsequent Reflect step toward "certain," undermining the
+verification loop.
+
+`checkPermission()` blocks `koan_set_confidence` when
+`role === "intake" && intakeStep === 3`.
+
+The gate enforces temporal separation between deliberation (asking/deciding
+what to ask) and reflection (verifying completeness).
+
+### Step propagation
 
 The current step is propagated via `ctx.intakeStep`, kept in sync by the
 `onStepUpdated()` hook in `IntakePhase`:
@@ -208,17 +228,18 @@ current active step at tool call time.
 
 ### Prompt + enforcement is not redundant
 
-The prompt still tells the LLM not to use side-effecting tools in step 1.
-The permission gate is a fallback that catches prompt non-compliance. Together:
-the prompt prevents the behavior; the gate catches it when the prompt fails.
-Neither alone is sufficient — the prompt can be ignored; the gate with no
-prompt would produce confusing "blocked" errors with no context for the LLM.
+The prompt tells the LLM not to use side-effecting tools in step 1 and not
+to assess confidence in step 3. The permission gates are fallbacks that catch
+prompt non-compliance. Together: the prompt prevents the behavior; the gate
+catches it when the prompt fails. Neither alone is sufficient — the prompt can
+be ignored; the gate with no prompt would produce confusing "blocked" errors
+with no context for the LLM.
 
 ---
 
 ## Audit Events and SSE Propagation
 
-Two new audit event types support UI visualization of confidence and iteration:
+Two audit event types support UI visualization of confidence and iteration:
 
 | Event | Emitted by | When |
 |-------|-----------|------|
@@ -252,7 +273,7 @@ mechanisms that address specific failure modes.
 ### Prompt Chaining over Stepwise (Scout / Deliberate / Reflect as separate steps)
 
 A monolithic "investigate" step — containing scouting, deliberation, and
-reflection in sequence within a single prompt — was rejected in favor of three
+reflection in sequence within a single prompt — is rejected in favor of three
 separate `koan_complete_step` calls.
 
 The risk with a monolithic step is **simulated refinement**: the LLM
@@ -286,6 +307,43 @@ LLM to re-state updated understanding before forming follow-up questions,
 preventing the "lost in the middle" problem where findings from early scout
 tool results are effectively forgotten by the time questions are formulated.
 
+### Anticipatory Reflection in Deliberate (downstream impact assessment)
+
+Between the Thread-of-Thought enumeration (Phase A) and question formulation
+(Phase B), the Deliberate step includes a downstream impact assessment
+(Phase A.5). For each unknown, the LLM must assess: if this assumption is
+wrong, what happens to downstream planning? Could it split or merge stories?
+Would the executor hit a surprise?
+
+Each unknown is classified as ASK (user input needed), SCOUT (follow-up can
+resolve), or SAFE (genuinely an implementation detail). This is the
+Anticipatory Reflection pattern: before deciding on an action (ask or skip),
+anticipate the consequences of getting it wrong.
+
+Without this step, the LLM classifies unknowns as "implementation details"
+without considering downstream consequences, avoiding questions it should ask.
+The explicit impact assessment makes the cost of wrong assumptions concrete
+and forces the LLM to justify each skip.
+
+### Default-ask question framing (preventing question avoidance)
+
+The Deliberate step frames question-asking as the default, with skipping
+requiring justification. The criteria use "Default: ask. You may skip a
+question ONLY if ALL of these are true" — three restrictive conditions that
+require the unknown to be purely about implementation, incapable of changing
+story boundaries, and unambiguous.
+
+This inverts the typical LLM bias. LLMs prefer advancing the workflow over
+pausing it, and will exploit any "skip if" framing by finding reasons to skip.
+By making "ask" the default and "skip" the exception requiring triple
+justification, the prompt aligns the path of least resistance with the desired
+behavior.
+
+The framing also explicitly positions the user as a collaborator ("The user is
+your collaborator, not an interruption") and emphasizes that intake is the only
+phase where the user can be consulted ("The decomposer cannot ask questions
+later — this is the only chance to get clarification").
+
 ### Chain-of-Verification in Reflect (evidence-grounded self-assessment)
 
 The Reflect step instructs the LLM to generate 3–5 verification questions
@@ -315,8 +373,8 @@ confidence level:
 - **Positive:** "certain means ALL of these are true" (four specific
   conditions about scope, codebase knowledge, user decisions, and story
   immutability)
-- **Negative:** "you are NOT certain if" (four failure modes that preclude
-  certainty)
+- **Negative:** "you are NOT certain if ANY of these are true" (seven
+  failure modes that preclude certainty)
 
 This is the Contrastive Chain-of-Thought pattern. A single positive definition
 ("certain means you have everything you need") leaves the LLM to interpret what
@@ -324,6 +382,23 @@ This is the Contrastive Chain-of-Thought pattern. A single positive definition
 confidence to "certain" prematurely to exit the loop faster (token-saving
 behavior). The negative examples make the failure modes concrete and explicit,
 raising the bar for claiming certainty.
+
+The negative checklist includes conditions that require positive evidence
+(questions asked, assumptions verified) rather than the absence of negative
+signals. The critical first condition — "you have not asked the user any
+questions in this or any previous round" — is mechanically non-vacuous: it is
+true or false based on whether `koan_ask_question` was called, not on a
+judgment call the LLM can rationalize. This prevents the checklist from being
+vacuously satisfied when no user interaction has occurred.
+
+### Stakes framing (EmotionPrompt for accountability)
+
+The system prompt includes accountability-invoking language: "A question you
+don't ask is an answer you're making up." This is the EmotionPrompt pattern
+(self-monitoring theory variant), which increases truthfulness and factual
+accuracy by invoking social accountability. The framing connects intake
+shortcuts directly to downstream failures, making the cost of skipping
+questions concrete rather than abstract.
 
 ### Iteration-aware guidance (first iteration vs. refinement)
 
@@ -339,16 +414,31 @@ on the gaps surfaced by reflection. The iteration number is passed as a
 parameter to `intakeStepGuidance()`, which branches on it to produce the
 appropriate framing.
 
+### Iteration expectations (soft minimum via GIoT)
+
+The Reflect step includes soft guidance that round 1 should rarely produce
+"certain" confidence, and that confidence should be capped at "high" if no
+questions have been asked. This is inspired by the GIoT (Guided Iteration of
+Thought) pattern, which forces a minimum number of iterations to ensure
+adequate exploration.
+
+The guidance is soft rather than mechanically enforced (unlike the hard
+`MAX_ITERATIONS` cap) to avoid forcing unnecessary iterations on genuinely
+trivial tasks. It provides directional pressure: the LLM can still declare
+"certain" on round 1, but it must do so against explicit guidance that this
+is unusual. This makes premature exit a deliberate, justified choice rather
+than the path of least resistance.
+
 ---
 
 ## Pitfalls
 
 ### Don't put confidence in koan_complete_step's `thoughts` parameter
 
-`thoughts` is for internal chain-of-thought reasoning. A previous design
-considered parsing confidence from the thoughts string. This violates the
-driver determinism invariant: the driver never parses free-text. Confidence
-must flow through a structured tool call with a typed parameter.
+`thoughts` is for internal chain-of-thought reasoning. Parsing confidence from
+the thoughts string would violate the driver determinism invariant: the driver
+never parses free-text. Confidence must flow through a structured tool call
+with a typed parameter.
 
 ### Don't rely on the Reflect prompt alone to enforce koan_set_confidence
 
@@ -377,12 +467,30 @@ it were available to other roles, they could set `ctx.intakeConfidence`
 spuriously, affecting the intake loop's behavior if intake is running
 concurrently (which it isn't currently, but could be in the future).
 
+### Don't allow koan_set_confidence during Deliberate (step 3)
+
+`koan_set_confidence` is blocked during step 3 via `STEP_3_BLOCKED_TOOLS`.
+Without this gate, the LLM sets confidence during Deliberate, anchoring the
+subsequent Reflect step toward "certain" and undermining the verification
+loop. Confidence assessment must happen only during Reflect (step 4), after
+the LLM has generated and answered verification questions.
+
+### Don't make the "NOT certain" checklist vacuously satisfiable
+
+Every condition in the negative confidence checklist must be non-vacuously
+testable — it must be possible for the condition to fire based on observable
+facts. Conditions framed as "a user answer raised a new question" are
+vacuously false when no questions have been asked (no answers exist, so no
+follow-up can be triggered). Prefer conditions that require positive evidence:
+"you have not asked any questions" is mechanically true or false based on
+whether `koan_ask_question` was called.
+
 ### Don't skip `ctx.intakeStep` sync in onStepUpdated
 
 The permission gate reads `ctx.intakeStep` at tool call time. If
 `onStepUpdated()` were not called on loop-back (step 4 → step 2), step 2
 would execute with `ctx.intakeStep = 4`, and the step-1 gate would not fire
-(step 4 ≠ 1). The step 1 gate is specifically `intakeStep === 1`. Only step 1
-needs gating, so the only critical sync is the boot → step 1 transition. But
-keeping `ctx.intakeStep` accurate at all times makes the invariant easier to
-reason about and avoids subtle bugs if the gating logic is ever extended.
+(step 4 ≠ 1). Steps 1 and 3 both need gating (step 1 blocks side-effecting
+tools; step 3 blocks `koan_set_confidence`), so keeping `ctx.intakeStep`
+accurate at all times is essential for correct gate behavior across loop
+iterations.

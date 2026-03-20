@@ -51,3 +51,10 @@ export type StoryStatus =
 // Epic lifecycle phases (driver-managed, not LLM-visible directly).
 // Note: "scouting" is intentionally absent — scouts run within other phases via IPC.
 export type EpicPhase = "intake" | "decomposition" | "review" | "executing" | "completed";
+
+// All model tiers as a runtime-iterable array.
+export const ALL_MODEL_TIERS: readonly ModelTier[] = ["strong", "standard", "cheap"];
+
+export function isModelTier(value: unknown): value is ModelTier {
+  return typeof value === "string" && ALL_MODEL_TIERS.includes(value as ModelTier);
+}

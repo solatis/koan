@@ -54,8 +54,8 @@ field:
 
 ### `ask` — User questions
 
-The subagent needs human input. The request contains questions with options;
-the response contains the user's selections.
+The subagent needs human input. The request contains one question with
+options; the response contains the user's selection.
 
 ```typescript
 interface AskIpcFile {
@@ -63,13 +63,12 @@ interface AskIpcFile {
   id: string;                    // UUID, for response correlation
   createdAt: string;
   payload: {
-    questions: Array<{
-      id: string;
-      question: string;
-      options: Array<{ label: string }>;
-      multi?: boolean;
-      recommended?: number;      // 0-indexed
-    }>;
+    id: string;
+    question: string;
+    context?: string;            // optional multi-paragraph background
+    options: Array<{ label: string }>;
+    multi?: boolean;
+    recommended?: number;        // 0-indexed
   };
   response: AskResponse | null;  // null = pending, non-null = answered
 }
@@ -189,30 +188,28 @@ interface ScoutSpawnContext {
 ## Ask Flow
 
 ```
-intake-llm calls koan_ask_question({ questions: [...] })
+intake-llm calls koan_ask_question({ id, question, context?, options, ... })
   → tool writes AskIpcFile { type: "ask", response: null }
   → tool enters 500ms poll loop (LLM turn blocked)
 
 ipc-responder detects { type: "ask", response: null }
-  → appends "Other" option to each question
-  → calls webServer.requestAnswer(questions, signal)
+  → appends "Other" option to the question
+  → calls webServer.requestAnswer(question, signal)
     → creates Promise in pendingInputs map
     → SSE "ask" event → browser renders QuestionForm
     → user fills form, clicks Submit
     → POST /api/answer → resolves Promise
-  → maps answers to AskAnswerPayload
+  → maps answer to AskAnswerPayload
   → writes AskResponse to ipc.json (atomic)
 
 tool poll detects response !== null
   → breaks loop
   → deleteIpcFile(dir)
-  → formats answers as structured text
+  → formats answer as structured text
   → returns to LLM
 ```
 
-The "Other" option is appended server-side — the LLM never includes it. On
-the result side, `removeRecommendedTag()` strips the ` (Recommended)` display
-suffix before building selection results.
+The "Other" option is appended server-side — the LLM never includes it.
 
 ---
 

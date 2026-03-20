@@ -4,56 +4,42 @@ import { submitAnswers } from '../../lib/api.js'
 import { QuestionCard } from './QuestionCard.jsx'
 
 export function QuestionForm({ token }) {
-  const { requestId, payload: questions } = useStore(s => s.pendingInput)
-  const [selections, setSelections] = useState(() => new Array(questions.length).fill(null))
+  const { requestId, payload: question } = useStore(s => s.pendingInput)
+  const [selection, setSelection] = useState(null)
 
-  const allAnswered = selections.every(s => s !== null && (s.selectedOptions?.length > 0 || s.customInput))
-  const answeredCount = selections.filter(s => s !== null && (s.selectedOptions?.length > 0 || s.customInput)).length
+  const answered = selection !== null && (selection.selectedOptions?.length > 0 || selection.customInput)
 
-  function updateSelection(index, selection) {
-    setSelections(prev => {
-      const next = [...prev]
-      next[index] = selection
-      return next
-    })
-  }
-
-  function acceptDefaults() {
-    const answers = questions.map((q) => {
-      const idx = q.recommended ?? 0
-      const label = q.options[idx]?.label
-      return { questionId: q.id, selectedOptions: label ? [label] : [] }
-    })
-    submitAnswers({ token, requestId, answers })
+  function acceptDefault() {
+    const idx = question.recommended ?? 0
+    const label = question.options[idx]?.label
+    const answer = {
+      questionId: question.id,
+      selectedOptions: label ? [label] : [],
+    }
+    submitAnswers({ token, requestId, answer })
   }
 
   function submit() {
-    const answers = questions.map((q, i) => ({
-      questionId: q.id,
-      ...(selections[i] || { selectedOptions: [] }),
-    }))
-    submitAnswers({ token, requestId, answers })
+    const answer = {
+      questionId: question.id,
+      ...(selection || { selectedOptions: [] }),
+    }
+    submitAnswers({ token, requestId, answer })
   }
 
   return (
     <div class="phase-inner">
-      <h2 class="phase-heading">A few questions to shape the plan</h2>
-      <div class="count-progress">{answeredCount} of {questions.length} answered</div>
+      <h2 class="phase-heading">A question to shape the plan</h2>
 
-      {questions.map((q, i) => (
-        <QuestionCard
-          key={q.id}
-          question={q}
-          index={i}
-          total={questions.length}
-          onSelect={(sel) => updateSelection(i, sel)}
-        />
-      ))}
+      <QuestionCard
+        question={question}
+        onSelect={setSelection}
+      />
 
       <div class="form-actions">
-        <button class="btn btn-secondary" onClick={acceptDefaults}>Accept All Defaults</button>
-        <button class="btn btn-primary" disabled={!allAnswered} onClick={submit}>Submit Answers</button>
-        {!allAnswered && <span class="form-helper">{questions.length - answeredCount} remaining</span>}
+        <button class="btn btn-secondary" onClick={acceptDefault}>Use Default</button>
+        <button class="btn btn-primary" disabled={!answered} onClick={submit}>Submit Answer</button>
+        {!answered && <span class="form-helper">Choose an option or provide custom input</span>}
       </div>
     </div>
   )

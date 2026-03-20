@@ -200,6 +200,23 @@
   margin-bottom: var(--gap-sm);
 }
 
+.question-context {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-md);
+  color: var(--text-muted);
+  line-height: 1.6;
+  margin-bottom: var(--gap-md);
+}
+
+.question-context p {
+  margin: 0 0 var(--gap-sm) 0;
+  white-space: pre-wrap;
+}
+
+.question-context p:last-child {
+  margin-bottom: 0;
+}
+
 .question-text {
   font-family: var(--font-sans);
   font-size: 18px;

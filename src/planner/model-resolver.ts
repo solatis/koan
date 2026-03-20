@@ -3,7 +3,7 @@
 // Returns undefined when no config exists so the caller omits --model,
 // preserving pi's current active model as the implicit fallback.
 
-import { ROLE_MODEL_TIER, type SubagentRole } from "./model-phase.js";
+import { ROLE_MODEL_TIER, type SubagentRole } from "./types.js";
 import { loadModelTierConfig } from "./model-config.js";
 
 export async function resolveModelForRole(role: SubagentRole): Promise<string | undefined> {

@@ -33,9 +33,9 @@ interface IntakeTask extends SubagentTaskBase {
 
 interface ScoutTask extends SubagentTaskBase {
   role: "scout";
-  question: string;           // What to investigate
-  outputFile: string;         // Where to write findings (relative to subagentDir)
-  investigatorRole: string;   // Persona for the scout ("security auditor", etc.)
+  question: string; // What to investigate
+  outputFile: string; // Where to write findings (relative to subagentDir)
+  investigatorRole: string; // Persona for the scout ("security auditor", etc.)
 }
 
 interface DecomposerTask extends SubagentTaskBase {
@@ -56,12 +56,16 @@ interface PlannerTask extends SubagentTaskBase {
 interface ExecutorTask extends SubagentTaskBase {
   role: "executor";
   storyId: string;
-  retryContext?: string;      // Failure summary from previous attempt
+  retryContext?: string; // Failure summary from previous attempt
 }
 
 type SubagentTask =
-  | IntakeTask | ScoutTask | DecomposerTask
-  | OrchestratorTask | PlannerTask | ExecutorTask;
+  | IntakeTask
+  | ScoutTask
+  | DecomposerTask
+  | OrchestratorTask
+  | PlannerTask
+  | ExecutorTask;
 ```
 
 ### Lifecycle
@@ -87,13 +91,13 @@ The previous design passed task configuration as 9 CLI flags
 
 Problems this caused:
 
-| Problem | Example |
-|---------|---------|
+| Problem                      | Example                                                                                                                                            |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Flat namespace collision** | `--koan-role` (pipeline role: "scout") vs `--koan-scout-role` (investigator persona: "security auditor") — two unrelated concepts sharing a prefix |
-| **Unstructured** | Role-specific fields mixed with common fields; `extraFlags: string[]` escape hatch needed for extensibility |
-| **Size limits** | `--koan-retry-context` carries multi-paragraph failure summaries — visible in `ps aux`, subject to `ARG_MAX` |
-| **Uninspectable** | After a crash, reconstructing what a subagent was asked to do requires parsing process arguments from logs |
-| **Inconsistent** | Runtime communication uses files (ipc.json); observation uses files (state.json); but task input used CLI args |
+| **Unstructured**             | Role-specific fields mixed with common fields; `extraFlags: string[]` escape hatch needed for extensibility                                        |
+| **Size limits**              | `--koan-retry-context` carries multi-paragraph failure summaries — visible in `ps aux`, subject to `ARG_MAX`                                       |
+| **Uninspectable**            | After a crash, reconstructing what a subagent was asked to do requires parsing process arguments from logs                                         |
+| **Inconsistent**             | Runtime communication uses files (ipc.json); observation uses files (state.json); but task input used CLI args                                     |
 
 ---
 
@@ -160,11 +164,11 @@ parameters live in `task.json` and flow into step guidance via the phase class.
 
 `dispatchPhase` validates required `task.json` fields before instantiating:
 
-| Role | Required fields | Failure if missing |
-|------|----------------|-------------------|
-| scout | `question`, `outputFile` | Step 1 guidance has no assignment → LLM outputs confused text → exits |
-| planner | `storyId` | Malformed paths like `stories//plan/plan.md` |
-| executor | `storyId` | Same path issue |
+| Role     | Required fields          | Failure if missing                                                    |
+| -------- | ------------------------ | --------------------------------------------------------------------- |
+| scout    | `question`, `outputFile` | Step 1 guidance has no assignment → LLM outputs confused text → exits |
+| planner  | `storyId`                | Malformed paths like `stories//plan/plan.md`                          |
+| executor | `storyId`                | Same path issue                                                       |
 
 ---
 
@@ -194,16 +198,17 @@ LLM calls koan_complete_step:
 
 `BasePhase` provides three overridable hooks for non-linear flows:
 
-| Hook | Purpose | Default |
-|------|---------|---------|
-| `getNextStep(step)` | Returns next step number or null (done). **Must be pure.** | Linear: step+1, null at totalSteps |
-| `onLoopBack(from, to)` | Side effects of backward transitions: state resets, counter increments, event emission. Async — properly awaited. | no-op |
-| `validateStepCompletion(step)` | Pre-condition check before advancing. Returns null to allow or an error string to block (returned as tool result so LLM can fix it). | null (always allow) |
+| Hook                           | Purpose                                                                                                                              | Default                            |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------- |
+| `getNextStep(step)`            | Returns next step number or null (done). **Must be pure.**                                                                           | Linear: step+1, null at totalSteps |
+| `onLoopBack(from, to)`         | Side effects of backward transitions: state resets, counter increments, event emission. Async — properly awaited.                    | no-op                              |
+| `validateStepCompletion(step)` | Pre-condition check before advancing. Returns null to allow or an error string to block (returned as tool result so LLM can fix it). | null (always allow)                |
 
 `IntakePhase` overrides all three to implement a confidence-gated loop over
 steps 2–4. See [intake-loop.md](./intake-loop.md) for details.
 
 Key invariants:
+
 - **`getNextStep()` is pure** — it only returns a step number. Mutation belongs in `onLoopBack()`.
 - **`step_transition` is NOT emitted at `begin()`** — it fires when step 1
   guidance is first returned, so the event log reflects when the LLM actually
@@ -269,14 +274,14 @@ constrains intended use; enforcement does not.
 
 ### Role permission matrix
 
-| Role | koan tools | write/edit | notes |
-|------|-----------|------------|-------|
-| **intake** | `koan_complete_step`, `koan_ask_question`, `koan_request_scouts`, `koan_set_confidence` | path-scoped to epicDir | `koan_set_confidence` blocked in step 1 (Extract) |
-| **scout** | `koan_complete_step` | path-scoped to epicDir | No `koan_ask_question` (no user interaction). No `koan_request_scouts` (no nested scouts). |
-| **decomposer** | `koan_complete_step`, `koan_ask_question`, `koan_request_scouts` | path-scoped to epicDir | — |
-| **orchestrator** | `koan_complete_step`, `koan_ask_question`, `koan_select_story`, `koan_complete_story`, `koan_retry_story`, `koan_skip_story` | path-scoped to epicDir | No `koan_request_scouts` — orchestrator uses bash for verification |
-| **planner** | `koan_complete_step`, `koan_ask_question`, `koan_request_scouts` | path-scoped to epicDir | — |
-| **executor** | `koan_complete_step`, `koan_ask_question` | **unrestricted** | Must modify the actual codebase |
+| Role             | koan tools                                                                                                                   | write/edit             | notes                                                                                      |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------ |
+| **intake**       | `koan_complete_step`, `koan_ask_question`, `koan_request_scouts`, `koan_set_confidence`                                      | path-scoped to epicDir | `koan_set_confidence` blocked in step 1 (Extract)                                          |
+| **scout**        | `koan_complete_step`                                                                                                         | path-scoped to epicDir | No `koan_ask_question` (no user interaction). No `koan_request_scouts` (no nested scouts). |
+| **decomposer**   | `koan_complete_step`, `koan_ask_question`, `koan_request_scouts`                                                             | path-scoped to epicDir | —                                                                                          |
+| **orchestrator** | `koan_complete_step`, `koan_ask_question`, `koan_select_story`, `koan_complete_story`, `koan_retry_story`, `koan_skip_story` | path-scoped to epicDir | No `koan_request_scouts` — orchestrator uses bash for verification                         |
+| **planner**      | `koan_complete_step`, `koan_ask_question`, `koan_request_scouts`                                                             | path-scoped to epicDir | —                                                                                          |
+| **executor**     | `koan_complete_step`, `koan_ask_question`                                                                                    | **unrestricted**       | Must modify the actual codebase                                                            |
 
 ### Path scoping
 
@@ -295,11 +300,11 @@ the write is allowed (cannot scope-check without context).
 Koan has 6 roles, but they cluster into 3 capability bands. Configuring 3
 model names is simpler than 6 and matches the natural grouping:
 
-| Tier | Roles | Why this tier |
-|------|-------|--------------|
-| **strong** | intake, decomposer, orchestrator, planner | Complex multi-step reasoning: investigating ambiguous requirements, splitting work into stories, verifying correctness, producing precise implementation plans |
-| **standard** | executor | Code implementation: reliable tool use and file editing without requiring the deepest reasoning |
-| **cheap** | scout | Narrow codebase investigation: reading files, grepping patterns, writing a focused findings report — no deep reasoning needed |
+| Tier         | Roles                                     | Why this tier                                                                                                                                                  |
+| ------------ | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **strong**   | intake, decomposer, orchestrator, planner | Complex multi-step reasoning: investigating ambiguous requirements, splitting work into stories, verifying correctness, producing precise implementation plans |
+| **standard** | executor                                  | Code implementation: reliable tool use and file editing without requiring the deepest reasoning                                                                |
+| **cheap**    | scout                                     | Narrow codebase investigation: reading files, grepping patterns, writing a focused findings report — no deep reasoning needed                                  |
 
 The mapping is hardcoded in `types.ts` (`ROLE_MODEL_TIER`). Adding a new role
 requires updating that map.
@@ -347,7 +352,7 @@ Scouts are deliberately constrained compared to other roles:
 - **No `koan_ask_question`** — scouts do not ask questions
 - **No `koan_request_scouts`** — scouts do not spawn nested scouts
 - **No IPC responder** — since there is no web server, no IPC responder runs
-- **Single step** — scouts have `totalSteps = 1`; they do one job and exit
+- **Four steps** -- scouts have `totalSteps = 4` (orient -> investigate -> verify -> report). Each step has exactly one cognitive goal, following the "don't give a step multiple cognitive goals" principle from [architecture.md Pitfalls](./architecture.md#pitfalls): separate `koan_complete_step` calls enforce genuinely isolated reasoning and prevent the LLM from sandbagging an earlier step because it already knows a later step is coming
 - **Cheap model** — scouts use the cheapest available model
 - **Parallel execution** — up to 4 scouts run concurrently via bounded pool
 - **Non-fatal failures** — a failed scout does not abort the parent; its task
@@ -378,11 +383,11 @@ After a subagent runs, its directory contains:
 The three JSON files have distinct lifecycles per
 [architecture.md § Directory-as-contract](./architecture.md#6-directory-as-contract):
 
-| File | Writer | Reader | When |
-|------|--------|--------|------|
-| `task.json` | Parent | Child | Once at startup |
-| `state.json` | Child | Parent | Continuous (50ms polling) |
-| `ipc.json` | Both | Both | Per-request (created, answered, deleted) |
+| File         | Writer | Reader | When                                     |
+| ------------ | ------ | ------ | ---------------------------------------- |
+| `task.json`  | Parent | Child  | Once at startup                          |
+| `state.json` | Child  | Parent | Continuous (50ms polling)                |
+| `ipc.json`   | Both   | Both   | Per-request (created, answered, deleted) |
 
 ---
 
@@ -411,14 +416,14 @@ webServer.completeAgent(id);
 `trackSubagent()` poll at 50ms. `registerAgent` polling derives the intake
 sub-phase for the progress bar:
 
-| Step | Pending ask? | Sub-phase |
-|------|-------------|-----------|
-| 1 | — | `"extract"` |
-| 2 | — | `"scout"` |
-| 3 | yes | `"questions"` |
-| 3 | no | `"deliberate"` |
-| 4 | — | `"reflect"` |
-| 5 | — | `"synthesize"` |
+| Step | Pending ask? | Sub-phase      |
+| ---- | ------------ | -------------- |
+| 1    | —            | `"extract"`    |
+| 2    | —            | `"scout"`      |
+| 3    | yes          | `"questions"`  |
+| 3    | no           | `"deliberate"` |
+| 4    | —            | `"reflect"`    |
+| 5    | —            | `"synthesize"` |
 
 Steps 2–4 repeat across iterations; the server additionally reads
 `intakeConfidence` and `intakeIteration` from the audit projection to populate

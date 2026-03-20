@@ -18,7 +18,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { createLogger } from "../../utils/logger.js";
 import type { RuntimeContext } from "../lib/runtime-context.js";
 
-const log = createLogger("Dispatch");
+const log = createLogger("Workflow");
 
 // Registers workflow tools. Called once at init in koan.ts,
 // before pi's _buildRuntime() snapshot. Tool execute callbacks read

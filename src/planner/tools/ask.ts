@@ -2,7 +2,7 @@
 // Both tools use file-based IPC to pause subagent execution and communicate
 // with the parent session, then resume with the response.
 //
-// koan_ask_question  — ask the user a question, get answers
+// koan_ask_question  — ask the user a question, get an answer
 // koan_request_scouts — request parallel codebase scouts, get findings paths
 
 import { promises as fs } from "node:fs";
@@ -20,7 +20,7 @@ import {
   createAskRequest,
   createScoutRequest,
   type AskAnswerPayload,
-  type ScoutTask,
+  type ScoutRequest,
 } from "../lib/ipc.js";
 
 // -- Schemas --
@@ -29,21 +29,18 @@ const OptionItemSchema = Type.Object({
   label: Type.String({ description: "Display label" }),
 });
 
-const QuestionItemSchema = Type.Object({
+const AskParamsSchema = Type.Object({
   id: Type.String({ description: "Question id (e.g. auth, cache, priority)" }),
   question: Type.String({ description: "Question text" }),
+  context: Type.Optional(Type.String({ description: "Optional background/context to help the user answer." })),
   options: Type.Array(OptionItemSchema, {
     description: "Available options. Do not include 'Other'.",
     minItems: 1,
   }),
   multi: Type.Optional(Type.Boolean({ description: "Allow multi-select" })),
   recommended: Type.Optional(
-    Type.Number({ description: "0-indexed recommended option. '(Recommended)' is shown automatically." }),
+    Type.Number({ description: "0-indexed recommended option." }),
   ),
-});
-
-const AskParamsSchema = Type.Object({
-  questions: Type.Array(QuestionItemSchema, { description: "Questions to ask", minItems: 1 }),
 });
 
 type AskParams = Static<typeof AskParamsSchema>;
@@ -62,16 +59,17 @@ type RequestScoutsParams = Static<typeof RequestScoutsSchema>;
 
 // -- Result formatting (ask) --
 
-interface QuestionResult {
+interface AskResult {
   id: string;
   question: string;
+  context?: string;
   options: string[];
   multi: boolean;
   selectedOptions: string[];
   customInput?: string;
 }
 
-function formatSelectionForSummary(result: QuestionResult): string {
+function formatSelectionForSummary(result: AskResult): string {
   const hasSelectedOptions = result.selectedOptions.length > 0;
   const hasCustomInput = Boolean(result.customInput);
 
@@ -89,14 +87,24 @@ function formatSelectionForSummary(result: QuestionResult): string {
   return result.selectedOptions[0] ?? "(no selection)";
 }
 
-function formatQuestionContext(result: QuestionResult, index: number): string {
+function formatQuestionContext(result: AskResult): string {
   const lines: string[] = [
-    `Question ${index + 1} (${result.id})`,
+    `Question (${result.id})`,
     `Prompt: ${result.question}`,
+  ];
+
+  if (result.context?.trim()) {
+    lines.push("Context:");
+    for (const paragraph of result.context.trim().split(/\n\s*\n/u)) {
+      lines.push(`  ${paragraph}`);
+    }
+  }
+
+  lines.push(
     "Options:",
     ...result.options.map((o, i) => `  ${i + 1}. ${o}`),
     "Response:",
-  ];
+  );
 
   const hasSelectedOptions = result.selectedOptions.length > 0;
   const hasCustomInput = Boolean(result.customInput);
@@ -121,27 +129,26 @@ function formatQuestionContext(result: QuestionResult, index: number): string {
   return lines.join("\n");
 }
 
-function buildSessionContent(results: QuestionResult[]): string {
-  const summaryLines = results.map((r) => `${r.id}: ${formatSelectionForSummary(r)}`).join("\n");
-  const contextBlocks = results.map((r, i) => formatQuestionContext(r, i)).join("\n\n");
-  return `User answers:\n${summaryLines}\n\nAnswer context:\n${contextBlocks}`;
+function buildSessionContent(result: AskResult): string {
+  return `User answer:\n${result.id}: ${formatSelectionForSummary(result)}\n\nAnswer context:\n${formatQuestionContext(result)}`;
 }
 
-function buildQuestionResults(
+function buildQuestionResult(
   params: AskParams,
-  answers: AskAnswerPayload["answers"],
-): QuestionResult[] {
-  return params.questions.map((q) => {
-    const answer = answers.find((a) => a.id === q.id) ?? { id: q.id, selectedOptions: [] };
-    return {
-      id: q.id,
-      question: q.question,
-      options: q.options.map((o) => o.label),
-      multi: q.multi ?? false,
-      selectedOptions: answer.selectedOptions,
-      customInput: answer.customInput,
-    };
-  });
+  answer: AskAnswerPayload | null,
+): AskResult {
+  const selectedOptions = answer?.id === params.id ? answer.selectedOptions : [];
+  const customInput = answer?.id === params.id ? answer.customInput : undefined;
+
+  return {
+    id: params.id,
+    question: params.question,
+    context: params.context,
+    options: params.options.map((o) => o.label),
+    multi: params.multi ?? false,
+    selectedOptions,
+    customInput,
+  };
 }
 
 // -- Shared poll helper --
@@ -155,11 +162,11 @@ function sleep(ms: number): Promise<void> {
 const ASK_TOOL_DESCRIPTION = `
 Ask the user for clarification when a choice materially affects the outcome.
 
-- Use when multiple valid approaches have different trade-offs.
+- Ask exactly one question per call.
 - Prefer 2-5 concise options.
 - Use multi=true when multiple answers are valid.
 - Use recommended=<index> (0-indexed) to mark the default option.
-- You can ask multiple related questions in one call using questions[].
+- Optionally include context to give enough background for an informed answer.
 - Do NOT include an 'Other' option; UI adds it automatically.
 `.trim();
 
@@ -239,9 +246,9 @@ export function registerAskTools(pi: ExtensionAPI, ctx: RuntimeContext): void {
 
       switch (pollResult) {
         case "answered": {
-          const results = buildQuestionResults(askParams, answeredPayload?.answers ?? []);
+          const result = buildQuestionResult(askParams, answeredPayload);
           return {
-            content: [{ type: "text" as const, text: buildSessionContent(results) }],
+            content: [{ type: "text" as const, text: buildSessionContent(result) }],
             details: undefined,
           };
         }
@@ -290,7 +297,7 @@ export function registerAskTools(pi: ExtensionAPI, ctx: RuntimeContext): void {
         };
       }
 
-      const ipc = createScoutRequest(scouts as ScoutTask[]);
+      const ipc = createScoutRequest(scouts as ScoutRequest[]);
       await writeIpcFile(dir, ipc);
 
       let aborted = false;

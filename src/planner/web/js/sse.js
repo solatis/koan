@@ -23,7 +23,7 @@ export function connectSSE(token) {
       pipelineEnd: d,
       intakeProgress: null,
     })),
-    ask:                (d) => set({ pendingInput: { type: 'ask',    requestId: d.requestId, payload: d.questions } }),
+    ask:                (d) => set({ pendingInput: { type: 'ask',    requestId: d.requestId, payload: d.question } }),
     review:             (d) => set({ pendingInput: { type: 'review', requestId: d.requestId, payload: d.stories } }),
     'model-config':           (d) => set(s => ({
       pendingInput: { type: 'model-config', requestId: d.requestId, payload: { ...d.tiers, scoutConcurrency: d.scoutConcurrency } },

@@ -18,10 +18,7 @@ import {
   type AskIpcFile,
   type ScoutIpcFile,
 } from "./ipc.js";
-// ipc.ts exports ScoutTask (IPC-level: id/role/prompt for the LLM-facing request);
-// task.ts also exports ScoutTask (manifest-level: role/epicDir/question/outputFile/investigatorRole).
-// Aliased here to avoid shadowing the ipc.ts type used by ScoutIpcFile fields.
-import type { ScoutTask as TaskScoutTask } from "./task.js";
+import type { ScoutTask } from "./task.js";
 import { pool } from "./pool.js";
 import { readProjection } from "./audit.js";
 import { loadScoutConcurrency } from "../model-config.js";
@@ -49,7 +46,7 @@ export interface ScoutSpawnContext {
   // Used for UI attribution when registering scouts with the web server.
   parentRole: string;
   // Spawns a single scout; returns exit code.
-  spawnScout: (task: TaskScoutTask, scoutSubagentDir: string) => Promise<number>;
+  spawnScout: (task: ScoutTask, scoutSubagentDir: string) => Promise<number>;
 }
 
 // Handles a pending ask request: routes to web server, writes response.
@@ -60,19 +57,20 @@ async function handleAskRequest(
   signal: AbortSignal,
 ): Promise<void> {
   const { payload } = ipc;
-  const questions: AskQuestion[] = payload.questions.map((q) => ({
-    id: q.id,
-    question: q.question,
-    options: q.options.map((o) => ({ label: o.label })),
-    multi: q.multi,
-    recommended: q.recommended,
-  }));
+  const question: AskQuestion = {
+    id: payload.id,
+    question: payload.question,
+    context: payload.context,
+    options: payload.options.map((o) => ({ label: o.label })),
+    multi: payload.multi,
+    recommended: payload.recommended,
+  };
 
-  // Append "Other" option to each question before presenting to the user.
-  const withOther: AskQuestion[] = questions.map((q) => ({
-    ...q,
-    options: [...q.options, { label: OTHER_OPTION }],
-  }));
+  // Append "Other" option before presenting to the user.
+  const withOther: AskQuestion = {
+    ...question,
+    options: [...question.options, { label: OTHER_OPTION }],
+  };
 
   let result: AnswerResult;
   try {
@@ -96,18 +94,15 @@ async function handleAskRequest(
     return;
   }
 
-  const answers: AskAnswerPayload["answers"] = result.answers.map((a) => {
-    const entry: AskAnswerPayload["answers"][number] = {
-      id: a.questionId,
-      selectedOptions: a.selectedOptions,
-    };
-    if (a.customInput !== undefined) {
-      entry.customInput = a.customInput;
-    }
-    return entry;
-  });
+  const answer: AskAnswerPayload = {
+    id: result.answer.questionId,
+    selectedOptions: result.answer.selectedOptions,
+  };
+  if (result.answer.customInput !== undefined) {
+    answer.customInput = result.answer.customInput;
+  }
 
-  const response = createAskResponse(ipc.id, { answers });
+  const response = createAskResponse(ipc.id, answer);
   // Re-read and validate before writing — idempotence guard against stale requests.
   const current = await readIpcFile(subagentDir);
   if (current !== null && current.type === "ask" && current.response === null && current.id === ipc.id) {
@@ -166,7 +161,7 @@ async function handleScoutRequest(
       // Construct the task manifest for this scout. The IPC-level ipcTask carries
       // id/role/prompt (LLM-facing); the task manifest carries the full SubagentTask
       // fields the scout process needs.
-      const scoutTask: TaskScoutTask = {
+      const scoutTask: ScoutTask = {
         role: "scout",
         epicDir: scoutCtx.epicDir,
         question: entry.ipcTask.prompt,

@@ -14,7 +14,7 @@ import {
   visibleWidth,
 } from "@mariozechner/pi-tui";
 
-import { ALL_MODEL_TIERS, type ModelTier } from "../../model-phase.js";
+import { ALL_MODEL_TIERS, type ModelTier } from "../../types.js";
 import { saveModelTierConfig } from "../../model-config.js";
 import type { ModelTierConfig } from "../../model-config.js";
 

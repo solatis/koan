@@ -1,12 +1,17 @@
 import { useState } from 'preact/hooks'
 
-export function QuestionCard({ question, index, total, onSelect }) {
+export function QuestionCard({ question, onSelect }) {
   const [selectedIndexes, setSelectedIndexes] = useState(() => new Set())
   const [otherInput, setOtherInput]           = useState('')
 
   const options    = question.options || []
   const allOptions = options.map(o => o.label)
   const otherIndex = allOptions.findIndex(l => l === 'Other (type your own)')
+  const contextParagraphs = (question.context || '')
+    .trim()
+    .split(/\n\s*\n/g)
+    .map(p => p.trim())
+    .filter(Boolean)
 
   function buildSelection(indexes, otherVal) {
     if (question.multi) {
@@ -56,8 +61,15 @@ export function QuestionCard({ question, index, total, onSelect }) {
 
   return (
     <div class="question-card">
-      <div class="question-header">{index + 1}/{total} · {question.id}</div>
+      <div class="question-header">{question.id}</div>
       {question.multi && <div class="question-multi-hint">select all that apply</div>}
+
+      {contextParagraphs.length > 0 && (
+        <div class="question-context">
+          {contextParagraphs.map((p, i) => <p key={i}>{p}</p>)}
+        </div>
+      )}
+
       <div class="question-text">{question.question}</div>
       <div class="options-list">
         {allOptions.map((label, i) => {
