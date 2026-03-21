@@ -35,12 +35,6 @@
   letter-spacing: 0.05em;
 }
 
-.timer {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-md);
-  color: var(--text-muted);
-}
-
 /* Main panel — fills all remaining vertical space */
 .main-panel {
   flex: 1 1 0;

@@ -1,5 +1,10 @@
+// Fixed top bar: logo · PillStrip · settings button.
+//
+// PillStrip reads phase from the store to render pipeline progress pills.
+// The settings button toggles showSettings, which flips App into interactive
+// mode and renders ModelConfig over the current phase content.
+
 import { PillStrip } from './PillStrip.jsx'
-import { Timer } from './Timer.jsx'
 import { useStore } from '../store.js'
 
 export function Header() {
@@ -17,7 +22,6 @@ export function Header() {
         >
           ⚙
         </button>
-        <Timer />
       </div>
     </header>
   )
