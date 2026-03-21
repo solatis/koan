@@ -17,8 +17,8 @@
 // propagate + select next). A single OrchestratorPhase class reads this value
 // in begin() to configure its total steps and guidance functions (§9.1).
 
-// Subagent roles — the six LLM roles in the pipeline.
-export type SubagentRole = "intake" | "scout" | "decomposer" | "orchestrator" | "planner" | "executor";
+// Subagent roles — the seven LLM roles in the pipeline.
+export type SubagentRole = "intake" | "scout" | "decomposer" | "orchestrator" | "planner" | "executor" | "brief-writer";
 
 // Model tiers — maps to three capability levels.
 export type ModelTier = "strong" | "standard" | "cheap";
@@ -28,6 +28,7 @@ export const ROLE_MODEL_TIER: Record<SubagentRole, ModelTier> = {
   intake: "strong",
   scout: "cheap",
   decomposer: "strong",
+  "brief-writer": "strong",
   orchestrator: "strong",
   planner: "strong",
   executor: "standard",
@@ -50,7 +51,7 @@ export type StoryStatus =
 
 // Epic lifecycle phases (driver-managed, not LLM-visible directly).
 // Note: "scouting" is intentionally absent — scouts run within other phases via IPC.
-export type EpicPhase = "intake" | "decomposition" | "review" | "executing" | "completed";
+export type EpicPhase = "intake" | "brief" | "decomposition" | "review" | "executing" | "completed";
 
 // All model tiers as a runtime-iterable array.
 export const ALL_MODEL_TIERS: readonly ModelTier[] = ["strong", "standard", "cheap"];

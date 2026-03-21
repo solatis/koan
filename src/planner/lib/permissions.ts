@@ -10,9 +10,10 @@
 //   2. ROLE_PERMISSIONS controls koan-specific tools and write/edit access.
 //      Unknown roles are blocked under default-deny policy.
 //
-//   3. Planning roles (intake, scout, decomposer, orchestrator, planner) have
-//      write/edit access path-scoped to the epic directory. Only the executor
-//      role has unrestricted write access — it must modify the codebase.
+//   3. Planning roles (intake, scout, decomposer, brief-writer, orchestrator,
+//      planner) have write/edit access path-scoped to the epic directory. Only
+//      the executor role has unrestricted write access — it must modify the
+//      codebase.
 
 import * as path from "node:path";
 
@@ -59,6 +60,17 @@ export const ROLE_PERMISSIONS: ReadonlyMap<string, ReadonlySet<string>> = new Ma
     ]),
   ],
   [
+    "brief-writer",
+    new Set([
+      "koan_complete_step",
+      "koan_review_artifact",
+      "edit",
+      "write",
+      // No koan_ask_question — the brief-writer uses artifact review, not structured questions.
+      // No koan_request_scouts — all codebase context arrives via context.md from intake.
+    ]),
+  ],
+  [
     "orchestrator",
     new Set([
       "koan_complete_step",
@@ -98,13 +110,12 @@ export const ROLE_PERMISSIONS: ReadonlyMap<string, ReadonlySet<string>> = new Ma
 
 // Planning roles write only inside the epic directory.
 // Executor has unrestricted write access (must implement stories in the codebase).
-const PLANNING_ROLES = new Set(["intake", "scout", "decomposer", "orchestrator", "planner"]);
+const PLANNING_ROLES = new Set(["intake", "scout", "decomposer", "brief-writer", "orchestrator", "planner"]);
 
-// STEP_1_BLOCKED_TOOLS: tools disallowed during the intake Extract step (step 1).
-// Step 1 is read-only comprehension. Blocking these tools here provides a
-// mechanical enforcement layer on top of the prompt-level prohibition, ensuring
-// the LLM cannot frontload scouting or question-asking before understanding
-// the conversation.
+// STEP_1_BLOCKED_TOOLS: tools disallowed during the intake Extract step (step 1)
+// and brief-writer Read step (step 1). Step 1 is read-only comprehension.
+// Blocking these tools here provides a mechanical enforcement layer on top of
+// the prompt-level prohibition.
 const STEP_1_BLOCKED_TOOLS = new Set([
   "koan_request_scouts",
   "koan_ask_question",
@@ -128,6 +139,7 @@ export function checkPermission(
   epicDir?: string,
   toolArgs?: Record<string, unknown>,
   intakeStep?: number,
+  briefWriterStep?: number,
 ): { allowed: boolean; reason?: string } {
   // Read tools are always allowed — check before role map lookup.
   if (READ_TOOLS.has(toolName)) {
@@ -152,6 +164,16 @@ export function checkPermission(
       allowed: false,
       reason: `${toolName} is not available during the Deliberate step (step 3). ` +
         "Confidence assessment belongs in the Reflect step (step 4).",
+    };
+  }
+
+  // Brief-writer step 1 (Read) is read-only: block write and edit so the LLM
+  // cannot draft files before it has comprehended context.md.
+  if (role === "brief-writer" && briefWriterStep === 1 && STEP_1_BLOCKED_TOOLS.has(toolName)) {
+    return {
+      allowed: false,
+      reason: `${toolName} is not available during the Read step (step 1). ` +
+        "Complete koan_complete_step first to advance to the Draft & Review step.",
     };
   }
 

@@ -55,6 +55,11 @@ export interface DecomposerTask extends SubagentTaskBase {
   role: "decomposer";
 }
 
+/** Task manifest for brief-writer subagents. */
+export interface BriefWriterTask extends SubagentTaskBase {
+  role: "brief-writer";
+}
+
 /** Task manifest for orchestrator subagents. */
 export interface OrchestratorTask extends SubagentTaskBase {
   role: "orchestrator";
@@ -79,12 +84,13 @@ export interface ExecutorTask extends SubagentTaskBase {
   retryContext?: string;
 }
 
-// The union is exhaustive over all six roles. TypeScript narrows task.role
+// The union is exhaustive over all seven roles. TypeScript narrows task.role
 // in switch/case so role-specific fields are accessible without casting.
 export type SubagentTask =
   | IntakeTask
   | ScoutTask
   | DecomposerTask
+  | BriefWriterTask
   | OrchestratorTask
   | PlannerTask
   | ExecutorTask;

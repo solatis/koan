@@ -103,6 +103,7 @@ export abstract class BasePhase {
         this.ctx.epicDir ?? undefined,
         event.input as Record<string, unknown>,
         this.ctx.intakeStep,
+        this.ctx.briefWriterStep,
       );
       if (!perm.allowed) {
         void this.eventLog?.append({

@@ -9,10 +9,10 @@
 //   Step 4 (Reflect)    — self-verify completeness, set confidence level
 //   Step 5 (Synthesize) — write context.md from all accumulated findings
 //
-// Steps 2–4 form the confidence loop. After Reflect, getNextStep() checks
-// ctx.intakeConfidence:
-//   - If "certain" or max iterations reached → return 5 (Synthesize)
-//   - Otherwise → return 2 (Scout), triggering a loop-back
+// Steps 2-4 form the confidence loop. After Reflect, getNextStep() checks
+// intakeState.confidence:
+//   - If "certain" or max iterations reached -> return 5 (Synthesize)
+//   - Otherwise -> return 2 (Scout), triggering a loop-back
 //
 // getNextStep() is pure — it only returns the next step number. All side effects
 // that accompany a loop-back (confidence reset, iteration increment, event emission)
@@ -36,18 +36,35 @@ import { EventLog } from "../../lib/audit.js";
 import { BasePhase } from "../base-phase.js";
 import { INTAKE_STEP_NAMES, intakeSystemPrompt, intakeStepGuidance } from "./prompts.js";
 import type { StepGuidance } from "../../lib/step.js";
+import type { ConfidenceLevel } from "../../tools/confidence.js";
+
+// -- Intake-private state --
+
+interface IntakeState {
+  confidence: ConfidenceLevel | null;
+  iteration: number;
+}
+
+// ConfidenceRef is a stable object created at IntakePhase construction time.
+// Tool registration happens at pi init before before_agent_start, so the tool
+// cannot receive runtime state directly -- it receives this stable mutable-ref
+// instead.
+export interface ConfidenceRef {
+  get iteration(): number;
+  setConfidence(level: ConfidenceLevel): void;
+}
 
 export class IntakePhase extends BasePhase {
   protected readonly role = "intake";
   protected readonly totalSteps = 5;
 
-  // Maximum number of Scout→Deliberate→Reflect iterations before forcing exit
+  // Maximum number of Scout->Deliberate->Reflect iterations before forcing exit
   // to Synthesize regardless of confidence level.
   private static readonly MAX_ITERATIONS = 4;
 
-  // Current loop iteration (1-based). Starts at 1 for the initial pass through
-  // steps 2–4; incremented in onLoopBack() each time the loop continues.
-  private iteration = 1;
+  private readonly intakeState: IntakeState = { confidence: null, iteration: 1 };
+
+  public readonly confidenceRef: ConfidenceRef;
 
   private readonly conversationPath: string;
 
@@ -59,6 +76,12 @@ export class IntakePhase extends BasePhase {
   ) {
     super(pi, ctx, log ?? createLogger("IntakePhase"), eventLog);
     this.conversationPath = path.join(ctx.epicDir!, "conversation.jsonl");
+
+    const state = this.intakeState;
+    this.confidenceRef = {
+      get iteration() { return state.iteration; },
+      setConfidence(level: ConfidenceLevel) { state.confidence = level; },
+    };
   }
 
   protected getSystemPrompt(): string {
@@ -69,14 +92,14 @@ export class IntakePhase extends BasePhase {
     const base = INTAKE_STEP_NAMES[step] ?? `Step ${step}`;
     // Annotate loop steps with the iteration number so the UI shows
     // e.g. "Scout (round 2)" instead of just "Scout".
-    if (step >= 2 && step <= 4 && this.iteration > 1) {
-      return `${base} (round ${this.iteration})`;
+    if (step >= 2 && step <= 4 && this.intakeState.iteration > 1) {
+      return `${base} (round ${this.intakeState.iteration})`;
     }
     return base;
   }
 
   protected getStepGuidance(step: number): StepGuidance {
-    return intakeStepGuidance(step, this.conversationPath, this.iteration);
+    return intakeStepGuidance(step, this.conversationPath, this.intakeState.iteration);
   }
 
   // -- Non-linear progression: pure query, no side effects --
@@ -86,13 +109,13 @@ export class IntakePhase extends BasePhase {
   // increment, confidence reset, event emission) live in onLoopBack().
   protected getNextStep(currentStep: number): number | null {
     if (currentStep === 4) {
-      const confidence = this.ctx.intakeConfidence;
-      const isExhausted = this.iteration >= IntakePhase.MAX_ITERATIONS;
+      const confidence = this.intakeState.confidence;
+      const isExhausted = this.intakeState.iteration >= IntakePhase.MAX_ITERATIONS;
 
       if (confidence === "certain" || isExhausted) {
         if (isExhausted && confidence !== "certain") {
-          this.log("Max iterations reached — forcing exit to Synthesize", {
-            iteration: this.iteration,
+          this.log("Max iterations reached -- forcing exit to Synthesize", {
+            iteration: this.intakeState.iteration,
             confidence,
           });
         }
@@ -117,11 +140,10 @@ export class IntakePhase extends BasePhase {
   // step requires a fresh assessment, and emits the iteration_start event.
   // Properly awaited so the event appears in correct sequence in events.jsonl.
   protected override async onLoopBack(_from: number, _to: number): Promise<void> {
-    this.iteration++;
-    this.ctx.intakeConfidence = null;
-    this.ctx.intakeIteration = this.iteration;
-    await this.eventLog?.emitIterationStart(this.iteration, IntakePhase.MAX_ITERATIONS);
-    this.log("Confidence loop: iterating", { newIteration: this.iteration });
+    this.intakeState.iteration++;
+    this.intakeState.confidence = null;
+    await this.eventLog?.emitIterationStart(this.intakeState.iteration, IntakePhase.MAX_ITERATIONS);
+    this.log("Confidence loop: iterating", { newIteration: this.intakeState.iteration });
   }
 
   // -- Pre-condition enforcement for Reflect (step 4) --
@@ -130,7 +152,7 @@ export class IntakePhase extends BasePhase {
   // the Reflect step. If it hasn't, we return an error message that the LLM
   // sees as the tool result — it must fix the pre-condition before retrying.
   protected async validateStepCompletion(step: number): Promise<string | null> {
-    if (step === 4 && this.ctx.intakeConfidence === null) {
+    if (step === 4 && this.intakeState.confidence === null) {
       return "You must call koan_set_confidence before completing the Reflect step. " +
         "Assess your confidence level based on the verification questions you answered, " +
         "then call koan_set_confidence, then call koan_complete_step.";
@@ -154,9 +176,8 @@ export class IntakePhase extends BasePhase {
   // handleStepComplete, preserving correct order in events.jsonl.
   protected override onStepUpdated(step: number): void {
     this.ctx.intakeStep = step;
-    this.ctx.intakeIteration = this.iteration;
 
-    if (step === 2 && this.iteration === 1) {
+    if (step === 2 && this.intakeState.iteration === 1) {
       void this.eventLog?.emitIterationStart(1, IntakePhase.MAX_ITERATIONS);
     }
   }
