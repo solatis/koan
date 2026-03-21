@@ -2,9 +2,10 @@
 // A single ipc.json file per subagent directory holds the current request and
 // its response. Atomic writes (tmp-rename) prevent partial reads.
 //
-// IPC protocol supports two message types (§11.2.4):
-//   "ask"           — subagent asks the user a question
-//   "scout-request" — subagent requests parallel codebase scout spawning
+// IPC protocol supports three message types (§11.2.4):
+//   "ask"             — subagent asks the user a question
+//   "scout-request"   — subagent requests parallel codebase scout spawning
+//   "artifact-review" — subagent presents a written artifact for human review
 
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
@@ -48,6 +49,20 @@ export interface AskResponse {
   payload: AskAnswerPayload | null;
 }
 
+// -- Artifact review types --
+
+export interface ArtifactReviewPayload {
+  artifactPath: string;   // relative path within epic dir (e.g., "brief.md")
+  content: string;        // raw markdown content of the artifact
+  description?: string;   // optional context for the reviewer
+}
+
+export interface ArtifactReviewResponse {
+  id: string;
+  respondedAt: string;
+  feedback: string;       // "Accept" or free-form text
+}
+
 // -- IPC file union --
 
 export interface AskIpcFile {
@@ -66,7 +81,15 @@ export interface ScoutIpcFile {
   response: ScoutResponse | null;
 }
 
-export type IpcFile = AskIpcFile | ScoutIpcFile;
+export interface ArtifactReviewIpcFile {
+  type: "artifact-review";
+  id: string;
+  createdAt: string;
+  payload: ArtifactReviewPayload;
+  response: ArtifactReviewResponse | null;
+}
+
+export type IpcFile = AskIpcFile | ScoutIpcFile | ArtifactReviewIpcFile;
 
 // -- File paths --
 
@@ -133,6 +156,16 @@ export function createScoutRequest(scouts: ScoutRequest[]): ScoutIpcFile {
     id: crypto.randomUUID(),
     createdAt: new Date().toISOString(),
     scouts,
+    response: null,
+  };
+}
+
+export function createArtifactReviewRequest(payload: ArtifactReviewPayload): ArtifactReviewIpcFile {
+  return {
+    type: "artifact-review",
+    id: crypto.randomUUID(),
+    createdAt: new Date().toISOString(),
+    payload,
     response: null,
   };
 }
@@ -205,6 +238,12 @@ export async function pollIpcUntilResponse(
 
       if (current.type === "scout-request" && current.response !== null && current.id === ipc.id) {
         outcome = "completed";
+        finalIpc = current;
+        break;
+      }
+
+      if (current.type === "artifact-review" && current.response !== null && current.id === ipc.id) {
+        outcome = "answered";
         finalIpc = current;
         break;
       }
