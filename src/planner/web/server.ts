@@ -13,7 +13,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
 
 import { readProjection, readRecentLogs } from "../lib/audit.js";
-import { loadModelTierConfig, saveModelTierConfig, loadScoutConcurrency, saveScoutConcurrency, type ModelTierConfig } from "../model-config.js";
+import { loadKoanConfig, loadModelTierConfig, saveModelTierConfig, saveScoutConcurrency, type ModelTierConfig } from "../model-config.js";
 import type {
   WebServerHandle,
   AskQuestion,
@@ -828,9 +828,8 @@ export async function startWebServer(epicDir: string): Promise<WebServerHandle> 
 
         async requestModelConfig(): Promise<void> {
           const requestId = randomUUID();
-          const config = await loadModelTierConfig();
-          const scoutConcurrency = await loadScoutConcurrency();
-          const payload = { requestId, tiers: config, scoutConcurrency, availableModels };
+          const { modelTiers, scoutConcurrency } = await loadKoanConfig();
+          const payload = { requestId, tiers: modelTiers, scoutConcurrency, availableModels };
           return new Promise<void>((resolve, reject) => {
             pendingInputs.set(requestId, {
               type: "model-config" as const,
