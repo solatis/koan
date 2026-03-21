@@ -153,12 +153,16 @@ export interface StoriesEvent {
   stories: Array<{ storyId: string; status: StoryStatus }>;
 }
 
+
 export interface SubagentEvent {
   role: string;
   storyId?: string;
+  model: string | null;
   step: number;
   totalSteps: number;
   stepName: string;
+  tokensSent: number;
+  tokensReceived: number;
   startedAt: number;
 }
 

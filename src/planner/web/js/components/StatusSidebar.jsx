@@ -1,4 +1,17 @@
+// Single home for all live-mode status context.
+//
+// Renders in the right column whenever a pipeline phase is active. Absorbs
+// the three removed components: agent identity (was SubagentMeta), elapsed
+// timer (was Timer), and phase progress (was ProgressBar + per-phase panels).
+//
+// Store slices read: phase (visibility gate + dispatch), subagent (identity
+// section), intakeProgress (intake-specific data), stories (decompose/execute).
+// The sidebar stays mounted between subagent spawns — phase status is visible
+// even when subagent is null.
+
+import { useState, useEffect } from 'preact/hooks'
 import { useStore } from '../store.js'
+import { shortenModel, formatTokens, formatElapsed } from '../lib/utils.js'
 
 // Maps confidence level to number of filled segments (out of 5) and accent colour.
 const CONFIDENCE_DISPLAY = {
@@ -23,21 +36,76 @@ export function StatusSidebar() {
   const subagent = useStore(s => s.subagent)
   const phase = useStore(s => s.phase)
   const intakeProgress = useStore(s => s.intakeProgress)
+  const stories = useStore(s => s.stories)
 
-  // Only render when there is an active subagent.
-  if (!subagent) return null
-
-  const isIntake = phase === 'intake'
+  // Render whenever there is an active phase in live mode.
+  if (!phase) return null
 
   return (
     <aside class="status-sidebar">
       <div class="sidebar-heading">Phase Status</div>
-      {isIntake && intakeProgress
-        ? <IntakeStatus progress={intakeProgress} />
-        : <GenericStatus phase={phase} />
-      }
+      {subagent && <AgentIdentity subagent={subagent} />}
+      <PhaseStatus phase={phase} intakeProgress={intakeProgress} stories={stories} />
     </aside>
   )
+}
+
+// -- Agent identity section (role, model, step, tokens, elapsed timer) --
+
+function AgentIdentity({ subagent }) {
+  const startedAt = subagent.startedAt
+  const [now, setNow] = useState(Date.now())
+
+  useEffect(() => {
+    if (!startedAt) return
+    const id = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [startedAt])
+
+  const stepLabel = subagent.stepName || (subagent.step && subagent.totalSteps
+    ? `Step ${subagent.step}/${subagent.totalSteps}`
+    : null)
+
+  const elapsed = startedAt ? formatElapsed(Math.max(0, now - startedAt)) : '—'
+
+  return (
+    <div class="sidebar-agent">
+      <div>
+        <span class="sidebar-agent-role">{subagent.role}</span>
+        {subagent.model && (
+          <span class="sidebar-agent-model"> · {shortenModel(subagent.model)}</span>
+        )}
+      </div>
+      {stepLabel && (
+        <div class="sidebar-agent-step">{stepLabel}</div>
+      )}
+      <div class="sidebar-agent-stats">
+        <span>↑{formatTokens(subagent.tokensSent || 0)} ↓{formatTokens(subagent.tokensReceived || 0)}</span>
+        <span>{elapsed}</span>
+      </div>
+      <div class="sidebar-divider" />
+    </div>
+  )
+}
+
+// -- Phase-specific status dispatcher --
+
+function PhaseStatus({ phase, intakeProgress, stories }) {
+  if (phase === 'intake') {
+    return intakeProgress
+      ? <IntakeStatus progress={intakeProgress} />
+      : <GenericStatus phase={phase} />
+  }
+  switch (phase) {
+    case 'brief':
+      return <BriefStatus />
+    case 'decomposition':
+      return <DecomposeStatus stories={stories} />
+    case 'executing':
+      return <ExecuteStatus stories={stories} />
+    default:
+      return <GenericStatus phase={phase} />
+  }
 }
 
 // -- Intake-specific status: confidence meter, iteration dots, sub-phase, summary --
@@ -97,20 +165,83 @@ function IntakeStatus({ progress }) {
   )
 }
 
-// -- Generic status for decompose / review / execute phases --
+// -- Brief phase status --
 
-function GenericStatus({ phase }) {
-  const label =
-    phase === 'decomposition' ? 'Decomposing into stories'
-    : phase === 'review'      ? 'Review in progress'
-    : phase === 'executing'   ? 'Executing stories'
-    : phase ?? 'In progress'
+function BriefStatus() {
+  return (
+    <>
+      <SidebarSection label="Status">
+        <div class="sidebar-value">Drafting epic brief…</div>
+      </SidebarSection>
+      <div class="sidebar-divider" />
+      <SidebarSection label="Summary">
+        <div class="sidebar-summary">Synthesizing requirements into a brief.</div>
+      </SidebarSection>
+    </>
+  )
+}
+
+// -- Decomposition phase status --
+
+function DecomposeStatus({ stories }) {
+  const count = stories ? stories.length : 0
+  return (
+    <>
+      <SidebarSection label="Status">
+        <div class="sidebar-value">
+          {count > 0 ? `${count} ${count === 1 ? 'story' : 'stories'} identified` : 'Decomposing…'}
+        </div>
+      </SidebarSection>
+      <div class="sidebar-divider" />
+      <SidebarSection label="Summary">
+        <div class="sidebar-summary">Breaking the epic into stories.</div>
+      </SidebarSection>
+    </>
+  )
+}
+
+// -- Execute phase status --
+
+function ExecuteStatus({ stories }) {
+  const total = stories ? stories.length : 0
+  const complete = stories ? stories.filter(s => s.status === 'done').length : 0
+  const active = stories ? stories.filter(s =>
+    s.status === 'selected' || s.status === 'planning' ||
+    s.status === 'executing' || s.status === 'verifying'
+  ).length : 0
 
   return (
-    <SidebarSection label="Status">
-      <div class="sidebar-value">{label}</div>
-      <div class="sidebar-summary" style={{ marginTop: '6px' }}>Phase in progress…</div>
-    </SidebarSection>
+    <>
+      <SidebarSection label="Progress">
+        <div class="sidebar-value">
+          {total > 0
+            ? `${complete}/${total} complete${active > 0 ? ` · ${active} active` : ''}`
+            : 'Executing stories…'}
+        </div>
+      </SidebarSection>
+      <div class="sidebar-divider" />
+      <SidebarSection label="Summary">
+        <div class="sidebar-summary">Implementing stories in parallel.</div>
+      </SidebarSection>
+    </>
+  )
+}
+
+// -- Generic status for phases without a dedicated widget --
+
+function GenericStatus({ phase }) {
+  const label = phase === 'review' ? 'Review in progress' : phase ?? 'In progress'
+
+  return (
+    <>
+      <SidebarSection label="Status">
+        <div class="sidebar-value">{label}</div>
+      </SidebarSection>
+      <div class="sidebar-divider" />
+      <SidebarSection label="Summary">
+        <div class="sidebar-summary">Phase in progress…</div>
+      </SidebarSection>
+    </>
   )
 }
 
