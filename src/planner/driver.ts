@@ -366,7 +366,6 @@ export async function runPipeline(
   }
 
   // Phase A: Epic Creation.
-  webServer?.pushNotification("Starting intake...", "info");
   await saveEpicState(epicDir, { ...epicState, phase: "intake" });
   webServer?.pushPhase("intake");
 
