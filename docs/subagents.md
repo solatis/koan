@@ -160,7 +160,7 @@ One sentence. No task content. The role name is included for primacy — it
 anchors the LLM's identity before it receives any instructions. Task-specific
 parameters live in `task.json` and flow into step guidance via the phase class.
 
-### Fail-fast guards
+### Fail-fast guards (bootstrap invariants only)
 
 `dispatchPhase` validates required `task.json` fields before instantiating:
 
@@ -169,6 +169,16 @@ parameters live in `task.json` and flow into step guidance via the phase class.
 | scout    | `question`, `outputFile` | Step 1 guidance has no assignment → LLM outputs confused text → exits |
 | planner  | `storyId`                | Malformed paths like `stories//plan/plan.md`                          |
 | executor | `storyId`                | Same path issue                                                       |
+
+These checks are intentionally fail-fast because they indicate a broken
+parent→child contract (programming/configuration error), not model behavior.
+
+**Boundary:** fail-fast is for unrecoverable conditions only (invariant or
+contract violations, unexpected states, or cases with no simple deterministic
+local recovery path). Recoverable model-output errors (for example malformed
+tool-call JSON/args or schema validation failures) should be surfaced as
+normal tool errors (`tool_result` with `isError=true`) so the LLM can retry
+in-process, rather than terminating the subagent process.
 
 ---
 

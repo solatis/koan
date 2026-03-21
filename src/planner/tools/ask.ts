@@ -182,6 +182,186 @@ Scouts run in parallel. The tool returns the file paths to read.
 - prompt: what to find (e.g., "Find all authentication middleware in src/")
 `.trim();
 
+// -- Extracted execute logic --
+
+type ToolResult = { content: Array<{ type: "text"; text: string }>; details: undefined };
+
+export async function executeAskQuestion(
+  params: AskParams,
+  subagentDir: string | null,
+  signal?: AbortSignal | null,
+): Promise<ToolResult> {
+  const dir = subagentDir;
+
+  if (!dir) {
+    return {
+      content: [{ type: "text" as const, text: "Error: koan_ask_question is only available in subagent context." }],
+      details: undefined,
+    };
+  }
+
+  if (await ipcFileExists(dir)) {
+    return {
+      content: [{ type: "text" as const, text: "Error: An IPC request is already pending." }],
+      details: undefined,
+    };
+  }
+
+  const ipc = createAskRequest(params);
+  await writeIpcFile(dir, ipc);
+
+  let aborted = false;
+  const onAbort = () => { aborted = true; };
+  if (signal) signal.addEventListener("abort", onAbort, { once: true });
+
+  type PollResult = "answered" | "cancelled" | "aborted" | "file-gone";
+  let pollResult: PollResult = "file-gone";
+  let answeredPayload: AskAnswerPayload | null = null;
+
+  try {
+    while (!aborted) {
+      await sleep(500);
+      if (signal?.aborted) { aborted = true; break; }
+
+      const current = await readIpcFile(dir);
+      if (current === null) { pollResult = "file-gone"; break; }
+
+      if (current.type === "ask" && current.response !== null && current.response.id === ipc.id) {
+        if (current.response.cancelled) {
+          pollResult = "cancelled";
+        } else {
+          pollResult = "answered";
+          answeredPayload = current.response.payload;
+        }
+        break;
+      }
+    }
+
+    if (aborted) pollResult = "aborted";
+  } finally {
+    await deleteIpcFile(dir);
+  }
+
+  switch (pollResult) {
+    case "answered": {
+      const result = buildQuestionResult(params, answeredPayload);
+      return {
+        content: [{ type: "text" as const, text: buildSessionContent(result) }],
+        details: undefined,
+      };
+    }
+    case "cancelled":
+      return {
+        content: [{ type: "text" as const, text: "The user declined to answer. Proceed with your best judgment." }],
+        details: undefined,
+      };
+    case "aborted":
+      return {
+        content: [{ type: "text" as const, text: "The question was aborted." }],
+        details: undefined,
+      };
+    case "file-gone":
+      return {
+        content: [{ type: "text" as const, text: "The question was cancelled." }],
+        details: undefined,
+      };
+  }
+}
+
+export async function executeRequestScouts(
+  params: RequestScoutsParams,
+  subagentDir: string | null,
+  signal?: AbortSignal | null,
+): Promise<ToolResult> {
+  const dir = subagentDir;
+
+  if (!dir) {
+    return {
+      content: [{ type: "text" as const, text: "Error: koan_request_scouts is only available in subagent context." }],
+      details: undefined,
+    };
+  }
+
+  if (await ipcFileExists(dir)) {
+    return {
+      content: [{ type: "text" as const, text: "Error: An IPC request is already pending." }],
+      details: undefined,
+    };
+  }
+
+  const ipc = createScoutRequest(params.scouts as ScoutRequest[]);
+  await writeIpcFile(dir, ipc);
+
+  let aborted = false;
+  const onAbort = () => { aborted = true; };
+  if (signal) signal.addEventListener("abort", onAbort, { once: true });
+
+  type PollResult = "completed" | "aborted" | "file-gone";
+  let pollResult: PollResult = "file-gone";
+  let findings: string[] = [];
+  let failures: string[] = [];
+
+  try {
+    while (!aborted) {
+      await sleep(500);
+      if (signal?.aborted) { aborted = true; break; }
+
+      const current = await readIpcFile(dir);
+      if (current === null) { pollResult = "file-gone"; break; }
+
+      if (current.type === "scout-request" && current.response !== null && current.id === ipc.id) {
+        pollResult = "completed";
+        findings = current.response.findings;
+        failures = current.response.failures;
+        break;
+      }
+    }
+
+    if (aborted) pollResult = "aborted";
+  } finally {
+    await deleteIpcFile(dir);
+  }
+
+  switch (pollResult) {
+    case "completed": {
+      const sections: string[] = [
+        `Scout findings: ${findings.length} completed, ${failures.length} failed.`,
+        "",
+      ];
+      for (const f of findings) {
+        try {
+          const content = await fs.readFile(f, "utf8");
+          sections.push(`--- scout: ${path.basename(path.dirname(f))} ---`);
+          sections.push(content.trim());
+          sections.push("");
+        } catch {
+          sections.push(`--- scout: ${path.basename(path.dirname(f))} --- (could not read findings)`);
+          sections.push("");
+        }
+      }
+      if (failures.length > 0) {
+        sections.push(`Failed scouts (non-fatal, proceed without them): ${failures.join(", ")}`);
+      }
+      return {
+        content: [{ type: "text" as const, text: sections.join("\n") }],
+        details: undefined,
+      };
+    }
+    case "aborted":
+      return {
+        content: [{ type: "text" as const, text: "Scout request aborted. Proceed without codebase context." }],
+        details: undefined,
+      };
+    case "file-gone":
+      return {
+        content: [{ type: "text" as const, text: "Scout request cancelled. Proceed without codebase context." }],
+        details: undefined,
+      };
+  }
+}
+
+// -- Tool registration --
+
 export function registerAskTools(pi: ExtensionAPI, ctx: RuntimeContext): void {
   // -- koan_ask_question --
 
@@ -192,82 +372,7 @@ export function registerAskTools(pi: ExtensionAPI, ctx: RuntimeContext): void {
     parameters: AskParamsSchema,
 
     async execute(_toolCallId, params, signal) {
-      const askParams = params as AskParams;
-      const dir = ctx.subagentDir;
-
-      if (!dir) {
-        return {
-          content: [{ type: "text" as const, text: "Error: koan_ask_question is only available in subagent context." }],
-          details: undefined,
-        };
-      }
-
-      if (await ipcFileExists(dir)) {
-        return {
-          content: [{ type: "text" as const, text: "Error: An IPC request is already pending." }],
-          details: undefined,
-        };
-      }
-
-      const ipc = createAskRequest(askParams);
-      await writeIpcFile(dir, ipc);
-
-      let aborted = false;
-      const onAbort = () => { aborted = true; };
-      if (signal) signal.addEventListener("abort", onAbort, { once: true });
-
-      type PollResult = "answered" | "cancelled" | "aborted" | "file-gone";
-      let pollResult: PollResult = "file-gone";
-      let answeredPayload: AskAnswerPayload | null = null;
-
-      try {
-        while (!aborted) {
-          await sleep(500);
-          if (signal?.aborted) { aborted = true; break; }
-
-          const current = await readIpcFile(dir);
-          if (current === null) { pollResult = "file-gone"; break; }
-
-          if (current.type === "ask" && current.response !== null && current.response.id === ipc.id) {
-            if (current.response.cancelled) {
-              pollResult = "cancelled";
-            } else {
-              pollResult = "answered";
-              answeredPayload = current.response.payload;
-            }
-            break;
-          }
-        }
-
-        if (aborted) pollResult = "aborted";
-      } finally {
-        await deleteIpcFile(dir);
-      }
-
-      switch (pollResult) {
-        case "answered": {
-          const result = buildQuestionResult(askParams, answeredPayload);
-          return {
-            content: [{ type: "text" as const, text: buildSessionContent(result) }],
-            details: undefined,
-          };
-        }
-        case "cancelled":
-          return {
-            content: [{ type: "text" as const, text: "The user declined to answer. Proceed with your best judgment." }],
-            details: undefined,
-          };
-        case "aborted":
-          return {
-            content: [{ type: "text" as const, text: "The question was aborted." }],
-            details: undefined,
-          };
-        case "file-gone":
-          return {
-            content: [{ type: "text" as const, text: "The question was cancelled." }],
-            details: undefined,
-          };
-      }
+      return executeAskQuestion(params as AskParams, ctx.subagentDir, signal);
     },
   });
 
@@ -280,93 +385,7 @@ export function registerAskTools(pi: ExtensionAPI, ctx: RuntimeContext): void {
     parameters: RequestScoutsSchema,
 
     async execute(_toolCallId, params, signal) {
-      const { scouts } = params as RequestScoutsParams;
-      const dir = ctx.subagentDir;
-
-      if (!dir) {
-        return {
-          content: [{ type: "text" as const, text: "Error: koan_request_scouts is only available in subagent context." }],
-          details: undefined,
-        };
-      }
-
-      if (await ipcFileExists(dir)) {
-        return {
-          content: [{ type: "text" as const, text: "Error: An IPC request is already pending." }],
-          details: undefined,
-        };
-      }
-
-      const ipc = createScoutRequest(scouts as ScoutRequest[]);
-      await writeIpcFile(dir, ipc);
-
-      let aborted = false;
-      const onAbort = () => { aborted = true; };
-      if (signal) signal.addEventListener("abort", onAbort, { once: true });
-
-      type PollResult = "completed" | "aborted" | "file-gone";
-      let pollResult: PollResult = "file-gone";
-      let findings: string[] = [];
-      let failures: string[] = [];
-
-      try {
-        while (!aborted) {
-          await sleep(500);
-          if (signal?.aborted) { aborted = true; break; }
-
-          const current = await readIpcFile(dir);
-          if (current === null) { pollResult = "file-gone"; break; }
-
-          if (current.type === "scout-request" && current.response !== null && current.id === ipc.id) {
-            pollResult = "completed";
-            findings = current.response.findings;
-            failures = current.response.failures;
-            break;
-          }
-        }
-
-        if (aborted) pollResult = "aborted";
-      } finally {
-        await deleteIpcFile(dir);
-      }
-
-      switch (pollResult) {
-        case "completed": {
-          const sections: string[] = [
-            `Scout findings: ${findings.length} completed, ${failures.length} failed.`,
-            "",
-          ];
-          // Read each findings file and include contents verbatim.
-          for (const f of findings) {
-            try {
-              const content = await fs.readFile(f, "utf8");
-              sections.push(`--- scout: ${path.basename(path.dirname(f))} ---`);
-              sections.push(content.trim());
-              sections.push("");
-            } catch {
-              sections.push(`--- scout: ${path.basename(path.dirname(f))} --- (could not read findings)`);
-              sections.push("");
-            }
-          }
-          if (failures.length > 0) {
-            sections.push(`Failed scouts (non-fatal, proceed without them): ${failures.join(", ")}`);
-          }
-          return {
-            content: [{ type: "text" as const, text: sections.join("\n") }],
-            details: undefined,
-          };
-        }
-        case "aborted":
-          return {
-            content: [{ type: "text" as const, text: "Scout request aborted. Proceed without codebase context." }],
-            details: undefined,
-          };
-        case "file-gone":
-          return {
-            content: [{ type: "text" as const, text: "Scout request cancelled. Proceed without codebase context." }],
-            details: undefined,
-          };
-      }
+      return executeRequestScouts(params as RequestScoutsParams, ctx.subagentDir, signal);
     },
   });
 }

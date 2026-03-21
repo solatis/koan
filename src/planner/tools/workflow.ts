@@ -20,6 +20,26 @@ import type { RuntimeContext } from "../lib/runtime-context.js";
 
 const log = createLogger("Workflow");
 
+// -- Extracted execute logic --
+
+export async function executeCompleteStep(
+  thoughts: string,
+  onCompleteStep: ((thoughts: string) => Promise<string | null>) | null,
+): Promise<{ content: Array<{ type: "text"; text: string }>; details: undefined }> {
+  if (!onCompleteStep) {
+    log("koan_complete_step called with no active phase");
+    return {
+      content: [{ type: "text" as const, text: "No workflow phase is active." }],
+      details: undefined,
+    };
+  }
+  const nextPrompt = await onCompleteStep(thoughts);
+  return {
+    content: [{ type: "text" as const, text: nextPrompt ?? "Phase complete." }],
+    details: undefined,
+  };
+}
+
 // Registers workflow tools. Called once at init in koan.ts,
 // before pi's _buildRuntime() snapshot. Tool execute callbacks read
 // from the RuntimeContext at call time — the context is mutable,
@@ -58,16 +78,8 @@ export function registerWorkflowTools(
       })),
     }),
     async execute(_toolCallId, params) {
-      if (!ctx.onCompleteStep) {
-        log("koan_complete_step called with no active phase");
-        throw new Error("No workflow phase is active.");
-      }
       const thoughts = (params as { thoughts?: string }).thoughts ?? "";
-      const nextPrompt = await ctx.onCompleteStep(thoughts);
-      return {
-        content: [{ type: "text" as const, text: nextPrompt ?? "Phase complete." }],
-        details: undefined,
-      };
+      return executeCompleteStep(thoughts, ctx.onCompleteStep);
     },
   });
 }

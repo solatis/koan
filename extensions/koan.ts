@@ -34,6 +34,20 @@ function currentModelId(ctx: ExtensionContext): string | null {
   return `${model.provider}/${model.id}`;
 }
 
+// Registers infrastructure-level event handlers that must be in place before
+// before_agent_start fires. Currently this is only the truncation override,
+// but the wrapper makes the ordering constraint visible at the call site.
+//
+// Why before before_agent_start? The audit tool_result handler registers
+// inside before_agent_start. The truncation override must precede it so the
+// audit handler sees the original event, not the replacement content we
+// return. Calling this function immediately after registerAllTools (and
+// before the dispatched guard) makes the ordering structural rather than
+// relying on a comment buried inside registerTruncationOverride's impl.
+function registerInfrastructureHandlers(pi: ExtensionAPI): void {
+  registerTruncationOverride(pi);
+}
+
 export default function koan(pi: ExtensionAPI): void {
   const log = createLogger("Koan");
 
@@ -49,12 +63,7 @@ export default function koan(pi: ExtensionAPI): void {
   const ctx = createRuntimeContext();
 
   registerAllTools(pi, ctx);
-  // Registered unconditionally — applies in both parent and subagent mode.
-  // Self-guards: no-op when bash output fits within pi's default limits.
-  // Must precede before_agent_start so the audit tool_result handler (which
-  // registers later, inside before_agent_start) sees the original event and
-  // does not interfere with the replacement content we return.
-  registerTruncationOverride(pi);
+  registerInfrastructureHandlers(pi);
 
   // Dispatch happens exactly once per session (guard prevents re-entry on
   // subsequent before_agent_start calls, which pi may emit on reconnect).

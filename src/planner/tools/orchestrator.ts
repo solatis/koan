@@ -75,6 +75,115 @@ export function assertStatus(storyId: string, current: StoryStatus, allowed: Sto
   }
 }
 
+// -- Extracted execute logic --
+
+type ToolResult = { content: Array<{ type: "text"; text: string }>; details: undefined };
+
+export async function executeSelectStory(epicDir: string, storyId: string): Promise<ToolResult> {
+  const ts = now();
+  const state = await loadStoryState(epicDir, storyId);
+  assertStatus(storyId, state.status, ["pending", "retry"]);
+
+  await saveStoryState(epicDir, storyId, { ...state, status: "selected", updatedAt: ts });
+  await writeStatusMd(
+    epicDir, storyId,
+    statusMd(storyId, "selected", `Selected at: ${ts}`, "(pending -- not yet verified)", ""),
+  );
+
+  return {
+    content: [{ type: "text" as const, text: `Story '${storyId}' selected.` }],
+    details: undefined,
+  };
+}
+
+export async function executeCompleteStory(
+  epicDir: string,
+  storyId: string,
+  verificationSummary?: string,
+): Promise<ToolResult> {
+  const ts = now();
+  const state = await loadStoryState(epicDir, storyId);
+  assertStatus(storyId, state.status, ["verifying"]);
+
+  await saveStoryState(epicDir, storyId, { ...state, status: "done", updatedAt: ts });
+  await writeStatusMd(
+    epicDir, storyId,
+    statusMd(
+      storyId, "done",
+      `Completed at: ${ts}`,
+      verificationSummary ?? "All checks passed.",
+      "",
+    ),
+  );
+
+  return {
+    content: [{ type: "text" as const, text: `Story '${storyId}' completed.` }],
+    details: undefined,
+  };
+}
+
+export async function executeRetryStory(
+  epicDir: string,
+  storyId: string,
+  failureSummary: string,
+): Promise<ToolResult> {
+  const ts = now();
+  const state = await loadStoryState(epicDir, storyId);
+  assertStatus(storyId, state.status, ["verifying"]);
+
+  await saveStoryState(epicDir, storyId, {
+    ...state,
+    status: "retry",
+    updatedAt: ts,
+    failureSummary: failureSummary,
+  });
+  await writeStatusMd(
+    epicDir, storyId,
+    statusMd(
+      storyId, "retry",
+      `Queued for retry at: ${ts}`,
+      "Failed -- see Notes for details.",
+      failureSummary,
+    ),
+  );
+
+  return {
+    content: [{ type: "text" as const, text: `Story '${storyId}' queued for retry.` }],
+    details: undefined,
+  };
+}
+
+export async function executeSkipStory(
+  epicDir: string,
+  storyId: string,
+  reason: string,
+): Promise<ToolResult> {
+  const ts = now();
+  const state = await loadStoryState(epicDir, storyId);
+  assertStatus(storyId, state.status, ["pending", "retry"]);
+
+  await saveStoryState(epicDir, storyId, {
+    ...state,
+    status: "skipped",
+    updatedAt: ts,
+    skipReason: reason,
+  });
+  await writeStatusMd(
+    epicDir, storyId,
+    statusMd(
+      storyId, "skipped",
+      `Skipped at: ${ts}`,
+      "(not executed)",
+      reason,
+    ),
+  );
+
+  return {
+    content: [{ type: "text" as const, text: `Story '${storyId}' skipped.` }],
+    details: undefined,
+  };
+}
+
 // -- Tool registration --
 
 export function registerOrchestratorTools(pi: ExtensionAPI, ctx: RuntimeContext): void {
@@ -90,22 +199,7 @@ export function registerOrchestratorTools(pi: ExtensionAPI, ctx: RuntimeContext)
     }),
     async execute(_toolCallId, params) {
       const { story_id } = params as { story_id: string };
-      const epicDir = requireEpicDir(ctx);
-      const ts = now();
-
-      const state = await loadStoryState(epicDir, story_id);
-      assertStatus(story_id, state.status, ["pending", "retry"]);
-
-      await saveStoryState(epicDir, story_id, { ...state, status: "selected", updatedAt: ts });
-      await writeStatusMd(
-        epicDir, story_id,
-        statusMd(story_id, "selected", `Selected at: ${ts}`, "(pending — not yet verified)", ""),
-      );
-
-      return {
-        content: [{ type: "text" as const, text: `Story '${story_id}' selected.` }],
-        details: undefined,
-      };
+      return executeSelectStory(requireEpicDir(ctx), story_id);
     },
   });
 
@@ -127,27 +221,7 @@ export function registerOrchestratorTools(pi: ExtensionAPI, ctx: RuntimeContext)
         story_id: string;
         verification_summary?: string;
       };
-      const epicDir = requireEpicDir(ctx);
-      const ts = now();
-
-      const state = await loadStoryState(epicDir, story_id);
-      assertStatus(story_id, state.status, ["verifying"]);
-
-      await saveStoryState(epicDir, story_id, { ...state, status: "done", updatedAt: ts });
-      await writeStatusMd(
-        epicDir, story_id,
-        statusMd(
-          story_id, "done",
-          `Completed at: ${ts}`,
-          verification_summary ?? "All checks passed.",
-          "",
-        ),
-      );
-
-      return {
-        content: [{ type: "text" as const, text: `Story '${story_id}' completed.` }],
-        details: undefined,
-      };
+      return executeCompleteStory(requireEpicDir(ctx), story_id, verification_summary);
     },
   });
 
@@ -166,32 +240,7 @@ export function registerOrchestratorTools(pi: ExtensionAPI, ctx: RuntimeContext)
     }),
     async execute(_toolCallId, params) {
       const { story_id, failure_summary } = params as { story_id: string; failure_summary: string };
-      const epicDir = requireEpicDir(ctx);
-      const ts = now();
-
-      const state = await loadStoryState(epicDir, story_id);
-      assertStatus(story_id, state.status, ["verifying"]);
-
-      await saveStoryState(epicDir, story_id, {
-        ...state,
-        status: "retry",
-        updatedAt: ts,
-        failureSummary: failure_summary,
-      });
-      await writeStatusMd(
-        epicDir, story_id,
-        statusMd(
-          story_id, "retry",
-          `Queued for retry at: ${ts}`,
-          "Failed — see Notes for details.",
-          failure_summary,
-        ),
-      );
-
-      return {
-        content: [{ type: "text" as const, text: `Story '${story_id}' queued for retry.` }],
-        details: undefined,
-      };
+      return executeRetryStory(requireEpicDir(ctx), story_id, failure_summary);
     },
   });
 
@@ -208,32 +257,7 @@ export function registerOrchestratorTools(pi: ExtensionAPI, ctx: RuntimeContext)
     }),
     async execute(_toolCallId, params) {
       const { story_id, reason } = params as { story_id: string; reason: string };
-      const epicDir = requireEpicDir(ctx);
-      const ts = now();
-
-      const state = await loadStoryState(epicDir, story_id);
-      assertStatus(story_id, state.status, ["pending", "retry"]);
-
-      await saveStoryState(epicDir, story_id, {
-        ...state,
-        status: "skipped",
-        updatedAt: ts,
-        skipReason: reason,
-      });
-      await writeStatusMd(
-        epicDir, story_id,
-        statusMd(
-          story_id, "skipped",
-          `Skipped at: ${ts}`,
-          "(not executed)",
-          reason,
-        ),
-      );
-
-      return {
-        content: [{ type: "text" as const, text: `Story '${story_id}' skipped.` }],
-        details: undefined,
-      };
+      return executeSkipStory(requireEpicDir(ctx), story_id, reason);
     },
   });
 }

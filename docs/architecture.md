@@ -48,7 +48,7 @@ call, the process exits — there is no stdin to recover. The entire workflow
 depends on the LLM calling `koan_complete_step` reliably.
 
 **The first thing any subagent does is call `koan_complete_step`.** The spawn
-prompt contains *only* this directive. The tool returns step 1 instructions.
+prompt contains _only_ this directive. The tool returns step 1 instructions.
 This establishes the calling pattern before the LLM sees complex instructions.
 
 ```
@@ -62,11 +62,11 @@ Tool returns:  Step 2 instructions (or "Phase complete.")
 
 Three reinforcement mechanisms make this robust across model capability levels:
 
-| Mechanism | Where | Why |
-|-----------|-------|-----|
-| **Primacy** | Boot prompt is the LLM's very first message | First action = tool call, at the top of conversation history |
-| **Recency** | `formatStep()` appends "WHEN DONE: Call koan_complete_step..." last | LLMs weight end-of-context instructions heavily |
-| **Muscle memory** | By step 2+ the LLM has called the tool N times | Pattern is locked in through repetition |
+| Mechanism         | Where                                                               | Why                                                          |
+| ----------------- | ------------------------------------------------------------------- | ------------------------------------------------------------ |
+| **Primacy**       | Boot prompt is the LLM's very first message                         | First action = tool call, at the top of conversation history |
+| **Recency**       | `formatStep()` appends "WHEN DONE: Call koan_complete_step..." last | LLMs weight end-of-context instructions heavily              |
+| **Muscle memory** | By step 2+ the LLM has called the tool N times                      | Pattern is locked in through repetition                      |
 
 ### 3. Driver determinism
 
@@ -75,6 +75,7 @@ files and exit codes, applies routing rules, and spawns the next subagent. It
 never makes judgment calls, parses free-text output, or adapts to LLM behavior.
 
 **Routing priority** in the story loop:
+
 1. `retry` status → re-execute (retry takes precedence over new work)
 2. `selected` status → plan + execute
 3. All stories `done` or `skipped` → epic complete
@@ -115,11 +116,11 @@ observable state — lives in well-known files inside that directory.
 
 Three JSON files, three lifecycles:
 
-| File | Writer | Reader | Lifecycle |
-|------|--------|--------|-----------|
-| **`task.json`** | Parent (before spawn) | Child (once, at startup) | Write-once, never modified |
-| **`state.json`** | Child (continuously) | Parent (polling) | Eagerly materialized audit projection |
-| **`ipc.json`** | Both (request/response) | Both (polling) | Temporary — created per request, deleted after response |
+| File             | Writer                  | Reader                   | Lifecycle                                               |
+| ---------------- | ----------------------- | ------------------------ | ------------------------------------------------------- |
+| **`task.json`**  | Parent (before spawn)   | Child (once, at startup) | Write-once, never modified                              |
+| **`state.json`** | Child (continuously)    | Parent (polling)         | Eagerly materialized audit projection                   |
+| **`ipc.json`**   | Both (request/response) | Both (polling)           | Temporary — created per request, deleted after response |
 
 The spawn command carries only the directory path. The child reads `task.json`
 to discover its role, epic context, and task-specific parameters. No
@@ -158,7 +159,6 @@ await fs.rename(tmp, target);
 This is not optional — the IPC responder, web server, and audit system all
 poll files concurrently. A partial read of `ipc.json` or `state.json` would
 cause silent data corruption or spurious errors.
-
 
 ---
 
@@ -228,18 +228,20 @@ All layers must be wired for a new event type to be visible end-to-end.
 
 ```
 [LLM calls tool]
-     ↓
-[tool mutates ctx + calls ctx.eventLog.emit*()] ← lib/audit.ts
-     ↓
-[fold() updates Projection → state.json written atomically]
-     ↓
-[web server polls state.json every 50ms, detects change] ← web/server.ts
-     ↓
-[pushEvent(type, payload) → SSE stream → browser]
-     ↓
-[sse.js addEventListener(type, handler) → useStore.setState()] ← web/js/sse.js
-     ↓
-[Zustand component selector → React re-render] ← web/js/store.js
+     |
+[tool mutates ctx + calls ctx.eventLog.emit*()] <- lib/audit.ts
+     |
+[fold() updates Projection -> state.json written atomically]
+     |
+[web server polls state.json every 50ms, detects change] <- web/server.ts
+     |
+[pushEvent(type, payload) -> SSE stream -> browser]
+     |
+[sse.js dispatches to named handler from store.js] <- web/js/sse.js
+     |
+[named handler calls useStore.setState()] <- web/js/store.js
+     |
+[Zustand component selector -> React re-render]
 ```
 
 ### Concrete example: `koan_set_confidence`
@@ -264,13 +266,24 @@ browser receives "intake-progress" event
   → confidence visualization component re-renders
 ```
 
+### `sse.js` / `store.js` boundary
+
+`sse.js` connects to the SSE stream and routes each event type to a named
+handler. It does not import `useStore` or know the store's internal shape.
+
+`store.js` owns the Zustand store shape and exports named handler functions
+(one per SSE event type). Each handler maps a raw SSE payload to a store
+state update.
+
+Changing the store shape only requires updating `store.js`; `sse.js` is
+stable across store shape changes.
+
 ### Replay on reconnect
 
 The web server buffers the last value of every stateful SSE event type. On
 reconnect, `replayState()` writes all buffered events to the new client. This
 ensures the browser always has current state after a network drop, without
 requiring a full page reload.
-
 
 ---
 
@@ -312,6 +325,33 @@ Scout success is derived from the JSON projection (`readProjection()` →
 A scout can write a partial findings file and then crash — file existence is
 not proof of completion.
 
+### Don't crash on recoverable model-output parse errors
+
+Fail-fast is scoped to **unrecoverable conditions**:
+
+- invariant/contract violations (e.g., broken `task.json` bootstrap contract)
+- unexpected states where there is no safe deterministic next action
+- failures with no simple local recovery path
+
+If a model emits malformed tool-call payloads (invalid JSON/args) or other
+per-turn formatting errors, treat them as recoverable execution errors:
+return a structured tool error (`tool_result` with `isError=true`) so the model
+can self-correct and retry in the same subagent process.
+
+Contrastive examples:
+
+| Condition | Classification | Expected handling |
+| --------- | -------------- | ----------------- |
+| Malformed tool-call JSON/args from LLM | Recoverable | Return `tool_result` error (`isError=true`), keep process alive |
+| Tool argument schema validation failure | Recoverable | Return validation error as `tool_result`, let model retry |
+| Disallowed/unknown tool call | Recoverable | Return blocked tool error, continue turn |
+| Missing/malformed `task.json` at subagent startup | Unrecoverable | Fail fast (bootstrap contract broken) |
+| Impossible phase routing / internal invariant breach | Unrecoverable | Fail fast |
+| Unexpected runtime state with no clear deterministic recovery | Unrecoverable | Fail fast |
+
+Crashing the process for recoverable model-output errors converts a local retry
+loop into a pipeline-level failure and should be avoided.
+
 ### Don't write state.json from outside state.ts / tool code
 
 The state module (`epic/state.ts`) and orchestrator tools are the only
@@ -346,11 +386,11 @@ Neither alone is sufficient.**
 Three enforcement mechanisms are available — use the appropriate one for the
 constraint:
 
-| Mechanism | What it enforces | How |
-|-----------|-----------------|-----|
-| **Permission fence** (`checkPermission`) | Which tools a role (or step) can use | Block at `tool_call` event; LLM sees a rejection message |
-| **`validateStepCompletion()`** | Required pre-calls before step advancement | Block `koan_complete_step`; LLM sees an error and must comply |
-| **Tool description** | Soft guidance on when to call | Cannot be enforced; LLM can ignore it |
+| Mechanism                                | What it enforces                           | How                                                           |
+| ---------------------------------------- | ------------------------------------------ | ------------------------------------------------------------- |
+| **Permission fence** (`checkPermission`) | Which tools a role (or step) can use       | Block at `tool_call` event; LLM sees a rejection message      |
+| **`validateStepCompletion()`**           | Required pre-calls before step advancement | Block `koan_complete_step`; LLM sees an error and must comply |
+| **Tool description**                     | Soft guidance on when to call              | Cannot be enforced; LLM can ignore it                         |
 
 Any behavioral constraint that matters for correctness needs **both** a prompt
 instruction (so the LLM knows what to do) and a mechanical gate (so
