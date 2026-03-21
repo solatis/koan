@@ -36,7 +36,7 @@
 
   /* Font sizes */
   --font-size-xs: 12px;
-  --font-size-sm: 13px;
+  --font-size-sm: 14px;
   --font-size-md: 15px;
   --font-size-lg: 16px;
 
@@ -72,4 +72,32 @@ html, body {
   font-family: var(--font-sans);
   font-size: var(--font-size-md);
   line-height: 1.5;
+}
+
+/* Global scrollbar styling — applied via * so every scrollable region (activity
+ * feed, sidebar, monitor) inherits the same dark appearance without per-element
+ * rules. Uses both the standard Firefox property and the webkit pseudo-elements
+ * for cross-browser coverage. Thumb colour matches --border; hover lightens to
+ * --text-ghost to indicate interactivity without drawing attention. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-ghost);
 }
