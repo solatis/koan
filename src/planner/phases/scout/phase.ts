@@ -22,13 +22,12 @@ export class ScoutPhase extends BasePhase {
 
   constructor(
     pi: ExtensionAPI,
-    config: { epicDir: string; question: string; outputFile: string; investigatorRole: string },
+    config: { question: string; outputFile: string; investigatorRole: string },
     ctx: RuntimeContext,
     log?: Logger,
     eventLog?: EventLog,
   ) {
     super(pi, ctx, log ?? createLogger("ScoutPhase"), eventLog);
-    void config.epicDir; // used via ctx.epicDir for permission scoping
     this.question = config.question;
     this.outputFile = config.outputFile;
     this.investigatorRole = config.investigatorRole;

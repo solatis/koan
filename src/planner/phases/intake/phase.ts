@@ -53,13 +53,12 @@ export class IntakePhase extends BasePhase {
 
   constructor(
     pi: ExtensionAPI,
-    config: { epicDir: string },
     ctx: RuntimeContext,
     log?: Logger,
     eventLog?: EventLog,
   ) {
     super(pi, ctx, log ?? createLogger("IntakePhase"), eventLog);
-    this.conversationPath = path.join(config.epicDir, "conversation.jsonl");
+    this.conversationPath = path.join(ctx.epicDir!, "conversation.jsonl");
   }
 
   protected getSystemPrompt(): string {

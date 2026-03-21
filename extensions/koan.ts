@@ -34,16 +34,18 @@ function currentModelId(ctx: ExtensionContext): string | null {
   return `${model.provider}/${model.id}`;
 }
 
-// Registers infrastructure-level event handlers that must be in place before
-// before_agent_start fires. Currently this is only the truncation override,
-// but the wrapper makes the ordering constraint visible at the call site.
-//
-// Why before before_agent_start? The audit tool_result handler registers
-// inside before_agent_start. The truncation override must precede it so the
-// audit handler sees the original event, not the replacement content we
-// return. Calling this function immediately after registerAllTools (and
-// before the dispatched guard) makes the ordering structural rather than
-// relying on a comment buried inside registerTruncationOverride's impl.
+/**
+ * Registers infrastructure-level event handlers that must be in place before
+ * `before_agent_start` fires.
+ *
+ * **Ordering contract:** call immediately after `registerAllTools` and before
+ * the `before_agent_start` dispatch guard. The audit system's `tool_result`
+ * handler is registered inside `before_agent_start`; the truncation override
+ * installed here must precede it so the audit handler observes the original
+ * event rather than the replacement content we return. Placing this call
+ * structurally before `before_agent_start` makes the constraint positional
+ * rather than implicit.
+ */
 function registerInfrastructureHandlers(pi: ExtensionAPI): void {
   registerTruncationOverride(pi);
 }

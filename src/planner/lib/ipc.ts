@@ -154,3 +154,66 @@ export function createCancelledResponse(requestId: string): AskResponse {
     payload: null,
   };
 }
+
+// -- Poll helper --
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Outcome of a single pollIpcUntilResponse call. */
+export type PollOutcome = "answered" | "cancelled" | "aborted" | "file-gone" | "completed";
+
+/** Return value of pollIpcUntilResponse: outcome tag + the IPC file snapshot (if any). */
+export interface PollIpcResult {
+  outcome: PollOutcome;
+  ipc: IpcFile | null;
+}
+
+/**
+ * Poll ipc.json until a response appears, the signal aborts, or the file vanishes.
+ *
+ * Extracted because executeAskQuestion and executeRequestScouts share identical
+ * poll logic. The finally block guarantees ipc.json deletion even when the signal
+ * aborts mid-poll -- without it, a stale ipc.json would block the next tool call.
+ */
+export async function pollIpcUntilResponse(
+  dir: string,
+  ipc: IpcFile,
+  signal?: AbortSignal | null,
+): Promise<PollIpcResult> {
+  let aborted = false;
+  const onAbort = () => { aborted = true; };
+  if (signal) signal.addEventListener("abort", onAbort, { once: true });
+
+  let outcome: PollOutcome = "file-gone";
+  let finalIpc: IpcFile | null = null;
+
+  try {
+    while (!aborted) {
+      await sleep(500);
+      if (signal?.aborted) { aborted = true; break; }
+
+      const current = await readIpcFile(dir);
+      if (current === null) { outcome = "file-gone"; break; }
+
+      if (current.type === "ask" && current.response !== null && current.response.id === ipc.id) {
+        outcome = current.response.cancelled ? "cancelled" : "answered";
+        finalIpc = current;
+        break;
+      }
+
+      if (current.type === "scout-request" && current.response !== null && current.id === ipc.id) {
+        outcome = "completed";
+        finalIpc = current;
+        break;
+      }
+    }
+
+    if (aborted) outcome = "aborted";
+  } finally {
+    await deleteIpcFile(dir);
+  }
+
+  return { outcome, ipc: finalIpc };
+}

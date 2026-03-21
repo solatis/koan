@@ -16,13 +16,11 @@ export class DecomposerPhase extends BasePhase {
 
   constructor(
     pi: ExtensionAPI,
-    config: { epicDir: string },
     ctx: RuntimeContext,
     log?: Logger,
     eventLog?: EventLog,
   ) {
     super(pi, ctx, log ?? createLogger("DecomposerPhase"), eventLog);
-    void config;
   }
 
   protected getSystemPrompt(): string {

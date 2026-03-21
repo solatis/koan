@@ -233,17 +233,30 @@ export interface WebServerHandle {
   readonly url: string;
   readonly port: number;
 
-  // Push methods (fire-and-forget, SSE)
+  // ---------------------------------------------------------------------------
+  // Concern 1 -- Push / SSE (fire-and-forget, no response expected)
+  //   pushPhase, pushStories, pushLogs, pushNotification
+  //
+  // Concern 2 -- Agent lifecycle / observation
+  //   registerAgent, startAgent, completeAgent, trackSubagent, clearSubagent
+  //
+  // Concern 3 -- Blocking human input (returns a Promise that resolves when the
+  //             user responds; must be called with an AbortSignal for cancellation)
+  //   requestReview, requestAnswer, requestModelConfig
+  //
+  // Note: this interface conflates three unrelated responsibilities. A future
+  // split into three narrower interfaces (PushHandle, AgentHandle, InputHandle)
+  // would allow callers to depend only on what they use. The split is deferred
+  // because it requires updating all call sites in driver.ts and koan.ts.
+  // ---------------------------------------------------------------------------
+
+  // Concern 1 -- Push / SSE
   pushPhase(phase: EpicPhase): void;
   pushStories(stories: Array<{ storyId: string; status: StoryStatus }>): void;
   pushLogs(lines: LogLine[], currentToolCallId?: string | null): void;
   pushNotification(message: string, level: "info" | "warning" | "error"): void;
 
-  // Observation polling (replaces startActivePolling)
-  trackSubagent(dir: string, role: string, storyId?: string): void;
-  clearSubagent(): void;
-
-  // Agent registration for the flat table
+  // Concern 2 -- Agent lifecycle / observation
   registerAgent(info: {
     id: string;
     name: string;
@@ -255,12 +268,13 @@ export interface WebServerHandle {
   }): void;
   startAgent(id: string): void;
   completeAgent(id: string): void;
+  trackSubagent(dir: string, role: string, storyId?: string): void;
+  clearSubagent(): void;
 
-  // Blocking input methods
+  // Concern 3 -- Blocking human input
   requestReview(stories: ReviewStory[], signal?: AbortSignal): Promise<ReviewResult>;
   requestAnswer(question: AskQuestion, signal: AbortSignal): Promise<AnswerResult>;
   requestModelConfig(): Promise<void>;
 
-  // Lifecycle
   close(): void;
 }

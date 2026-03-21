@@ -15,11 +15,12 @@ import type { RuntimeContext } from "../lib/runtime-context.js";
 import {
   ipcFileExists,
   writeIpcFile,
-  readIpcFile,
-  deleteIpcFile,
   createAskRequest,
   createScoutRequest,
+  pollIpcUntilResponse,
   type AskAnswerPayload,
+  type AskIpcFile,
+  type ScoutIpcFile,
   type ScoutRequest,
 } from "../lib/ipc.js";
 
@@ -151,12 +152,6 @@ function buildQuestionResult(
   };
 }
 
-// -- Shared poll helper --
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 // -- Tool registration --
 
 const ASK_TOOL_DESCRIPTION = `
@@ -210,39 +205,13 @@ export async function executeAskQuestion(
   const ipc = createAskRequest(params);
   await writeIpcFile(dir, ipc);
 
-  let aborted = false;
-  const onAbort = () => { aborted = true; };
-  if (signal) signal.addEventListener("abort", onAbort, { once: true });
+  const { outcome, ipc: answeredIpc } = await pollIpcUntilResponse(dir, ipc, signal);
+  const answeredPayload: AskAnswerPayload | null =
+    outcome === "answered" && answeredIpc?.type === "ask"
+      ? (answeredIpc as AskIpcFile).response?.payload ?? null
+      : null;
 
-  type PollResult = "answered" | "cancelled" | "aborted" | "file-gone";
-  let pollResult: PollResult = "file-gone";
-  let answeredPayload: AskAnswerPayload | null = null;
-
-  try {
-    while (!aborted) {
-      await sleep(500);
-      if (signal?.aborted) { aborted = true; break; }
-
-      const current = await readIpcFile(dir);
-      if (current === null) { pollResult = "file-gone"; break; }
-
-      if (current.type === "ask" && current.response !== null && current.response.id === ipc.id) {
-        if (current.response.cancelled) {
-          pollResult = "cancelled";
-        } else {
-          pollResult = "answered";
-          answeredPayload = current.response.payload;
-        }
-        break;
-      }
-    }
-
-    if (aborted) pollResult = "aborted";
-  } finally {
-    await deleteIpcFile(dir);
-  }
-
-  switch (pollResult) {
+  switch (outcome) {
     case "answered": {
       const result = buildQuestionResult(params, answeredPayload);
       return {
@@ -261,6 +230,7 @@ export async function executeAskQuestion(
         details: undefined,
       };
     case "file-gone":
+    default:
       return {
         content: [{ type: "text" as const, text: "The question was cancelled." }],
         details: undefined,
@@ -292,38 +262,13 @@ export async function executeRequestScouts(
   const ipc = createScoutRequest(params.scouts as ScoutRequest[]);
   await writeIpcFile(dir, ipc);
 
-  let aborted = false;
-  const onAbort = () => { aborted = true; };
-  if (signal) signal.addEventListener("abort", onAbort, { once: true });
+  const { outcome, ipc: completedIpc } = await pollIpcUntilResponse(dir, ipc, signal);
 
-  type PollResult = "completed" | "aborted" | "file-gone";
-  let pollResult: PollResult = "file-gone";
-  let findings: string[] = [];
-  let failures: string[] = [];
-
-  try {
-    while (!aborted) {
-      await sleep(500);
-      if (signal?.aborted) { aborted = true; break; }
-
-      const current = await readIpcFile(dir);
-      if (current === null) { pollResult = "file-gone"; break; }
-
-      if (current.type === "scout-request" && current.response !== null && current.id === ipc.id) {
-        pollResult = "completed";
-        findings = current.response.findings;
-        failures = current.response.failures;
-        break;
-      }
-    }
-
-    if (aborted) pollResult = "aborted";
-  } finally {
-    await deleteIpcFile(dir);
-  }
-
-  switch (pollResult) {
+  switch (outcome) {
     case "completed": {
+      const scoutIpc = completedIpc as ScoutIpcFile;
+      const findings = scoutIpc.response!.findings;
+      const failures = scoutIpc.response!.failures;
       const sections: string[] = [
         `Scout findings: ${findings.length} completed, ${failures.length} failed.`,
         "",
@@ -353,6 +298,7 @@ export async function executeRequestScouts(
         details: undefined,
       };
     case "file-gone":
+    default:
       return {
         content: [{ type: "text" as const, text: "Scout request cancelled. Proceed without codebase context." }],
         details: undefined,

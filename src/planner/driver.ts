@@ -20,7 +20,8 @@ import {
   ensureStoryDirectory,
   discoverStoryIds,
 } from "./epic/state.js";
-import { spawnSubagent, type SpawnOptions } from "./subagent.js";
+import { spawnSubagent, type SpawnOptions, type SubagentResult } from "./subagent.js";
+import type { SubagentTask } from "./lib/task.js";
 import type { Logger } from "../utils/logger.js";
 import type { StoryState } from "./epic/types.js";
 import type { WebServerHandle, ReviewStory } from "./web/server-types.js";
@@ -84,6 +85,38 @@ function routeFromState(stories: StoryState[], log: Logger): RoutingDecision {
 }
 
 // ---------------------------------------------------------------------------
+// spawnTracked
+// ---------------------------------------------------------------------------
+
+/**
+ * Owns the web-server lifecycle (register -> track -> spawn -> clear -> complete)
+ * for a single subagent invocation.
+ *
+ * Does not own story status transitions -- those remain in the callers
+ * (runStoryExecution, runStoryReexecution).
+ *
+ * Full DI of spawnSubagent is out of scope: driver.ts is an entry point,
+ * exempt from the "no hard-coded dependencies" rule per project conventions.
+ */
+async function spawnTracked(
+  id: string,
+  name: string,
+  role: string,
+  task: SubagentTask,
+  dir: string,
+  storyId: string | undefined,
+  opts: SpawnOptions,
+  webServer: WebServerHandle | null,
+): Promise<SubagentResult> {
+  webServer?.registerAgent({ id, name, dir, role, model: null, parent: null });
+  webServer?.trackSubagent(dir, role, storyId);
+  const result = await spawnSubagent(task, dir, opts);
+  webServer?.clearSubagent();
+  webServer?.completeAgent(id);
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Phase A helpers
 // ---------------------------------------------------------------------------
 
@@ -95,17 +128,8 @@ async function runIntake(
   webServer: WebServerHandle | null,
 ): Promise<boolean> {
   const subagentDir = await ensureSubagentDirectory(epicDir, "intake");
-  webServer?.registerAgent({ id: "intake", name: "intake", dir: subagentDir, role: "intake", model: null, parent: null });
-  webServer?.trackSubagent(subagentDir, "intake");
-
-  const result = await spawnSubagent(
-    { role: "intake", epicDir },
-    subagentDir,
-    { cwd, extensionPath, log, webServer: webServer ?? undefined },
-  );
-
-  webServer?.clearSubagent();
-  webServer?.completeAgent("intake");
+  const opts: SpawnOptions = { cwd, extensionPath, log, webServer: webServer ?? undefined };
+  const result = await spawnTracked("intake", "intake", "intake", { role: "intake", epicDir }, subagentDir, undefined, opts, webServer);
   if (result.exitCode !== 0) {
     log("Intake failed", { exitCode: result.exitCode });
     return false;
@@ -121,17 +145,8 @@ async function runDecomposer(
   webServer: WebServerHandle | null,
 ): Promise<boolean> {
   const subagentDir = await ensureSubagentDirectory(epicDir, "decomposer");
-  webServer?.registerAgent({ id: "decomposer", name: "decomposer", dir: subagentDir, role: "decomposer", model: null, parent: null });
-  webServer?.trackSubagent(subagentDir, "decomposer");
-
-  const result = await spawnSubagent(
-    { role: "decomposer", epicDir },
-    subagentDir,
-    { cwd, extensionPath, log, webServer: webServer ?? undefined },
-  );
-
-  webServer?.clearSubagent();
-  webServer?.completeAgent("decomposer");
+  const opts: SpawnOptions = { cwd, extensionPath, log, webServer: webServer ?? undefined };
+  const result = await spawnTracked("decomposer", "decomposer", "decomposer", { role: "decomposer", epicDir }, subagentDir, undefined, opts, webServer);
   if (result.exitCode !== 0) {
     log("Decomposer failed", { exitCode: result.exitCode });
     return false;
@@ -160,13 +175,7 @@ async function runStoryExecution(
   // 2. Spawn planner.
   const plannerDir = await ensureSubagentDirectory(epicDir, `planner-${storyId}`);
   const plannerId = `planner-${storyId}`;
-  webServer?.registerAgent({ id: plannerId, name: `planner-${storyId}`, dir: plannerDir, role: "planner", model: null, parent: null });
-  webServer?.trackSubagent(plannerDir, "planner", storyId);
-
-  const planResult = await spawnSubagent({ role: "planner", epicDir, storyId }, plannerDir, opts);
-
-  webServer?.clearSubagent();
-  webServer?.completeAgent(plannerId);
+  const planResult = await spawnTracked(plannerId, `planner-${storyId}`, "planner", { role: "planner", epicDir, storyId }, plannerDir, storyId, opts, webServer);
 
   if (planResult.exitCode !== 0) {
     // Planner failed — skip executor, proceed directly to post-execution
@@ -180,13 +189,7 @@ async function runStoryExecution(
 
     const postDir = await ensureSubagentDirectory(epicDir, `orchestrator-post-${storyId}`);
     const postId = `orchestrator-post-${storyId}`;
-    webServer?.registerAgent({ id: postId, name: `orchestrator-post-${storyId}`, dir: postDir, role: "orchestrator", model: null, parent: null });
-    webServer?.trackSubagent(postDir, "orchestrator", storyId);
-
-    await spawnSubagent({ role: "orchestrator", epicDir, stepSequence: "post-execution", storyId }, postDir, opts);
-
-    webServer?.clearSubagent();
-    webServer?.completeAgent(postId);
+    await spawnTracked(postId, `orchestrator-post-${storyId}`, "orchestrator", { role: "orchestrator", epicDir, stepSequence: "post-execution", storyId }, postDir, storyId, opts, webServer);
     return;
   }
 
@@ -197,13 +200,7 @@ async function runStoryExecution(
   // 4. Spawn executor.
   const execDir = await ensureSubagentDirectory(epicDir, `executor-${storyId}`);
   const execId = `executor-${storyId}`;
-  webServer?.registerAgent({ id: execId, name: `executor-${storyId}`, dir: execDir, role: "executor", model: null, parent: null });
-  webServer?.trackSubagent(execDir, "executor", storyId);
-
-  const execResult = await spawnSubagent({ role: "executor", epicDir, storyId }, execDir, opts);
-
-  webServer?.clearSubagent();
-  webServer?.completeAgent(execId);
+  const execResult = await spawnTracked(execId, `executor-${storyId}`, "executor", { role: "executor", epicDir, storyId }, execDir, storyId, opts, webServer);
 
   if (execResult.exitCode !== 0) {
     log("Executor failed", { storyId, exitCode: execResult.exitCode });
@@ -216,13 +213,7 @@ async function runStoryExecution(
   // 6. Spawn orchestrator (post-execution).
   const postDir = await ensureSubagentDirectory(epicDir, `orchestrator-post-${storyId}`);
   const postId = `orchestrator-post-${storyId}`;
-  webServer?.registerAgent({ id: postId, name: `orchestrator-post-${storyId}`, dir: postDir, role: "orchestrator", model: null, parent: null });
-  webServer?.trackSubagent(postDir, "orchestrator", storyId);
-
-  await spawnSubagent({ role: "orchestrator", epicDir, stepSequence: "post-execution", storyId }, postDir, opts);
-
-  webServer?.clearSubagent();
-  webServer?.completeAgent(postId);
+  await spawnTracked(postId, `orchestrator-post-${storyId}`, "orchestrator", { role: "orchestrator", epicDir, stepSequence: "post-execution", storyId }, postDir, storyId, opts, webServer);
 }
 
 async function runStoryReexecution(
@@ -239,28 +230,16 @@ async function runStoryReexecution(
 
   const execDir = await ensureSubagentDirectory(epicDir, `executor-${storyId}-retry-${retryCount}`);
   const execId = `executor-${storyId}-retry-${retryCount}`;
-  webServer?.registerAgent({ id: execId, name: `executor-${storyId}-retry-${retryCount}`, dir: execDir, role: "executor", model: null, parent: null });
-  webServer?.trackSubagent(execDir, "executor", storyId);
-
   // retryContext flows from koan_retry_story's failure_summary into the task
   // manifest, where the executor reads it from step 1 guidance.
-  await spawnSubagent({ role: "executor", epicDir, storyId, retryContext: failureContext }, execDir, opts);
-
-  webServer?.clearSubagent();
-  webServer?.completeAgent(execId);
+  await spawnTracked(execId, `executor-${storyId}-retry-${retryCount}`, "executor", { role: "executor", epicDir, storyId, retryContext: failureContext }, execDir, storyId, opts, webServer);
 
   const story = await loadStoryState(epicDir, storyId);
   await saveStoryState(epicDir, storyId, { ...story, status: "verifying", updatedAt: new Date().toISOString() });
 
   const postDir = await ensureSubagentDirectory(epicDir, `orchestrator-post-${storyId}-retry-${retryCount}`);
   const postId = `orchestrator-post-${storyId}-retry-${retryCount}`;
-  webServer?.registerAgent({ id: postId, name: `orchestrator-post-${storyId}-retry-${retryCount}`, dir: postDir, role: "orchestrator", model: null, parent: null });
-  webServer?.trackSubagent(postDir, "orchestrator", storyId);
-
-  await spawnSubagent({ role: "orchestrator", epicDir, stepSequence: "post-execution", storyId }, postDir, opts);
-
-  webServer?.clearSubagent();
-  webServer?.completeAgent(postId);
+  await spawnTracked(postId, `orchestrator-post-${storyId}-retry-${retryCount}`, "orchestrator", { role: "orchestrator", epicDir, stepSequence: "post-execution", storyId }, postDir, storyId, opts, webServer);
 }
 
 async function refreshWebServerStories(epicDir: string, webServer: WebServerHandle): Promise<void> {
@@ -283,17 +262,8 @@ async function runStoryLoop(
     // 1. Spawn orchestrator (pre-execution) — selects first story.
     const preDir = await ensureSubagentDirectory(epicDir, "orchestrator-pre");
     const preId = "orchestrator-pre";
-    webServer?.registerAgent({ id: preId, name: "orchestrator-pre", dir: preDir, role: "orchestrator", model: null, parent: null });
-    webServer?.trackSubagent(preDir, "orchestrator");
-
-    const preResult = await spawnSubagent(
-      { role: "orchestrator", epicDir, stepSequence: "pre-execution" },
-      preDir,
-      { cwd, extensionPath, log, webServer: webServer ?? undefined },
-    );
-
-    webServer?.clearSubagent();
-    webServer?.completeAgent(preId);
+    const opts: SpawnOptions = { cwd, extensionPath, log, webServer: webServer ?? undefined };
+    const preResult = await spawnTracked(preId, "orchestrator-pre", "orchestrator", { role: "orchestrator", epicDir, stepSequence: "pre-execution" }, preDir, undefined, opts, webServer);
 
     if (preResult.exitCode !== 0) {
       return { success: false, summary: "Pre-execution orchestrator failed" };

@@ -28,7 +28,7 @@ export async function dispatchPhase(
 
   switch (task.role) {
     case "intake": {
-      const phase = new IntakePhase(pi, { epicDir: task.epicDir }, ctx, logger, eventLog);
+      const phase = new IntakePhase(pi, ctx, logger, eventLog);
       await phase.begin();
       break;
     }
@@ -37,7 +37,6 @@ export async function dispatchPhase(
       // outputFile is relative to subagentDir in the task manifest.
       // ScoutPhase receives the resolved absolute path.
       const phase = new ScoutPhase(pi, {
-        epicDir: task.epicDir,
         question: task.question,
         outputFile: path.join(ctx.subagentDir!, task.outputFile),
         investigatorRole: task.investigatorRole,
@@ -47,7 +46,7 @@ export async function dispatchPhase(
     }
 
     case "decomposer": {
-      const phase = new DecomposerPhase(pi, { epicDir: task.epicDir }, ctx, logger, eventLog);
+      const phase = new DecomposerPhase(pi, ctx, logger, eventLog);
       await phase.begin();
       break;
     }

@@ -16,28 +16,22 @@ export const CONFIG_PATH = path.join(os.homedir(), ".koan", "config.json");
 
 export type ModelTierConfig = Record<ModelTier, string>;
 
+export interface KoanConfig {
+  modelTiers: ModelTierConfig | null;
+  scoutConcurrency: number;
+}
+
 interface KoanConfigFile {
   modelTiers?: Record<string, string>;
   scoutConcurrency?: number;
   [key: string]: unknown;
 }
 
-export async function loadModelTierConfig(): Promise<ModelTierConfig | null> {
-  let raw: string;
-  try {
-    raw = await fs.readFile(CONFIG_PATH, "utf8");
-  } catch {
-    return null;
-  }
+// -- Private helpers --------------------------------------------------------
 
-  let parsed: KoanConfigFile;
-  try {
-    parsed = JSON.parse(raw) as KoanConfigFile;
-  } catch {
-    log("config.json is not valid JSON; treating model tier config as absent.");
-    return null;
-  }
+const DEFAULT_SCOUT_CONCURRENCY = 8;
 
+function parseModelTiers(parsed: KoanConfigFile): ModelTierConfig | null {
   if (!parsed.modelTiers || typeof parsed.modelTiers !== "object") {
     return null;
   }
@@ -74,21 +68,47 @@ export async function loadModelTierConfig(): Promise<ModelTierConfig | null> {
   return result as ModelTierConfig;
 }
 
-// -- Scout concurrency -------------------------------------------------------
-
-const DEFAULT_SCOUT_CONCURRENCY = 8;
-
-export async function loadScoutConcurrency(): Promise<number> {
-  try {
-    const raw = await fs.readFile(CONFIG_PATH, "utf8");
-    const parsed = JSON.parse(raw) as KoanConfigFile;
-    if (typeof parsed.scoutConcurrency === "number" && parsed.scoutConcurrency > 0) {
-      return parsed.scoutConcurrency;
-    }
-  } catch {
-    // File missing or invalid — use default.
+function parseScoutConcurrency(parsed: KoanConfigFile): number {
+  if (typeof parsed.scoutConcurrency === "number" && parsed.scoutConcurrency > 0) {
+    return parsed.scoutConcurrency;
   }
   return DEFAULT_SCOUT_CONCURRENCY;
+}
+
+// -- Public loaders ---------------------------------------------------------
+
+export async function loadKoanConfig(): Promise<KoanConfig> {
+  const defaults: KoanConfig = { modelTiers: null, scoutConcurrency: DEFAULT_SCOUT_CONCURRENCY };
+
+  let raw: string;
+  try {
+    raw = await fs.readFile(CONFIG_PATH, "utf8");
+  } catch {
+    return defaults;
+  }
+
+  let parsed: KoanConfigFile;
+  try {
+    parsed = JSON.parse(raw) as KoanConfigFile;
+  } catch {
+    log("config.json is not valid JSON; treating config as absent.");
+    return defaults;
+  }
+
+  return {
+    modelTiers: parseModelTiers(parsed),
+    scoutConcurrency: parseScoutConcurrency(parsed),
+  };
+}
+
+export async function loadModelTierConfig(): Promise<ModelTierConfig | null> {
+  return (await loadKoanConfig()).modelTiers;
+}
+
+// -- Scout concurrency ------------------------------------------------------
+
+export async function loadScoutConcurrency(): Promise<number> {
+  return (await loadKoanConfig()).scoutConcurrency;
 }
 
 export async function saveScoutConcurrency(concurrency: number): Promise<void> {
@@ -110,7 +130,7 @@ export async function saveScoutConcurrency(concurrency: number): Promise<void> {
   await fs.rename(tmpPath, CONFIG_PATH);
 }
 
-// -- Model tiers (save) ------------------------------------------------------
+// -- Model tiers (save) -----------------------------------------------------
 
 export async function saveModelTierConfig(config: ModelTierConfig): Promise<void> {
   const configDir = path.dirname(CONFIG_PATH);
