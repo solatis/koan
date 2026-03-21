@@ -109,6 +109,22 @@ export function handleReviewCancelledEvent(d) {
     : {})
 }
 
+export function handleArtifactReviewEvent(d) {
+  set({
+    pendingInput: {
+      type: 'artifact-review',
+      requestId: d.requestId,
+      payload: { artifactPath: d.artifactPath, content: d.content, description: d.description },
+    }
+  })
+}
+
+export function handleArtifactReviewCancelledEvent(d) {
+  set(s => s.pendingInput?.requestId === d.requestId
+    ? { pendingInput: null, notifications: [...s.notifications, { id: Date.now(), message: 'The artifact review was cancelled.', level: 'warning' }] }
+    : {})
+}
+
 export function handleNotificationEvent(d) {
   set(s => ({
     notifications: [...s.notifications, { id: Date.now(), message: d.message, level: d.level }],

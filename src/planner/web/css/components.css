@@ -861,3 +861,105 @@
 .agent-doing-inflight {
   color: var(--text) !important;
 }
+
+/* ---- Artifact review ---- */
+.artifact-review-content {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--gap-lg);
+  overflow-y: auto;
+  max-height: 60vh;
+  margin-bottom: var(--gap-md);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-md);
+  line-height: 1.7;
+  color: var(--text);
+}
+
+.artifact-review-content h1,
+.artifact-review-content h2,
+.artifact-review-content h3,
+.artifact-review-content h4 {
+  color: var(--text-strong);
+  margin-top: var(--gap-lg);
+  margin-bottom: var(--gap-sm);
+}
+
+.artifact-review-content h1 { font-size: 1.4em; }
+.artifact-review-content h2 { font-size: 1.2em; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+.artifact-review-content h3 { font-size: 1.05em; }
+
+.artifact-review-content p { margin: var(--gap-sm) 0; }
+
+.artifact-review-content ul,
+.artifact-review-content ol {
+  padding-left: var(--gap-lg);
+  margin: var(--gap-sm) 0;
+}
+
+.artifact-review-content li { margin: 2px 0; }
+
+.artifact-review-content code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+.artifact-review-content pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--gap-md);
+  overflow-x: auto;
+  margin: var(--gap-sm) 0;
+}
+
+.artifact-review-content pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: var(--font-size-sm);
+}
+
+.artifact-review-content blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: var(--gap-md);
+  color: var(--text-muted);
+  margin: var(--gap-sm) 0;
+}
+
+.artifact-review-content strong { color: var(--text-strong); }
+
+.artifact-review-content a {
+  color: var(--blue);
+  text-decoration: underline;
+}
+
+.artifact-review-feedback {
+  width: 100%;
+  min-height: 80px;
+  padding: var(--gap-sm) var(--gap-md);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-md);
+  resize: vertical;
+  outline: none;
+  box-sizing: border-box;
+  margin-bottom: var(--gap-md);
+}
+
+.artifact-review-feedback:focus {
+  border-color: var(--blue-border);
+}
+
+.artifact-review-feedback::placeholder {
+  color: var(--text-dim);
+  font-style: italic;
+}
