@@ -23,7 +23,9 @@ import type {
   AnswerElement,
   LogLine,
   IntakeProgressEvent,
+  ArtifactReviewFeedback,
 } from "./server-types.js";
+import type { ArtifactReviewPayload } from "../lib/ipc.js";
 import type { EpicPhase, StoryStatus } from "../types.js";
 
 // ---------------------------------------------------------------------------
@@ -250,9 +252,9 @@ export async function startWebServer(epicDir: string): Promise<WebServerHandle> 
   // SSE clients
   const sseClients = new Set<http.ServerResponse>();
 
-  // Pending inputs (requestReview / requestAnswer / requestModelConfig)
+  // Pending inputs (requestReview / requestAnswer / requestModelConfig / requestArtifactReview)
   interface PendingEntry {
-    type: "review" | "ask" | "model-config";
+    type: "review" | "ask" | "model-config" | "artifact-review";
     resolve: (result: unknown) => void;
     reject: (err: Error) => void;
     payload: unknown;
@@ -316,6 +318,14 @@ export async function startWebServer(epicDir: string): Promise<WebServerHandle> 
         write("review", { requestId, stories: entry.payload });
       } else if (entry.type === "model-config") {
         write("model-config", entry.payload);
+      } else if (entry.type === "artifact-review") {
+        const p = entry.payload as ArtifactReviewPayload;
+        write("artifact-review", {
+          requestId,
+          artifactPath: p.artifactPath,
+          content: p.content,
+          description: p.description,
+        });
       }
     }
 
@@ -382,7 +392,7 @@ export async function startWebServer(epicDir: string): Promise<WebServerHandle> 
         agent.tokensReceived = projection.tokensReceived;
         agent.eventCount = projection.eventCount;
         // Cache the latest projection so polling timers can read confidence/iteration
-        // without issuing a second readProjection call for the same agent.
+        // without issuing a second readProjection call for the same file in the same tick.
         agent.lastProjection = projection;
         if (projection.status !== "running") {
           agent.status = projection.status;
@@ -616,6 +626,26 @@ export async function startWebServer(epicDir: string): Promise<WebServerHandle> 
         return;
       }
 
+      if (method === "POST" && pathname === "/api/artifact-review") {
+        const body = await readBody(req).catch(() => null);
+        const b = body as { token?: string; requestId?: string; feedback?: string } | null;
+        if (!b) { sendJson(res, 400, { ok: false, error: "Invalid body" }); return; }
+        if (b.token !== sessionToken) { sendJson(res, 403, { ok: false, error: "Invalid token" }); return; }
+        const { requestId, feedback } = b;
+        if (!requestId || typeof feedback !== "string" || feedback.trim() === "") {
+          sendJson(res, 400, { ok: false, error: "Missing requestId or feedback" }); return;
+        }
+        const pending = pendingInputs.get(requestId);
+        if (!pending || pending.type !== "artifact-review") {
+          sendJson(res, 409, { ok: false, error: "No pending artifact review with this requestId" }); return;
+        }
+        const artifactResult: ArtifactReviewFeedback = { feedback };
+        pending.resolve(artifactResult);
+        pendingInputs.delete(requestId);
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+
       if (method === "POST" && pathname === "/api/cancel") {
         const body = await readBody(req).catch(() => null);
         const b = body as { token?: string } | null;
@@ -838,6 +868,42 @@ export async function startWebServer(epicDir: string): Promise<WebServerHandle> 
               payload,
             });
             pushEvent("model-config", payload);
+          });
+        },
+
+        requestArtifactReview(payload: ArtifactReviewPayload, signal: AbortSignal): Promise<ArtifactReviewFeedback> {
+          return new Promise<ArtifactReviewFeedback>((res, rej) => {
+            const requestId = randomUUID();
+            const abortHandler = () => {
+              pendingInputs.delete(requestId);
+              pushEvent("artifact-review-cancelled", { requestId });
+              const err = new Error(`Artifact review cancelled: signal aborted`);
+              (err as NodeJS.ErrnoException).name = "AbortError";
+              rej(err);
+            };
+            pendingInputs.set(requestId, {
+              type: "artifact-review",
+              resolve: (result: unknown) => {
+                signal.removeEventListener("abort", abortHandler);
+                res(result as ArtifactReviewFeedback);
+              },
+              reject: (err: Error) => {
+                signal.removeEventListener("abort", abortHandler);
+                rej(err);
+              },
+              payload,
+            });
+            pushEvent("artifact-review", {
+              requestId,
+              artifactPath: payload.artifactPath,
+              content: payload.content,
+              description: payload.description,
+            });
+            if (signal.aborted) {
+              abortHandler();
+            } else {
+              signal.addEventListener("abort", abortHandler, { once: true });
+            }
           });
         },
 

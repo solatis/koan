@@ -3,6 +3,7 @@
 
 import type { LogLine } from "../lib/audit.js";
 import type { EpicPhase, StoryStatus } from "../types.js";
+import type { ArtifactReviewPayload } from "../lib/ipc.js";
 
 export type { LogLine, EpicPhase, StoryStatus };
 
@@ -111,6 +112,24 @@ export interface AnswerResult {
   cancelled: boolean;
   answer: AnswerElement;
 }
+
+// ---------------------------------------------------------------------------
+// Artifact review types
+// ---------------------------------------------------------------------------
+
+export interface ArtifactReviewEvent {
+  requestId: string;
+  artifactPath: string;
+  content: string;        // raw markdown
+  description?: string;
+}
+
+export interface ArtifactReviewFeedback {
+  feedback: string;       // "Accept" or free-form text
+}
+
+// Re-export for use in ipc-responder.ts without double-importing ipc.ts
+export type { ArtifactReviewPayload };
 
 // ---------------------------------------------------------------------------
 // SSE event payload types (server → browser)
@@ -242,7 +261,7 @@ export interface WebServerHandle {
   //
   // Concern 3 -- Blocking human input (returns a Promise that resolves when the
   //             user responds; must be called with an AbortSignal for cancellation)
-  //   requestReview, requestAnswer, requestModelConfig
+  //   requestReview, requestAnswer, requestModelConfig, requestArtifactReview
   //
   // Note: this interface conflates three unrelated responsibilities. A future
   // split into three narrower interfaces (PushHandle, AgentHandle, InputHandle)
@@ -275,6 +294,7 @@ export interface WebServerHandle {
   requestReview(stories: ReviewStory[], signal?: AbortSignal): Promise<ReviewResult>;
   requestAnswer(question: AskQuestion, signal: AbortSignal): Promise<AnswerResult>;
   requestModelConfig(): Promise<void>;
+  requestArtifactReview(payload: ArtifactReviewPayload, signal: AbortSignal): Promise<ArtifactReviewFeedback>;
 
   close(): void;
 }

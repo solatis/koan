@@ -2,9 +2,10 @@
 // handles them, and writes responses back. Runs concurrently with subagent
 // process execution and terminates when the provided AbortSignal fires.
 //
-// Supports two request types:
-//   "ask"           → route to web server, write answer back
-//   "scout-request" → spawn scouts via pool(), write findings paths back
+// Supports three request types:
+//   "ask"             → route to web server, write answer back
+//   "scout-request"   → spawn scouts via pool(), write findings paths back
+//   "artifact-review" → route to web server, write feedback back
 
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
@@ -17,6 +18,8 @@ import {
   type AskAnswerPayload,
   type AskIpcFile,
   type ScoutIpcFile,
+  type ArtifactReviewIpcFile,
+  type ArtifactReviewResponse,
 } from "./ipc.js";
 import type { ScoutTask } from "./task.js";
 import { pool } from "./pool.js";
@@ -106,6 +109,47 @@ async function handleAskRequest(
   // Re-read and validate before writing — idempotence guard against stale requests.
   const current = await readIpcFile(subagentDir);
   if (current !== null && current.type === "ask" && current.response === null && current.id === ipc.id) {
+    await writeIpcFile(subagentDir, { ...current, response });
+  }
+}
+
+// Handles a pending artifact-review request: routes to web server, writes feedback.
+async function handleArtifactReviewRequest(
+  subagentDir: string,
+  ipc: ArtifactReviewIpcFile,
+  webServer: WebServerHandle,
+  signal: AbortSignal,
+): Promise<void> {
+  const { payload } = ipc;
+
+  let feedback: string;
+  try {
+    const result = await webServer.requestArtifactReview(payload, signal);
+    feedback = result.feedback;
+  } catch (err: unknown) {
+    if (err instanceof Error && (err.name === "AbortError" || signal.aborted)) {
+      const current = await readIpcFile(subagentDir);
+      if (current !== null && current.type === "artifact-review" && current.response === null && current.id === ipc.id) {
+        const cancelledResponse: ArtifactReviewResponse = {
+          id: ipc.id,
+          respondedAt: new Date().toISOString(),
+          feedback: "Review cancelled.",
+        };
+        await writeIpcFile(subagentDir, { ...current, response: cancelledResponse });
+      }
+      return;
+    }
+    throw err;
+  }
+
+  const response: ArtifactReviewResponse = {
+    id: ipc.id,
+    respondedAt: new Date().toISOString(),
+    feedback,
+  };
+  // Re-read and validate before writing — idempotence guard against stale requests.
+  const current = await readIpcFile(subagentDir);
+  if (current !== null && current.type === "artifact-review" && current.response === null && current.id === ipc.id) {
     await writeIpcFile(subagentDir, { ...current, response });
   }
 }
@@ -220,6 +264,8 @@ export async function runIpcResponder(
         await handleAskRequest(subagentDir, ipc, webServer, signal);
       } else if (ipc.type === "scout-request" && scoutContext) {
         await handleScoutRequest(subagentDir, ipc, scoutContext, webServer, signal);
+      } else if (ipc.type === "artifact-review") {
+        await handleArtifactReviewRequest(subagentDir, ipc, webServer, signal);
       }
     } catch {
       // Swallow all errors — transient filesystem issues must not abort the parent session.
