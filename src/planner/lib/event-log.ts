@@ -138,9 +138,13 @@ export class EventLog {
     this.fd = await fs.open(this.eventsPath, "a");
     await this.writeState();
     // Heartbeat keeps updatedAt fresh even during long-running steps.
+    // unref() so the timer doesn't prevent process exit — pi's print mode
+    // relies on natural event loop drain (no process.exit()) and never
+    // emits session_shutdown, so EventLog.close() may not be called.
     this.heartbeat = setInterval(() => {
       void this.append({ kind: "heartbeat" } as Omit<HeartbeatEvent, "ts" | "seq">);
     }, HEARTBEAT_MS);
+    this.heartbeat.unref();
   }
 
   // Assigns ts + seq, appends JSON line, folds, writes state atomically.
