@@ -8,7 +8,7 @@ How koan spawns, manages, and terminates LLM subagent processes.
 
 ## Task Manifest
 
-Every subagent starts as a generic `pi -p` process with one koan-specific
+Every subagent starts as a generic `pi --mode json -p` process with one koan-specific
 input: a directory path. The koan extension reads `task.json` from that
 directory to learn what kind of subagent it is, what epic it belongs to, and
 what work to perform.
@@ -74,7 +74,7 @@ type SubagentTask =
 
 1. Parent calls `ensureSubagentDirectory()` → creates the directory
 2. Parent writes `task.json` (atomic: tmp + rename)
-3. Parent spawns `pi -p --koan-dir {subagentDir} ...`
+3. Parent spawns `pi --mode json -p --koan-dir {subagentDir} ...`
 4. Child extension reads `task.json` at startup → dispatches to phase
 5. `task.json` is never modified after spawn
 
@@ -112,9 +112,10 @@ driver: webServer.registerAgent(...)
 driver: webServer.trackSubagent(subagentDir, role)
 driver: spawnSubagent(task, subagentDir, opts)
           → resolves model for role (3-tier: strong/standard/cheap)
-          → builds CLI args: pi -p -e ext --koan-dir dir [--model model] "boot prompt"
+          → builds CLI args: pi --mode json -p -e ext --koan-dir dir [--model model] "boot prompt"
           → spawn("pi", args, { cwd, stdio: ["ignore", "pipe", "pipe"] })
           → captures stdout/stderr to subagentDir/stdout.log, stderr.log
+          → parses stdout JSONL for text_delta events → forwards deltas to web server SSE
           → starts IPC responder concurrently (if webServer available)
           → waits for proc.on("close")
           → aborts IPC responder
@@ -127,7 +128,7 @@ driver: checks exitCode, routes to next phase
 ### Child side
 
 ```
-pi -p starts with koan extension
+pi --mode json -p starts with koan extension
 koan.ts init:
   → registers --koan-dir flag
   → creates RuntimeContext { epicDir: null, subagentDir: null, onCompleteStep: null }
@@ -384,8 +385,8 @@ After a subagent runs, its directory contains:
   state.json          # Output: audit projection (written by child, polled by parent)
   events.jsonl        # Output: append-only audit log
   ipc.json            # Transient: runtime communication (created/deleted per request)
-  stdout.log          # Captured stdout from pi -p process
-  stderr.log          # Captured stderr from pi -p process
+  stdout.log          # JSONL event stream from pi --mode json -p (structured, not raw text)
+  stderr.log          # Captured stderr from pi process
   findings.md         # Task output (scouts)
   context.md          # Task output (intake — conversation, codebase findings, decisions)
 ```

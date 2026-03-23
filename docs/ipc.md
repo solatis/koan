@@ -12,8 +12,8 @@ File-based inter-process communication between parent and subagent processes.
 
 ## Overview
 
-Subagent `pi -p` processes cannot communicate with the parent via stdin (it is
-`"ignore"`). Instead, they share a single `ipc.json` file in the subagent
+Subagent `pi --mode json -p` processes cannot communicate with the parent via
+stdin (it is `"ignore"`). Instead, they share a single `ipc.json` file in the subagent
 directory. The subagent writes a request; the parent polls, handles it, and
 writes the response back. The subagent polls for the response.
 

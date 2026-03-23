@@ -9,6 +9,7 @@ Spoke documents:
 - [docs/intake-loop.md](docs/intake-loop.md) — confidence-gated loop, non-linear step progression, prompt engineering
 - [docs/epic-brief.md](docs/epic-brief.md) — brief artifact, brief-writer subagent, downstream references
 - [docs/artifact-review.md](docs/artifact-review.md) — artifact review IPC protocol, review loop, reusability
+- [docs/token-streaming.md](docs/token-streaming.md) — stdout JSONL parsing, pi `--mode json` integration, SSE delta path
 
 **Pipeline phases:** `intake` → `brief` → `decomposition` → `review` → `executing` → `completed`
 
@@ -24,7 +25,7 @@ both worlds.
 
 ## 2. Step-First Workflow Pattern (critical)
 
-Every subagent is a `pi -p` process. Once the LLM produces text without a tool
+Every subagent is a `pi --mode json -p` process. The `--mode json` flag makes pi emit structured JSONL on stdout instead of human-readable text; `-p` keeps it non-interactive (exits after processing the boot prompt without waiting on stdin). Once the LLM produces text without a tool
 call, the process exits — there is no stdin to recover.
 
 **The first thing any subagent does is call `koan_complete_step`.** The spawn

@@ -46,8 +46,7 @@ failures in the deterministic driver. Markdown is forgiving; JSON is not.
 
 ### 2. Step-first workflow
 
-Every subagent is a `pi -p` process. Once the LLM produces text without a tool
-call, the process exits — there is no stdin to recover. The entire workflow
+Every subagent is a `pi --mode json -p` process. `--mode json` makes pi emit structured JSONL on stdout instead of human-readable text; `-p` keeps it non-interactive (exits after processing the boot prompt without waiting on stdin). Once the LLM produces text without a tool call, the process exits — there is no stdin to recover. The entire workflow
 depends on the LLM calling `koan_complete_step` reliably.
 
 **The first thing any subagent does is call `koan_complete_step`.** The spawn
@@ -132,7 +131,7 @@ other process-level channels.
 
 ```
 # Spawn interface: one koan flag, the rest is pi-level
-pi -p -e {extensionPath} --koan-dir {subagentDir} [--model {model}] "{bootPrompt}"
+pi --mode json -p -e {extensionPath} --koan-dir {subagentDir} [--model {model}] "{bootPrompt}"
 ```
 
 **Why:** CLI flags are a flat namespace — they cause naming collisions (e.g.,
@@ -221,6 +220,12 @@ When adding a new piece of state that the UI should see, wire all five layers:
 
 All five layers must be present. Missing any one of them produces silent data
 loss — the event is appended but never reaches the browser.
+
+**Exception — ephemeral display data:** High-frequency data with no persistence
+value (e.g., token deltas) should bypass the audit pipeline and push directly
+to SSE. Routing hundreds of events per second through `events.jsonl` + `fold()`
++ `state.json` adds I/O overhead with no benefit. See
+[token-streaming.md](./token-streaming.md) for the alternate path.
 
 ---
 
@@ -459,3 +464,15 @@ subagent directory before spawning. CLI flags are for bootstrap only (locating
 the directory). Structured data in flags creates flat-namespace collisions,
 size limits, and an uninspectable interface. The directory-as-contract
 invariant exists specifically to prevent this.
+
+### Don't put high-frequency ephemeral data through the audit pipeline
+
+Token deltas and similar high-frequency signals arrive at hundreds of events
+per second. Routing them through the audit pipeline (`events.jsonl` → `fold()`
+→ `state.json`) would mean hundreds of append + fold + atomic-write cycles per
+second for data that has no persistence value — it is display-only and cleared
+when the subagent finishes.
+
+The stdout JSONL parsing path exists for exactly this case: parse `text_delta`
+events directly from the subagent's stdout and push them to SSE clients without
+touching the audit system. See [token-streaming.md](./token-streaming.md).
