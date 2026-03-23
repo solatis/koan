@@ -75,8 +75,10 @@
 .activity-feed-inner {
   display: flex;
   flex-direction: column;
+  justify-content: flex-end;   /* gravity: content hugs bottom of viewport */
   gap: 2px;
   max-width: 960px;
+  min-height: 100%;            /* fill scroll container so justify-content works */
 }
 
 /* ---- Activity cards (thinking, future: tool results) ---- */
