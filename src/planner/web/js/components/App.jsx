@@ -3,11 +3,11 @@
 // it stays at the top because .app is a flex column with overflow:hidden and
 // child areas scroll internally.
 //
-// Two mutually exclusive content modes below the header:
+// Three-column workspace shell below the header:
 //
-//   Interactive — PhaseContent fills a centred scrollable column. Used for
-//                 forms, settings overlay, loading screen, and completion.
-//   Live        — StatusSidebar on the left, ActivityFeed on the right.
+//   Left   -- StatusSidebar (live mode only)
+//   Center -- main-panel: PhaseContent (interactive) or ActivityFeed + StreamingOutput (live)
+//   Right  -- ArtifactsFolder (always mounted)
 //
 // isInteractive = !phase || pendingInput || showSettings || phase === 'completed'
 //
@@ -20,6 +20,8 @@ import { ActivityFeed } from './ActivityFeed.jsx'
 import { AgentMonitor } from './AgentMonitor.jsx'
 import { StatusSidebar } from './StatusSidebar.jsx'
 import { Notifications } from './Notifications.jsx'
+// StreamingOutput removed — streaming tokens now render inline in ActivityFeed's ThinkingCard
+import { ArtifactsFolder } from './ArtifactsFolder.jsx'
 import { useStore } from '../store.js'
 
 export function App({ token, topic }) {
@@ -34,23 +36,21 @@ export function App({ token, topic }) {
   return (
     <div class="app">
       <Header />
-      {isInteractive ? (
-        <main class="main-panel">
-          <div class="phase-content">
-            <PhaseContent token={token} topic={topic} />
-          </div>
-        </main>
-      ) : (
-        // Live layout: status sidebar on the left, activity feed on the right.
-        <div class="live-layout">
-          <StatusSidebar />
-          <div class="live-main">
-            <main class="main-panel">
+      <div class="workspace">
+        {!isInteractive && <StatusSidebar />}
+        <div class="workspace-main">
+          <main class="main-panel">
+            {isInteractive ? (
+              <div class="phase-content">
+                <PhaseContent token={token} topic={topic} />
+              </div>
+            ) : (
               <ActivityFeed />
-            </main>
-          </div>
+            )}
+          </main>
         </div>
-      )}
+        <ArtifactsFolder token={token} />
+      </div>
       <AgentMonitor />
       <Notifications />
     </div>

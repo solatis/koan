@@ -33,3 +33,16 @@ export async function submitReview({ token, requestId, approved, skipped }) {
     console.error('Failed to submit review:', err)
   }
 }
+
+export async function fetchArtifacts(token) {
+  const resp = await fetch(`/api/artifacts?session=${encodeURIComponent(token)}`)
+  if (!resp.ok) throw new Error('Failed to fetch artifacts')
+  return resp.json()
+}
+
+export async function fetchArtifactContent(token, path) {
+  const resp = await fetch(`/api/artifact?session=${encodeURIComponent(token)}&path=${encodeURIComponent(path)}`)
+  if (resp.status === 404) throw Object.assign(new Error('File not found'), { status: 404 })
+  if (!resp.ok) throw new Error('Failed to fetch artifact content')
+  return resp.json()
+}

@@ -13,6 +13,17 @@ export interface ArtifactEntry {
   modifiedAt: string;
 }
 
+// -- Scope --
+
+export function isArtifactInScope(relativePath: string): boolean {
+  const norm = path.normalize(relativePath);
+  if (!norm.endsWith(".md")) return false;
+  const segments = norm.split(path.sep);
+  if (segments.includes("subagents")) return false;
+  // Must be root-level or under stories/
+  return segments.length === 1 || segments[0] === "stories";
+}
+
 // -- List --
 
 export async function listArtifacts(epicDir: string): Promise<ArtifactEntry[]> {
@@ -21,7 +32,7 @@ export async function listArtifacts(epicDir: string): Promise<ArtifactEntry[]> {
   // Pass 1: epic root .md files
   const rootEntries = await fs.readdir(epicDir, { withFileTypes: true });
   for (const e of rootEntries) {
-    if (!e.isFile() || !e.name.endsWith(".md")) continue;
+    if (!e.isFile() || !isArtifactInScope(e.name)) continue;
     const abs = path.join(epicDir, e.name);
     const stat = await fs.stat(abs);
     results.push({
@@ -36,11 +47,11 @@ export async function listArtifacts(epicDir: string): Promise<ArtifactEntry[]> {
   try {
     const entries = await fs.readdir(storiesDir, { withFileTypes: true, recursive: true });
     for (const e of entries) {
-      if (!e.isFile() || !e.name.endsWith(".md")) continue;
+      if (!e.isFile()) continue;
       const parent = (e as any).parentPath ?? (e as any).path ?? storiesDir;
       const abs = path.join(parent, e.name);
       const rel = path.relative(epicDir, abs);
-      if (rel.split(path.sep).includes("subagents")) continue;
+      if (!isArtifactInScope(rel)) continue;
       const stat = await fs.stat(abs);
       results.push({
         path: rel,
@@ -65,7 +76,25 @@ export async function readArtifact(epicDir: string, relativePath: string): Promi
   if (rel !== "" && (rel.startsWith("..") || path.isAbsolute(rel))) {
     throw new Error(`Path "${relativePath}" escapes the epic directory.`);
   }
+  if (!isArtifactInScope(rel)) {
+    throw new Error(`Path "${relativePath}" is outside artifact scope.`);
+  }
   return fs.readFile(abs, "utf8");
+}
+
+// -- Display helpers --
+
+export function formatArtifactSize(bytes: number): string {
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+export function artifactDisplayPath(relativePath: string): string {
+  const norm = path.posix.normalize(relativePath.replace(/\\/g, "/"));
+  const segments = norm.split("/");
+  if (segments.length === 1) return "epic root / " + segments[0];
+  return segments.join(" / ");
 }
 
 // -- Write --

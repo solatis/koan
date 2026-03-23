@@ -4,8 +4,9 @@
 import type { LogLine } from "../lib/audit.js";
 import type { EpicPhase, StoryStatus } from "../types.js";
 import type { ArtifactReviewPayload } from "../lib/ipc.js";
+import type { ArtifactEntry } from "../epic/artifacts.js";
 
-export type { LogLine, EpicPhase, StoryStatus };
+export type { LogLine, EpicPhase, StoryStatus, ArtifactEntry };
 
 // ---------------------------------------------------------------------------
 // Ask model types (relocated from ui/ask/ask-logic.ts)
@@ -244,6 +245,10 @@ export interface AgentEntry {
 
 export interface AgentsEvent {
   agents: AgentEntry[];
+}
+
+export interface ArtifactsEvent {
+  files: ArtifactEntry[];
 }
 
 export interface ModelConfigEvent {

@@ -399,3 +399,162 @@
   font-size: 13px;
   margin-top: 2px;
 }
+
+/* ---- Workspace shell: three-column layout ---- */
+
+.workspace {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+}
+
+.workspace-main {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.artifacts-sidebar {
+  width: clamp(240px, 20vw, 300px);
+  flex-shrink: 0;
+  background: var(--bg-elevated);
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  padding: var(--gap-md) var(--gap-lg);
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- Artifact tree ---- */
+
+.tree-folder {
+  margin-bottom: 2px;
+}
+
+.tree-folder-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-dim);
+  padding: 3px 4px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  border-radius: var(--radius-sm);
+  user-select: none;
+}
+
+.tree-folder-label:hover {
+  color: var(--text-muted);
+  background: var(--bg-surface);
+}
+
+.tree-children {
+  padding-left: 14px;
+}
+
+.tree-file {
+  display: flex;
+  flex-direction: column;
+  padding: 3px 4px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  margin-bottom: 1px;
+}
+
+.tree-hover {
+  background: var(--bg-surface);
+}
+
+.tree-file-name {
+  color: var(--blue);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.tree-file-meta {
+  color: var(--text-ghost);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.tree-new-badge {
+  display: inline-block;
+  background: var(--green);
+  color: #fff;
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+/* ---- Artifact overlay ---- */
+
+.artifact-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+
+.artifact-overlay-panel {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  width: 860px;
+  max-width: 92vw;
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.artifact-overlay-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.artifact-overlay-title {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.artifact-overlay-path {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-ghost);
+  margin-top: 2px;
+}
+
+.artifact-overlay-readonly-badge {
+  font-size: 10px;
+  color: var(--text-ghost);
+  border: 1px solid var(--border);
+  padding: 2px 6px;
+  border-radius: 3px;
+  margin-left: 8px;
+  vertical-align: middle;
+  font-weight: 400;
+}
+
+.artifact-overlay-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 28px;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--text-muted);
+}

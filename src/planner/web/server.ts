@@ -4,7 +4,7 @@
 // owned by koan_plan.execute().
 
 import http from "node:http";
-import { promises as fs, readFileSync } from "node:fs";
+import { promises as fs, readFileSync, watch as fsWatch } from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -13,6 +13,8 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
 
 import { readProjection, readRecentLogs } from "../lib/audit.js";
+import { listArtifacts, readArtifact, artifactDisplayPath, formatArtifactSize } from "../epic/artifacts.js";
+import type { ArtifactEntry } from "../epic/artifacts.js";
 import { loadKoanConfig, loadModelTierConfig, saveModelTierConfig, saveScoutConcurrency, type ModelTierConfig } from "../model-config.js";
 import type {
   WebServerHandle,
@@ -211,7 +213,14 @@ interface AgentInfoInternal {
 // startWebServer
 // ---------------------------------------------------------------------------
 
-export async function startWebServer(epicDir: string): Promise<WebServerHandle> {
+export interface WebServerOptions {
+  /** Fixed port (0 = random). */
+  port?: number;
+  /** Fixed session token (empty = random UUID). Must be a valid UUID if set. */
+  token?: string;
+}
+
+export async function startWebServer(epicDir: string, opts?: WebServerOptions): Promise<WebServerHandle> {
   await ensureBundle();
 
   // Discover available models from pi's registry
@@ -231,7 +240,7 @@ export async function startWebServer(epicDir: string): Promise<WebServerHandle> 
     ["/static/js/app.js",          { content: loadAsset("dist/app.js"),        mimeType: "application/javascript; charset=utf-8" }],
   ]);
 
-  const sessionToken = randomUUID();
+  const sessionToken = opts?.token || randomUUID();
 
   // Buffered state for SSE replay on reconnect
   let currentPhase: EpicPhase | null = null;
@@ -275,6 +284,56 @@ export async function startWebServer(epicDir: string): Promise<WebServerHandle> 
 
   // Subagent observation polling
   let trackingTimer: ReturnType<typeof setInterval> | null = null;
+
+  // Artifact watcher lifecycle
+  let artifactWatcher: import("node:fs").FSWatcher | null = null;
+  let artifactPollTimer: ReturnType<typeof setInterval> | null = null;
+
+  // Enrich artifact entries with pre-formatted size for the frontend
+  function withFormattedSize(entries: ArtifactEntry[]) {
+    return entries.map(e => ({ ...e, formattedSize: formatArtifactSize(e.size) }));
+  }
+
+  // Snapshot hash for artifact change detection
+  function artifactHash(entries: ArtifactEntry[]): string {
+    const sorted = entries.slice().sort((a, b) => a.path.localeCompare(b.path));
+    return JSON.stringify(sorted);
+  }
+
+  // Single-flight artifact rescan: at most one listArtifacts() in flight,
+  // with a pending flag to coalesce bursty change signals into one follow-up.
+  let artifactScanInFlight = false;
+  let artifactScanPending = false;
+
+  async function checkArtifacts(): Promise<void> {
+    if (artifactScanInFlight) {
+      artifactScanPending = true;
+      return;
+    }
+    artifactScanInFlight = true;
+    try {
+      do {
+        artifactScanPending = false;
+        const files = await listArtifacts(epicDir);
+        const newHash = artifactHash(files);
+        if (newHash !== artifactHash(lastArtifacts)) {
+          lastArtifacts = files;
+          pushEvent("artifacts", { files: withFormattedSize(lastArtifacts) });
+        }
+      } while (artifactScanPending);
+    } catch {
+      // Non-fatal
+    } finally {
+      artifactScanInFlight = false;
+    }
+  }
+
+  // Populate initial artifacts snapshot
+  try {
+    lastArtifacts = await listArtifacts(epicDir);
+  } catch {
+    // Non-fatal -- start with empty list
+  }
 
   // ---------------------------------------------------------------------------
   // SSE helpers
@@ -533,6 +592,32 @@ export async function startWebServer(epicDir: string): Promise<WebServerHandle> 
         return;
       }
 
+      if (method === "GET" && pathname === "/api/artifacts") {
+        const token = url.searchParams.get("session");
+        if (token !== sessionToken) { sendText(res, 403, "Invalid session token"); return; }
+        const files = await listArtifacts(epicDir);
+        sendJson(res, 200, { files: withFormattedSize(files) });
+        return;
+      }
+
+      if (method === "GET" && pathname === "/api/artifact") {
+        const token = url.searchParams.get("session");
+        if (token !== sessionToken) { sendText(res, 403, "Invalid session token"); return; }
+        const filePath = url.searchParams.get("path");
+        if (!filePath) { sendJson(res, 400, { ok: false, error: "Missing path" }); return; }
+        try {
+          const content = await readArtifact(epicDir, filePath);
+          const displayPath = artifactDisplayPath(filePath);
+          sendJson(res, 200, { content, displayPath });
+        } catch (err: unknown) {
+          if ((err as NodeJS.ErrnoException).code === "ENOENT") { sendJson(res, 404, { ok: false, error: "File not found" }); return; }
+          const msg = err instanceof Error ? err.message : "Unknown error";
+          if (msg.startsWith("Path ") && (msg.includes("escapes the epic directory") || msg.includes("outside artifact scope"))) { sendJson(res, 400, { ok: false, error: msg }); return; }
+          throw err;
+        }
+        return;
+      }
+
       if (method === "GET" && pathname === "/api/model-config") {
         const config = await loadModelTierConfig();
         sendJson(res, 200, { tiers: config });
@@ -687,7 +772,7 @@ export async function startWebServer(epicDir: string): Promise<WebServerHandle> 
       reject(new Error(`Failed to start koan web server: ${err.message}`));
     });
 
-    server.listen(0, "127.0.0.1", () => {
+    server.listen(opts?.port || 0, "127.0.0.1", () => {
       const addr = server.address();
       if (!addr || typeof addr === "string") {
         reject(new Error("Failed to start koan web server: invalid address"));
@@ -975,12 +1060,33 @@ export async function startWebServer(epicDir: string): Promise<WebServerHandle> 
           for (const [, entry] of pendingInputs) entry.reject(new Error("Server closed"));
           pendingInputs.clear();
           if (trackingTimer) { clearInterval(trackingTimer); trackingTimer = null; }
+          if (artifactWatcher) { try { artifactWatcher.close(); } catch { /* Ignore */ } artifactWatcher = null; }
+          if (artifactPollTimer) { clearInterval(artifactPollTimer); artifactPollTimer = null; }
           for (const agent of agents.values()) stopAgentPolling(agent);
           for (const client of sseClients) { try { client.end(); } catch { /* Ignore */ } }
           sseClients.clear();
           try { server.close(); } catch { /* Ignore */ }
         },
       };
+
+      // Start artifact watcher (fs.watch with polling fallback)
+      function startArtifactPolling(): void {
+        if (artifactPollTimer !== null) { console.warn("[koan] startArtifactPolling: polling already active, skipping"); return; }
+        artifactPollTimer = setInterval(() => { void checkArtifacts(); }, 2000);
+        artifactPollTimer.unref();
+      }
+
+      try {
+        artifactWatcher = fsWatch(epicDir, { recursive: true }, () => { void checkArtifacts(); });
+        artifactWatcher.unref();
+        artifactWatcher.on("error", () => {
+          try { artifactWatcher?.close(); } catch { /* Ignore */ }
+          artifactWatcher = null;
+          startArtifactPolling();
+        });
+      } catch {
+        startArtifactPolling();
+      }
 
       resolve(handle);
     });
