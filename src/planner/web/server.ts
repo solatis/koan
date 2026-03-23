@@ -24,6 +24,7 @@ import type {
   LogLine,
   IntakeProgressEvent,
   ArtifactReviewFeedback,
+  TokenDeltaEvent,
 } from "./server-types.js";
 import type { ArtifactReviewPayload } from "../lib/ipc.js";
 import type { EpicPhase, StoryStatus } from "../types.js";
@@ -238,6 +239,12 @@ export async function startWebServer(epicDir: string): Promise<WebServerHandle> 
   let currentSubagent: unknown | null = null;
   let lastLogs: LogLine[] = [];
   let pipelineEnd: { success: boolean; summary: string } | null = null;
+  let lastArtifacts: ArtifactEntry[] = [];
+
+  // Server-side accumulator for token streaming. Holds the full text produced
+  // by the current subagent so reconnecting clients can catch up. Cleared on
+  // subagent transitions (trackSubagent / clearSubagent).
+  let streamingText = "";
 
   // Denormalized intake progress buffer. Includes confidence and iteration from
   // the intake agent's projection so the UI can visualize loop progress.
@@ -309,7 +316,15 @@ export async function startWebServer(epicDir: string): Promise<WebServerHandle> 
     }
 
     if (currentSubagent) write("subagent", currentSubagent);
+    // Replay accumulated streaming text as a single delta event. The frontend's
+    // appendTokenDelta handles this transparently — it accumulates from zero
+    // after each clear, so receiving the full text as one "delta" produces the
+    // correct state.
+    if (streamingText) {
+      write("token-delta", { delta: streamingText } satisfies TokenDeltaEvent);
+    }
     if (lastLogs.length > 0) write("logs", { lines: lastLogs });
+    if (lastArtifacts.length > 0) write("artifacts", { files: withFormattedSize(lastArtifacts) });
 
     for (const [requestId, entry] of pendingInputs) {
       if (entry.type === "ask") {
@@ -715,8 +730,29 @@ export async function startWebServer(epicDir: string): Promise<WebServerHandle> 
           pushEvent("notification", { message, level });
         },
 
+        pushTokenDelta(delta: string): void {
+          // Accumulate server-side for replay on client reconnect. Without this,
+          // a client that reconnects mid-stream would see an empty streaming area
+          // with no error signal — a silent failure.
+          streamingText += delta;
+          // Push only the delta (not accumulated text) to already-connected clients.
+          // This matches the provider stream's own framing and minimizes SSE payload.
+          pushEvent("token-delta", { delta } satisfies TokenDeltaEvent);
+        },
+
+        clearTokenStream(): void {
+          // Called on message_end boundaries. Clears stale text so it doesn't
+          // persist while the LLM is executing tools or waiting on IPC.
+          if (streamingText) {
+            streamingText = "";
+            pushEvent("token-clear", {});
+          }
+        },
+
         trackSubagent(dir: string, role: string, storyId?: string): void {
           if (trackingTimer) { clearInterval(trackingTimer); trackingTimer = null; }
+          // New subagent starts — discard previous text.
+          streamingText = "";
           const startedAt = Date.now();
           const timer = setInterval(async () => {
             try {
@@ -748,6 +784,8 @@ export async function startWebServer(epicDir: string): Promise<WebServerHandle> 
         clearSubagent(): void {
           if (trackingTimer) { clearInterval(trackingTimer); trackingTimer = null; }
           currentSubagent = null;
+          // Subagent finished — discard text.
+          streamingText = "";
           pushEvent("subagent-idle", {});
         },
 

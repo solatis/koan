@@ -191,6 +191,10 @@ export interface AskCancelledEvent {
   requestId: string;
 }
 
+export interface TokenDeltaEvent {
+  delta: string;
+}
+
 export interface PipelineEndEvent {
   success: boolean;
   summary: string;
@@ -278,6 +282,20 @@ export interface WebServerHandle {
   pushStories(stories: Array<{ storyId: string; status: StoryStatus }>): void;
   pushLogs(lines: LogLine[], currentToolCallId?: string | null): void;
   pushNotification(message: string, level: "info" | "warning" | "error"): void;
+  /**
+   * Push a streaming token delta from a subagent to all SSE clients.
+   *
+   * Parameterless because only one subagent is tracked at a time (via
+   * trackSubagent / clearSubagent). There is no ambiguity about which
+   * subagent the delta belongs to — only the tracked subagent generates tokens.
+   */
+  pushTokenDelta(delta: string): void;
+  /**
+   * Clear the streaming token buffer. Called on message boundaries
+   * (message_end) so stale text from a previous turn does not persist
+   * while the LLM is executing tools or waiting on IPC.
+   */
+  clearTokenStream(): void;
 
   // Concern 2 -- Agent lifecycle / observation
   registerAgent(info: {

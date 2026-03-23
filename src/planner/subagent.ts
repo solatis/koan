@@ -6,7 +6,7 @@
 // its role and parameters — no structured data flows through CLI flags).
 //
 // The spawn command carries only what pi needs at the OS level:
-//   pi -p -e {ext} --koan-dir {subagentDir} [--model {model}] "{bootPrompt}"
+//   pi --mode json -p -e {ext} --koan-dir {subagentDir} [--model {model}] "{bootPrompt}"
 //
 // All tools register unconditionally at init. Task-specific content is
 // intentionally absent from spawn prompts: it arrives as step 1 guidance
@@ -108,6 +108,12 @@ export async function spawnSubagent(
     : undefined;
 
   const args = [
+    // --mode json makes pi emit structured JSONL on stdout instead of human-
+    // readable text. Combined with -p (non-interactive), this is the designed
+    // integration surface for external UIs. Pi's own subagent extension uses
+    // the identical flag pair — ["--mode", "json", "-p"] — confirming this is
+    // the supported composition.
+    "--mode", "json",
     "-p",
     "-e", opts.extensionPath,
     "--koan-dir", subagentDir,
@@ -136,9 +142,52 @@ export async function spawnSubagent(
     }
 
     let stderr = "";
+    let buffer = "";
 
     proc.stdout.on("data", (data: Buffer) => {
+      // Write raw bytes first — log file receives the full JSONL output
+      // regardless of what the parser does. Diagnostics are unaffected.
       stdoutLog.write(data);
+
+      // Accumulate into buffer because a single "data" event may contain
+      // a partial line (TCP-style framing — no guarantee of line boundaries).
+      buffer += data.toString();
+
+      // Split on newlines. lines[0..n-2] are complete; lines[n-1] may be a
+      // partial line — keep it in buffer for the next "data" event.
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";  // trailing partial line (or "" if data ended with \n)
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const event = JSON.parse(line);
+          // Filter to text_delta and thinking_delta. --mode json emits all
+          // session events (tool execution, turn boundaries, compaction, etc.).
+          // Only these two carry incremental tokens we want to stream.
+          // Everything else is handled by the existing state.json polling path.
+          if (
+            event.type === "message_update" &&
+            (event.assistantMessageEvent?.type === "text_delta" ||
+             event.assistantMessageEvent?.type === "thinking_delta") &&
+            typeof event.assistantMessageEvent.delta === "string"
+          ) {
+            opts.webServer?.pushTokenDelta(event.assistantMessageEvent.delta);
+          }
+          // Clear streaming text when an assistant message finishes. Without
+          // this, thinking from turn N stays visible while the LLM executes
+          // tools or waits on IPC, and turn N+1 thinking concatenates onto it.
+          if (
+            event.type === "message_end" &&
+            event.message?.role === "assistant"
+          ) {
+            opts.webServer?.clearTokenStream();
+          }
+        } catch {
+          // Malformed line (e.g. stderr bleed or partial JSONL during
+          // buffer flush). Skip — the log file has the full bytes.
+        }
+      }
     });
 
     proc.stderr.on("data", (data: Buffer) => {
@@ -150,6 +199,28 @@ export async function spawnSubagent(
       abortIpc?.();
       stdoutLog.end();
       stderrLog.end();
+
+      // Flush any partial JSONL line still in the buffer. Under normal
+      // operation the buffer is empty at close, but a process killed
+      // mid-line (e.g., SIGKILL) would otherwise lose the last event.
+      // This must happen before resolve() so the delta arrives before
+      // the driver calls clearSubagent() -> pushEvent("subagent-idle").
+      if (buffer.trim()) {
+        try {
+          const event = JSON.parse(buffer);
+          if (
+            event.type === "message_update" &&
+            (event.assistantMessageEvent?.type === "text_delta" ||
+             event.assistantMessageEvent?.type === "thinking_delta") &&
+            typeof event.assistantMessageEvent.delta === "string"
+          ) {
+            opts.webServer?.pushTokenDelta(event.assistantMessageEvent.delta);
+          }
+        } catch {
+          // Ignore malformed trailing content — log file has the raw bytes.
+        }
+      }
+
       const exitCode = code ?? 1;
       log(`${task.role} subagent exited`, { exitCode });
       resolve({ exitCode, stderr, subagentDir });
