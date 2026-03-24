@@ -29,7 +29,7 @@
 //
 // Step 1 is read-only: the permission fence blocks koan_request_scouts,
 // koan_ask_question, koan_set_confidence, write, and edit during that step,
-// enforced via ctx.intakeStep which is kept in sync via onStepUpdated().
+// enforced via ctx.currentStep which BasePhase.onStepUpdated() keeps in sync.
 
 import * as path from "node:path";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -199,22 +199,21 @@ export class IntakePhase extends BasePhase {
     return null;
   }
 
-  // -- Sync ctx fields whenever the active step changes --
+  // -- Intake-specific side effects on step changes --
   //
-  // ctx.intakeStep is read by the permission fence to block side-effecting tools
-  // during the read-only Extract step (step 1).
-  //
-  // iteration_start is emitted here for iteration 1 when Scout (step 2) is first
-  // entered. Subsequent iterations emit iteration_start via onLoopBack(). This
-  // ensures the web UI always knows which iteration is active from the moment
-  // scouting begins, not just after the first confidence assessment.
+  // BasePhase.onStepUpdated() handles writing ctx.currentStep. This override
+  // exists only for two intake-specific side effects:
+  //   1. Reset lastReviewAccepted when entering step 5 so only step-5 reviews
+  //      count toward the validateStepCompletion gate.
+  //   2. Emit iteration_start for iteration 1 when Scout (step 2) is first
+  //      entered. Subsequent iterations emit iteration_start via onLoopBack().
   //
   // The void on emitIterationStart is intentional: onStepUpdated is synchronous.
   // EventLog.append() serializes all appends via an internal promise queue, so
   // this event is enqueued before the emitStepTransition that follows in
   // handleStepComplete, preserving correct order in events.jsonl.
   protected override onStepUpdated(step: number): void {
-    this.ctx.intakeStep = step;
+    super.onStepUpdated(step);
 
     // Reset lastReviewAccepted when entering step 5 so only step-5 reviews
     // count toward the validateStepCompletion gate. Without this, a spurious

@@ -393,6 +393,81 @@ describe("permission matrix", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Step-aware permission gating
+// ---------------------------------------------------------------------------
+
+describe("step-aware permission gating", () => {
+  const epicDir = "/tmp/test-epic";
+
+  // -- Intake step 1 (Extract): read-only, blocks side-effecting tools --
+
+  it("intake step 1 blocks koan_request_scouts", () => {
+    const result = checkPermission("intake", "koan_request_scouts", epicDir, undefined, 1);
+    assert.equal(result.allowed, false);
+  });
+
+  it("intake step 1 blocks koan_ask_question", () => {
+    const result = checkPermission("intake", "koan_ask_question", epicDir, undefined, 1);
+    assert.equal(result.allowed, false);
+  });
+
+  it("intake step 1 blocks koan_set_confidence", () => {
+    const result = checkPermission("intake", "koan_set_confidence", epicDir, undefined, 1);
+    assert.equal(result.allowed, false);
+  });
+
+  it("intake step 1 blocks write", () => {
+    const result = checkPermission("intake", "write", epicDir, { path: path.join(epicDir, "landscape.md") }, 1);
+    assert.equal(result.allowed, false);
+  });
+
+  it("intake step 1 blocks edit", () => {
+    const result = checkPermission("intake", "edit", epicDir, { path: path.join(epicDir, "landscape.md") }, 1);
+    assert.equal(result.allowed, false);
+  });
+
+  // -- Intake step 2 (Scout): side-effecting tools allowed --
+
+  it("intake step 2 allows koan_request_scouts", () => {
+    const result = checkPermission("intake", "koan_request_scouts", epicDir, undefined, 2);
+    assert.equal(result.allowed, true);
+  });
+
+  // -- Intake step 3 (Deliberate): blocks koan_set_confidence --
+
+  it("intake step 3 blocks koan_set_confidence", () => {
+    const result = checkPermission("intake", "koan_set_confidence", epicDir, undefined, 3);
+    assert.equal(result.allowed, false);
+  });
+
+  // -- Intake step 4 (Reflect): koan_set_confidence allowed --
+
+  it("intake step 4 allows koan_set_confidence", () => {
+    const result = checkPermission("intake", "koan_set_confidence", epicDir, undefined, 4);
+    assert.equal(result.allowed, true);
+  });
+
+  // -- Brief-writer step 1 (Read): read-only, blocks write/edit --
+
+  it("brief-writer step 1 blocks write", () => {
+    const result = checkPermission("brief-writer", "write", epicDir, { path: path.join(epicDir, "brief.md") }, 1);
+    assert.equal(result.allowed, false);
+  });
+
+  it("brief-writer step 1 blocks edit", () => {
+    const result = checkPermission("brief-writer", "edit", epicDir, { path: path.join(epicDir, "brief.md") }, 1);
+    assert.equal(result.allowed, false);
+  });
+
+  // -- Brief-writer step 2 (Draft & Review): write/edit allowed inside epic dir --
+
+  it("brief-writer step 2 allows write inside epic dir", () => {
+    const result = checkPermission("brief-writer", "write", epicDir, { path: path.join(epicDir, "brief.md") }, 2);
+    assert.equal(result.allowed, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Initial state invariants
 // ---------------------------------------------------------------------------
 

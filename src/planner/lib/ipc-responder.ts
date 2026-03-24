@@ -164,7 +164,6 @@ async function handleScoutRequest(
 ): Promise<void> {
   const { scouts: ipcScouts, id } = ipc;
   const findings: string[] = [];
-  const failures: string[] = [];
 
   // Compute per-scout directories. Scout dirs live under the epic's subagents/
   // directory so they appear in the standard directory layout.
@@ -197,11 +196,11 @@ async function handleScoutRequest(
 
   const taskIds = scoutEntries.map((t) => t.ipcTask.id);
   const concurrency = await loadScoutConcurrency();
-  await pool(
+  const poolResult = await pool(
     taskIds,
     concurrency,
     async (taskId) => {
-      if (signal.aborted) return { exitCode: 1, stderr: "aborted", subagentDir: "" };
+      if (signal.aborted) return false;
 
       const entry = scoutEntries.find((t) => t.ipcTask.id === taskId)!;
       webServer?.startAgent(taskId);
@@ -214,7 +213,7 @@ async function handleScoutRequest(
         role: "scout",
         epicDir: scoutCtx.epicDir,
         question: entry.ipcTask.prompt,
-        outputFile: "findings.md",         // relative — ScoutPhase resolves to absolute
+        outputFile: "findings.md",         // relative -- ScoutPhase resolves to absolute
         investigatorRole: entry.ipcTask.role,
       };
 
@@ -228,25 +227,23 @@ async function handleScoutRequest(
         succeeded = projection?.status === "completed";
       }
 
-      const absoluteOutputFile = path.join(entry.subagentDir, scoutTask.outputFile);
       if (succeeded) {
+        const absoluteOutputFile = path.join(entry.subagentDir, scoutTask.outputFile);
         findings.push(absoluteOutputFile);
-      } else {
-        failures.push(taskId);
       }
 
       if (webServer) {
         webServer.completeAgent(taskId);
       }
 
-      return { exitCode, stderr: "", subagentDir: entry.subagentDir };
+      return succeeded;
     },
   );
 
-  // Re-read and validate before writing response — idempotence guard.
+  // Re-read and validate before writing response -- idempotence guard.
   const current = await readIpcFile(subagentDir);
   if (current !== null && current.type === "scout-request" && current.response === null && current.id === id) {
-    const updated: ScoutIpcFile = { ...current, response: { findings, failures } };
+    const updated: ScoutIpcFile = { ...current, response: { findings, failures: poolResult.failed } };
     await writeIpcFile(subagentDir, updated);
   }
 }

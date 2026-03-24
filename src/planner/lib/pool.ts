@@ -2,8 +2,6 @@
 // Runs all items to completion regardless of individual failures.
 // Timeout logic belongs in the worker closure, not here.
 
-import type { SubagentResult } from "../subagent.js";
-
 // -- Types --
 
 export interface PoolResult {
@@ -49,7 +47,7 @@ class Semaphore {
 export async function pool(
   itemIds: string[],
   limit: number,
-  worker: (itemId: string) => Promise<SubagentResult>,
+  worker: (itemId: string) => Promise<boolean>,
   onProgress?: (progress: PoolProgress) => void,
 ): Promise<PoolResult> {
   const sem = new Semaphore(limit);
@@ -76,8 +74,8 @@ export async function pool(
       emit();
 
       try {
-        const result = await worker(id);
-        if (result.exitCode !== 0) {
+        const ok = await worker(id);
+        if (!ok) {
           failed.push(id);
         }
       } finally {

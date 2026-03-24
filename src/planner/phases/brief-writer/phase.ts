@@ -93,10 +93,4 @@ export class BriefWriterPhase extends BasePhase {
     }
     return null;
   }
-
-  // ctx.briefWriterStep is read by the permission fence to block write/edit
-  // during the read-only Read step (step 1).
-  protected override onStepUpdated(step: number): void {
-    this.ctx.briefWriterStep = step;
-  }
 }

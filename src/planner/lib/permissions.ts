@@ -139,8 +139,7 @@ export function checkPermission(
   toolName: string,
   epicDir?: string,
   toolArgs?: Record<string, unknown>,
-  intakeStep?: number,
-  briefWriterStep?: number,
+  currentStep?: number,
 ): { allowed: boolean; reason?: string } {
   // Read tools are always allowed — check before role map lookup.
   if (READ_TOOLS.has(toolName)) {
@@ -150,7 +149,7 @@ export function checkPermission(
   // Intake step 1 (Extract) is read-only: block all side-effecting tools so
   // the LLM cannot frontload scouting or question-asking before it has read
   // and understood the conversation.
-  if (role === "intake" && intakeStep === 1 && STEP_1_BLOCKED_TOOLS.has(toolName)) {
+  if (role === "intake" && currentStep === 1 && STEP_1_BLOCKED_TOOLS.has(toolName)) {
     return {
       allowed: false,
       reason: `${toolName} is not available during the Extract step (step 1). ` +
@@ -160,7 +159,7 @@ export function checkPermission(
 
   // Intake step 3 (Deliberate): block koan_set_confidence so the LLM cannot
   // pre-commit to a confidence level before the Reflect step's verification.
-  if (role === "intake" && intakeStep === 3 && STEP_3_BLOCKED_TOOLS.has(toolName)) {
+  if (role === "intake" && currentStep === 3 && STEP_3_BLOCKED_TOOLS.has(toolName)) {
     return {
       allowed: false,
       reason: `${toolName} is not available during the Deliberate step (step 3). ` +
@@ -170,7 +169,7 @@ export function checkPermission(
 
   // Brief-writer step 1 (Read) is read-only: block write and edit so the LLM
   // cannot draft files before it has comprehended landscape.md.
-  if (role === "brief-writer" && briefWriterStep === 1 && STEP_1_BLOCKED_TOOLS.has(toolName)) {
+  if (role === "brief-writer" && currentStep === 1 && STEP_1_BLOCKED_TOOLS.has(toolName)) {
     return {
       allowed: false,
       reason: `${toolName} is not available during the Read step (step 1). ` +

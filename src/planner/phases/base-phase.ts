@@ -102,8 +102,7 @@ export abstract class BasePhase {
         event.toolName,
         this.ctx.epicDir ?? undefined,
         event.input as Record<string, unknown>,
-        this.ctx.intakeStep,
-        this.ctx.briefWriterStep,
+        this.ctx.currentStep,
       );
       if (!perm.allowed) {
         void this.eventLog?.append({
@@ -198,11 +197,11 @@ export abstract class BasePhase {
 
   // -- Overridable hooks --
 
-  // Called whenever this.step is updated (including loop-backs). Subclasses
-  // use this to sync ctx fields (e.g., intakeStep) with the current step.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  protected onStepUpdated(_step: number): void {
-    // Default: no-op.
+  // Called whenever this.step is updated (including loop-backs). Syncs
+  // ctx.currentStep with the current step so the permission fence always
+  // reflects the active step. Subclasses may override for additional side effects.
+  protected onStepUpdated(step: number): void {
+    this.ctx.currentStep = step;
   }
 
   // Called when a loop-back occurs (nextStep < previousStep), after this.step

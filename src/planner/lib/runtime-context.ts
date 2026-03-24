@@ -6,12 +6,9 @@
 //   string  -> next step's formatted prompt (tool returns it to the LLM)
 //   null    -> phase is complete (tool returns "Phase complete.")
 //
-// intakeStep is kept on RuntimeContext (not IntakePhase) because BasePhase's
-// permission fence reads it during every tool_call event without knowing the
-// active phase type.
-//
-// briefWriterStep mirrors intakeStep for the brief-writer role: the permission
-// fence uses it to block write/edit during the read-only Read step (step 1).
+// currentStep is kept on RuntimeContext (not on individual phases) because
+// BasePhase's permission fence reads it on every tool_call event without
+// knowing the active phase type.
 //
 // eventLog: the active EventLog for the current subagent session. Set during
 //   before_agent_start after the log file is opened. Tools that need to emit
@@ -23,8 +20,7 @@ export interface RuntimeContext {
   epicDir: string | null;
   subagentDir: string | null;
   onCompleteStep: ((thoughts: string) => Promise<string | null>) | null;
-  intakeStep: number;
-  briefWriterStep: number;
+  currentStep: number;
   eventLog: EventLog | null;
 }
 
@@ -33,8 +29,7 @@ export function createRuntimeContext(): RuntimeContext {
     epicDir: null,
     subagentDir: null,
     onCompleteStep: null,
-    intakeStep: 0,
-    briefWriterStep: 0,
+    currentStep: 0,
     eventLog: null,
   };
 }
