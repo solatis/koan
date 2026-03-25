@@ -1,8 +1,7 @@
-// Scout phase prompts — 4-step investigation workflow:
-//   Step 1: Orient    (identify entry points, plan investigation)
-//   Step 2: Investigate (deep read, trace dependencies, gather evidence)
-//   Step 3: Verify & Analyze (re-read cited files, organize findings)
-//   Step 4: Report    (write findings.md with verified facts)
+// Scout phase prompts — 3-step investigation workflow:
+//   Step 1: Investigate (find entry points AND read/trace code — combined for speed)
+//   Step 2: Verify      (spot-check critical claims with targeted tool calls)
+//   Step 3: Report      (write findings.md with verified facts)
 //
 // The system prompt establishes the investigator identity but contains no task
 // details — a scout doesn't know its question until koan_complete_step returns
@@ -10,17 +9,25 @@
 // prompt or spawn prompt would front-load instructions before the tool-call
 // pattern is established, causing weaker models to answer inline and exit.
 //
-// The verification step (3) is the key addition over the original single-step
-// design. Cheap models hallucinate file paths and API names. Re-reading every
-// file before reporting catches confabulation before it reaches the intake-LLM.
+// Speed design: scouts are optimized for breadth and speed. They use cheap
+// models for narrow codebase investigation. The system prompt explicitly
+// instructs batching tool calls (reading multiple files per turn, running
+// multiple grep/find commands simultaneously). The original 4-step design
+// (Orient → Investigate → Verify → Report) was reduced to 3 steps by merging
+// Orient into Investigate — separating "find files" from "read files" was an
+// artificial split that wasted a full round trip.
+//
+// The verification step (2) uses targeted spot-checks (grep for a function
+// name, read a specific line range) rather than re-reading every cited file.
+// Full re-reads are an intrinsic self-correction anti-pattern that doubles
+// I/O with marginal accuracy gain for narrow investigation tasks.
 
 import type { StepGuidance } from "../../lib/step.js";
 
 export const SCOUT_STEP_NAMES: Record<number, string> = {
-  1: "Orient",
-  2: "Investigate",
-  3: "Verify & Analyze",
-  4: "Report",
+  1: "Investigate",
+  2: "Verify",
+  3: "Report",
 };
 
 export function scoutSystemPrompt(): string {
@@ -29,6 +36,16 @@ export function scoutSystemPrompt(): string {
 ## Your role
 
 You find facts. You do NOT interpret, recommend, or opine.
+
+## Speed principles
+
+You are optimized for speed and breadth. Cast a wide net quickly.
+
+- Call MULTIPLE tools simultaneously. Read 3–5 files in one turn, not one at a time.
+- Combine search strategies: run grep, find, and read calls together in a single turn.
+- Use bash for broad sweeps: \`grep -rn\` across directories, \`find\` with multiple patterns.
+- Do NOT be overly cautious or sequential. Explore aggressively, discard irrelevant results.
+- Maximize work per turn. Each tool-call turn should accomplish as much as possible.
 
 ## Strict rules
 
@@ -50,7 +67,7 @@ You write a single markdown file with your findings. The file location and forma
 
 - All read tools (read, bash, grep, glob, find, ls) — for reading the codebase.
 - \`write\` / \`edit\` — for writing the output file only.
-- \`koan_complete_step\` — to signal completion.`;
+- \`koan_complete_step\` — to advance to the next workflow step.`;
 }
 
 export function scoutStepGuidance(
@@ -64,7 +81,7 @@ export function scoutStepGuidance(
       return {
         title: SCOUT_STEP_NAMES[1],
         instructions: [
-          "Understand the question and identify where to look in the codebase.",
+          "Find and read the relevant code to answer the question.",
           "",
           "## Your Assignment",
           "",
@@ -74,11 +91,11 @@ export function scoutStepGuidance(
           "## Actions",
           "",
           "1. Parse the question: what exactly are you being asked to find?",
-          "2. Identify search terms, file patterns, and likely directory locations.",
-          "3. Use grep, glob, find, or ls to locate 3–8 candidate entry-point files.",
-          "4. Do NOT read file contents yet — just identify targets.",
-          "",
-          "Report your entry points and investigation plan in the `thoughts` parameter.",
+          "2. Cast a wide net: run grep, find, or glob to locate candidate files. Run multiple searches simultaneously.",
+          "3. Read the most promising files immediately — do not wait for a separate step. Read 3–5 files at once.",
+          "4. Follow imports, cross-references, and call chains to related files. Read follow-up files in batches.",
+          "5. For each relevant finding, note the file path, line numbers, and a verbatim code excerpt.",
+          "6. Be thorough but fast: if a file is irrelevant, move on immediately.",
         ],
       };
 
@@ -86,45 +103,22 @@ export function scoutStepGuidance(
       return {
         title: SCOUT_STEP_NAMES[2],
         instructions: [
-          "Read the entry-point files and trace through the code to answer the question.",
+          "Spot-check your key findings before reporting.",
           "",
           "## Actions",
           "",
-          "1. Read each entry-point file identified in the previous step.",
-          "2. Follow imports, cross-references, and call chains to related files.",
-          "3. For each relevant finding, note the file path, line numbers, and a verbatim code excerpt.",
-          "4. Be thorough: do not stop at the first partial answer. Check related files.",
-          "5. If a file turns out to be irrelevant, move on — do not force-fit it.",
-          "",
-          "Report your findings and the files you read in the `thoughts` parameter.",
+          "1. Pick the 2–3 most critical claims from your investigation.",
+          "2. Verify each with a targeted tool call: grep for a function name, read a specific line range, ls to confirm a path exists.",
+          "3. If you find a discrepancy, correct it. If a file does not exist, drop the reference.",
+          "4. Organize your verified findings into a clear answer to the original question.",
+          "5. Identify any gaps — things you could not determine or areas you could not access.",
+          "6. Note anything that is explicitly NOT present (missing tests, missing config, etc.).",
         ],
       };
 
     case 3:
       return {
         title: SCOUT_STEP_NAMES[3],
-        instructions: [
-          "Verify every claim you plan to report and organize your findings.",
-          "",
-          "## Verification",
-          "",
-          "1. Re-read every file you plan to cite in your report.",
-          "2. Confirm that file paths are correct and the code excerpts match the actual content.",
-          "3. If you find a discrepancy, correct it. If a file does not exist, remove the reference.",
-          "",
-          "## Analysis",
-          "",
-          "4. Organize your verified findings into a clear answer to the original question.",
-          "5. Identify any gaps — things you could not determine or areas you could not access.",
-          "6. Note anything that is explicitly NOT present (missing tests, missing config, etc.).",
-          "",
-          "Report your verified findings and any gaps in the `thoughts` parameter.",
-        ],
-      };
-
-    case 4:
-      return {
-        title: SCOUT_STEP_NAMES[4],
         instructions: [
           "Write your findings to the output file.",
           "",

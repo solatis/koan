@@ -144,7 +144,7 @@ export abstract class BasePhase {
   // -- Private step progression --
 
   private async handleStepComplete(thoughts: string): Promise<string | null> {
-    void thoughts; // captured in event log via tool_result; subclass prompts may reference it
+    void thoughts; // captured in event log via tool_result; escape hatch for models that can't mix text + tool_call
 
     if (this.step === 0) {
       // Boot transition: the LLM called koan_complete_step as instructed by the

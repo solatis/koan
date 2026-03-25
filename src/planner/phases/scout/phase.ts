@@ -1,5 +1,5 @@
 // Scout phase: answers one narrow codebase question and writes findings.
-// Four-step workflow (orient → investigate → verify → report), cheap model, no user interaction.
+// Three-step workflow (investigate → verify → report), cheap model, no user interaction.
 // Task context (question, outputFile, investigatorRole) is received via task.json
 // (directory-as-contract) and delivered to the LLM through step guidance.
 
@@ -14,7 +14,7 @@ import type { StepGuidance } from "../../lib/step.js";
 
 export class ScoutPhase extends BasePhase {
   protected readonly role = "scout";
-  protected readonly totalSteps = 4;
+  protected readonly totalSteps = 3;
 
   private readonly question: string;
   private readonly outputFile: string;

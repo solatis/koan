@@ -368,7 +368,7 @@ log for testing and crash recovery.
 | `status` | IPC responder, web server | Scout success, agent completion |
 | `step` | Web server | Intake sub-phase derivation |
 | `currentToolCallId` | Web server | "doing X" vs "done with X" in UI |
-| `completionSummary` | Web server | Scout card summary (500-char prefix of `thoughts`) |
+| `completionSummary` | Web server | Scout card summary (incidental 500-char prefix of `thoughts` escape hatch) |
 | `tokensSent/Received` | Web server | Token usage display |
 | `model` | Web server | Model display |
 

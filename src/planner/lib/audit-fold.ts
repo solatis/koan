@@ -159,9 +159,9 @@ export function fold(s: Projection, e: AuditEvent): Projection {
         currentToolCallId: e.toolCallId,
       };
       // Extract completionSummary from koan_complete_step's thoughts param.
-      // The thoughts parameter is chain-of-thought, not task output (per
-      // AGENTS.md invariant), but we capture a prefix for the projection
-      // so the web UI can show scout summaries.
+      // `thoughts` is an escape hatch for models that can't mix text +
+      // tool_call (see step.ts invariant), NOT task output. We capture a
+      // 500-char prefix for UI display — this is incidental, not a contract.
       if (e.tool === "koan_complete_step" && typeof e.input?.thoughts === "string") {
         updated.completionSummary = e.input.thoughts.slice(0, 500) || null;
       }

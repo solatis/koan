@@ -270,7 +270,7 @@ Every step guidance string has the same structure:
 
 {instructions}
 
-WHEN DONE: Call koan_complete_step with your findings in the `thoughts` parameter.
+WHEN DONE: Call koan_complete_step to advance to the next step.
 Do NOT call this tool until the work described in this step is finished.
 ```
 
@@ -278,17 +278,37 @@ The invoke-after directive is always **last** (recency reinforcement). Steps
 that need the LLM to call a domain tool before `koan_complete_step` (e.g.,
 `koan_select_story`) can override `invokeAfter`.
 
-### The `thoughts` parameter
+### The `thoughts` parameter — escape hatch, not data channel
 
-`thoughts` is **internal chain-of-thought reasoning only**. It is NOT task
-output and MUST NOT be treated as such:
+`thoughts` on `koan_complete_step` is an **escape hatch** for models that
+cannot produce both text output and a tool call in the same response.
 
-- Task output goes to files (`findings.md`, `landscape.md`, etc.)
-- The driver/parent reads those files after the subagent exits
-- `thoughts` exists so models that cannot mix text + tool_call in one response
-  (e.g., GPT-5-codex) can still express reasoning while advancing the workflow
-- A 500-char prefix of `thoughts` is captured in the audit projection as
-  `completionSummary` for scout UI display — this is the only consumer
+**Why it exists:** Many of our workflows instruct the LLM to "write down a
+list of X items and evaluate each one-by-one," use chain-of-draft reasoning,
+or work through multi-step analysis. These patterns work best when the LLM has
+a place to write intermediate reasoning. Models that can mix text + tool_call
+do this naturally in their text output. Models that can't (e.g., GPT-5-codex)
+would be stuck: they need to call `koan_complete_step` to advance, but calling
+a tool means they can't produce text. The `thoughts` parameter gives them
+somewhere to put their working.
+
+Extended thinking / `<thinking>` blocks are not sufficient: not all models
+support them, they are not visible in audit logs, and some reasoning patterns
+work better as explicit text the model can reference in subsequent turns.
+
+**The invariant:** `thoughts` must **NEVER** be actively used to capture task
+output. No summaries, no reports, no structured data extraction.
+
+- ❌ "Call koan_complete_step with your analysis in the `thoughts` parameter"
+- ❌ "Report your findings in the `thoughts` parameter"
+- ✅ "Call koan_complete_step to advance to the next step"
+- ✅ (LLM fills `thoughts` with whatever it wants — that's fine)
+
+Task output goes to files (`findings.md`, `landscape.md`, `plan.md`, etc.).
+The driver/parent reads those files after the subagent exits.
+
+A 500-char prefix of `thoughts` is captured in the audit projection as
+`completionSummary` for UI display — this is incidental, not a contract.
 
 ---
 
@@ -384,7 +404,7 @@ Scouts are deliberately constrained compared to other roles:
 - **No `koan_ask_question`** — scouts do not ask questions
 - **No `koan_request_scouts`** — scouts do not spawn nested scouts
 - **No IPC responder** — since there is no web server, no IPC responder runs
-- **Four steps** -- scouts have `totalSteps = 4` (orient -> investigate -> verify -> report). Each step has exactly one cognitive goal, following the "don't give a step multiple cognitive goals" principle from [architecture.md Pitfalls](./architecture.md#pitfalls): separate `koan_complete_step` calls enforce genuinely isolated reasoning and prevent the LLM from sandbagging an earlier step because it already knows a later step is coming
+- **Three steps** — scouts have `totalSteps = 3` (investigate → verify → report). Each step has exactly one cognitive goal, following the "don't give a step multiple cognitive goals" principle from [architecture.md Pitfalls](./architecture.md#pitfalls). The original 4-step design separated "orient" (find files) from "investigate" (read files), but this was an artificial split that wasted a full round trip — finding entry points and reading them is one cognitive activity
 - **Cheap model** — scouts use the cheapest available model
 - **Parallel execution** — up to 4 scouts run concurrently via bounded pool
 - **Non-fatal failures** — a failed scout does not abort the parent; its task

@@ -54,15 +54,32 @@ export function registerWorkflowTools(
   ctx: RuntimeContext,
 ): void {
   // -- koan_complete_step --
-  // INVARIANT: `thoughts` is internal chain-of-thought reasoning only.
-  // It is NOT captured as task output and must NOT be treated as such.
-  // Its purpose: models that cannot mix text output + tool_call in one
-  // response (e.g. GPT-5-codex) still express reasoning via this param.
-  // Task output is written to files in the subagent directory:
+  //
+  // INVARIANT: `thoughts` is an ESCAPE HATCH, not a data channel.
+  //
+  // Many LLMs cannot produce both text output and a tool call in the same
+  // response. Without `thoughts`, these models would have no way to do
+  // chain-of-thought reasoning (working through lists, chain-of-draft,
+  // evaluating items one-by-one) while still calling koan_complete_step to
+  // advance the workflow. The parameter gives them a place to write
+  // intermediate reasoning. Extended thinking / <thinking> blocks are not
+  // sufficient: not all models support them, they aren't visible in audit
+  // logs, and some reasoning patterns work better as explicit text the model
+  // can reference in subsequent turns.
+  //
+  // THE RULE: `thoughts` must NEVER be actively used to capture task output.
+  // No summaries, no reports, no structured data. Step instructions must NOT
+  // say "put your findings/analysis in the `thoughts` parameter." The LLM
+  // may fill `thoughts` with whatever it wants — that's fine — but no prompt
+  // should instruct it to put specific content there. Task output goes to
+  // files in the subagent directory:
   //   - scouts:  {subagentDir}/findings.md
   //   - intake:  {subagentDir}/landscape.md
   //   - others:  as defined by step instructions
   // The driver/parent reads those files after the subagent exits.
+  //
+  // A 500-char prefix of `thoughts` is captured in the audit projection as
+  // `completionSummary` for UI display — this is incidental, not a contract.
   pi.registerTool({
     name: "koan_complete_step",
     label: "Complete current workflow step",

@@ -6,10 +6,30 @@
 // koan_complete_step habit; recency (last thing in each step) reinforces it.
 // Together they make the calling pattern robust across model capability levels.
 //
-// The `thoughts` parameter on koan_complete_step captures the model's work output
-// (analysis, review, findings) as a tool parameter rather than text output. This
-// ensures models that can't mix text + tool_call in one response still advance
-// the workflow.
+// ## The `thoughts` parameter invariant
+//
+// `thoughts` on koan_complete_step is an ESCAPE HATCH, not a data channel.
+//
+// Many LLMs cannot produce both text output and a tool call in the same
+// response. Without `thoughts`, these models would have no way to do
+// chain-of-thought reasoning (lists, chain-of-draft, working through items
+// one-by-one) while still calling koan_complete_step to advance the workflow.
+// The parameter gives them a place to write intermediate reasoning.
+//
+// Extended thinking / <thinking> blocks exist but are insufficient: not all
+// models support them, they are not visible in audit logs, and some reasoning
+// patterns (e.g., "write down a list of X items and evaluate each") work
+// better as explicit text the model can reference in subsequent turns.
+//
+// THE INVARIANT: `thoughts` must NEVER be actively used to capture task
+// output. No summaries, no reports, no structured data. Step instructions
+// must NOT say "put your findings in the `thoughts` parameter" or similar.
+// Task output goes to files (findings.md, landscape.md, plan.md, etc.).
+// The LLM may fill `thoughts` with whatever it wants — that's fine — but
+// no prompt should instruct it to put specific content there.
+//
+// A 500-char prefix of `thoughts` is captured in the audit projection as
+// `completionSummary` for UI display — this is incidental, not a contract.
 
 export interface StepGuidance {
   title: string;
@@ -22,8 +42,13 @@ export interface StepGuidance {
 
 // Appended to every step that doesn't override invokeAfter.
 // Positioned last for recency — LLMs weight end-of-context instructions heavily.
+//
+// NOTE: The default invoke deliberately does NOT mention the `thoughts` parameter.
+// See the invariant above — `thoughts` is an escape hatch for models that can't
+// mix text + tool_call, not a data channel. Prompts must not instruct the LLM
+// to put specific content there.
 const DEFAULT_INVOKE = [
-  "WHEN DONE: Call koan_complete_step with your findings in the `thoughts` parameter.",
+  "WHEN DONE: Call koan_complete_step to advance to the next step.",
   "Do NOT call this tool until the work described in this step is finished.",
 ].join("\n");
 

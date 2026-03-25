@@ -435,8 +435,10 @@ than the path of least resistance.
 
 ### Don't put confidence in koan_complete_step's `thoughts` parameter
 
-`thoughts` is for internal chain-of-thought reasoning. Parsing confidence from
-the thoughts string would violate the driver determinism invariant: the driver
+`thoughts` is an escape hatch for models that can't mix text + tool_call in
+one response (see [subagents.md § The thoughts parameter](./subagents.md#the-thoughts-parameter--escape-hatch-not-data-channel)).
+It must never be actively used to capture task output, and parsing it for
+routing decisions would violate the driver determinism invariant: the driver
 never parses free-text. Confidence must flow through a structured tool call
 with a typed parameter.
 
