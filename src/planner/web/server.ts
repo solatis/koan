@@ -199,6 +199,9 @@ interface AgentInfoInternal {
   spawnOrder: number;
   completionOrder?: number;
   pollingTimer?: ReturnType<typeof setInterval>;
+  // Timing: when the agent started and finished running
+  startedAt: number | null;
+  completedAt: number | null;
   // Internal derived fields
   subPhase: string | null;
   eventCount: number;
@@ -420,7 +423,8 @@ export async function startWebServer(epicDir: string, opts?: WebServerOptions): 
   function buildAgentsArray(): Array<{
     id: string; name: string; role: string; model: string | null;
     parent: string | null; status: string | null; tokensSent: number;
-    tokensReceived: number; recentActions: Array<{ tool: string; summary: string; inFlight: boolean; ts?: string }>; subPhase: string | null;
+    tokensReceived: number; recentActions: Array<{ tool: string; summary: string; inFlight: boolean; ts?: string }>;
+    subPhase: string | null; startedAt: number | null; completedAt: number | null;
   }> {
     const sorted = Array.from(agents.values()).sort((a, b) => a.spawnOrder - b.spawnOrder);
     return sorted.map((a) => ({
@@ -434,6 +438,8 @@ export async function startWebServer(epicDir: string, opts?: WebServerOptions): 
       tokensReceived: a.tokensReceived,
       recentActions: a.recentActions,
       subPhase: a.subPhase,
+      startedAt: a.startedAt,
+      completedAt: a.completedAt,
     }));
   }
 
@@ -913,13 +919,16 @@ export async function startWebServer(epicDir: string, opts?: WebServerOptions): 
           model: string | null; parent: string | null;
           status?: "running" | null;
         }): void {
+          const effectiveStatus = info.status ?? "running";
           const agent: AgentInfoInternal = {
             ...info,
-            status: info.status ?? "running",
+            status: effectiveStatus,
             tokensSent: 0,
             tokensReceived: 0,
             recentActions: [],
             spawnOrder: spawnCounter++,
+            startedAt: effectiveStatus === "running" ? Date.now() : null,
+            completedAt: null,
             subPhase: null,
             eventCount: 0,
             completionSummary: null,
@@ -934,6 +943,7 @@ export async function startWebServer(epicDir: string, opts?: WebServerOptions): 
           const agent = agents.get(id);
           if (!agent || agent.status !== null) return;
           agent.status = "running";
+          agent.startedAt = Date.now();
           startAgentPolling(agent);
           pushEvent("agents", { agents: buildAgentsArray() });
           if (agent.role === "scout") pushEvent("scouts", { scouts: buildScoutsArray() });
@@ -952,6 +962,7 @@ export async function startWebServer(epicDir: string, opts?: WebServerOptions): 
               agent.status = "failed";
             }
             agent.completionOrder = completionCounter++;
+            agent.completedAt = Date.now();
             pushEvent("agents", { agents: buildAgentsArray() });
             if (agent.role === "scout") {
               agent.completionSummary = projection?.completionSummary ?? null;
