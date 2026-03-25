@@ -12,7 +12,7 @@
 //
 // eventLog: the active EventLog for the current subagent session. Set during
 //   before_agent_start after the log file is opened. Tools that need to emit
-//   audit events (e.g. koan_set_confidence) read this at call time.
+//   audit events read this at call time.
 //
 // phaseInstructions: optional context injected by the workflow orchestrator's
 //   decision. Present when the user provided focus instructions during the

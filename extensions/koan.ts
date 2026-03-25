@@ -18,9 +18,6 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 
 import { dispatchPhase } from "../src/planner/phases/dispatch.js";
 import { registerAllTools, createRuntimeContext } from "../src/planner/tools/index.js";
-import type { ConfidenceRef } from "../src/planner/phases/intake/phase.js";
-import type { ConfidenceLevel } from "../src/planner/tools/confidence.js";
-import type { AuditRef } from "../src/planner/tools/confidence.js";
 import { createLogger, setLogDir } from "../src/utils/logger.js";
 import { EventLog, extractToolCall, extractToolResult } from "../src/planner/lib/audit.js";
 import { readTaskFile } from "../src/planner/lib/task.js";
@@ -79,21 +76,7 @@ export default function koan(pi: ExtensionAPI): void {
 
   const ctx = createRuntimeContext();
 
-  // Delegating holder: tools register at init with this stable ref; dispatchPhase
-  // swaps in the real IntakePhase.confidenceRef during before_agent_start.
-  // For non-intake sessions the delegate stays null and setConfidence is a no-op
-  // (the permission fence blocks the tool anyway).
-  let delegate: ConfidenceRef | null = null;
-  const confidenceRef: ConfidenceRef = {
-    get iteration() { return delegate?.iteration ?? 0; },
-    setConfidence(level: ConfidenceLevel) { delegate?.setConfidence(level); },
-  };
-
-  // Separate audit dependency for the confidence tool. ctx.eventLog is set
-  // during before_agent_start; tools read it at call time via this stable ref.
-  const auditRef: AuditRef = ctx;
-
-  registerAllTools(pi, ctx, confidenceRef, auditRef);
+  registerAllTools(pi, ctx);
   registerInfrastructureHandlers(pi);
 
   // Dispatch happens exactly once per session (guard prevents re-entry on
@@ -131,7 +114,7 @@ export default function koan(pi: ExtensionAPI): void {
     );
     await eventLog.open();
 
-    // Make the event log available to tools (e.g. koan_set_confidence) via ctx.
+    // Make the event log available to tools via ctx.
     ctx.eventLog = eventLog;
 
     pi.on("tool_call", (event) => {
@@ -184,7 +167,7 @@ export default function koan(pi: ExtensionAPI): void {
       void eventLog.close();
     });
 
-    await dispatchPhase(pi, task, ctx, log, eventLog, (ref) => { delegate = ref; });
+    await dispatchPhase(pi, task, ctx, log, eventLog);
   });
 
   // -- koan_plan tool --

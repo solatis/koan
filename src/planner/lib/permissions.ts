@@ -34,7 +34,6 @@ export const ROLE_PERMISSIONS: ReadonlyMap<string, ReadonlySet<string>> = new Ma
       "koan_complete_step",
       "koan_ask_question",
       "koan_request_scouts",
-      "koan_set_confidence",
       "koan_review_artifact",
       "edit",
       "write",
@@ -139,18 +138,8 @@ const PLANNING_ROLES = new Set([
 const STEP_1_BLOCKED_TOOLS = new Set([
   "koan_request_scouts",
   "koan_ask_question",
-  "koan_set_confidence",
   "write",
   "edit",
-]);
-
-// STEP_3_BLOCKED_TOOLS: tools disallowed during the intake Deliberate step (step 3).
-// Confidence assessment belongs exclusively in the Reflect step (step 4).
-// Allowing koan_set_confidence during Deliberate lets the LLM pre-commit to a
-// confidence level before verification, anchoring the subsequent Reflect step
-// toward premature "certain" declarations.
-const STEP_3_BLOCKED_TOOLS = new Set([
-  "koan_set_confidence",
 ]);
 
 export function checkPermission(
@@ -173,16 +162,6 @@ export function checkPermission(
       allowed: false,
       reason: `${toolName} is not available during the Extract step (step 1). ` +
         "Complete koan_complete_step first to advance to the Scout step.",
-    };
-  }
-
-  // Intake step 3 (Deliberate): block koan_set_confidence so the LLM cannot
-  // pre-commit to a confidence level before the Reflect step's verification.
-  if (role === "intake" && currentStep === 3 && STEP_3_BLOCKED_TOOLS.has(toolName)) {
-    return {
-      allowed: false,
-      reason: `${toolName} is not available during the Deliberate step (step 3). ` +
-        "Confidence assessment belongs in the Reflect step (step 4).",
     };
   }
 

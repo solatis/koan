@@ -10,7 +10,7 @@ import { createLogger, type Logger } from "../../utils/logger.js";
 import type { RuntimeContext } from "../lib/runtime-context.js";
 import type { EventLog } from "../lib/audit.js";
 import type { SubagentTask } from "../lib/task.js";
-import { IntakePhase, type ConfidenceRef } from "./intake/phase.js";
+import { IntakePhase } from "./intake/phase.js";
 import { ScoutPhase } from "./scout/phase.js";
 import { DecomposerPhase } from "./decomposer/phase.js";
 import { BriefWriterPhase } from "./brief-writer/phase.js";
@@ -25,14 +25,12 @@ export async function dispatchPhase(
   ctx: RuntimeContext,
   log?: Logger,
   eventLog?: EventLog,
-  onConfidenceRef?: (ref: ConfidenceRef) => void,
 ): Promise<void> {
   const logger = log ?? createLogger("Dispatch");
 
   switch (task.role) {
     case "intake": {
       const phase = new IntakePhase(pi, ctx, logger, eventLog);
-      onConfidenceRef?.(phase.confidenceRef);
       await phase.begin();
       break;
     }
