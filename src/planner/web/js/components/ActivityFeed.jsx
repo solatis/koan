@@ -80,9 +80,16 @@ function ThinkingCard({ line, isInFlight, isFlashing, dimmed }) {
   )
 }
 
-/** Card for koan_request_scouts — shows dispatched scouts with name + role */
+/** Card for koan_request_scouts — shows dispatched scouts with name + role.
+ *  Cross-references live scout status from the store to color the accent bar. */
 function ScoutCard({ line, isInFlight, isFlashing, dimmed }) {
-  const scouts = line.scouts || []
+  const scoutDefs = line.scouts || []
+  const liveScouts = useStore(s => s.scouts)
+
+  // Build id→status lookup from live scout data
+  const statusById = {}
+  for (const s of liveScouts) statusById[s.id] = s.status
+
   const cls = [
     'activity-card',
     'activity-card-scouts',
@@ -95,17 +102,24 @@ function ScoutCard({ line, isInFlight, isFlashing, dimmed }) {
     <div class={cls}>
       <div class="activity-card-header">
         <span class="activity-card-tool">
-          dispatching {scouts.length} scout{scouts.length !== 1 ? 's' : ''}
+          dispatching {scoutDefs.length} scout{scoutDefs.length !== 1 ? 's' : ''}
         </span>
         {isInFlight && <span class="activity-card-meta"><span class="activity-dots">…</span></span>}
       </div>
       <div class="scout-list">
-        {scouts.map((s, i) => (
-          <div key={i} class="scout-entry">
-            <span class="scout-name">{s.id}</span>
-            <span class="scout-role">{s.role}</span>
-          </div>
-        ))}
+        {scoutDefs.map((s, i) => {
+          const status = statusById[s.id] ?? null
+          const statusCls = status === 'running'   ? 'scout-running'
+                          : status === 'completed' ? 'scout-completed'
+                          : status === 'failed'    ? 'scout-failed'
+                          :                          'scout-queued'
+          return (
+            <div key={i} class={`scout-entry ${statusCls}`}>
+              <span class="scout-name">{s.id}</span>
+              <span class="scout-role">{s.role}</span>
+            </div>
+          )
+        })}
       </div>
     </div>
   )

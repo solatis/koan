@@ -161,10 +161,15 @@
   padding: 5px var(--gap-sm);
   font-family: var(--font-mono);
   font-size: var(--font-size-xs);
-  border-left: 2px solid var(--blue);
-  background: var(--blue-bg);
+  border-left: 2px solid var(--border);
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
+
+/* Status-based accent bar colors — synced with agent status convention */
+.scout-queued    { border-left-color: var(--text-dim); }
+.scout-running   { border-left-color: var(--blue);     background: var(--blue-bg); }
+.scout-completed { border-left-color: var(--green);    background: var(--green-bg); }
+.scout-failed    { border-left-color: var(--red);      background: var(--red-bg); }
 
 .scout-name {
   color: var(--text-muted);
