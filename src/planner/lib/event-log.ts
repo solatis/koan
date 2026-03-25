@@ -10,8 +10,6 @@ import type {
   PhaseStartEvent,
   StepTransitionEvent,
   PhaseEndEvent,
-  ConfidenceChangeEvent,
-  IterationStartEvent,
   Projection,
   ToolCallEvent,
   ToolResultEvent,
@@ -127,8 +125,6 @@ export class EventLog {
       tokensSent: 0,
       tokensReceived: 0,
       lastToolResultAt: null,
-      intakeConfidence: null,
-      intakeIteration: 0,
     };
   }
 
@@ -191,21 +187,7 @@ export class EventLog {
     } as Omit<PhaseEndEvent, "ts" | "seq">);
   }
 
-  async emitConfidenceChange(level: ConfidenceChangeEvent["level"], iteration: number): Promise<void> {
-    await this.append({
-      kind: "confidence_change",
-      level,
-      iteration,
-    } as Omit<ConfidenceChangeEvent, "ts" | "seq">);
-  }
 
-  async emitIterationStart(iteration: number, maxIterations: number): Promise<void> {
-    await this.append({
-      kind: "iteration_start",
-      iteration,
-      maxIterations,
-    } as Omit<IterationStartEvent, "ts" | "seq">);
-  }
 
   async close(): Promise<void> {
     if (this.heartbeat) {

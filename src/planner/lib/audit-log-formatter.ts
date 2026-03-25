@@ -346,7 +346,7 @@ function buildChronologicalLog(events: AuditEvent[], count: number): LogLine[] {
 
   for (const e of events) {
     if (e.kind === "heartbeat" || e.kind === "usage") continue;
-    if (e.kind === "confidence_change" || e.kind === "iteration_start") continue;
+
 
     if (e.kind === "thinking") {
       // Retroactive: this text is from the turn that just completed.

@@ -189,17 +189,5 @@ export function fold(s: Projection, e: AuditEvent): Projection {
     case "thinking":
       return base;
 
-    case "confidence_change":
-      return {
-        ...base,
-        intakeConfidence: e.level,
-        intakeIteration: e.iteration,
-      };
-
-    case "iteration_start":
-      return {
-        ...base,
-        intakeIteration: e.iteration,
-      };
   }
 }

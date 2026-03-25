@@ -74,22 +74,6 @@ export interface ThinkingEvent extends EventBase {
   chars: number;
 }
 
-export interface ConfidenceChangeEvent extends EventBase {
-  kind: "confidence_change";
-  // The confidence level declared by the intake agent via koan_set_confidence.
-  level: "exploring" | "low" | "medium" | "high" | "certain";
-  // Which iteration of the Scout->Deliberate->Reflect loop this was declared in.
-  iteration: number;
-}
-
-export interface IterationStartEvent extends EventBase {
-  kind: "iteration_start";
-  // The new iteration number (incremented from the previous Reflect step).
-  iteration: number;
-  // Maximum allowed iterations before the loop is forced to exit.
-  maxIterations: number;
-}
-
 export type AuditEvent =
   | ToolCallEvent
   | ToolResultEvent
@@ -98,9 +82,7 @@ export type AuditEvent =
   | PhaseEndEvent
   | HeartbeatEvent
   | UsageEvent
-  | ThinkingEvent
-  | ConfidenceChangeEvent
-  | IterationStartEvent;
+  | ThinkingEvent;
 
 // Distributive Omit -- distributes over union members so object literals
 // with fields specific to one member are accepted.
@@ -131,11 +113,7 @@ export interface Projection {
   tokensReceived: number;
   // Timestamp of the most recent tool_result event; used to track thinking gaps.
   lastToolResultAt: string | null;
-  // Intake-specific: the most recent confidence level declared by koan_set_confidence.
-  // Null for non-intake subagents or before any confidence is declared.
-  intakeConfidence: "exploring" | "low" | "medium" | "high" | "certain" | null;
-  // Intake-specific: the current loop iteration (1-based). Zero for non-intake.
-  intakeIteration: number;
+
 }
 
 // -- Correlated tool invocations --
