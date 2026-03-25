@@ -1,35 +1,38 @@
 :root {
   /* Background layers */
-  --bg:          #F5EDE0;   /* cream base — "the desk" */
-  --bg-surface:  #E6DACB;   /* panels, sidebars — "paper on desk" */
+  --bg:          #FEFAE0;   /* cornsilk base — "the desk" */
+  --bg-surface:  #E0D8C8;   /* stone — sidebars, panels, monitor */
   --bg-elevated: #FFFFFF;   /* cards, overlays — "paper on paper" */
-  --bg-inset:    #DDD0BE;   /* pressed/inset areas */
+  --bg-inset:    #D4CCB8;   /* pressed/inset areas */
 
   /* Borders */
-  --border:        #D4C6B4;
-  --border-strong: #C4B49E;
+  --border:        #C8C0A8;
+  --border-strong: #B8B098;
 
   /* Text hierarchy */
-  --text:        #5E4E3C;   /* Walnut — default body */
-  --text-strong: #2A1F14;   /* Espresso — headings */
-  --text-muted:  #957E68;   /* Driftwood — metadata */
-  --text-ghost:  #C0AD98;   /* Sand — disabled/placeholder */
+  --text:        #4A4428;   /* Olive-brown — default body */
+  --text-strong: #283618;   /* Black Forest — headings */
+  --text-muted:  #7A7450;   /* Dried sage — metadata */
+  --text-ghost:  #A09A6E;   /* Faded straw — disabled/placeholder */
 
   /* Status — the ONLY saturated colors */
-  --green:             #4E7A42;
-  --green-bg:          #EDF4EB;
-  --green-border:      #4E7A42;
-  --terracotta:        #C2694B;
-  --terracotta-bg:     #FDF0E6;
-  --terracotta-border: #C2694B;
-  --red:               #A83E36;
-  --red-bg:            #F8EAEA;
-  --red-border:        #A83E36;
-  --ochre:             #B8953A;
-  --ochre-bg:          #F8F0E0;
-  --ochre-border:      #B8953A;
-  --plum:              #7C4A5A;
-  --plum-bg:           #F4ECF0;
+  --green:             #606C38;
+  --green-bg:          #EEF2E4;
+  --green-border:      #606C38;
+  --copper:            #BC6C25;
+  --copper-bg:         #FDF3E4;
+  --copper-border:     #BC6C25;
+  --caramel:           #DDA15E;
+  --caramel-bg:        #FEF7E8;
+  --caramel-border:    #DDA15E;
+  --red:               #9A3412;
+  --red-bg:            #FEF0E8;
+  --red-border:        #9A3412;
+  --ochre:             #92810A;
+  --ochre-bg:          #FEFCE8;
+  --ochre-border:      #92810A;
+  --plum:              #606C38;
+  --plum-bg:           #EEF2E4;
 
   /* Typography */
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;

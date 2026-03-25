@@ -90,7 +90,7 @@
 }
 
 .activity-card-active {
-  border-color: var(--terracotta-border);
+  border-color: var(--copper-border);
 }
 
 .activity-card-header {
@@ -140,7 +140,7 @@
   padding: 2px var(--space-4) var(--space-2);
   font-family: var(--font-mono);
   font-size: var(--font-size-xs);
-  color: var(--terracotta);
+  color: var(--copper);
   cursor: pointer;
   user-select: none;
 }
@@ -148,7 +148,7 @@
 /* ---- Scout dispatch card ---- */
 
 .activity-card-scouts .activity-card-tool {
-  color: var(--terracotta);
+  color: var(--copper);
 }
 
 .scout-list {
@@ -171,7 +171,7 @@
 
 /* Status-based accent bar colors — synced with agent status convention */
 .scout-queued    { border-left-color: var(--text-muted); }
-.scout-running   { border-left-color: var(--terracotta); background: var(--terracotta-bg); }
+.scout-running   { border-left-color: var(--copper); background: var(--copper-bg); }
 .scout-completed { border-left-color: var(--green);      background: var(--green-bg); }
 .scout-failed    { border-left-color: var(--red);        background: var(--red-bg); }
 
@@ -211,7 +211,7 @@
 }
 
 .activity-high .activity-tool {
-  color: var(--terracotta);
+  color: var(--copper);
 }
 
 .activity-summary {
@@ -352,7 +352,7 @@
 }
 
 .sidebar-agent-role {
-  color: var(--terracotta);
+  color: var(--copper);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -455,7 +455,7 @@
 }
 
 .tree-file-name {
-  color: var(--terracotta);
+  color: var(--copper);
   font-family: var(--font-mono);
   font-size: 12px;
 }

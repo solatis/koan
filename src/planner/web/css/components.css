@@ -22,9 +22,9 @@
 }
 
 .pill.active {
-  background: var(--terracotta);
+  background: var(--copper);
   color: #fff;
-  border-color: var(--terracotta);
+  border-color: var(--copper);
 }
 
 .pill.done {
@@ -51,7 +51,7 @@
 }
 
 .badge.done   { background: var(--green-bg);       color: var(--green); }
-.badge.active { background: var(--terracotta-bg);  color: var(--terracotta); }
+.badge.active { background: var(--copper-bg);  color: var(--copper); }
 .badge.failed { background: var(--red-bg);         color: var(--red); }
 
 /* ---- Agent table ---- */
@@ -98,7 +98,7 @@
 }
 
 .agent-status-queued   { color: var(--text-muted); }
-.agent-status-running  { color: var(--terracotta); }
+.agent-status-running  { color: var(--copper); }
 .agent-status-done     { color: var(--green); font-weight: 600; }
 .agent-status-failed   { color: var(--red); }
 
@@ -144,7 +144,7 @@
 }
 
 .card.card-running {
-  border-left: 3px solid var(--terracotta);
+  border-left: 3px solid var(--copper);
 }
 
 .card.card-done {
@@ -240,7 +240,7 @@
 .question-context a,
 .question-text a,
 .option-text a {
-  color: var(--terracotta);
+  color: var(--copper);
   text-decoration: underline;
 }
 
@@ -266,7 +266,7 @@
 .question-multi-hint {
   font-family: var(--font-mono);
   font-size: var(--font-size-xs);
-  color: var(--terracotta);
+  color: var(--copper);
   margin-bottom: var(--space-2);
 }
 
@@ -294,8 +294,8 @@
 }
 
 .option.selected {
-  border-color: var(--terracotta-border);
-  background: var(--terracotta-bg);
+  border-color: var(--copper-border);
+  background: var(--copper-bg);
 }
 
 .option-other {
@@ -318,8 +318,8 @@
 
 .option.selected .radio-dot,
 .option.selected .checkbox-dot {
-  border-color: var(--terracotta);
-  background: var(--terracotta);
+  border-color: var(--copper);
+  background: var(--copper);
 }
 
 .option.selected .checkbox-dot::after {
@@ -345,7 +345,7 @@
 .recommended-badge {
   font-family: var(--font-mono);
   font-size: var(--font-size-xs);
-  color: var(--terracotta);
+  color: var(--copper);
   margin-left: auto;
   white-space: nowrap;
 }
@@ -365,7 +365,7 @@
 }
 
 .other-input:focus {
-  border-color: var(--terracotta);
+  border-color: var(--copper);
 }
 
 .other-input.visible {
@@ -397,7 +397,7 @@
 }
 
 .scout-concurrency-input:focus {
-  border-color: var(--terracotta);
+  border-color: var(--copper);
   outline: none;
 }
 
@@ -489,7 +489,7 @@
 }
 
 .activity-tool {
-  color: var(--terracotta);
+  color: var(--copper);
   min-width: 60px;
 }
 
@@ -549,7 +549,7 @@
   animation: fade-in 150ms ease-out;
 }
 
-.notification.info    { background: var(--terracotta); }
+.notification.info    { background: var(--copper); }
 .notification.warning { background: var(--ochre); }
 .notification.error   { background: var(--red); }
 
@@ -643,7 +643,7 @@
 }
 
 .model-tier-input:focus {
-  border-color: var(--terracotta);
+  border-color: var(--copper);
 }
 
 .model-tier-input::placeholder {
@@ -672,7 +672,7 @@
 }
 
 .model-tier-select:focus {
-  border-color: var(--terracotta);
+  border-color: var(--copper);
 }
 
 .model-tier-select option {
@@ -764,7 +764,7 @@
 }
 
 .prefix-active {
-  color: var(--terracotta);
+  color: var(--copper);
   animation: pulse-dot 1s ease-in-out infinite;
 }
 
@@ -845,7 +845,7 @@
 .artifact-review-content strong { color: var(--text-strong); }
 
 .artifact-review-content a {
-  color: var(--terracotta);
+  color: var(--copper);
   text-decoration: underline;
 }
 
@@ -866,7 +866,7 @@
 }
 
 .artifact-review-feedback:focus {
-  border-color: var(--terracotta);
+  border-color: var(--copper);
 }
 
 .artifact-review-feedback::placeholder {
@@ -965,8 +965,8 @@
 .workflow-turn-user {
   align-self: flex-end;
   max-width: 80%;
-  background: var(--terracotta-bg);
-  border: 1px solid var(--terracotta-border);
+  background: var(--copper-bg);
+  border: 1px solid var(--copper-border);
   border-radius: var(--radius-md);
   padding: var(--space-1) var(--space-4);
   font-size: var(--font-size-sm);
@@ -1017,25 +1017,25 @@
 
 .workflow-option:hover {
   background: var(--bg-surface);
-  border-color: var(--terracotta-border);
+  border-color: var(--copper-border);
 }
 
 .workflow-option.recommended {
-  border-color: var(--terracotta-border);
-  background: var(--terracotta-bg);
+  border-color: var(--copper-border);
+  background: var(--copper-bg);
 }
 
 .workflow-option.recommended:hover {
-  background: color-mix(in srgb, var(--terracotta-bg) 80%, var(--bg-surface));
+  background: color-mix(in srgb, var(--copper-bg) 80%, var(--bg-surface));
 }
 
 .workflow-option.selected {
-  border-color: var(--terracotta-border);
-  background: var(--terracotta-bg);
+  border-color: var(--copper-border);
+  background: var(--copper-bg);
 }
 
 .workflow-option.selected .workflow-option-label {
-  color: var(--terracotta);
+  color: var(--copper);
 }
 
 .workflow-option-label {
@@ -1046,7 +1046,7 @@
 }
 
 .workflow-option.recommended .workflow-option-label {
-  color: var(--terracotta);
+  color: var(--copper);
 }
 
 .workflow-option-context {
@@ -1078,7 +1078,7 @@
 }
 
 .workflow-feedback:focus {
-  border-color: var(--terracotta);
+  border-color: var(--copper);
 }
 
 .workflow-feedback::placeholder {

@@ -61,47 +61,50 @@ component references tokens — never raw color codes or pixel values.
 
 | Token           | Value     | Usage                                               |
 | --------------- | --------- | --------------------------------------------------- |
-| `--bg`          | `#F5EDE0` | Page base — the "desk"                              |
-| `--bg-surface`  | `#E6DACB` | Cards, panels — "paper on desk"                     |
-| `--bg-elevated` | `#FFFFFF` | Elevated cards, overlays — "paper on paper"         |
-| `--bg-inset`    | `#DDD0BE` | Inset areas, pressed states — "indentation in wood" |
+| `--bg`          | `#FEFAE0` | Cornsilk base — the "desk"                          |
+| `--bg-surface`  | `#E0D8C8` | Stone — sidebars, panels, monitor                   |
+| `--bg-elevated` | `#FFFFFF` | Cards, overlays — "paper on paper"                  |
+| `--bg-inset`    | `#D4CCB8` | Pressed/inset areas                                 |
 
 #### Text
 
-| Token           | Value     | Name      | Usage                                |
-| --------------- | --------- | --------- | ------------------------------------ |
-| `--text`        | `#5E4E3C` | Walnut    | Default body text                    |
-| `--text-strong` | `#2A1F14` | Espresso  | Headings, names, emphasis            |
-| `--text-muted`  | `#957E68` | Driftwood | Metadata, timestamps, secondary info |
-| `--text-ghost`  | `#C0AD98` | Sand      | Placeholders, disabled states        |
+| Token           | Value     | Name         | Usage                                |
+| --------------- | --------- | ------------ | ------------------------------------ |
+| `--text`        | `#4A4428` | Olive-brown  | Default body text                    |
+| `--text-strong` | `#283618` | Black Forest | Headings, names, emphasis            |
+| `--text-muted`  | `#7A7450` | Dried sage   | Metadata, timestamps, secondary info |
+| `--text-ghost`  | `#A09A6E` | Faded straw  | Placeholders, disabled states        |
 
 #### Borders
 
 | Token             | Value     | Usage                      |
 | ----------------- | --------- | -------------------------- |
-| `--border`        | `#D4C6B4` | Default card/panel borders |
-| `--border-strong` | `#C4B49E` | Dividers, emphasis borders |
+| `--border`        | `#C8C0A8` | Default card/panel borders |
+| `--border-strong` | `#B8B098` | Dividers, emphasis borders |
 
 #### Status — The Pigment Palette
 
-These are the only saturated colors in the system. Use sparingly.
+Based on the Olive Garden Feast palette. Use sparingly.
 
-| Token                 | Value     | Name       | Meaning                         |
-| --------------------- | --------- | ---------- | ------------------------------- |
-| `--green`             | `#4E7A42` | Forest     | Done, success, complete         |
-| `--green-bg`          | `#EDF4EB` | —          | Success background tint         |
-| `--green-border`      | `#4E7A42` | —          | Success border accent           |
-| `--terracotta`        | `#C2694B` | Terracotta | Active, running, primary action |
-| `--terracotta-bg`     | `#FDF0E6` | —          | Active background tint          |
-| `--terracotta-border` | `#C2694B` | —          | Active border accent            |
-| `--red`               | `#A83E36` | Rust       | Error, failed, destructive      |
-| `--red-bg`            | `#F8EAEA` | —          | Error background tint           |
-| `--red-border`        | `#A83E36` | —          | Error border accent             |
-| `--ochre`             | `#B8953A` | Ochre      | Warning, caution                |
-| `--ochre-bg`          | `#F8F0E0` | —          | Warning background tint         |
-| `--ochre-border`      | `#B8953A` | —          | Warning border accent           |
-| `--plum`              | `#7C4A5A` | Plum       | Thinking, AI-internal states    |
-| `--plum-bg`           | `#F4ECF0` | —          | Thinking background tint        |
+| Token              | Value     | Name    | Meaning                         |
+| ------------------ | --------- | ------- | ------------------------------- |
+| `--green`          | `#606C38` | Olive   | Done, success, complete         |
+| `--green-bg`       | `#EEF2E4` | —       | Success background tint         |
+| `--green-border`   | `#606C38` | —       | Success border accent           |
+| `--copper`         | `#BC6C25` | Copper  | Active, running, primary action |
+| `--copper-bg`      | `#FDF3E4` | —       | Active background tint          |
+| `--copper-border`  | `#BC6C25` | —       | Active border accent            |
+| `--caramel`        | `#DDA15E` | Caramel | Pulsing dots, secondary accent  |
+| `--caramel-bg`     | `#FEF7E8` | —       | Caramel background tint         |
+| `--caramel-border` | `#DDA15E` | —       | Caramel border accent           |
+| `--red`            | `#9A3412` | Ember   | Error, failed, destructive      |
+| `--red-bg`         | `#FEF0E8` | —       | Error background tint           |
+| `--red-border`     | `#9A3412` | —       | Error border accent             |
+| `--ochre`          | `#92810A` | Ochre   | Warning, caution                |
+| `--ochre-bg`       | `#FEFCE8` | —       | Warning background tint         |
+| `--ochre-border`   | `#92810A` | —       | Warning border accent           |
+| `--plum`           | `#606C38` | Olive   | Thinking, AI-internal states    |
+| `--plum-bg`        | `#EEF2E4` | —       | Thinking background tint        |
 
 #### Status Color Usage Rules
 
@@ -243,7 +246,7 @@ Three variants. All use `--radius-sm` (6px), `--font-sans`.
 | Variant     | Background     | Text     | Border                      | When to use                                          |
 | ----------- | -------------- | -------- | --------------------------- | ---------------------------------------------------- |
 | **Primary** | `--green`      | `#fff`   | none                        | Single main action per view (Begin Planning, Submit) |
-| **Accent**  | `--terracotta` | `#fff`   | none                        | Secondary prominent action (Submit Review)           |
+| **Accent**  | `--copper` | `#fff`   | none                        | Secondary prominent action (Submit Review)           |
 | **Ghost**   | `transparent`  | `--text` | `1px solid --border-strong` | Cancel, Back, non-committal actions                  |
 
 Sizing: `padding: 12px 24px`, `font-size: --font-size-md`, `font-weight: 600`.
@@ -259,7 +262,7 @@ States:
 All inputs: `--radius-sm`, `padding: 12px 16px`, `border: 1px solid --border`,
 `background: --bg-elevated`, `font-size: --font-size-md`, `color: --text-strong`.
 
-- **Focus:** `border-color: --terracotta`
+- **Focus:** `border-color: --copper`
 - **Placeholder:** `color: --text-ghost`, `font-style: italic`
 - **Textarea:** Same as input. `min-height: 80px`, `resize: vertical`.
 - **Select:** Same as input. Custom chevron via background SVG in `--text-muted`.
@@ -272,7 +275,7 @@ Inline status indicators. `--radius-md` (10px), `padding: 5px 14px`,
 | State   | Background        | Text           |
 | ------- | ----------------- | -------------- |
 | Done    | `--green-bg`      | `--green`      |
-| Active  | `--terracotta-bg` | `--terracotta` |
+| Active  | `--copper-bg` | `--copper` |
 | Failed  | `--red-bg`        | `--red`        |
 | Warning | `--ochre-bg`      | `--ochre`      |
 | Neutral | `--bg-inset`      | `--text-muted` |
@@ -309,7 +312,7 @@ padding: --space-6 (24px)
 | State   | Background        | Left border              |
 | ------- | ----------------- | ------------------------ |
 | Default | `--bg-elevated`   | none                     |
-| Running | `--terracotta-bg` | `3px solid --terracotta` |
+| Running | `--copper-bg` | `3px solid --copper` |
 | Done    | `--green-bg`      | `3px solid --green`      |
 | Failed  | `--red-bg`        | `3px solid --red`        |
 
@@ -347,7 +350,7 @@ Individual pills: `padding: 6px 16px`, `font-size: --font-size-sm`, `font-weight
 | State    | Background     | Text           | Prefix |
 | -------- | -------------- | -------------- | ------ |
 | Inactive | `--bg`         | `--text-ghost` | none   |
-| Active   | `--terracotta` | `#fff`         | `● `   |
+| Active   | `--copper` | `#fff`         | `● `   |
 | Done     | `--green`      | `#fff`         | `✓ `   |
 
 Pills are separated by `border-right: 1px solid --border`. Last pill has no
@@ -366,7 +369,7 @@ Data cells:  --font-mono, --font-size-sm
 
 Agent name is `--font-weight-heading` (600) and colored by status:
 
-- Running: `--terracotta`
+- Running: `--copper`
 - Done: `--green`
 - Failed: `--red`
 - Queued: `--text-ghost`
@@ -388,9 +391,9 @@ border-radius: --radius-lg
 metadata (right, `--text-muted`, `--font-size-xs`).
 
 **Body:** `--font-mono`, `--font-size-sm`, `--text-muted`, `white-space: pre-wrap`.
-Clamped to 3 lines with "show more ▸" link in `--terracotta`.
+Clamped to 3 lines with "show more ▸" link in `--copper`.
 
-**Active variant:** `border-color: --terracotta-border`.
+**Active variant:** `border-color: --copper-border`.
 
 **Thinking variant:** tool name in `--plum`.
 
@@ -416,10 +419,10 @@ padding: --space-6
 `border-radius: --radius-sm`, `cursor: pointer`.
 
 - Hover: `border-color: --text-muted`
-- Selected: `border-color: --terracotta-border`, `background: --terracotta-bg`
+- Selected: `border-color: --copper-border`, `background: --copper-bg`
 
 Radio dots: `14px` circle, `border: 2px solid --text-ghost`.
-Selected: `border-color: --terracotta`, `background: --terracotta`.
+Selected: `border-color: --copper`, `background: --copper`.
 
 ### 4.6 Notification Toast
 
@@ -434,7 +437,7 @@ animation: fade-in --duration-fast, then fade-out --duration-slow after 3s
 
 | Type    | Background     |
 | ------- | -------------- |
-| Info    | `--terracotta` |
+| Info    | `--copper` |
 | Warning | `--ochre`      |
 | Error   | `--red`        |
 
@@ -536,8 +539,8 @@ Is it a heading or name?           → --text-strong
 Is it body copy?                   → --text
 Is it a timestamp, count, model?   → --text-muted
 Is it a placeholder or disabled?   → --text-ghost
-Is it a status indicator?          → Use the status color (--green, --terracotta, --red, --ochre)
-Is it an interactive link/action?  → --terracotta
+Is it a status indicator?          → Use the status color (--green, --copper, --red, --ochre)
+Is it an interactive link/action?  → --copper
 ```
 
 ### 6.3 "Should I use mono or sans?"
@@ -554,7 +557,7 @@ Everything else                          → sans
 
 ```
 Idle/default   → no color, --border, --bg-elevated
-Running/active → left accent border (--terracotta), tinted bg (--terracotta-bg)
+Running/active → left accent border (--copper), tinted bg (--copper-bg)
 Complete/done  → left accent border (--green), tinted bg (--green-bg)
 Error/failed   → left accent border (--red), tinted bg (--red-bg)
 Warning        → left accent border (--ochre), tinted bg (--ochre-bg)
@@ -583,7 +586,7 @@ tempted to add them, stop.
 | ❌ Don't                                      | ✅ Do instead                                  |
 | --------------------------------------------- | ---------------------------------------------- |
 | Use `box-shadow` for elevation                | Use `border: 1px solid --border`               |
-| Use blue (`#58a6ff`) for anything             | Use `--terracotta` for active/accent           |
+| Use blue (`#58a6ff`) for anything             | Use `--copper` for active/accent           |
 | Use raw hex colors in components              | Reference `var(--token)`                       |
 | Make text uppercase in body copy              | Uppercase only in `.text-label` elements       |
 | Add `transform: scale()` animations           | Use `opacity` transitions only                 |
@@ -629,8 +632,8 @@ scrollbar-color: var(--border-strong) transparent;
 Webkit:
 
 - Track: `transparent`
-- Thumb: `var(--border-strong)` (`#C4B49E`) — warm tan, not gray or black
-- Thumb hover: `var(--text-muted)` (`#957E68`) — slightly darker on interaction
+- Thumb: `var(--border-strong)` (`#B8B098`) — warm tan, not gray or black
+- Thumb hover: `var(--text-muted)` (`#7A7450`) — slightly darker on interaction
 - Width: `7px`
 - Border-radius: `4px`
 

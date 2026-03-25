@@ -50,7 +50,7 @@
   display: inline-block;
   width: 6px;
   height: 14px;
-  background: var(--terracotta);
+  background: var(--copper);
   border-radius: 1px;
   vertical-align: text-bottom;
   margin-left: 2px;
@@ -71,6 +71,6 @@
   width: 12px;
   height: 12px;
   border-radius: 50%;
-  background: var(--terracotta);
+  background: var(--copper);
   animation: thinking-pulse 1.5s ease-in-out infinite;
 }
