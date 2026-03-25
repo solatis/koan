@@ -62,9 +62,7 @@ function AgentIdentity({ subagent }) {
     return () => clearInterval(id)
   }, [startedAt])
 
-  const stepLabel = subagent.stepName || (subagent.step && subagent.totalSteps
-    ? `Step ${subagent.step}/${subagent.totalSteps}`
-    : null)
+  const stepLabel = subagent.stepName || null
 
   const elapsed = startedAt ? formatElapsed(Math.max(0, now - startedAt)) : '—'
 

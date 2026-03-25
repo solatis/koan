@@ -141,7 +141,7 @@ export function fold(s: Projection, e: AuditEvent): Projection {
         ...base,
         step: e.step,
         totalSteps: e.totalSteps,
-        stepName: `Step ${e.step}/${e.totalSteps}: ${e.name}`,
+        stepName: e.name,
       };
 
     case "phase_end":
