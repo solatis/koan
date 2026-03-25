@@ -80,15 +80,38 @@ function ThinkingCard({ line, isInFlight, isFlashing, dimmed }) {
   )
 }
 
+function formatElapsedShort(ms) {
+  const sec = Math.floor(ms / 1000)
+  if (sec < 60) return `${sec}s`
+  const min = Math.floor(sec / 60)
+  const rem = sec % 60
+  return rem > 0 ? `${min}m ${rem}s` : `${min}m`
+}
+
 /** Card for koan_request_scouts — shows dispatched scouts with name + role.
- *  Cross-references live scout status from the store to color the accent bar. */
+ *  Cross-references live scout status from the store to color the accent bar.
+ *  Shows total elapsed time once all scouts have completed. */
 function ScoutCard({ line, isInFlight, isFlashing, dimmed }) {
   const scoutDefs = line.scouts || []
   const liveScouts = useStore(s => s.scouts)
+  const allAgents = useStore(s => s.agents)
 
   // Build id→status lookup from live scout data
   const statusById = {}
   for (const s of liveScouts) statusById[s.id] = s.status
+
+  // Compute total elapsed from scout agent timing data
+  const scoutIds = new Set(scoutDefs.map(s => s.id))
+  const scoutAgents = allAgents.filter(a => scoutIds.has(a.name || a.id))
+  const allDone = scoutAgents.length > 0 && scoutAgents.every(a => a.status === 'completed' || a.status === 'failed')
+  let totalElapsed = null
+  if (allDone) {
+    const starts = scoutAgents.filter(a => a.startedAt).map(a => a.startedAt)
+    const ends = scoutAgents.filter(a => a.completedAt).map(a => a.completedAt)
+    if (starts.length > 0 && ends.length > 0) {
+      totalElapsed = formatElapsedShort(Math.max(...ends) - Math.min(...starts))
+    }
+  }
 
   const cls = [
     'activity-card',
@@ -104,7 +127,12 @@ function ScoutCard({ line, isInFlight, isFlashing, dimmed }) {
         <span class="activity-card-tool">
           dispatching {scoutDefs.length} scout{scoutDefs.length !== 1 ? 's' : ''}
         </span>
-        {isInFlight && <span class="activity-card-meta"><span class="activity-dots">…</span></span>}
+        <span class="activity-card-meta">
+          {isInFlight
+            ? <span class="activity-dots">…</span>
+            : totalElapsed && <span class="activity-elapsed">{totalElapsed}</span>
+          }
+        </span>
       </div>
       <div class="scout-list">
         {scoutDefs.map((s, i) => {

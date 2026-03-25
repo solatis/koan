@@ -115,6 +115,10 @@
   font-size: var(--font-size-xs);
 }
 
+.activity-elapsed {
+  color: var(--text-muted);
+}
+
 .activity-card-body {
   padding: 0 var(--gap-md) var(--gap-sm);
   font-family: var(--font-mono);
