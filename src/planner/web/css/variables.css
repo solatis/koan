@@ -1,13 +1,13 @@
 :root {
   /* Background layers */
-  --bg:          #FAF5EE;   /* cream base — "the desk" */
-  --bg-surface:  #F0E8DA;   /* panels, sidebars — "paper on desk" */
+  --bg:          #F5EDE0;   /* cream base — "the desk" */
+  --bg-surface:  #E6DACB;   /* panels, sidebars — "paper on desk" */
   --bg-elevated: #FFFFFF;   /* cards, overlays — "paper on paper" */
-  --bg-inset:    #E8DFD0;   /* pressed/inset areas */
+  --bg-inset:    #DDD0BE;   /* pressed/inset areas */
 
   /* Borders */
-  --border:        #E2D6C6;
-  --border-strong: #D4C6B4;
+  --border:        #D4C6B4;
+  --border-strong: #C4B49E;
 
   /* Text hierarchy */
   --text:        #5E4E3C;   /* Walnut — default body */

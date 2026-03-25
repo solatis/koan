@@ -61,10 +61,10 @@ component references tokens — never raw color codes or pixel values.
 
 | Token           | Value     | Usage                                               |
 | --------------- | --------- | --------------------------------------------------- |
-| `--bg`          | `#FAF5EE` | Page base — the "desk"                              |
-| `--bg-surface`  | `#F0E8DA` | Cards, panels — "paper on desk"                     |
+| `--bg`          | `#F5EDE0` | Page base — the "desk"                              |
+| `--bg-surface`  | `#E6DACB` | Cards, panels — "paper on desk"                     |
 | `--bg-elevated` | `#FFFFFF` | Elevated cards, overlays — "paper on paper"         |
-| `--bg-inset`    | `#E8DFD0` | Inset areas, pressed states — "indentation in wood" |
+| `--bg-inset`    | `#DDD0BE` | Inset areas, pressed states — "indentation in wood" |
 
 #### Text
 
@@ -79,8 +79,8 @@ component references tokens — never raw color codes or pixel values.
 
 | Token             | Value     | Usage                      |
 | ----------------- | --------- | -------------------------- |
-| `--border`        | `#E2D6C6` | Default card/panel borders |
-| `--border-strong` | `#D4C6B4` | Dividers, emphasis borders |
+| `--border`        | `#D4C6B4` | Default card/panel borders |
+| `--border-strong` | `#C4B49E` | Dividers, emphasis borders |
 
 #### Status — The Pigment Palette
 
@@ -629,7 +629,7 @@ scrollbar-color: var(--border-strong) transparent;
 Webkit:
 
 - Track: `transparent`
-- Thumb: `var(--border-strong)` (`#D4C6B4`) — warm tan, not gray or black
+- Thumb: `var(--border-strong)` (`#C4B49E`) — warm tan, not gray or black
 - Thumb hover: `var(--text-muted)` (`#957E68`) — slightly darker on interaction
 - Width: `7px`
 - Border-radius: `4px`
