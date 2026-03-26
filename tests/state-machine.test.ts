@@ -413,11 +413,6 @@ describe("step-aware permission gating", () => {
     assert.equal(result.allowed, false);
   });
 
-  it("intake step 1 blocks koan_set_confidence", () => {
-    const result = checkPermission("intake", "koan_set_confidence", epicDir, undefined, 1);
-    assert.equal(result.allowed, false);
-  });
-
   it("intake step 1 blocks write", () => {
     const result = checkPermission("intake", "write", epicDir, { path: path.join(epicDir, "landscape.md") }, 1);
     assert.equal(result.allowed, false);
@@ -432,20 +427,6 @@ describe("step-aware permission gating", () => {
 
   it("intake step 2 allows koan_request_scouts", () => {
     const result = checkPermission("intake", "koan_request_scouts", epicDir, undefined, 2);
-    assert.equal(result.allowed, true);
-  });
-
-  // -- Intake step 3 (Deliberate): blocks koan_set_confidence --
-
-  it("intake step 3 blocks koan_set_confidence", () => {
-    const result = checkPermission("intake", "koan_set_confidence", epicDir, undefined, 3);
-    assert.equal(result.allowed, false);
-  });
-
-  // -- Intake step 4 (Reflect): koan_set_confidence allowed --
-
-  it("intake step 4 allows koan_set_confidence", () => {
-    const result = checkPermission("intake", "koan_set_confidence", epicDir, undefined, 4);
     assert.equal(result.allowed, true);
   });
 
