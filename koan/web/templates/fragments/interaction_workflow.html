@@ -1,0 +1,37 @@
+<div class="workflow-chat">
+  {% for turn in chat_turns %}
+  <div class="workflow-turn">
+    {% if turn.role == "orchestrator" %}
+    <div class="workflow-turn-orchestrator">
+      <div class="workflow-turn-header">
+        <span class="workflow-turn-role">Orchestrator</span>
+      </div>
+      <div class="workflow-turn-body">{{ turn.status_report }}</div>
+    </div>
+    {% if turn.recommended_phases %}
+    <div class="workflow-options">
+      {% for rp in turn.recommended_phases %}
+      <button class="workflow-option{% if rp.recommended %} recommended{% endif %}"
+              data-phase="{{ rp.phase }}">
+        <span class="workflow-option-label">{{ rp.phase }}</span>
+        {% if rp.context %}
+        <span class="workflow-option-context">{{ rp.context }}</span>
+        {% endif %}
+      </button>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% elif turn.role == "user" %}
+    <div class="workflow-turn-user">{{ turn.message }}</div>
+    {% endif %}
+  </div>
+  {% endfor %}
+
+  <div id="workflow-form" data-token="{{ token }}" class="workflow-chat-input">
+    <textarea id="workflow-textarea" class="workflow-feedback"
+              placeholder="Optional context for the chosen phase..."></textarea>
+    <div class="form-actions">
+      <button id="btn-workflow-continue" class="btn btn-primary">Continue</button>
+    </div>
+  </div>
+</div>

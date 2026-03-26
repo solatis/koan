@@ -26,6 +26,11 @@ if TYPE_CHECKING:
 log = get_logger("subagent")
 
 
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
 # -- Boot prompt ---------------------------------------------------------------
 
 def boot_prompt(role: str) -> str:
@@ -115,6 +120,7 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
         phase_module=phase_module,
         phase_ctx=phase_ctx,
         event_log=event_log,
+        model=model,
     )
     app_state.agents[agent_id] = agent
 
@@ -149,20 +155,71 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
         cwd=subagent_dir,
     )
 
+    # Emit agent spawn to SSE
+    _push_sse(app_state, "subagent", {
+        "agent_id": agent_id,
+        "role": role,
+        "model": model,
+        "step": 0,
+        "startedAt": agent.started_at.isoformat(),
+    })
+    _push_sse(app_state, "agents", {
+        "agents": [{"agent_id": a.agent_id, "role": a.role} for a in app_state.agents.values()]
+    })
+
     # Stream tracking (telemetry only -- handshake detected via MCP path)
     async def stream_stdout():
         assert proc.stdout is not None
+        last_tool: str | None = None
         async for raw in proc.stdout:
             line = raw.decode("utf-8", errors="replace").rstrip("\n")
             events = runner.parse_stream_event(line)
             for ev in events:
-                _push_sse(app_state, "stream", {
-                    "agent_id": agent_id,
-                    "role": role,
-                    "type": ev.type,
-                    "content": ev.content,
-                    "tool_name": ev.tool_name,
-                })
+                if ev.type == "token_delta":
+                    agent.token_count["received"] = agent.token_count.get("received", 0) + len(ev.content or "")
+                    _push_sse(app_state, "token-delta", {
+                        "delta": ev.content,
+                        "agent_id": agent_id,
+                    })
+                elif ev.type == "thinking":
+                    _push_sse(app_state, "logs", {
+                        "line": {
+                            "tool": "thinking",
+                            "summary": "thinking...",
+                            "inFlight": True,
+                            "ts": _now_iso(),
+                        },
+                        "agent_id": agent_id,
+                    })
+                elif ev.type == "tool_call":
+                    agent.token_count["sent"] = agent.token_count.get("sent", 0) + len(ev.content or "")
+                    # Close previous in-flight tool
+                    if last_tool:
+                        _push_sse(app_state, "logs", {
+                            "line": {
+                                "tool": last_tool,
+                                "summary": "completed",
+                                "inFlight": False,
+                            },
+                            "agent_id": agent_id,
+                        })
+                    last_tool = ev.tool_name
+                    _push_sse(app_state, "logs", {
+                        "line": {
+                            "tool": ev.tool_name or "tool",
+                            "summary": ev.content or "",
+                            "inFlight": True,
+                        },
+                        "agent_id": agent_id,
+                    })
+                else:
+                    _push_sse(app_state, "stream", {
+                        "agent_id": agent_id,
+                        "role": role,
+                        "type": ev.type,
+                        "content": ev.content,
+                        "tool_name": ev.tool_name,
+                    })
 
     async def drain_stderr():
         assert proc.stderr is not None
@@ -211,6 +268,12 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
     await event_log.emit_phase_end(outcome)
     await event_log.close()
     del app_state.agents[agent_id]
+
+    # Emit subagent-idle and updated agents list
+    _push_sse(app_state, "subagent-idle", {})
+    _push_sse(app_state, "agents", {
+        "agents": [{"agent_id": a.agent_id, "role": a.role} for a in app_state.agents.values()]
+    })
 
     log.info("%s (agent_id=%s) exited with code %d", role, agent_id, exit_code)
     return exit_code

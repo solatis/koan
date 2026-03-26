@@ -1,0 +1,545 @@
+/* Single centred column. max-width keeps the entire UI (header, sidebar,
+ * feed, monitor) as one cohesive panel in the middle of the viewport.
+ * The body background fills the remaining viewport edges. */
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  max-width: 1300px;
+  margin: 0 auto;
+}
+
+/* Header -- normal flex child, not fixed. Stays at top because .app is a
+ * flex column with overflow:hidden; child areas scroll internally. */
+.header {
+  flex-shrink: 0;
+  height: var(--header-height);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-6);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.logo {
+  font-family: var(--font-sans);
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--text-strong);
+  letter-spacing: -0.03em;
+}
+
+/* Main panel -- fills all remaining vertical space */
+.main-panel {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Phase content area -- scrollable, fills remaining space */
+.phase-content {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.phase-inner {
+  width: 100%;
+  max-width: 960px;
+}
+
+/* Activity feed -- fills remaining space in phase-content, scrollable */
+.activity-feed-scroll {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: overlay;
+  padding: var(--space-4) var(--space-6);
+  /* Subtle fade at top when scrolled */
+  mask-image: linear-gradient(to bottom, transparent, black 8px, black);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, black 8px, black);
+}
+
+.activity-feed-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 960px;
+}
+
+/* ---- Activity cards (thinking, future: tool results) ---- */
+
+.activity-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  margin: var(--space-1) 0;
+  overflow: hidden;
+}
+
+.activity-card-active {
+  border-color: var(--copper-border);
+}
+
+.activity-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--space-2) var(--space-4);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+}
+
+.activity-card-tool {
+  color: var(--text-muted);
+}
+
+.activity-card-thinking .activity-card-tool {
+  color: var(--plum);
+}
+
+.activity-card-meta {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.activity-elapsed {
+  color: var(--text-muted);
+}
+
+.activity-card-body {
+  padding: 0 var(--space-4) var(--space-2);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+}
+
+.activity-card-body:not(.expanded) {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.activity-card-more {
+  padding: 2px var(--space-4) var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--copper);
+  cursor: pointer;
+  user-select: none;
+}
+
+/* ---- Scout dispatch card ---- */
+
+.activity-card-scouts .activity-card-tool {
+  color: var(--copper);
+}
+
+.scout-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 var(--space-4) var(--space-2);
+}
+
+.scout-entry {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  border-left: 2px solid var(--border);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+/* Status-based accent bar colors -- synced with agent status convention */
+.scout-queued    { border-left-color: var(--text-muted); }
+.scout-running   { border-left-color: var(--copper); background: var(--copper-bg); }
+.scout-completed { border-left-color: var(--green);      background: var(--green-bg); }
+.scout-failed    { border-left-color: var(--red);        background: var(--red-bg); }
+
+.scout-name {
+  color: var(--text-muted);
+  font-weight: 500;
+  min-width: 20ch;
+  flex-shrink: 0;
+}
+
+.scout-role {
+  color: var(--text-ghost);
+}
+
+.activity-card-more:hover {
+  color: var(--text-strong);
+}
+
+.activity-line {
+  display: flex;
+  gap: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  padding: 2px 0;
+  line-height: 1.4;
+}
+
+.activity-line.activity-high {
+  color: var(--text-muted);
+}
+
+.activity-tool {
+  color: var(--text-ghost);
+  min-width: 48px;
+  flex-shrink: 0;
+}
+
+.activity-high .activity-tool {
+  color: var(--copper);
+}
+
+.activity-summary {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.activity-detail {
+  color: var(--text-ghost);
+  padding-left: 12px;
+}
+
+/* Monitor -- sticky bottom, sizes to content, centered like activity feed.
+ * No border-top or mask fade -- it connects seamlessly with the sidebars. */
+.monitor {
+  flex: 0 0 auto;
+  max-height: 40vh;
+  overflow-y: overlay;
+  background: var(--bg-surface);
+  padding: var(--space-4) var(--space-6);
+}
+
+.monitor-inner {
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+.agent-table-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin-bottom: var(--space-2);
+}
+
+.monitor-label {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.agent-badges {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.token-totals {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+}
+
+/* ---- Live layout: activity feed + status sidebar ---- */
+
+/* Row wrapper for live mode: sidebar (left) + activity feed (right).
+ * No centering or margin-top needed -- the parent .app handles both. */
+.live-layout {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+}
+
+/* Left column -- takes all remaining width, scroll contained within. */
+.live-main {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- Status sidebar ----
+ * Sits on the LEFT of the activity feed inside the centred .live-layout
+ * container. Width uses clamp(240px, 20vw, 300px): 20vw scales with the
+ * viewport; 240px/300px bound the range. Typography is mono throughout.
+ * The sidebar scrolls independently of the feed column. */
+
+.status-sidebar {
+  width: clamp(240px, 20vw, 300px);
+  flex-shrink: 0;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  padding: var(--space-4);
+}
+
+.sidebar-heading {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: var(--space-4);
+}
+
+.sidebar-section {
+  margin-bottom: var(--space-4);
+}
+
+.sidebar-label {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: var(--space-1);
+}
+
+/* Value line beneath a section */
+.sidebar-value {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.sidebar-divider {
+  height: 1px;
+  background: var(--border);
+  margin: var(--space-4) 0;
+}
+
+.sidebar-summary {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+/* Agent identity section */
+.sidebar-agent {
+  margin-bottom: var(--space-4);
+  font-family: var(--font-mono);
+}
+
+.sidebar-agent-role {
+  color: var(--copper);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 13px;
+}
+
+.sidebar-agent-model {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.sidebar-agent-step {
+  color: var(--text-muted);
+  font-size: 13px;
+  margin-top: 2px;
+}
+
+.sidebar-agent-stats {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-muted);
+  font-size: 13px;
+  margin-top: 2px;
+}
+
+/* ---- Workspace shell: three-column layout ---- */
+
+.workspace {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+}
+
+.workspace-main {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.artifacts-sidebar {
+  width: clamp(240px, 20vw, 300px);
+  flex-shrink: 0;
+  background: var(--bg-surface);
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+}
+
+.artifacts-empty {
+  color: var(--text-ghost);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: var(--space-4) 0;
+}
+
+/* ---- Artifact tree ---- */
+
+.tree-folder {
+  margin-bottom: 2px;
+}
+
+.tree-folder-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  padding: 3px 4px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  border-radius: var(--radius-sm);
+  user-select: none;
+}
+
+.tree-folder-label:hover {
+  color: var(--text-strong);
+  background: var(--bg-inset);
+}
+
+.tree-children {
+  padding-left: 14px;
+}
+
+.tree-file {
+  display: flex;
+  flex-direction: column;
+  padding: 3px 4px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  margin-bottom: 1px;
+}
+
+.tree-hover {
+  background: var(--bg-inset);
+}
+
+.tree-file-name {
+  color: var(--copper);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.tree-file-meta {
+  color: var(--text-ghost);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.tree-new-badge {
+  display: inline-block;
+  background: var(--green);
+  color: #fff;
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+/* ---- Artifact overlay ---- */
+
+.artifact-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(42, 31, 20, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+
+.artifact-overlay-panel {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  width: 860px;
+  max-width: 92vw;
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.artifact-overlay-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.artifact-overlay-title {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.artifact-overlay-path {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-ghost);
+  margin-top: 2px;
+}
+
+.artifact-overlay-readonly-badge {
+  font-size: 10px;
+  color: var(--text-ghost);
+  border: 1px solid var(--border);
+  padding: 2px 6px;
+  border-radius: 3px;
+  margin-left: 8px;
+  vertical-align: middle;
+  font-weight: 400;
+}
+
+.artifact-overlay-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 28px;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--text-muted);
+}

@@ -84,11 +84,149 @@ def route_from_state(stories: list[dict]) -> dict:
     return {"action": "error", "error": "no actionable stories found"}
 
 
-# -- Stubs (T8) ---------------------------------------------------------------
+# -- SSE push -----------------------------------------------------------------
 
 def push_sse(app_state: AppState, event_type: str, payload: Any) -> None:
-    """SSE push stub -- logs and no-ops. T8 will replace."""
-    log.info("SSE [%s]: %s", event_type, payload)
+    """Push an SSE event to all connected clients with replay caching."""
+    # Render HTML fragment for low-frequency structural events
+    html_payload = _render_fragment(app_state, event_type, payload)
+
+    # Cache the rendered payload (not the raw input) so reconnect replay
+    # sends exactly what live clients received.
+    STATEFUL_EVENTS = {
+        "phase", "subagent", "subagent-idle", "agents", "artifacts",
+        "interaction", "intake-progress", "pipeline-end",
+    }
+    if event_type in STATEFUL_EVENTS:
+        app_state.last_sse_values[event_type] = html_payload
+
+    # Enqueue to all connected SSE clients
+    for queue in app_state.sse_clients:
+        try:
+            queue.put_nowait((event_type, html_payload))
+        except Exception:
+            pass  # queue full or closed -- skip
+
+
+def _render_fragment(app_state: AppState, event_type: str, payload: Any) -> Any:
+    """Render Jinja2 fragment for structural events; pass through for stream events."""
+    from .web.app import _get_jinja, _build_artifact_tree, _format_size, _format_elapsed_ms
+    from .web.app import _format_tokens, _build_subagent_display, _build_agents_list, ALL_PHASES, _done_phases
+
+    env = _get_jinja()
+
+    if event_type == "phase":
+        # payload is a phase string
+        phase = payload if isinstance(payload, str) else payload.get("phase", "")
+        app_state.phase = phase
+        tmpl = env.get_template("fragments/status_sidebar.html")
+        html = tmpl.render(
+            subagent=_build_subagent_display(app_state),
+            phase_status={"phase": phase},
+        )
+        return {"phase": phase, "html": html, "target": "status-sidebar"}
+
+    if event_type == "subagent":
+        tmpl = env.get_template("fragments/status_sidebar.html")
+        subagent_data = _build_subagent_display(app_state)
+        html = tmpl.render(
+            subagent=subagent_data,
+            phase_status={"phase": app_state.phase or "intake"},
+        )
+        return {**(payload if isinstance(payload, dict) else {}), "html": html, "target": "status-sidebar"}
+
+    if event_type == "subagent-idle":
+        tmpl = env.get_template("fragments/status_sidebar.html")
+        html = tmpl.render(
+            subagent=None,
+            phase_status={"phase": app_state.phase or "intake"},
+        )
+        return {"html": html, "target": "status-sidebar"}
+
+    if event_type == "agents":
+        tmpl = env.get_template("fragments/monitor.html")
+        agents = _build_agents_list(app_state)
+        html = tmpl.render(agents=agents)
+        return {**(payload if isinstance(payload, dict) else {}), "html": html, "target": "monitor"}
+
+    if event_type == "artifacts":
+        epic_dir = app_state.epic_dir
+        artifacts = []
+        if epic_dir:
+            try:
+                from .artifacts import list_artifacts as _list
+                artifacts = _list(epic_dir)
+            except Exception:
+                pass
+        tree = _build_artifact_tree(artifacts)
+        tmpl = env.get_template("fragments/artifacts_sidebar.html")
+        html = tmpl.render(artifacts=artifacts, artifact_tree=tree)
+        return {**(payload if isinstance(payload, dict) else {}), "html": html, "target": "artifacts-sidebar"}
+
+    if event_type == "interaction":
+        if isinstance(payload, dict):
+            itype = payload.get("type", "")
+            if itype == "ask":
+                tmpl = env.get_template("fragments/interaction_ask.html")
+                html = tmpl.render(
+                    questions=payload.get("questions", []),
+                    token=payload.get("token", ""),
+                )
+                return {**payload, "html": html, "target": "workspace-main-content"}
+            if itype == "artifact-review":
+                tmpl = env.get_template("fragments/interaction_artifact_review.html")
+                html = tmpl.render(
+                    content=payload.get("content", ""),
+                    description=payload.get("description", ""),
+                    token=payload.get("token", ""),
+                )
+                return {**payload, "html": html, "target": "workspace-main-content"}
+            if itype == "workflow-decision":
+                tmpl = env.get_template("fragments/interaction_workflow.html")
+                html = tmpl.render(
+                    chat_turns=payload.get("chat_turns", []),
+                    token=payload.get("token", ""),
+                )
+                return {**payload, "html": html, "target": "workspace-main-content"}
+            if itype == "cleared":
+                # Restore activity feed
+                html = '<div id="workspace-main-content"><div class="activity-feed-scroll"><div id="activity-feed-inner" class="activity-feed-inner"></div></div></div>'
+                return {"type": "cleared", "html": html, "target": "workspace-main-content"}
+        return payload
+
+    if event_type == "pipeline-end":
+        tmpl = env.get_template("fragments/completion.html")
+        if isinstance(payload, dict):
+            artifacts = payload.get("artifacts", [])
+            for a in artifacts:
+                if "formatted_size" not in a:
+                    a["formatted_size"] = _format_size(a.get("size", 0))
+            html = tmpl.render(
+                success=payload.get("success", False),
+                summary=payload.get("summary", ""),
+                error=payload.get("error", ""),
+                phase=payload.get("phase", ""),
+                artifacts=artifacts,
+            )
+            return {**payload, "html": html, "target": "workspace-main-content"}
+        return payload
+
+    if event_type == "intake-progress":
+        tmpl = env.get_template("fragments/status_sidebar.html")
+        phase_status = {"phase": "intake"}
+        if isinstance(payload, dict):
+            phase_status["sub_phase"] = payload.get("subPhase", "")
+            phase_status["confidence"] = payload.get("confidence")
+            phase_status["summary"] = payload.get("summary", "")
+        html = tmpl.render(
+            subagent=_build_subagent_display(app_state),
+            phase_status=phase_status,
+        )
+        return {**(payload if isinstance(payload, dict) else {}), "html": html, "target": "status-sidebar"}
+
+    # High-frequency events: pass through without HTML
+    # token-delta, token-clear, logs, notification, stream, story, error
+    return payload
 
 
 
@@ -471,13 +609,20 @@ async def driver_main(app_state: AppState) -> None:
         await save_epic_state(epic_dir, {**epic_state, "phase": phase})
         push_sse(app_state, "phase", phase)
 
+        # Push artifacts update at start of each phase
+        push_sse(app_state, "artifacts", {})
+
         if is_stub_phase(phase):
             pass  # carry forward pending_instructions
         else:
             ok = await run_phase(phase, app_state, pending_instructions)
             pending_instructions = None
             if not ok:
-                push_sse(app_state, "error", {"phase": phase})
+                push_sse(app_state, "pipeline-end", {
+                    "success": False,
+                    "phase": phase,
+                    "error": f"Phase {phase} failed",
+                })
                 return
 
         successors = get_successor_phases(phase)
@@ -492,7 +637,11 @@ async def driver_main(app_state: AppState) -> None:
         app_state.frozen_logs = list(app_state.frozen_logs)
         decision = await run_workflow_orchestrator(phase, successors, app_state)
         if not decision:
-            push_sse(app_state, "error", {"phase": phase})
+            push_sse(app_state, "pipeline-end", {
+                "success": False,
+                "phase": phase,
+                "error": "Workflow orchestrator failed",
+            })
             return
         phase = decision["next_phase"]
         pending_instructions = decision.get("instructions")
@@ -500,3 +649,10 @@ async def driver_main(app_state: AppState) -> None:
     epic_state = await load_epic_state(epic_dir)
     await save_epic_state(epic_dir, {**epic_state, "phase": "completed"})
     push_sse(app_state, "phase", "completed")
+
+    # Push completion event with artifact list
+    push_sse(app_state, "pipeline-end", {
+        "success": True,
+        "summary": "All phases completed successfully",
+        "artifacts": list_artifacts(epic_dir),
+    })

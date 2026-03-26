@@ -245,7 +245,7 @@ async def koan_review_artifact(path: str = "", description: str = "") -> str:
         raise ToolError(json.dumps(result))
 
     response = result.get("response", "")
-    accepted = result.get("accepted", response == "" or response.strip().lower() in ("", "ok", "approved", "lgtm"))
+    accepted = result.get("accepted", response == "" or response.strip().lower() in ("", "ok", "approved", "lgtm", "accept"))
     agent.phase_ctx.last_review_accepted = accepted
 
     return response
@@ -257,9 +257,23 @@ async def koan_propose_workflow(status: str = "", phases: list[dict] | None = No
     _check_or_raise(agent, "koan_propose_workflow", {"status": status, "phases": phases})
     assert _app_state is not None, "app_state not initialized"
 
+    # Build chat_turns with status_report + recommended_phases to match
+    # the interaction_workflow.html template contract.
+    chat_turns = [{
+        "role": "orchestrator",
+        "status_report": status,
+        "recommended_phases": [
+            {
+                "phase": p.get("phase", p.get("name", "")),
+                "context": p.get("context", p.get("description", "")),
+                "recommended": p.get("recommended", False),
+            }
+            for p in (phases or [])
+        ],
+    }]
     future = await enqueue_interaction(
         agent, _app_state, "workflow-decision",
-        {"status": status, "phases": phases or []},
+        {"chat_turns": chat_turns},
     )
     result = await future
 

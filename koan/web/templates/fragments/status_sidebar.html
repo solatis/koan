@@ -1,0 +1,38 @@
+{% if subagent %}
+<div class="sidebar-agent" data-started-at="{{ subagent.started_at_ms }}">
+  <div class="sidebar-agent-role">{{ subagent.role }}</div>
+  <div class="sidebar-agent-model">{{ subagent.model or "--" }}</div>
+  <div class="sidebar-agent-step">{{ subagent.step_name or ("step " ~ subagent.step) }}</div>
+  <div class="sidebar-agent-stats">
+    <span>{{ subagent.tokens_display }}</span>
+    <span class="elapsed-value">{{ subagent.elapsed or "0m 00s" }}</span>
+  </div>
+</div>
+<div class="sidebar-divider"></div>
+{% endif %}
+{% if phase_status %}
+<div class="sidebar-section">
+  <div class="sidebar-label">Phase</div>
+  <div class="sidebar-value">{{ phase_status.phase }}</div>
+</div>
+{% if phase_status.sub_phase %}
+<div class="sidebar-section">
+  <div class="sidebar-label">Sub-phase</div>
+  <div class="sidebar-value">{{ phase_status.sub_phase }}</div>
+</div>
+{% endif %}
+{% if phase_status.confidence is not none %}
+<div class="sidebar-section">
+  <div class="sidebar-label">Confidence</div>
+  <div class="sidebar-value">{{ phase_status.confidence }}%</div>
+</div>
+{% endif %}
+{% if phase_status.summary %}
+<div class="sidebar-divider"></div>
+<div class="sidebar-summary">{{ phase_status.summary }}</div>
+{% endif %}
+{% endif %}
+{% if not subagent and not phase_status %}
+<div class="sidebar-heading">Status</div>
+<div class="sidebar-value" style="color: var(--text-ghost);">Waiting...</div>
+{% endif %}

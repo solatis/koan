@@ -1,0 +1,24 @@
+<div class="phase-content">
+  <div class="phase-inner">
+    {% if success %}
+    <h2 class="phase-heading">Run Complete</h2>
+    <p class="phase-status">{{ summary or "All phases completed successfully." }}</p>
+    {% if artifacts %}
+    <div class="summary-list">
+      {% for a in artifacts %}
+      <div class="summary-item">
+        <span class="icon-done">[OK]</span>
+        <span>{{ a.path }} ({{ a.formatted_size }})</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% else %}
+    <h2 class="phase-heading" style="color: var(--red);">Run Failed</h2>
+    <p class="phase-status">{{ error or "An error occurred." }}</p>
+    {% if phase %}
+    <p class="phase-status" style="color: var(--text-muted);">Failed during: {{ phase }}</p>
+    {% endif %}
+    {% endif %}
+  </div>
+</div>

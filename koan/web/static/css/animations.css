@@ -1,0 +1,76 @@
+/* Phase content crossfade */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.phase-content .phase-inner {
+  animation: fade-in 250ms ease-out;
+}
+
+/* Sliding text input for "Other" option */
+@keyframes slide-open {
+  from { max-height: 0; opacity: 0; }
+  to   { max-height: 80px; opacity: 1; }
+}
+
+/* Pill state transitions */
+.pill {
+  transition: background 200ms ease, color 200ms ease, border-color 200ms ease;
+}
+
+/* Notification fade-out */
+.notification.fade-out {
+  animation: fade-out 300ms ease-in forwards;
+}
+
+@keyframes fade-out {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(8px); }
+}
+
+/* Thinking indicator */
+@keyframes thinking-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
+
+.thinking-dot {
+  animation: thinking-pulse 1.5s ease-in-out infinite;
+}
+
+.thinking-timer {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  margin-left: 0.4em;
+}
+
+/* Streaming cursor -- pulsing bar at the end of streaming text */
+.streaming-cursor {
+  display: inline-block;
+  width: 6px;
+  height: 14px;
+  background: var(--copper);
+  border-radius: 1px;
+  vertical-align: text-bottom;
+  margin-left: 2px;
+  animation: cursor-blink 1s step-end infinite;
+}
+
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0; }
+}
+
+.agent-doing-thinking {
+  color: var(--text-muted);
+}
+
+/* Pulsing dot -- replaces spinner for loading states */
+.loading-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--copper);
+  animation: thinking-pulse 1.5s ease-in-out infinite;
+}

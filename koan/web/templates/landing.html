@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="header">
+  <div class="header-left">
+    <span class="logo">koan</span>
+  </div>
+</header>
+<div class="main-panel">
+  <div class="phase-content">
+    <div class="phase-inner">
+      <h2 class="phase-heading">New Run</h2>
+
+      <div class="question-card">
+        <div class="question-header">Task</div>
+        <textarea id="task-input" class="workflow-feedback"
+          placeholder="Describe what you want to build..."
+          rows="4">{{ task or "" }}</textarea>
+      </div>
+
+      <div class="model-config-section">
+        <h3 class="model-config-section-heading">Model Configuration</h3>
+        <div class="model-config-tiers">
+          <div class="model-tier-row">
+            <div class="model-tier-header">
+              <span class="model-tier-label">Strong</span>
+            </div>
+            <p class="model-tier-description">Architect, complex reasoning</p>
+            <input id="tier-strong" class="model-tier-input" type="text"
+              placeholder="e.g. claude-opus-4-6"
+              value="{{ tiers.strong if tiers else '' }}">
+          </div>
+          <div class="model-tier-row">
+            <div class="model-tier-header">
+              <span class="model-tier-label">Standard</span>
+            </div>
+            <p class="model-tier-description">General tasks, coding</p>
+            <input id="tier-standard" class="model-tier-input" type="text"
+              placeholder="e.g. claude-sonnet-4-6"
+              value="{{ tiers.standard if tiers else '' }}">
+          </div>
+          <div class="model-tier-row">
+            <div class="model-tier-header">
+              <span class="model-tier-label">Cheap</span>
+            </div>
+            <p class="model-tier-description">Scouts, lightweight analysis</p>
+            <input id="tier-cheap" class="model-tier-input" type="text"
+              placeholder="e.g. claude-haiku-4-5"
+              value="{{ tiers.cheap if tiers else '' }}">
+          </div>
+        </div>
+      </div>
+
+      <div class="model-config-section">
+        <h3 class="model-config-section-heading">Scout Concurrency</h3>
+        <input id="scout-concurrency" class="scout-concurrency-input" type="number"
+          min="1" max="32" value="{{ scout_concurrency }}">
+      </div>
+
+      <div class="form-actions">
+        <button id="btn-start-run" class="btn btn-primary">Start Run</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,33 @@
+{% if agents %}
+<div class="monitor-inner">
+  <div class="agent-table-header">
+    <span class="monitor-label">Agents</span>
+  </div>
+  <table class="agent-table">
+    <thead>
+      <tr>
+        <th class="col-status"></th>
+        <th class="col-agent">Agent</th>
+        <th class="col-model">Model</th>
+        <th class="col-tokens">Tokens</th>
+        <th class="col-time">Time</th>
+        <th class="col-doing">Doing</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for a in agents %}
+      <tr>
+        <td class="col-status agent-status-{{ a.status }}">
+          {% if a.status == "running" %}>>{% elif a.status == "done" %}[OK]{% elif a.status == "failed" %}[!!]{% else %}[ ]{% endif %}
+        </td>
+        <td class="col-agent agent-name-{{ a.status }}">{{ a.role }}</td>
+        <td class="col-model agent-model-cell">{{ a.model or "--" }}</td>
+        <td class="col-tokens agent-tokens-cell">{{ a.tokens_display }}</td>
+        <td class="col-time agent-time-cell">{{ a.elapsed }}</td>
+        <td class="col-doing agent-doing-dim">{{ a.doing or "--" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}

@@ -35,6 +35,7 @@ class AgentState:
     event_log: Any = None
     handshake_observed: bool = False
     pending_tool: asyncio.Future | None = None
+    model: str | None = None
     token_count: dict = field(default_factory=lambda: {"sent": 0, "received": 0})
     started_at: datetime = field(default_factory=datetime.utcnow)
 

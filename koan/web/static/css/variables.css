@@ -1,0 +1,110 @@
+:root {
+  /* Background layers */
+  --bg:          #FEFAE0;   /* cornsilk base -- "the desk" */
+  --bg-surface:  #E0D8C8;   /* stone -- sidebars, panels, monitor */
+  --bg-elevated: #FFFFFF;   /* cards, overlays -- "paper on paper" */
+  --bg-inset:    #D4CCB8;   /* pressed/inset areas */
+
+  /* Borders */
+  --border:        #C8C0A8;
+  --border-strong: #B8B098;
+
+  /* Text hierarchy */
+  --text:        #4A4428;   /* Olive-brown -- default body */
+  --text-strong: #283618;   /* Black Forest -- headings */
+  --text-muted:  #7A7450;   /* Dried sage -- metadata */
+  --text-ghost:  #A09A6E;   /* Faded straw -- disabled/placeholder */
+
+  /* Status -- the ONLY saturated colors */
+  --green:             #606C38;
+  --green-bg:          #EEF2E4;
+  --green-border:      #606C38;
+  --copper:            #BC6C25;
+  --copper-bg:         #FDF3E4;
+  --copper-border:     #BC6C25;
+  --caramel:           #DDA15E;
+  --caramel-bg:        #FEF7E8;
+  --caramel-border:    #DDA15E;
+  --red:               #9A3412;
+  --red-bg:            #FEF0E8;
+  --red-border:        #9A3412;
+  --ochre:             #92810A;
+  --ochre-bg:          #FEFCE8;
+  --ochre-border:      #92810A;
+  --plum:              #606C38;
+  --plum-bg:           #EEF2E4;
+
+  /* Typography */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'SF Mono', 'JetBrains Mono', 'Cascadia Code', 'Fira Code', monospace;
+
+  /* Font sizes */
+  --font-size-xs: 11px;
+  --font-size-sm: 13px;
+  --font-size-md: 15px;
+  --font-size-lg: 17px;
+  --font-size-xl: 22px;
+  --font-size-display: 28px;
+
+  /* Spacing (base unit 4px) */
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-4:  16px;
+  --space-6:  24px;
+  --space-8:  32px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* Shape */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+
+  /* Motion */
+  --duration-fast:   150ms;
+  --duration-normal: 250ms;
+  --duration-slow:   400ms;
+  --ease-default:    ease-out;
+
+  /* Layout */
+  --header-height:      56px;
+  --monitor-min-height: 120px;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-md);
+  line-height: 1.6;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}

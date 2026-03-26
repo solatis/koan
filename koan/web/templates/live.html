@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block content %}
+<header class="header">
+  <div class="header-left">
+    <span class="logo">koan</span>
+    <div class="pill-strip">
+      {% for p in phases %}
+      <span class="pill{% if p == current_phase %} active{% elif p in done_phases %} done{% endif %}"
+            data-phase="{{ p }}">{{ p }}</span>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="header-right">
+    <button class="settings-btn" title="Settings">&#9881;</button>
+  </div>
+</header>
+<div class="workspace">
+  <aside id="status-sidebar" class="status-sidebar">
+    {% include "fragments/status_sidebar.html" %}
+  </aside>
+  <div class="workspace-main">
+    <div id="workspace-main-content">
+      <div class="activity-feed-scroll">
+        <div id="activity-feed-inner" class="activity-feed-inner"></div>
+      </div>
+    </div>
+    <div id="monitor" class="monitor">
+      {% include "fragments/monitor.html" %}
+    </div>
+  </div>
+  <aside id="artifacts-sidebar" class="artifacts-sidebar">
+    {% include "fragments/artifacts_sidebar.html" %}
+  </aside>
+</div>
+
+<!-- Model config overlay (hidden by default) -->
+<div id="model-config-overlay" class="artifact-overlay" hidden>
+  <div class="artifact-overlay-panel" style="max-width: 640px;">
+    <div class="artifact-overlay-header">
+      <div class="artifact-overlay-title">Model Configuration</div>
+      <button class="settings-btn" onclick="document.getElementById('model-config-overlay').hidden=true">X</button>
+    </div>
+    <div class="artifact-overlay-body">
+      <div class="model-config-tiers">
+        <div class="model-tier-row">
+          <div class="model-tier-header"><span class="model-tier-label">Strong</span></div>
+          <input id="cfg-strong" class="model-tier-input" type="text"
+            value="{{ tiers.strong if tiers else '' }}">
+        </div>
+        <div class="model-tier-row">
+          <div class="model-tier-header"><span class="model-tier-label">Standard</span></div>
+          <input id="cfg-standard" class="model-tier-input" type="text"
+            value="{{ tiers.standard if tiers else '' }}">
+        </div>
+        <div class="model-tier-row">
+          <div class="model-tier-header"><span class="model-tier-label">Cheap</span></div>
+          <input id="cfg-cheap" class="model-tier-input" type="text"
+            value="{{ tiers.cheap if tiers else '' }}">
+        </div>
+      </div>
+      <div class="model-config-section">
+        <h3 class="model-config-section-heading">Scout Concurrency</h3>
+        <input id="cfg-scout-concurrency" class="scout-concurrency-input" type="number"
+          min="1" max="32" value="{{ scout_concurrency }}">
+      </div>
+      <div class="form-actions">
+        <button id="btn-save-config" class="btn btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
