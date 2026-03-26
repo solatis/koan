@@ -1,13 +1,9 @@
-node_modules/
-dist/
-build/
 .pi/
 .DS_Store
 
 .claude/
 plans/
 .koan/
-*.tsbuildinfo
 .env
 .env.*
 *.log

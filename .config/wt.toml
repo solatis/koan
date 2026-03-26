@@ -2,11 +2,11 @@
 # Docs: https://worktrunk.dev/hook/
 
 [post-create]
-deps = "npm ci"
+deps = "uv sync --dev"
 
 [post-start]
 copy = "wt step copy-ignored"
 
 [pre-merge]
-check = "npm run check"
-test = "npm test"
+check = "uv run ruff check ."
+test = "uv run pytest"

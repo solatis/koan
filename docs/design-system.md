@@ -59,12 +59,12 @@ component references tokens — never raw color codes or pixel values.
 
 #### Backgrounds
 
-| Token           | Value     | Usage                                               |
-| --------------- | --------- | --------------------------------------------------- |
-| `--bg`          | `#FEFAE0` | Cornsilk base — the "desk"                          |
-| `--bg-surface`  | `#E0D8C8` | Stone — sidebars, panels, monitor                   |
-| `--bg-elevated` | `#FFFFFF` | Cards, overlays — "paper on paper"                  |
-| `--bg-inset`    | `#D4CCB8` | Pressed/inset areas                                 |
+| Token           | Value     | Usage                              |
+| --------------- | --------- | ---------------------------------- |
+| `--bg`          | `#FEFAE0` | Cornsilk base — the "desk"         |
+| `--bg-surface`  | `#E0D8C8` | Stone — sidebars, panels, monitor  |
+| `--bg-elevated` | `#FFFFFF` | Cards, overlays — "paper on paper" |
+| `--bg-inset`    | `#D4CCB8` | Pressed/inset areas                |
 
 #### Text
 
@@ -243,11 +243,11 @@ Base-level elements. Every component is built from these.
 
 Three variants. All use `--radius-sm` (6px), `--font-sans`.
 
-| Variant     | Background     | Text     | Border                      | When to use                                          |
-| ----------- | -------------- | -------- | --------------------------- | ---------------------------------------------------- |
-| **Primary** | `--green`      | `#fff`   | none                        | Single main action per view (Begin Planning, Submit) |
-| **Accent**  | `--copper` | `#fff`   | none                        | Secondary prominent action (Submit Review)           |
-| **Ghost**   | `transparent`  | `--text` | `1px solid --border-strong` | Cancel, Back, non-committal actions                  |
+| Variant     | Background    | Text     | Border                      | When to use                                          |
+| ----------- | ------------- | -------- | --------------------------- | ---------------------------------------------------- |
+| **Primary** | `--green`     | `#fff`   | none                        | Single main action per view (Begin Planning, Submit) |
+| **Accent**  | `--copper`    | `#fff`   | none                        | Secondary prominent action (Submit Review)           |
+| **Ghost**   | `transparent` | `--text` | `1px solid --border-strong` | Cancel, Back, non-committal actions                  |
 
 Sizing: `padding: 12px 24px`, `font-size: --font-size-md`, `font-weight: 600`.
 
@@ -272,13 +272,13 @@ All inputs: `--radius-sm`, `padding: 12px 16px`, `border: 1px solid --border`,
 Inline status indicators. `--radius-md` (10px), `padding: 5px 14px`,
 `font-size: --font-size-sm`, `font-weight: 600`.
 
-| State   | Background        | Text           |
-| ------- | ----------------- | -------------- |
-| Done    | `--green-bg`      | `--green`      |
-| Active  | `--copper-bg` | `--copper` |
-| Failed  | `--red-bg`        | `--red`        |
-| Warning | `--ochre-bg`      | `--ochre`      |
-| Neutral | `--bg-inset`      | `--text-muted` |
+| State   | Background    | Text           |
+| ------- | ------------- | -------------- |
+| Done    | `--green-bg`  | `--green`      |
+| Active  | `--copper-bg` | `--copper`     |
+| Failed  | `--red-bg`    | `--red`        |
+| Warning | `--ochre-bg`  | `--ochre`      |
+| Neutral | `--bg-inset`  | `--text-muted` |
 
 ### 3.5 Labels
 
@@ -309,12 +309,12 @@ padding: --space-6 (24px)
 
 **Status variants** — left accent border, tinted background:
 
-| State   | Background        | Left border              |
-| ------- | ----------------- | ------------------------ |
-| Default | `--bg-elevated`   | none                     |
-| Running | `--copper-bg` | `3px solid --copper` |
-| Done    | `--green-bg`      | `3px solid --green`      |
-| Failed  | `--red-bg`        | `3px solid --red`        |
+| State   | Background      | Left border          |
+| ------- | --------------- | -------------------- |
+| Default | `--bg-elevated` | none                 |
+| Running | `--copper-bg`   | `3px solid --copper` |
+| Done    | `--green-bg`    | `3px solid --green`  |
+| Failed  | `--red-bg`      | `3px solid --red`    |
 
 When a card has a status border, use `border-radius: 0 --radius-lg --radius-lg 0`
 so the left edge is straight.
@@ -347,11 +347,11 @@ background: --bg
 
 Individual pills: `padding: 6px 16px`, `font-size: --font-size-sm`, `font-weight: 600`.
 
-| State    | Background     | Text           | Prefix |
-| -------- | -------------- | -------------- | ------ |
-| Inactive | `--bg`         | `--text-ghost` | none   |
+| State    | Background | Text           | Prefix |
+| -------- | ---------- | -------------- | ------ |
+| Inactive | `--bg`     | `--text-ghost` | none   |
 | Active   | `--copper` | `#fff`         | `● `   |
-| Done     | `--green`      | `#fff`         | `✓ `   |
+| Done     | `--green`  | `#fff`         | `✓ `   |
 
 Pills are separated by `border-right: 1px solid --border`. Last pill has no
 right border.
@@ -435,11 +435,11 @@ color: #fff
 animation: fade-in --duration-fast, then fade-out --duration-slow after 3s
 ```
 
-| Type    | Background     |
-| ------- | -------------- |
+| Type    | Background |
+| ------- | ---------- |
 | Info    | `--copper` |
-| Warning | `--ochre`      |
-| Error   | `--red`        |
+| Warning | `--ochre`  |
+| Error   | `--red`    |
 
 ### 4.7 Overlay / Modal
 
@@ -586,7 +586,7 @@ tempted to add them, stop.
 | ❌ Don't                                      | ✅ Do instead                                  |
 | --------------------------------------------- | ---------------------------------------------- |
 | Use `box-shadow` for elevation                | Use `border: 1px solid --border`               |
-| Use blue (`#58a6ff`) for anything             | Use `--copper` for active/accent           |
+| Use blue (`#58a6ff`) for anything             | Use `--copper` for active/accent               |
 | Use raw hex colors in components              | Reference `var(--token)`                       |
 | Make text uppercase in body copy              | Uppercase only in `.text-label` elements       |
 | Add `transform: scale()` animations           | Use `opacity` transitions only                 |
@@ -603,11 +603,11 @@ tempted to add them, stop.
 ### File Organization
 
 ```
-src/planner/web/css/
-  variables.css    ← all tokens defined here
-  layout.css       ← app shell, grid, sidebar layouts
-  components.css   ← card, badge, pill, table, form components
-  animations.css   ← keyframes and motion utilities
+koan/web/static/css/
+  variables.css    <- all tokens defined here
+  layout.css       <- app shell, grid, sidebar layouts
+  components.css   <- card, badge, pill, table, form components
+  animations.css   <- keyframes and motion utilities
 ```
 
 ### Token Naming Convention

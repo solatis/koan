@@ -6,17 +6,17 @@ principles, and pitfalls that govern the codebase.
 
 **Spoke documents** cover subsystems in depth:
 
-- [Subagents](./subagents.md) — spawn lifecycle, boot protocol, step-first
+- [Subagents](./subagents.md) -- spawn lifecycle, boot protocol, step-first
   workflow, phase dispatch, permissions, model tiers
-- [IPC](./ipc.md) — file-based inter-process communication between parent and
-  subagent, scout spawning, question routing
-- [Token Streaming](./token-streaming.md) — stdout JSONL parsing, pi `--mode json` integration, SSE delta path
-- [State & Driver](./state.md) — the driver/LLM boundary, JSON vs markdown
+- [IPC](./ipc.md) -- HTTP MCP inter-process communication, blocking tool calls,
+  scout spawning
+- [Token Streaming](./token-streaming.md) -- runner stdout parsing, SSE delta path
+- [State & Driver](./state.md) -- the driver/LLM boundary, JSON vs markdown
   ownership, epic and story state, routing rules
-- [Intake Loop](./intake-loop.md) — confidence-gated investigation loop,
+- [Intake Loop](./intake-loop.md) -- confidence-gated investigation loop,
   non-linear step progression, prompt engineering principles
-- [Epic Brief](./epic-brief.md) — brief artifact, brief-writer subagent, downstream references
-- [Artifact Review](./artifact-review.md) — artifact review IPC protocol, review loop, reusability
+- [Epic Brief](./epic-brief.md) -- brief artifact, brief-writer subagent, downstream references
+- [Artifact Review](./artifact-review.md) -- artifact review protocol, review loop, reusability
 
 ---
 
@@ -28,7 +28,7 @@ ways that are difficult to diagnose.
 ### 1. File boundary
 
 LLMs write **markdown files only**. The driver maintains **JSON state files**
-internally — no LLM ever reads or writes a `.json` file.
+internally -- no LLM ever reads or writes a `.json` file.
 
 Tool code bridges both worlds: orchestrator tools write JSON state (for the
 driver) and templated `status.md` (for LLMs). The driver reads JSON and exit
@@ -36,9 +36,9 @@ codes; it never parses markdown.
 
 ```
 Orchestrator calls koan_complete_story(story_id)
-  → tool code writes state.json + status.md
-  → driver reads state.json to route next action
-  → LLM reads status.md if it needs to reference the decision
+  -> tool code writes state.json + status.md
+  -> driver reads state.json to route next action
+  -> LLM reads status.md if it needs to reference the decision
 ```
 
 **Why:** If an LLM writes JSON, schema drift and parse errors become runtime
@@ -46,8 +46,12 @@ failures in the deterministic driver. Markdown is forgiving; JSON is not.
 
 ### 2. Step-first workflow
 
-Every subagent is a `pi --mode json -p` process. `--mode json` makes pi emit structured JSONL on stdout instead of human-readable text; `-p` keeps it non-interactive (exits after processing the boot prompt without waiting on stdin). Once the LLM produces text without a tool call, the process exits — there is no stdin to recover. The entire workflow
-depends on the LLM calling `koan_complete_step` reliably.
+Every subagent is a CLI process (`claude`, `codex`, or `gemini`) that connects
+to the driver's HTTP MCP endpoint at `http://localhost:{port}/mcp?agent_id={id}`.
+The subagent receives tools via MCP and calls them over HTTP. Once the LLM
+produces text without a tool call, the process may exit -- there is no stdin to
+recover. The entire workflow depends on the LLM calling `koan_complete_step`
+reliably.
 
 **The first thing any subagent does is call `koan_complete_step`.** The spawn
 prompt contains _only_ this directive. The tool returns step 1 instructions.
@@ -55,38 +59,39 @@ This establishes the calling pattern before the LLM sees complex instructions.
 
 ```
 Boot prompt:  "You are a koan {role} agent. Call koan_complete_step to receive your instructions."
-     ↓ LLM calls koan_complete_step (step 0 → 1 transition)
+     | LLM calls koan_complete_step (step 0 -> 1 transition)
 Tool returns:  Step 1 instructions (rich context, task details, guidance)
-     ↓ LLM does work...
-     ↓ LLM calls koan_complete_step
+     | LLM does work...
+     | LLM calls koan_complete_step
 Tool returns:  Step 2 instructions (or "Phase complete.")
 ```
 
 Three reinforcement mechanisms make this robust across model capability levels:
 
-| Mechanism         | Where                                                               | Why                                                          |
-| ----------------- | ------------------------------------------------------------------- | ------------------------------------------------------------ |
-| **Primacy**       | Boot prompt is the LLM's very first message                         | First action = tool call, at the top of conversation history |
-| **Recency**       | `formatStep()` appends "WHEN DONE: Call koan_complete_step..." last | LLMs weight end-of-context instructions heavily              |
-| **Muscle memory** | By step 2+ the LLM has called the tool N times                      | Pattern is locked in through repetition                      |
+| Mechanism         | Where                                                                | Why                                                          |
+| ----------------- | -------------------------------------------------------------------- | ------------------------------------------------------------ |
+| **Primacy**       | Boot prompt is the LLM's very first message                          | First action = tool call, at the top of conversation history |
+| **Recency**       | `format_step()` appends "WHEN DONE: Call koan_complete_step..." last | LLMs weight end-of-context instructions heavily              |
+| **Muscle memory** | By step 2+ the LLM has called the tool N times                       | Pattern is locked in through repetition                      |
 
 ### 3. Driver determinism
 
-The driver (`driver.ts`) is a deterministic state machine. It reads JSON state
-files and exit codes, applies routing rules, and spawns the next subagent. It
-never makes judgment calls, parses free-text output, or adapts to LLM behavior.
+The driver (`koan/driver.py`) is a deterministic state machine. It reads JSON
+state files and exit codes, applies routing rules, and spawns the next subagent.
+It never makes judgment calls, parses free-text output, or adapts to LLM
+behavior.
 
 **Routing priority** in the story loop:
 
-1. `retry` status → re-execute (retry takes precedence over new work)
-2. `selected` status → plan + execute
-3. All stories `done` or `skipped` → epic complete
-4. None of the above → error ("orchestrator may have exited without a routing decision")
+1. `retry` status -> re-execute (retry takes precedence over new work)
+2. `selected` status -> plan + execute
+3. All stories `done` or `skipped` -> epic complete
+4. None of the above -> error ("orchestrator may have exited without a routing decision")
 
 ### 4. Default-deny permissions
 
-Every tool call in a subagent passes through a permission fence (`tool_call`
-event handler in `BasePhase`). Unknown roles are blocked. Unknown tools are
+Every tool call passes through a permission fence (`check_permission()` in
+`koan/lib/permissions.py`). Unknown roles are blocked. Unknown tools are
 blocked. Planning roles can only write inside the epic directory.
 
 The one accepted limitation: `READ_TOOLS` (bash, read, grep, glob, find, ls)
@@ -102,196 +107,150 @@ Each subagent receives only the minimum context for its task:
 - The **system prompt** establishes role identity and rules, but no task details
 - **Task details** arrive via step 1 guidance (returned by the first tool call)
 
-This is not just tidiness — it is load-bearing. A previous design injected
-step 1 guidance into the first user message (via a `context` event handler),
-but that front-loaded complex instructions before the LLM had established the
-`koan_complete_step` calling pattern. Weaker models (haiku) produced text
-output and exited without entering the workflow. The `context` event handler
-was deliberately removed; step guidance is now delivered exclusively through
-`koan_complete_step` return values.
+This is not just tidiness -- it is load-bearing. A previous design injected
+step 1 guidance into the first user message, but that front-loaded complex
+instructions before the LLM had established the `koan_complete_step` calling
+pattern. Weaker models produced text output and exited without entering the
+workflow. Step guidance is now delivered exclusively through `koan_complete_step`
+return values.
 
 ### 6. Directory-as-contract
 
 The subagent directory is the **sole interface** between parent and child.
-Everything a subagent needs — its task, its communication channel, its
-observable state — lives in well-known files inside that directory.
+Everything a subagent needs -- its task, its observable state -- lives in
+well-known files inside that directory.
 
-Three JSON files, three lifecycles:
+Two JSON files and an MCP URL:
 
-| File             | Writer                  | Reader                   | Lifecycle                                               |
-| ---------------- | ----------------------- | ------------------------ | ------------------------------------------------------- |
-| **`task.json`**  | Parent (before spawn)   | Child (once, at startup) | Write-once, never modified                              |
-| **`state.json`** | Child (continuously)    | Parent (polling)         | Eagerly materialized audit projection                   |
-| **`ipc.json`**   | Both (request/response) | Both (polling)           | Temporary — created per request, deleted after response |
+| File               | Writer                    | Reader                   | Lifecycle                                   |
+| ------------------ | ------------------------- | ------------------------ | ------------------------------------------- |
+| **`task.json`**    | Parent (before spawn)     | Parent (at registration) | Write-once, never modified                  |
+| **`state.json`**   | Parent (audit projection) | Available for debugging  | Eagerly materialized after each audit event |
+| **`events.jsonl`** | Parent (audit log)        | Available for replay     | Append-only event log                       |
 
-The spawn command carries only the directory path. The child reads `task.json`
-to discover its role, epic context, and task-specific parameters. No
-structured configuration flows through CLI flags, environment variables, or
-other process-level channels.
+The `task.json` includes an `mcp_url` field pointing at
+`http://localhost:{port}/mcp?agent_id={id}`. The child reads this to discover
+its MCP endpoint. No structured configuration flows through CLI flags,
+environment variables, or other process-level channels.
 
-```
-# Spawn interface: one koan flag, the rest is pi-level
-pi --mode json -p -e {extensionPath} --koan-dir {subagentDir} [--model {model}] "{bootPrompt}"
-```
+**Why:** CLI flags are a flat namespace -- they cause naming collisions, cannot
+represent nested structure, are visible in process listings, and are subject to
+`ARG_MAX` limits for large values like retry context. Files are structured,
+inspectable (`cat task.json`), typed, and consistent with how we handle
+observation (audit).
 
-**Why:** CLI flags are a flat namespace — they cause naming collisions (e.g.,
-`--koan-role` for pipeline role vs `--koan-scout-role` for investigator
-persona), cannot represent nested structure, are visible in process listings,
-and are subject to `ARG_MAX` limits for large values like retry context.
-Files are structured, inspectable (`cat task.json`), typed, and consistent
-with how we already handle runtime communication (IPC) and observation (audit).
-
-See [subagents.md § Task Manifest](./subagents.md#task-manifest) for the
+See [subagents.md -- Task Manifest](./subagents.md#task-manifest) for the
 `task.json` schema and spawn flow.
 
 ---
 
 ## Atomic Writes
 
-All persistent writes (JSON state, IPC files, status.md, audit state.json)
-use the same pattern: write to a `.tmp` file, then `fs.rename()` to the target.
-This prevents partial reads during concurrent access.
+All persistent writes (JSON state, status.md, audit state.json) use the same
+pattern: write to a `.tmp` file, then `os.rename()` to the target. This
+prevents partial reads during concurrent access.
 
-```typescript
-const tmp = path.join(dir, "file.tmp");
-await fs.writeFile(tmp, content, "utf8");
-await fs.rename(tmp, target);
-```
-
-This is not optional — the IPC responder, web server, and audit system all
-poll files concurrently. A partial read of `ipc.json` or `state.json` would
-cause silent data corruption or spurious errors.
+The `koan/audit/event_log.py` module uses this pattern for all state writes.
+This is not optional -- the web server and audit system access files
+concurrently. A partial read of `state.json` would cause silent data
+corruption or spurious errors.
 
 ---
 
-## Tool Registration Constraint
+## Tool Registration
 
-All tools **must** be registered unconditionally at extension init, before
-pi's `_buildRuntime()` snapshot. Tools registered after `_buildRuntime()` are
-invisible to the LLM.
+Tools are registered as `fastmcp` tool handlers in `koan/web/mcp_endpoint.py`.
+When a tool call arrives via HTTP, the MCP endpoint:
 
-CLI flags are unavailable during init (`getFlag()` returns undefined before
-`_buildRuntime()` sets flagValues), so conditional registration based on role
-is impossible. Instead:
+1. Extracts `agent_id` from the URL query parameter
+2. Looks up the agent's state (role, step counter, permissions) in the in-process registry
+3. Calls `check_permission()` from `koan/lib/permissions.py`
+4. If allowed, dispatches to the tool handler
+5. Returns the result as the MCP tool response
 
-1. All tools register at init, reading from the mutable `RuntimeContext` at call time
-2. `BasePhase.registerHandlers()` adds a `tool_call` event listener that checks permissions per-role at runtime
-3. The `RuntimeContext` is populated later, during `before_agent_start`
-
-This is the **mutable-ref pattern**: static registration, dynamic dispatch.
+This replaces the previous TypeScript pattern of registering tools at extension
+init and checking permissions via event hooks. The Python model is simpler:
+tools are HTTP handlers, permissions are checked per-call.
 
 ---
 
 ## Event-Sourced Audit
 
-Each subagent maintains an append-only event log (`events.jsonl`) and an
-eagerly-materialized projection (`state.json`). This is the observability
-layer that drives the web dashboard.
+Each subagent's audit state is maintained in-process by the driver. The event
+log (`events.jsonl`) is append-only, and the projection (`state.json`) is
+eagerly materialized after each event.
 
 ```
-audit event appended → fold(events) → state.json written atomically
-web server polls state.json (50ms) → detects change → pushes SSE event
-sse.js handler → Zustand store update → component re-render
+tool call arrives via MCP -> driver handles it -> emits audit event
+  -> fold(events) -> state.json written atomically
+  -> SSE event pushed directly to connected browsers
 ```
 
 ### Rules
 
-- **`fold()` is pure** — given the same event sequence, it must produce the same
+- **`fold()` is pure** -- given the same event sequence, it must produce the same
   projection. No I/O, no randomness, no side effects inside `fold()`.
 - **New event types require a fold handler.** Unknown events are silently ignored
   (forward compatibility), but a new event that is not folded contributes nothing
-  to the projection and will not be visible to the web server or UI.
+  to the projection and will not be visible in the UI.
 - **Projection is eagerly materialized.** It is written atomically after every
-  `append()` call. The web server reads `state.json`, not `events.jsonl`. This
-  keeps polling cheap (one file read) without needing to replay the log.
-- **`append()` calls are serialized.** `EventLog` serializes appends via an
-  internal promise chain. Concurrent callers (e.g., heartbeat timer and
-  `tool_result` handler) enqueue without racing on the `.tmp.json` file.
+  event. The web server reads the projection from in-process state; `state.json`
+  on disk is for debugging and post-mortem.
+- **SSE is pushed directly.** There is no polling loop. When a tool handler
+  emits an audit event, the SSE push happens in the same call chain.
 
 ### Adding new observable state
 
-When adding a new piece of state that the UI should see, wire all five layers:
+When adding a new piece of state that the UI should see, wire three layers:
 
-1. **Emit an audit event** — add a typed event and an `emit*()` helper in `lib/audit.ts`
-2. **Update `fold()`** — handle the new event type to update the projection field
-3. **Update the Projection type** — add the field to the `Projection` interface
-4. **Web server polling** — read the new field from the cached projection in the 50ms polling callback and include it in the SSE payload
-5. **Frontend** — add a handler in `sse.js` and a slice in `store.js`
+1. **Emit an audit event** -- add a typed event in `koan/audit/events.py`
+2. **Update `fold()`** -- handle the new event type in `koan/audit/fold.py`
+3. **Push SSE** -- emit the SSE event from the tool handler or state transition
+   in `koan/web/app.py`
 
-All five layers must be present. Missing any one of them produces silent data
-loss — the event is appended but never reaches the browser.
+The HTMX frontend receives SSE events and swaps server-rendered HTML fragments.
 
-**Exception — ephemeral display data:** High-frequency data with no persistence
+**Exception -- ephemeral display data:** High-frequency data with no persistence
 value (e.g., token deltas) should bypass the audit pipeline and push directly
-to SSE. Routing hundreds of events per second through `events.jsonl` + `fold()`
-+ `state.json` adds I/O overhead with no benefit. See
-[token-streaming.md](./token-streaming.md) for the alternate path.
+to SSE. See [token-streaming.md](./token-streaming.md) for the alternate path.
 
 ---
 
 ## SSE Event Lifecycle
 
-State flows from LLM tool calls to the browser through a five-layer pipeline.
-All layers must be wired for a new event type to be visible end-to-end.
+State flows from LLM tool calls to the browser through a direct push pipeline.
 
 ```
-[LLM calls tool]
+[LLM calls tool via HTTP MCP]
      |
-[tool mutates ctx + calls ctx.eventLog.emit*()] <- lib/audit.ts
+[MCP endpoint handles call, emits audit event]
      |
-[fold() updates Projection -> state.json written atomically]
+[fold() updates projection, state.json written atomically]
      |
-[web server polls state.json every 50ms, detects change] <- web/server.ts
+[SSE event pushed to connected browsers]  <- koan/web/app.py
      |
-[pushEvent(type, payload) -> SSE stream -> browser]
-     |
-[sse.js dispatches to named handler from store.js] <- web/js/sse.js
-     |
-[named handler calls useStore.setState()] <- web/js/store.js
-     |
-[Zustand component selector -> React re-render]
+[HTMX receives SSE, swaps server-rendered fragment]
 ```
 
 ### Concrete example: `koan_set_confidence`
 
 ```
-LLM calls koan_set_confidence({ level: "high" })
-  → ctx.intakeConfidence = "high"
-  → ctx.eventLog.emitConfidenceChange("high", 2)
-      → append({ kind: "confidence_change", level: "high", iteration: 2 })
-      → fold: projection.intakeConfidence = "high", projection.intakeIteration = 2
-      → writeState(projection) → state.json
-  → returns "Confidence set to high."
-
-web server polling timer fires (50ms)
-  → pollAgent(intake) → readProjection(dir) → intakeConfidence: "high"
-  → agent.lastProjection = projection
-  → intake sub-phase → builds IntakeProgressEvent { confidence: "high", iteration: 2, ... }
-  → pushEvent("intake-progress", event) → SSE stream
-
-browser receives "intake-progress" event
-  → sse.js handler → useStore.setState({ intakeProgress: event })
-  → confidence visualization component re-renders
+LLM calls koan_set_confidence({ level: "high" }) via MCP
+  -> MCP endpoint checks permissions
+  -> emits confidence_change audit event
+  -> fold: projection.intake_confidence = "high", projection.intake_iteration = 2
+  -> write_state(projection) -> state.json
+  -> push SSE "intake-progress" event to connected browsers
+  -> HTMX swaps confidence visualization fragment
+  -> returns "Confidence set to high." as MCP tool result
 ```
-
-### `sse.js` / `store.js` boundary
-
-`sse.js` connects to the SSE stream and routes each event type to a named
-handler. It does not import `useStore` or know the store's internal shape.
-
-`store.js` owns the Zustand store shape and exports named handler functions
-(one per SSE event type). Each handler maps a raw SSE payload to a store
-state update.
-
-Changing the store shape only requires updating `store.js`; `sse.js` is
-stable across store shape changes.
 
 ### Replay on reconnect
 
 The web server buffers the last value of every stateful SSE event type. On
-reconnect, `replayState()` writes all buffered events to the new client. This
-ensures the browser always has current state after a network drop, without
-requiring a full page reload.
+reconnect, all buffered events are written to the new client. This ensures
+the browser always has current state after a network drop, without requiring
+a full page reload.
 
 ---
 
@@ -306,32 +265,25 @@ koan_complete_step". Putting task content (file paths, instructions, context)
 risks the LLM producing text output on the first turn and exiting. This has
 happened with haiku-class models and is not recoverable.
 
-### Don't inject step guidance via the `context` event
-
-A `context` event handler that injects step 1 guidance into the first user
-message was tried and removed. It creates the same problem as putting content
-in the spawn prompt — the LLM sees complex instructions before establishing
-the tool-calling pattern.
-
 ### Don't add `escalated` as a story status
 
-Escalation is handled via `koan_ask_question` (IPC → web server → user
-answers → IPC response). A separate `escalated` status was tried and created
-a dead routing path — the driver had nowhere clean to send it without
-duplicating the ask UI flow that IPC already handles.
+Escalation is handled via `koan_ask_question` (MCP tool call -> web UI -> user
+answers -> MCP response). A separate `escalated` status was tried and created
+a dead routing path -- the driver had nowhere clean to send it without
+duplicating the ask UI flow.
 
 ### Don't add `scouting` as an epic phase
 
-Scouts run inside the IPC responder during intake/decomposer/planner phases,
-not as a top-level driver phase. Adding `scouting` to `EpicPhase` would imply
-a driver state that never exists, creating dead code paths.
+Scouts run inside the `koan_request_scouts` tool handler during
+intake/decomposer/planner phases, not as a top-level driver phase. Adding
+`scouting` to `EpicPhase` would imply a driver state that never exists,
+creating dead code paths.
 
 ### Don't rely on file existence for scout success
 
-Scout success is derived from the JSON projection (`readProjection()` →
-`status === "completed"`), not from checking whether `findings.md` exists.
-A scout can write a partial findings file and then crash — file existence is
-not proof of completion.
+Scout success is derived from the JSON projection (`status === "completed"`),
+not from checking whether `findings.md` exists. A scout can write a partial
+findings file and then crash -- file existence is not proof of completion.
 
 ### Don't crash on recoverable model-output parse errors
 
@@ -343,36 +295,17 @@ Fail-fast is scoped to **unrecoverable conditions**:
 
 If a model emits malformed tool-call payloads (invalid JSON/args) or other
 per-turn formatting errors, treat them as recoverable execution errors:
-return a structured tool error (`tool_result` with `isError=true`) so the model
-can self-correct and retry in the same subagent process.
+return a structured tool error so the model can self-correct and retry in
+the same subagent process.
 
-Contrastive examples:
-
-| Condition | Classification | Expected handling |
-| --------- | -------------- | ----------------- |
-| Malformed tool-call JSON/args from LLM | Recoverable | Return `tool_result` error (`isError=true`), keep process alive |
-| Tool argument schema validation failure | Recoverable | Return validation error as `tool_result`, let model retry |
-| Disallowed/unknown tool call | Recoverable | Return blocked tool error, continue turn |
-| Missing/malformed `task.json` at subagent startup | Unrecoverable | Fail fast (bootstrap contract broken) |
-| Impossible phase routing / internal invariant breach | Unrecoverable | Fail fast |
-| Unexpected runtime state with no clear deterministic recovery | Unrecoverable | Fail fast |
-
-Crashing the process for recoverable model-output errors converts a local retry
-loop into a pipeline-level failure and should be avoided.
-
-### Don't write state.json from outside state.ts / tool code
-
-The state module (`epic/state.ts`) and orchestrator tools are the only
-writers of JSON state. `status.md` writes belong exclusively in
-`tools/orchestrator.ts`. Mixing these responsibilities violates the file
-boundary invariant.
-
-### Don't call koan_complete_step in the tool description eagerly
-
-The tool description says "DO NOT call this tool until the step instructions
-explicitly tell you to." Without this guard, aggressive models call
-`koan_complete_step` immediately after receiving step guidance, skipping
-the actual work.
+| Condition                                                     | Classification | Expected handling                        |
+| ------------------------------------------------------------- | -------------- | ---------------------------------------- |
+| Malformed tool-call JSON/args from LLM                        | Recoverable    | Return tool error, keep process alive    |
+| Tool argument schema validation failure                       | Recoverable    | Return validation error, let model retry |
+| Disallowed/unknown tool call                                  | Recoverable    | Return blocked tool error, continue turn |
+| Missing/malformed `task.json` at subagent startup             | Unrecoverable  | Fail fast (bootstrap contract broken)    |
+| Impossible phase routing / internal invariant breach          | Unrecoverable  | Fail fast                                |
+| Unexpected runtime state with no clear deterministic recovery | Unrecoverable  | Fail fast                                |
 
 ### Don't assume bash is restricted per role
 
@@ -385,48 +318,35 @@ constraint. Do not assume bash calls are blocked for planning roles.
 **The pattern: prompt expresses intent; mechanical gate catches non-compliance.
 Neither alone is sufficient.**
 
-- **Prompt alone** — the LLM can ignore it. The original 3-step intake design
-  told the LLM not to scout in step 1; it frontloaded all work into step 1
-  anyway, producing duplicate scout requests in later steps.
-- **Gate alone** — the LLM receives a cryptic "blocked" error with no context.
-  It cannot fix the problem if it does not know what it did wrong.
+- **Prompt alone** -- the LLM can ignore it.
+- **Gate alone** -- the LLM receives a cryptic "blocked" error with no context.
 
-Three enforcement mechanisms are available — use the appropriate one for the
+Three enforcement mechanisms are available -- use the appropriate one for the
 constraint:
 
-| Mechanism                                | What it enforces                           | How                                                           |
-| ---------------------------------------- | ------------------------------------------ | ------------------------------------------------------------- |
-| **Permission fence** (`checkPermission`) | Which tools a role (or step) can use       | Block at `tool_call` event; LLM sees a rejection message      |
-| **`validateStepCompletion()`**           | Required pre-calls before step advancement | Block `koan_complete_step`; LLM sees an error and must comply |
-| **Tool description**                     | Soft guidance on when to call              | Cannot be enforced; LLM can ignore it                         |
+| Mechanism                                 | What it enforces                           | How                                                           |
+| ----------------------------------------- | ------------------------------------------ | ------------------------------------------------------------- |
+| **Permission fence** (`check_permission`) | Which tools a role (or step) can use       | Block at MCP endpoint; LLM sees a rejection message           |
+| **`validate_step_completion()`**          | Required pre-calls before step advancement | Block `koan_complete_step`; LLM sees an error and must comply |
+| **Tool description**                      | Soft guidance on when to call              | Cannot be enforced; LLM can ignore it                         |
 
 Any behavioral constraint that matters for correctness needs **both** a prompt
 instruction (so the LLM knows what to do) and a mechanical gate (so
 non-compliance is caught and corrected, not silently propagated).
 
-See [intake-loop.md § Step-Aware Permission Gating](./intake-loop.md#step-aware-permission-gating).
+See [intake-loop.md -- Step-Aware Permission Gating](./intake-loop.md#step-aware-permission-gating).
 
 ### Don't give a step multiple cognitive goals
 
 Each step should have exactly one cognitive goal. Grouping multiple goals into
 a single step ("do A, then B, then C") enables **simulated refinement**: the
 LLM artificially downgrades its output for A to manufacture visible improvement
-in C. When all three goals are in one step, the model can pre-plan the
-"improvement" because it already knows C is coming.
-
-Separate `koan_complete_step` calls enforce genuinely isolated reasoning: the
-LLM must complete each goal before it sees the next goal's instructions. There
-is no opportunity to sandbag — the next step's prompt has not arrived yet.
-
-This is why the intake phase has three loop steps (Scout / Deliberate / Reflect)
-rather than a single monolithic "investigate" step. The scout phase follows the
-same principle (orient → investigate → verify → report — four distinct goals,
-four distinct steps).
+in C. Separate `koan_complete_step` calls enforce genuinely isolated reasoning.
 
 When designing a new phase, each step should answer: "What is the single thing
 this step accomplishes?" If the answer requires "and then", split the step.
 
-See [intake-loop.md § Prompt Chaining over Stepwise](./intake-loop.md#prompt-engineering-principles)
+See [intake-loop.md -- Prompt Chaining over Stepwise](./intake-loop.md#prompt-engineering-principles)
 for the detailed rationale.
 
 ### Don't parse free-text for loop control decisions
@@ -437,42 +357,30 @@ value set via a dedicated tool call, not a sentiment extracted from the LLM's
 for routing decisions. Any loop gate must flow through a typed tool parameter
 and a structured context field.
 
-### Don't put side effects in getNextStep()
+### Don't put side effects in get_next_step()
 
-`getNextStep()` must be a pure query — it returns the next step number and
+`get_next_step()` must be a pure query -- it returns the next step number and
 nothing else. Putting state mutations, counter increments, or event emission
-inside `getNextStep()` violates this contract and makes the method unsafe to
-reason about (e.g., a test that calls `getNextStep()` to inspect the decision
-should not trigger side effects).
+inside `get_next_step()` violates this contract.
 
-Side effects that accompany a loop-back belong in `onLoopBack()`, which
-`BasePhase` calls after detecting a backward transition:
+Side effects that accompany a loop-back belong in `on_loop_back()`:
 
 ```
-BAD:  getNextStep(4) { this.iteration++; this.ctx.confidence = null; return 2; }
-GOOD: getNextStep(4) { return 2; }
-      onLoopBack(4, 2) { this.iteration++; this.ctx.confidence = null; }
+BAD:  get_next_step(4) { self.iteration += 1; self.confidence = None; return 2 }
+GOOD: get_next_step(4) { return 2 }
+      on_loop_back(4, 2) { self.iteration += 1; self.confidence = None }
 ```
-
-The `onLoopBack()` hook is async and properly awaited, ensuring event
-emission (`emitIterationStart`) is correctly sequenced in `events.jsonl`.
 
 ### Don't pass structured data through CLI flags
 
 If information is needed by a subagent, write it to `task.json` in the
-subagent directory before spawning. CLI flags are for bootstrap only (locating
-the directory). Structured data in flags creates flat-namespace collisions,
-size limits, and an uninspectable interface. The directory-as-contract
-invariant exists specifically to prevent this.
+subagent directory before spawning. CLI flags are for bootstrap only. The
+directory-as-contract invariant exists specifically to prevent this.
 
 ### Don't put high-frequency ephemeral data through the audit pipeline
 
 Token deltas and similar high-frequency signals arrive at hundreds of events
-per second. Routing them through the audit pipeline (`events.jsonl` → `fold()`
-→ `state.json`) would mean hundreds of append + fold + atomic-write cycles per
-second for data that has no persistence value — it is display-only and cleared
-when the subagent finishes.
-
-The stdout JSONL parsing path exists for exactly this case: parse `text_delta`
-events directly from the subagent's stdout and push them to SSE clients without
-touching the audit system. See [token-streaming.md](./token-streaming.md).
+per second. Routing them through the audit pipeline would mean hundreds of
+append + fold + atomic-write cycles per second for data that has no persistence
+value. The runner stdout parsing path exists for exactly this case. See
+[token-streaming.md](./token-streaming.md).

@@ -1,6 +1,7 @@
 # Planning Widget
 
 ## Context
+
 The planning widget follows the stacked-card + timeline-rail layout and optimizes for long-running sessions (30-120 minutes).
 
 The runtime pane is designed around one principle:
@@ -49,6 +50,7 @@ Elapsed time remains right-aligned in the top row.
 ## Phase-Specific Modifications Panel
 
 ### A) Plan design / plan code / plan docs / execution
+
 Show plan-modification counters:
 
 - `milestones : +Δ (total)`
@@ -57,6 +59,7 @@ Show plan-modification counters:
 - `changes    : +Δ (total)`
 
 ### B) QR decompose
+
 Show QR decomposition counters:
 
 - `qr items added   : +Δ (total)`
@@ -64,6 +67,7 @@ Show QR decomposition counters:
 - `groups assigned  : +Δ (total)`
 
 ### C) QR verify
+
 Show explicit placeholder (by design):
 
 - `[placeholder]`
