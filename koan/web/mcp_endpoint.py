@@ -32,10 +32,15 @@ mcp = FastMCP(name="koan")
 
 
 def _check_or_raise(agent: AgentState, tool_name: str, tool_args: dict | None = None) -> None:
+    phase_ctx = agent.phase_ctx
+    resolved_epic_dir = (
+        phase_ctx.epic_dir if phase_ctx is not None and phase_ctx.epic_dir
+        else agent.epic_dir or None
+    )
     result = check_permission(
         role=agent.role,
         tool_name=tool_name,
-        epic_dir=agent.epic_dir,
+        epic_dir=resolved_epic_dir,
         tool_args=tool_args,
         current_step=agent.step,
     )
