@@ -169,6 +169,9 @@ export function fold(s: Projection, e: AuditEvent): Projection {
     }
 
     case "tool_result":
+      // NOTE: ToolResultEvent.debugOutput is intentionally NOT folded into
+      // Projection/state.json. It is debug-only and can be large; keeping it
+      // out of Projection preserves lightweight 50ms polling behavior.
       return {
         ...base,
         lastAction: summarizeResult(e),

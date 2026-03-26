@@ -6,7 +6,8 @@
 // its role and parameters — no structured data flows through CLI flags).
 //
 // The spawn command carries only what pi needs at the OS level:
-//   pi --mode json -p -e {ext} --koan-dir {subagentDir} [--model {model}] "{bootPrompt}"
+//   pi --mode json -p -e {ext} --koan-dir {subagentDir} [--model {model}]
+//      [--koan-debug] "{bootPrompt}"
 //
 // All tools register unconditionally at init. Task-specific content is
 // intentionally absent from spawn prompts: it arrives as step 1 guidance
@@ -21,6 +22,7 @@ import { createLogger, type Logger } from "../utils/logger.js";
 import { resolveModelForRole } from "./model-resolver.js";
 import { runIpcResponder, type ScoutSpawnContext } from "./lib/ipc-responder.js";
 import { writeTaskFile, type SubagentTask, type ScoutTask } from "./lib/task.js";
+import { KOAN_DEBUG_FLAG } from "./lib/constants.js";
 import type { WebServerHandle } from "./web/server-types.js";
 
 // -- Result type --
@@ -36,6 +38,10 @@ export interface SubagentResult {
 export interface SpawnOptions {
   cwd: string;
   extensionPath: string;
+  /** When true, appends --koan-debug to the child pi args so subagents
+   *  receive the debug flag. Non-optional: every construction site must
+   *  set it explicitly so TypeScript catches any missed call site. */
+  debugMode: boolean;
   modelOverride?: string;
   log?: Logger;
   webServer?: WebServerHandle;
@@ -60,6 +66,32 @@ function bootPrompt(role: string): string {
   return `You are a koan ${role} agent. Call koan_complete_step to receive your instructions.`;
 }
 
+// Builds the CLI args passed to `pi` for a subagent process.
+// Exported for unit tests so flag/model argument behavior can be verified
+// without spawning a real process.
+export function buildSubagentArgs(
+  role: SubagentTask["role"],
+  subagentDir: string,
+  extensionPath: string,
+  modelOverride: string | undefined,
+  debugMode: boolean,
+): string[] {
+  return [
+    // --mode json makes pi emit structured JSONL on stdout instead of human-
+    // readable text. Combined with -p (non-interactive), this is the designed
+    // integration surface for external UIs. Pi's own subagent extension uses
+    // the identical flag pair — ["--mode", "json", "-p"] — confirming this is
+    // the supported composition.
+    "--mode", "json",
+    "-p",
+    "-e", extensionPath,
+    "--koan-dir", subagentDir,
+    ...(modelOverride ? ["--model", modelOverride] : []),
+    ...(debugMode ? ["--" + KOAN_DEBUG_FLAG] : []),
+    bootPrompt(role),
+  ];
+}
+
 // Builds the ScoutSpawnContext injected into the IPC responder. Scouts spawned
 // via this context do not receive a web server — they are narrow investigators
 // with no user interaction and no nested IPC.
@@ -76,6 +108,7 @@ function makeScoutSpawnContext(
       const result = await spawnSubagent(task, scoutSubagentDir, {
         cwd: opts.cwd,
         extensionPath: opts.extensionPath,
+        debugMode: opts.debugMode,
         // Deliberately no webServer — scouts are narrow investigators.
         log,
       });
@@ -107,19 +140,13 @@ export async function spawnSubagent(
     ? makeScoutSpawnContext(task.role, task.epicDir, opts, log)
     : undefined;
 
-  const args = [
-    // --mode json makes pi emit structured JSONL on stdout instead of human-
-    // readable text. Combined with -p (non-interactive), this is the designed
-    // integration surface for external UIs. Pi's own subagent extension uses
-    // the identical flag pair — ["--mode", "json", "-p"] — confirming this is
-    // the supported composition.
-    "--mode", "json",
-    "-p",
-    "-e", opts.extensionPath,
-    "--koan-dir", subagentDir,
-    ...(modelOverride ? ["--model", modelOverride] : []),
-    bootPrompt(task.role),
-  ];
+  const args = buildSubagentArgs(
+    task.role,
+    subagentDir,
+    opts.extensionPath,
+    modelOverride,
+    opts.debugMode,
+  );
 
   log(`Spawning ${task.role} subagent`, { subagentDir });
 

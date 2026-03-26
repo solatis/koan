@@ -17,6 +17,7 @@ import { Type } from "@sinclair/typebox";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 
 import { dispatchPhase } from "../src/planner/phases/dispatch.js";
+import { KOAN_DEBUG_FLAG } from "../src/planner/lib/constants.js";
 import { registerAllTools, createRuntimeContext } from "../src/planner/tools/index.js";
 import { createLogger, setLogDir } from "../src/utils/logger.js";
 import { EventLog, extractToolCall, extractToolResult } from "../src/planner/lib/audit.js";
@@ -74,6 +75,12 @@ export default function koan(pi: ExtensionAPI): void {
     default: "",
   });
 
+  pi.registerFlag(KOAN_DEBUG_FLAG, {
+    description: "Developer mode: show verbatim step prompts in the activity feed.",
+    type: "boolean",
+    default: false,
+  });
+
   const ctx = createRuntimeContext();
 
   registerAllTools(pi, ctx);
@@ -105,6 +112,7 @@ export default function koan(pi: ExtensionAPI): void {
     // decision interaction. Phases access this via this.ctx.phaseInstructions in
     // their getStepGuidance() implementation.
     ctx.phaseInstructions = task.phaseInstructions;
+    ctx.debugMode = !!pi.getFlag(KOAN_DEBUG_FLAG);
 
     const eventLog = new EventLog(
       subagentDir,
@@ -132,7 +140,7 @@ export default function koan(pi: ExtensionAPI): void {
         input: Record<string, unknown>;
         content: Array<{ type: string; text?: string }>;
         isError: boolean;
-      }));
+      }, { debug: ctx.debugMode }));
     });
 
     pi.on("turn_end", (event) => {
@@ -196,7 +204,8 @@ export default function koan(pi: ExtensionAPI): void {
       const portFlag = pi.getFlag("koan-webserver-port") as string || "";
       const serverPort = portFlag ? parseInt(portFlag, 10) : 0;
       const serverToken = (pi.getFlag("koan-webserver-token") as string) || "";
-      const server = await startWebServer(epicInfo.directory, { port: serverPort, token: serverToken });
+      const debugMode = !!pi.getFlag(KOAN_DEBUG_FLAG);
+      const server = await startWebServer(epicInfo.directory, { port: serverPort, token: serverToken, debugMode });
       try {
         // Skip opening the browser when a fixed port is set — the caller
         // (e.g. an automated agent or test harness) already knows the URL.
@@ -204,7 +213,7 @@ export default function koan(pi: ExtensionAPI): void {
         await exportConversation(extCtx.sessionManager, epicInfo.directory);
         log("Conversation exported", { epicDir: epicInfo.directory });
 
-        const result = await runPipeline(epicInfo.directory, extCtx.cwd, extensionPath, log, server);
+        const result = await runPipeline(epicInfo.directory, extCtx.cwd, extensionPath, log, server, { debugMode });
 
         return {
           content: [{ type: "text" as const, text: `Dashboard: ${server.url}\n\n${result.summary}` }],

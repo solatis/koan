@@ -23,7 +23,7 @@ export interface LogLine {
   details?: string[];
   // Timestamp used by thinking entries to drive the live elapsed timer.
   ts?: string;
-  // Expandable content body: thinking text, tool output, etc.
+  // Expandable content body: thinking text, tool output, step guidance, etc.
   body?: string;
   // Structured scout data for koan_request_scouts cards.
   scouts?: Array<{ id: string; role: string }>;
@@ -60,8 +60,14 @@ const FILE_TOOLS = new Set(["read", "edit", "write"]);
 // -- Public API --
 
 // Reads events.jsonl, correlates tool pairs, and returns structured log entries.
-// Filters out heartbeats, usage, and koan_complete_step (noisy).
-export async function readRecentLogs(dir: string, count = 8): Promise<LogLine[]> {
+// Filters out heartbeats, usage, and koan_complete_step (noisy in non-debug mode).
+// In debug mode, koan_complete_step results are used to attach step guidance text
+// as an expandable body on the preceding step line.
+export async function readRecentLogs(
+  dir: string,
+  count = 8,
+  opts?: { debug?: boolean },
+): Promise<LogLine[]> {
   try {
     const raw = await fs.readFile(path.join(dir, "events.jsonl"), "utf8");
     const events = raw
@@ -70,7 +76,7 @@ export async function readRecentLogs(dir: string, count = 8): Promise<LogLine[]>
       .filter(Boolean)
       .map((line) => JSON.parse(line) as AuditEvent);
 
-    return buildChronologicalLog(events, count);
+    return buildChronologicalLog(events, count, opts?.debug ?? false);
   } catch {
     return [];
   }
@@ -238,6 +244,9 @@ function formatPairedResult(e: ToolResultEvent, input: Record<string, unknown>):
   if (FILE_TOOLS.has(e.tool)) {
     const p = (input["path"] as string | undefined) ?? "";
     const suffix = e.lines != null ? ` · ${e.lines}L/${formatChars(e.chars ?? 0)}` : "";
+    // Placeholder for future debug body rendering.
+    // In debug mode, a per-tool formatter may populate line.body.
+    // See: formatDebugBody(tool, input, e.debugOutput)
     return {
       tool: e.tool,
       summary: `${p}${suffix}`,
@@ -250,6 +259,9 @@ function formatPairedResult(e: ToolResultEvent, input: Record<string, unknown>):
     const cmd = (input["command"] as string | undefined) ?? "";
     const bin = cmd.trim().split(/\s+/)[0] ?? "bash";
     const suffix = e.lines != null ? ` · ${e.lines}L/${formatChars(e.chars ?? 0)}` : "";
+    // Placeholder for future debug body rendering.
+    // In debug mode, a per-tool formatter may populate line.body.
+    // See: formatDebugBody(tool, input, e.debugOutput)
     return {
       tool: "bash",
       summary: `${bin}${suffix}`,
@@ -298,6 +310,9 @@ function formatLifecycleEvent(e: PhaseStartEvent | StepTransitionEvent | PhaseEn
 // formatPairedResult but with inFlight: true and no output metrics.
 function formatInFlightCall(tool: string, input: Record<string, unknown>): LogLine {
   if (FILE_TOOLS.has(tool)) {
+    // Placeholder for future debug body rendering.
+    // In debug mode, a per-tool formatter may populate line.body.
+    // See: formatDebugBody(tool, input, debugOutput)
     return {
       tool,
       summary: (input["path"] as string | undefined) ?? "",
@@ -309,6 +324,9 @@ function formatInFlightCall(tool: string, input: Record<string, unknown>): LogLi
   if (tool === "bash") {
     const cmd = (input["command"] as string | undefined) ?? "";
     const bin = cmd.trim().split(/\s+/)[0] ?? "bash";
+    // Placeholder for future debug body rendering.
+    // In debug mode, a per-tool formatter may populate line.body.
+    // See: formatDebugBody(tool, input, debugOutput)
     return { tool: "bash", summary: bin, highValue: false, inFlight: true };
   }
 
@@ -333,7 +351,12 @@ function formatInFlightCall(tool: string, input: Record<string, unknown>): LogLi
 // one LogLine per tool invocation (at result time, or at call time if
 // still in-flight) plus lifecycle events. Inserts thinking lines to
 // represent gaps between visible events where the LLM is reasoning.
-function buildChronologicalLog(events: AuditEvent[], count: number): LogLine[] {
+//
+// In debug mode, koan_complete_step results are not dropped: the
+// koanResponse text is attached as an expandable body to the most
+// recent step line (tool === "step"), which was emitted by the
+// step_transition event immediately preceding this result.
+function buildChronologicalLog(events: AuditEvent[], count: number, debug: boolean = false): LogLine[] {
   const pendingCalls = new Map<string, { tool: string; input: Record<string, unknown> }>();
   const lines: LogLine[] = [];
   let thinkingStartTs: string | null = null;
@@ -380,6 +403,21 @@ function buildChronologicalLog(events: AuditEvent[], count: number): LogLine[] {
     if (e.kind === "tool_result") {
       if (e.tool === "koan_complete_step") {
         pendingCalls.delete(e.toolCallId);
+        // In debug mode, attach the step guidance text to the most recent step
+        // line. step_transition fires immediately before this tool_result in
+        // events.jsonl (guaranteed by the serialised EventLog.append chain), so
+        // lines[lines.length - 1] is the step line when it exists.
+        //
+        // "Phase complete." edge case: when handleStepComplete returns null,
+        // phase_end has already been emitted. phaseEnded blocks attachment so
+        // the terminal koan_complete_step result cannot overwrite the previous
+        // step's guidance body.
+        if (debug && e.koanResponse?.length && !phaseEnded) {
+          const last = lines[lines.length - 1];
+          if (last?.tool === "step") {
+            last.body = e.koanResponse.join("\n");
+          }
+        }
         continue;
       }
       const call = pendingCalls.get(e.toolCallId);
@@ -434,3 +472,4 @@ function buildChronologicalLog(events: AuditEvent[], count: number): LogLine[] {
 
   return lines.slice(-count);
 }
+

@@ -37,6 +37,12 @@ interface PiToolResultEvent {
 const FILE_TOOLS = new Set(["read", "edit", "write"]);
 const HEARTBEAT_MS = 10_000;
 
+// Tools for which a bounded debug output preview is captured when debug mode
+// is active. Intentionally narrow: only bash in this iteration.
+const DEBUG_CAPTURE_TOOLS = new Set(["bash"]);
+
+const DEBUG_CAPTURE_LIMIT = 4096;
+
 // -- Helpers --
 
 import { now } from "./time.js";
@@ -56,7 +62,10 @@ export function extractToolCall(piEvent: PiToolCallEvent): ToolCallEvent {
   };
 }
 
-export function extractToolResult(piEvent: PiToolResultEvent): ToolResultEvent {
+export function extractToolResult(
+  piEvent: PiToolResultEvent,
+  opts?: { debug?: boolean },
+): ToolResultEvent {
   const { toolCallId, toolName, input, content, isError } = piEvent;
 
   const ev: ToolResultEvent = {
@@ -85,6 +94,18 @@ export function extractToolResult(piEvent: PiToolResultEvent): ToolResultEvent {
       .filter((c) => c.type === "text" && c.text !== undefined)
       .map((c) => c.text as string);
   }
+
+  // Debug mode: capture a bounded preview of tool output for designated tools.
+  // Only populated when debug is active; never written in normal mode.
+  // NOT folded into Projection — debug-only; never add to Projection.
+  if (opts?.debug && DEBUG_CAPTURE_TOOLS.has(toolName) && !isError) {
+    const text = content.find((c) => c.type === "text")?.text ?? "";
+    ev.debugOutput =
+      text.slice(0, DEBUG_CAPTURE_LIMIT) +
+      (text.length > DEBUG_CAPTURE_LIMIT ? "\n\u2026[truncated]" : "");
+  }
+
+  void input; // suppress unused-variable warning (input is part of the public API shape)
 
   return ev;
 }

@@ -5,7 +5,8 @@
 // Spawn pattern used throughout: spawnSubagent(task, subagentDir, opts).
 // epicDir is part of the task (written to task.json) rather than SpawnOptions
 // because it is subagent configuration, not process infrastructure. SpawnOptions
-// holds only what the OS-level spawn needs: cwd, extensionPath, model, webServer.
+// holds only what the OS-level spawn needs: cwd, extensionPath, model, webServer,
+// and the debug mode flag.
 
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
@@ -148,10 +149,11 @@ async function runSimplePhase(
   extensionPath: string,
   log: Logger,
   webServer: WebServerHandle | null,
+  debugMode: boolean,
   phaseInstructions?: string,
 ): Promise<boolean> {
   const subagentDir = await ensureSubagentDirectory(epicDir, role);
-  const opts: SpawnOptions = { cwd, extensionPath, log, webServer: webServer ?? undefined };
+  const opts: SpawnOptions = { cwd, extensionPath, log, webServer: webServer ?? undefined, debugMode };
   const task = (phaseInstructions
     ? { role, epicDir, phaseInstructions }
     : { role, epicDir }) as SubagentTask;
@@ -170,6 +172,7 @@ async function runPhase(
   extensionPath: string,
   log: Logger,
   webServer: WebServerHandle | null,
+  debugMode: boolean,
   phaseInstructions?: string,
 ): Promise<boolean> {
   const role = PHASE_ROLE[phase];
@@ -177,7 +180,7 @@ async function runPhase(
     // Should never happen — isStubPhase() guards this in the loop above.
     throw new Error(`No role mapping for implemented phase: ${phase}`);
   }
-  return runSimplePhase(role, epicDir, cwd, extensionPath, log, webServer, phaseInstructions);
+  return runSimplePhase(role, epicDir, cwd, extensionPath, log, webServer, debugMode, phaseInstructions);
 }
 
 // ---------------------------------------------------------------------------
@@ -191,8 +194,9 @@ async function runStoryExecution(
   storyId: string,
   log: Logger,
   webServer: WebServerHandle | null,
+  debugMode: boolean,
 ): Promise<void> {
-  const opts: SpawnOptions = { cwd, extensionPath, log, webServer: webServer ?? undefined };
+  const opts: SpawnOptions = { cwd, extensionPath, log, webServer: webServer ?? undefined, debugMode };
 
   // 1. Set status to 'planning'.
   const story = await loadStoryState(epicDir, storyId);
@@ -251,8 +255,9 @@ async function runStoryReexecution(
   failureContext: string | undefined,
   log: Logger,
   webServer: WebServerHandle | null,
+  debugMode: boolean,
 ): Promise<void> {
-  const opts: SpawnOptions = { cwd, extensionPath, log, webServer: webServer ?? undefined };
+  const opts: SpawnOptions = { cwd, extensionPath, log, webServer: webServer ?? undefined, debugMode };
 
   const execDir = await ensureSubagentDirectory(epicDir, `executor-${storyId}-retry-${retryCount}`);
   const execId = `executor-${storyId}-retry-${retryCount}`;
@@ -283,12 +288,13 @@ async function runStoryLoop(
   extensionPath: string,
   log: Logger,
   webServer: WebServerHandle | null,
+  debugMode: boolean,
 ): Promise<{ success: boolean; summary: string }> {
   {
     // 1. Spawn orchestrator (pre-execution) — selects first story.
     const preDir = await ensureSubagentDirectory(epicDir, "orchestrator-pre");
     const preId = "orchestrator-pre";
-    const opts: SpawnOptions = { cwd, extensionPath, log, webServer: webServer ?? undefined };
+    const opts: SpawnOptions = { cwd, extensionPath, log, webServer: webServer ?? undefined, debugMode };
     const preResult = await spawnTracked(preId, "orchestrator-pre", "orchestrator", { role: "orchestrator", epicDir, stepSequence: "pre-execution" }, preDir, undefined, opts, webServer);
 
     if (preResult.exitCode !== 0) {
@@ -307,7 +313,7 @@ async function runStoryLoop(
       switch (routing.action) {
         case "execute": {
           const storyId = routing.storyId as string;
-          await runStoryExecution(epicDir, cwd, extensionPath, storyId, log, webServer);
+          await runStoryExecution(epicDir, cwd, extensionPath, storyId, log, webServer, debugMode);
           if (webServer) await refreshWebServerStories(epicDir, webServer);
           break;
         }
@@ -338,7 +344,7 @@ async function runStoryLoop(
             retryCount: story.retryCount + 1,
             updatedAt: new Date().toISOString(),
           });
-          await runStoryReexecution(epicDir, cwd, extensionPath, storyId, story.retryCount + 1, story.failureSummary, log, webServer);
+          await runStoryReexecution(epicDir, cwd, extensionPath, storyId, story.retryCount + 1, story.failureSummary, log, webServer, debugMode);
           if (webServer) await refreshWebServerStories(epicDir, webServer);
           break;
         }
@@ -392,6 +398,7 @@ async function runWorkflowOrchestrator(
   extensionPath: string,
   log: Logger,
   webServer: WebServerHandle,
+  debugMode: boolean,
 ): Promise<{ nextPhase: EpicPhase; instructions?: string } | null> {
   await writeWorkflowStatus(epicDir, completedPhase, availablePhases);
 
@@ -407,7 +414,7 @@ async function runWorkflowOrchestrator(
   const dirLabel = `workflow-orch-${completedPhase}-${Date.now()}`;
   const dir = await ensureSubagentDirectory(epicDir, dirLabel);
   const id = `workflow-orchestrator-${completedPhase}`;
-  const opts: SpawnOptions = { cwd, extensionPath, log, webServer };
+  const opts: SpawnOptions = { cwd, extensionPath, log, webServer, debugMode };
   const result = await spawnTracked(id, id, "workflow-orchestrator", task, dir, undefined, opts, webServer);
 
   if (result.exitCode !== 0) {
@@ -440,7 +447,9 @@ export async function runPipeline(
   extensionPath: string,
   log: Logger,
   webServer: WebServerHandle | null,
+  opts: { debugMode: boolean } = { debugMode: false },
 ): Promise<{ success: boolean; summary: string }> {
+  const { debugMode } = opts;
   const epicState = await loadEpicState(epicDir);
 
   // Model config gate — blocks until user confirms model selection in the web UI.
@@ -460,7 +469,7 @@ export async function runPipeline(
       // pendingInstructions are carried forward — stubs don't consume them.
       log(`Phase "${phase}" is a placeholder — auto-advancing`, { phase });
     } else {
-      const phaseOk = await runPhase(phase, epicDir, cwd, extensionPath, log, webServer, pendingInstructions);
+      const phaseOk = await runPhase(phase, epicDir, cwd, extensionPath, log, webServer, debugMode, pendingInstructions);
       // Consumed by the real phase — clear regardless of success.
       pendingInstructions = undefined;
       if (!phaseOk) return { success: false, summary: `Phase "${phase}" failed` };
@@ -498,7 +507,7 @@ export async function runPipeline(
     webServer.freezeLogs();
 
     const decision = await runWorkflowOrchestrator(
-      phase, successors, epicDir, cwd, extensionPath, log, webServer,
+      phase, successors, epicDir, cwd, extensionPath, log, webServer, debugMode,
     );
     if (!decision) {
       return { success: false, summary: `Workflow orchestrator failed after "${phase}"` };
@@ -513,3 +522,4 @@ export async function runPipeline(
 
   return { success: true, summary: "Pipeline completed successfully" };
 }
+

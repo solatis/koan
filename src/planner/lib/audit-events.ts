@@ -29,6 +29,10 @@ export interface ToolResultEvent extends EventBase {
   chars?: number;
   // Koan tool response text preserved for projection (completionSummary, etc.).
   koanResponse?: string[];
+  // Reserved for debug mode: bounded preview of tool output content.
+  // Populated by extractToolResult() when debugMode is active.
+  // NOT written in normal mode. Never folded into Projection.
+  debugOutput?: string;
 }
 
 // -- Lifecycle events --

@@ -18,6 +18,11 @@
 //   decision. Present when the user provided focus instructions during the
 //   workflow decision interaction. Absent when the orchestrator is skipped or
 //   the user gave no additional direction. Applies uniformly to all phases.
+//
+// debugMode: true when the parent session was launched with --koan-debug.
+//   Forwarded to child processes via the CLI flag. Enables verbatim step
+//   guidance text in the activity feed (audit-log-formatter) and bounded
+//   debug output capture for designated tools (extractToolResult).
 
 import type { EventLog } from "./event-log.js";
 
@@ -31,6 +36,9 @@ export interface RuntimeContext {
    *  Injected into step 1 guidance when the user provides context during
    *  the workflow decision interaction. */
   phaseInstructions?: string;
+  /** True when the parent session was launched with --koan-debug.
+   *  Set during before_agent_start from the CLI flag. */
+  debugMode: boolean;
 }
 
 export function createRuntimeContext(): RuntimeContext {
@@ -40,5 +48,6 @@ export function createRuntimeContext(): RuntimeContext {
     onCompleteStep: null,
     currentStep: 0,
     eventLog: null,
+    debugMode: false,
   };
 }

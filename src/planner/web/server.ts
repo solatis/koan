@@ -220,10 +220,15 @@ export interface WebServerOptions {
   port?: number;
   /** Fixed session token (empty = random UUID). Must be a valid UUID if set. */
   token?: string;
+  /** When true, passes { debug: true } to readRecentLogs in the activity-feed
+   *  tracking timer so step guidance text appears as expandable card bodies. */
+  debugMode?: boolean;
 }
 
 export async function startWebServer(epicDir: string, opts?: WebServerOptions): Promise<WebServerHandle> {
   await ensureBundle();
+
+  const debugMode = opts?.debugMode ?? false;
 
   // Discover available models from pi's registry
   const authStorage = new AuthStorage();
@@ -881,7 +886,7 @@ export async function startWebServer(epicDir: string, opts?: WebServerOptions): 
           const startedAt = Date.now();
           const timer = setInterval(async () => {
             try {
-              const [projection, logs] = await Promise.all([readProjection(dir), readRecentLogs(dir, 50)]);
+              const [projection, logs] = await Promise.all([readProjection(dir), readRecentLogs(dir, 50, { debug: debugMode })]);
               if (logs.length > 0) {
                 lastLogs = logs;
                 pushEvent("logs", { lines: logs, currentToolCallId: projection?.currentToolCallId ?? null });
