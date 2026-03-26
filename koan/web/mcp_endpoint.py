@@ -19,11 +19,13 @@ import aiofiles
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
-from ..epic_state import ensure_subagent_directory
+from ..epic_state import atomic_write_json, ensure_subagent_directory
 from ..lib.permissions import check_permission
+from ..lib.phase_dag import is_valid_transition
 from ..logger import get_logger
 from ..phases.format_step import format_step
 from ..runners import resolve_runner
+from .interactions import activate_next_interaction, enqueue_interaction
 
 if TYPE_CHECKING:
     from ..state import AgentState, AppState
@@ -198,31 +200,97 @@ async def koan_request_scouts(questions: list[dict] | None = None) -> str:
 
 
 @mcp.tool(name="koan_ask_question")
-def koan_ask_question(question: str = "") -> str:
+async def koan_ask_question(questions: list[dict] | None = None) -> str:
     agent = _get_agent()
-    _check_or_raise(agent, "koan_ask_question", {"question": question})
-    return "[stub] koan_ask_question: not yet implemented"
+    _check_or_raise(agent, "koan_ask_question", {"questions": questions})
+    assert _app_state is not None, "app_state not initialized"
+
+    future = await enqueue_interaction(agent, _app_state, "ask", {"questions": questions or []})
+    result = await future
+
+    if isinstance(result, dict) and "error" in result:
+        raise ToolError(json.dumps(result))
+
+    answers = result.get("answers", [])
+    questions_list = questions or []
+    lines = []
+    for i, a in enumerate(answers):
+        q_text = questions_list[i].get("question", f"Q{i+1}") if i < len(questions_list) else f"Q{i+1}"
+        a_text = a.get("answer", "") if isinstance(a, dict) else str(a)
+        lines.append(f"Q: {q_text}\nA: {a_text}")
+    return "\n\n".join(lines) if lines else "No answers provided."
 
 
 @mcp.tool(name="koan_review_artifact")
-def koan_review_artifact(artifact: str = "") -> str:
+async def koan_review_artifact(path: str = "", description: str = "") -> str:
     agent = _get_agent()
-    _check_or_raise(agent, "koan_review_artifact", {"artifact": artifact})
-    return "[stub] koan_review_artifact: not yet implemented"
+    _check_or_raise(agent, "koan_review_artifact", {"path": path, "description": description})
+    assert _app_state is not None, "app_state not initialized"
+
+    try:
+        async with aiofiles.open(path, "r") as f:
+            content = await f.read()
+    except FileNotFoundError:
+        raise ToolError(
+            json.dumps({"error": "file_not_found", "message": f"Artifact not found: {path}"})
+        )
+
+    future = await enqueue_interaction(
+        agent, _app_state, "artifact-review",
+        {"path": path, "description": description, "content": content},
+    )
+    result = await future
+
+    if isinstance(result, dict) and "error" in result:
+        raise ToolError(json.dumps(result))
+
+    response = result.get("response", "")
+    accepted = result.get("accepted", response == "" or response.strip().lower() in ("", "ok", "approved", "lgtm"))
+    agent.phase_ctx.last_review_accepted = accepted
+
+    return response
 
 
 @mcp.tool(name="koan_propose_workflow")
-def koan_propose_workflow(workflow: str = "") -> str:
+async def koan_propose_workflow(status: str = "", phases: list[dict] | None = None) -> str:
     agent = _get_agent()
-    _check_or_raise(agent, "koan_propose_workflow", {"workflow": workflow})
-    return "[stub] koan_propose_workflow: not yet implemented"
+    _check_or_raise(agent, "koan_propose_workflow", {"status": status, "phases": phases})
+    assert _app_state is not None, "app_state not initialized"
+
+    future = await enqueue_interaction(
+        agent, _app_state, "workflow-decision",
+        {"status": status, "phases": phases or []},
+    )
+    result = await future
+
+    if isinstance(result, dict) and "error" in result:
+        raise ToolError(json.dumps(result))
+
+    agent.phase_ctx.proposal_made = True
+
+    phase = result.get("phase", "")
+    context = result.get("context", "")
+    return f"Selected: {phase}\n{context}".strip()
 
 
 @mcp.tool(name="koan_set_next_phase")
-def koan_set_next_phase(phase: str = "") -> str:
+async def koan_set_next_phase(phase: str = "", instructions: str = "") -> str:
     agent = _get_agent()
-    _check_or_raise(agent, "koan_set_next_phase", {"phase": phase})
-    return "[stub] koan_set_next_phase: not yet implemented"
+    _check_or_raise(agent, "koan_set_next_phase", {"phase": phase, "instructions": instructions})
+
+    from_phase = getattr(agent.phase_ctx, "completed_phase", None)
+    if not is_valid_transition(from_phase, phase):
+        raise ToolError(
+            json.dumps({
+                "error": "invalid_transition",
+                "message": f"Transition {from_phase} -> {phase} is not valid",
+            })
+        )
+
+    out_path = Path(agent.phase_ctx.subagent_dir) / "workflow-decision.json"
+    await atomic_write_json(out_path, {"next_phase": phase, "instructions": instructions})
+    agent.phase_ctx.next_phase_set = True
+    return f"Phase set to {phase}."
 
 
 # -- ASGI wrapper --------------------------------------------------------------

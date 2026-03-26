@@ -4,13 +4,23 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from .config import KoanConfig
 from .types import EpicPhase, SubagentRole
+
+
+@dataclass
+class PendingInteraction:
+    type: Literal["ask", "artifact-review", "workflow-decision"]
+    agent_id: str
+    future: asyncio.Future
+    payload: dict
+    token: str = field(default_factory=lambda: uuid.uuid4().hex)
 
 
 @dataclass
@@ -36,8 +46,8 @@ class AppState:
     start_event: asyncio.Event = field(default_factory=asyncio.Event)
     agents: dict[str, AgentState] = field(default_factory=dict)
     sse_clients: list = field(default_factory=list)
-    active_interaction: Any | None = None
-    interaction_queue: deque = field(default_factory=deque)
+    active_interaction: PendingInteraction | None = None
+    interaction_queue: deque[PendingInteraction] = field(default_factory=deque)
     interaction_queue_max: int = 8
     frozen_logs: list = field(default_factory=list)
     config: KoanConfig = field(default_factory=KoanConfig)

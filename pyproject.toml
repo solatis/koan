@@ -14,7 +14,7 @@ dependencies = [
 koan = "koan.__main__:main"
 
 [dependency-groups]
-dev = ["pytest"]
+dev = ["pytest", "anyio", "pytest-anyio"]
 
 [build-system]
 requires = ["hatchling"]

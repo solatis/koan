@@ -228,22 +228,35 @@ def _push_sse(app_state: AppState, event_type: str, payload: dict) -> None:
 
 def _cancel_pending_interactions(agent_id: str, app_state: AppState) -> None:
     """Resolve any pending/queued blocking interactions for this agent."""
-    # Check active interaction
-    active = app_state.active_interaction
-    if active is not None and getattr(active, "agent_id", None) == agent_id:
-        fut = getattr(active, "future", None)
-        if fut is not None and not fut.done():
-            fut.set_result({"error": "agent_exited", "message": "Agent process exited"})
-        app_state.active_interaction = None
+    from .web.interactions import activate_next_interaction
 
-    # Check queued interactions
+    error_result = {"error": "agent_exited", "message": "Agent process exited"}
+
+    # Collect and cancel all interactions belonging to agent_id (queue first,
+    # then active) before promoting any next interaction.  This prevents
+    # activate_next_interaction() from promoting another queued interaction
+    # from the same exiting agent into the active slot.
+
     remaining = []
     for item in app_state.interaction_queue:
-        if getattr(item, "agent_id", None) == agent_id:
-            fut = getattr(item, "future", None)
-            if fut is not None and not fut.done():
-                fut.set_result({"error": "agent_exited", "message": "Agent process exited"})
+        if item.agent_id == agent_id:
+            if not item.future.done():
+                item.future.set_result(error_result)
+            _push_sse(app_state, "notification", {
+                "type": "interaction_cancelled",
+                "agent_id": agent_id,
+            })
         else:
             remaining.append(item)
     app_state.interaction_queue.clear()
     app_state.interaction_queue.extend(remaining)
+
+    active = app_state.active_interaction
+    if active is not None and active.agent_id == agent_id:
+        if not active.future.done():
+            active.future.set_result(error_result)
+        _push_sse(app_state, "notification", {
+            "type": "interaction_cancelled",
+            "agent_id": agent_id,
+        })
+        activate_next_interaction(app_state)
