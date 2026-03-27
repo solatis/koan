@@ -1,0 +1,48 @@
+<div class="settings-section-heading">Profiles</div>
+<div id="settings-profiles-list">
+  {% for p in profiles %}
+  <div class="profile-row" data-profile-name="{{ p.name }}">
+    <span class="profile-row-name">{{ p.name }}{% if p.read_only %} <span title="Built-in">[locked]</span>{% endif %}</span>
+    <span class="profile-row-tiers">{{ p.tier_summary or "--" }}</span>
+    <span class="profile-row-actions">
+      {% if not p.read_only %}
+      <button class="btn btn-secondary btn-edit-profile" data-name="{{ p.name }}" style="padding:4px 10px;font-size:13px">Edit</button>
+      <button class="btn btn-secondary btn-delete-profile" data-name="{{ p.name }}" style="padding:4px 10px;font-size:13px">Delete</button>
+      {% endif %}
+    </span>
+  </div>
+  {% endfor %}
+</div>
+
+<button class="btn btn-secondary" id="btn-new-profile" style="margin-top:8px">+ New Profile</button>
+<div id="new-profile-form-container" hidden></div>
+<div id="edit-profile-form-container" hidden></div>
+
+<details id="agent-installations-section" style="margin-top:24px">
+  <summary class="settings-section-heading" style="cursor:pointer">Agent Installations</summary>
+  <div class="installation-cards" id="settings-installations-list">
+    {% for inst in installations %}
+    <div class="installation-card">
+      <span class="installation-card-alias">{{ inst.alias }}</span>
+      {% if inst.is_active %}<span class="badge active">active</span>{% endif %}
+      <span class="installation-card-meta">{{ inst.runner_type }}</span>
+      <span class="installation-card-meta">{{ inst.binary or "--" }}</span>
+      {% if inst.extra_args %}<span class="installation-card-meta">{{ inst.extra_args | join(" ") }}</span>{% endif %}
+      <span class="profile-row-actions">
+        {% if not inst.is_active %}
+        <button class="btn btn-secondary btn-set-active-inst" data-alias="{{ inst.alias }}" data-runner="{{ inst.runner_type }}" style="padding:3px 8px;font-size:12px">Set active</button>
+        {% endif %}
+        <button class="btn btn-secondary btn-edit-inst" data-alias="{{ inst.alias }}" style="padding:3px 8px;font-size:12px">Edit</button>
+        <button class="btn btn-secondary btn-delete-inst" data-alias="{{ inst.alias }}" style="padding:3px 8px;font-size:12px">Delete</button>
+      </span>
+    </div>
+    {% endfor %}
+  </div>
+  <button class="btn btn-secondary" id="btn-new-installation" style="margin-top:8px">+ New Installation</button>
+  <div id="new-installation-form-container" hidden></div>
+  <div id="edit-installation-form-container" hidden></div>
+</details>
+
+<div style="margin-top:24px;text-align:right">
+  <button class="btn btn-secondary" id="btn-refresh-probe">Refresh</button>
+</div>

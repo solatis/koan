@@ -383,3 +383,97 @@ def test_workflow_interaction_sse_payload_shape(app_state):
 def test_model_config_removed(client, app_state):
     resp = client.get("/api/model-config")
     assert resp.status_code in (404, 405)
+
+
+# -- Landing page: profile selector & settings button ------------------------
+
+def test_landing_includes_profile_selector(client, app_state):
+    app_state.probe_results = _make_probe_results()
+    app_state.balanced_profile = Profile(name="balanced", tiers={
+        "strong": ProfileTier(runner_type="claude", model="opus", thinking="high"),
+    })
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert "profile-select" in resp.text
+    assert "settings-btn" in resp.text
+
+
+def test_landing_start_run_disabled_no_runners(client, app_state):
+    app_state.probe_results = [
+        ProbeResult(runner_type="claude", available=False),
+        ProbeResult(runner_type="codex", available=False),
+    ]
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert "disabled" in resp.text
+    assert "No available runners" in resp.text
+
+
+def test_landing_start_run_enabled_with_runners(client, app_state):
+    app_state.probe_results = _make_probe_results()
+    app_state.balanced_profile = Profile(name="balanced", tiers={})
+    resp = client.get("/")
+    assert resp.status_code == 200
+    # The button should exist without disabled attribute
+    assert 'id="btn-start-run"' in resp.text
+    assert "No available runners" not in resp.text
+
+
+def test_start_run_sends_profile(client, app_state):
+    app_state.probe_results = _make_probe_results()
+    resp = client.post(
+        "/api/start-run",
+        json={"task": "build something", "profile": "balanced"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    assert app_state.config.active_profile == "balanced"
+
+
+def test_start_run_unknown_profile_rejected(client, app_state):
+    app_state.probe_results = _make_probe_results()
+    resp = client.post(
+        "/api/start-run",
+        json={"task": "build something", "profile": "nonexistent"},
+    )
+    assert resp.status_code == 422
+    assert "not found" in resp.json()["message"]
+
+
+def test_agents_list(client, app_state):
+    app_state.config.agent_installations.append(AgentInstallation(
+        alias="my-claude", runner_type="claude", binary="/usr/bin/claude", extra_args=[],
+    ))
+    resp = client.get("/api/agents")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "installations" in data
+    assert "active_installations" in data
+    assert len(data["installations"]) == 1
+
+
+def test_agents_create_and_delete(client, app_state):
+    resp = client.post("/api/agents", json={
+        "alias": "test-agent",
+        "runner_type": "claude",
+        "binary": "/usr/bin/claude",
+        "extra_args": [],
+    })
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    assert any(i.alias == "test-agent" for i in app_state.config.agent_installations)
+
+    resp = client.delete("/api/agents/test-agent")
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    assert not any(i.alias == "test-agent" for i in app_state.config.agent_installations)
+
+
+def test_agents_set_active(client, app_state):
+    app_state.config.agent_installations.append(AgentInstallation(
+        alias="my-claude", runner_type="claude", binary="/usr/bin/claude", extra_args=[],
+    ))
+    resp = client.put("/api/agents/claude/active", json={"alias": "my-claude"})
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    assert app_state.config.active_installations.get("claude") == "my-claude"

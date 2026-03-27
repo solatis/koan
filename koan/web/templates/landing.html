@@ -4,6 +4,9 @@
   <div class="header-left">
     <span class="logo">koan</span>
   </div>
+  <div class="header-right">
+    <button class="settings-btn" aria-label="Settings">&#9881;</button>
+  </div>
 </header>
 <div class="main-panel">
   <div class="phase-content">
@@ -18,36 +21,14 @@
       </div>
 
       <div class="model-config-section">
-        <h3 class="model-config-section-heading">Model Configuration</h3>
-        <div class="model-config-tiers">
-          <div class="model-tier-row">
-            <div class="model-tier-header">
-              <span class="model-tier-label">Strong</span>
-            </div>
-            <p class="model-tier-description">Architect, complex reasoning</p>
-            <input id="tier-strong" class="model-tier-input" type="text"
-              placeholder="e.g. claude-opus-4-6"
-              value="{{ tiers.strong if tiers else '' }}">
-          </div>
-          <div class="model-tier-row">
-            <div class="model-tier-header">
-              <span class="model-tier-label">Standard</span>
-            </div>
-            <p class="model-tier-description">General tasks, coding</p>
-            <input id="tier-standard" class="model-tier-input" type="text"
-              placeholder="e.g. claude-sonnet-4-6"
-              value="{{ tiers.standard if tiers else '' }}">
-          </div>
-          <div class="model-tier-row">
-            <div class="model-tier-header">
-              <span class="model-tier-label">Cheap</span>
-            </div>
-            <p class="model-tier-description">Scouts, lightweight analysis</p>
-            <input id="tier-cheap" class="model-tier-input" type="text"
-              placeholder="e.g. claude-haiku-4-5"
-              value="{{ tiers.cheap if tiers else '' }}">
-          </div>
-        </div>
+        <h3 class="model-config-section-heading">Profile</h3>
+        <select id="profile-select" class="model-tier-select">
+          {% for p in profiles %}
+          <option value="{{ p.name }}"{% if p.name == active_profile %} selected{% endif %}>
+            {{ p.name }}{% if p.read_only %} (built-in){% endif %}
+          </option>
+          {% endfor %}
+        </select>
       </div>
 
       <div class="model-config-section">
@@ -57,7 +38,29 @@
       </div>
 
       <div class="form-actions">
+        {% if has_runners %}
         <button id="btn-start-run" class="btn btn-primary">Start Run</button>
+        {% else %}
+        <button id="btn-start-run" class="btn btn-primary" disabled
+          title="No available runners. Install and authenticate at least one runner in Settings.">Start Run</button>
+        {% endif %}
+      </div>
+      {% if not has_runners %}
+      <span class="no-runners-msg">No available runners. Open Settings to install and authenticate a runner.</span>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<div id="settings-overlay" class="settings-overlay" hidden>
+  <div class="settings-overlay-backdrop">
+    <div class="settings-overlay-panel">
+      <div class="settings-overlay-header">
+        <span class="settings-overlay-title">Settings</span>
+        <button class="settings-btn" id="btn-close-settings" aria-label="Close">&#10005;</button>
+      </div>
+      <div class="settings-overlay-body" id="settings-overlay-body">
+        <p class="settings-section-heading">Loading...</p>
       </div>
     </div>
   </div>

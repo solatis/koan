@@ -1085,3 +1085,153 @@
   color: var(--text-muted);
   font-style: italic;
 }
+
+/* ---- Settings overlay ---- */
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+}
+
+.settings-overlay-backdrop {
+  width: 100%;
+  height: 100%;
+  background: rgba(42, 31, 20, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.settings-overlay-panel {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  width: 720px;
+  max-width: 94vw;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.settings-overlay-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.settings-overlay-title {
+  font-weight: 700;
+  font-size: var(--font-size-lg);
+  color: var(--text-strong);
+}
+
+.settings-overlay-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-6);
+}
+
+.settings-section-heading {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  margin-bottom: var(--space-4);
+}
+
+.profile-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-2);
+  background: var(--bg);
+}
+
+.profile-row-name {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--text-strong);
+  min-width: 120px;
+}
+
+.profile-row-tiers {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+
+.profile-row-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.installation-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+
+.installation-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  min-width: 180px;
+  max-width: 220px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.installation-card-alias {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.installation-card-meta {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+
+.no-runners-msg {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-sm);
+  color: var(--red);
+  margin-top: var(--space-2);
+}
+
+.profile-form {
+  border: 1px solid var(--copper-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  background: var(--copper-bg);
+  margin-top: var(--space-4);
+}
+
+.tier-form-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.tier-form-label {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  text-transform: uppercase;
+  min-width: 70px;
+  color: var(--text-muted);
+}

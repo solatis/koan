@@ -14,6 +14,9 @@
   var questionAnswers = {};
   var selectedWorkflowPhase = null;
 
+  // Cached data for settings overlay cascade dropdowns
+  var cachedProbeData = null;
+
   // -- Helpers ----------------------------------------------------------------
 
   function esc(s) {
@@ -322,21 +325,26 @@
       return;
     }
 
-    // Settings toggle
+    // Settings open (gear button on landing header)
     if (tgt.classList.contains("settings-btn") || tgt.closest(".settings-btn")) {
-      var overlay = $("#model-config-overlay");
-      if (overlay) overlay.hidden = !overlay.hidden;
+      // Close button inside overlay
+      if (tgt.id === "btn-close-settings" || (tgt.closest("#btn-close-settings"))) {
+        var ov = $("#settings-overlay");
+        if (ov) ov.hidden = true;
+        return;
+      }
+      // Close artifact overlay button (reuses settings-btn class)
+      if (tgt.id === "btn-close-artifact") {
+        var artOv = $(".artifact-overlay");
+        if (artOv) artOv.remove();
+        return;
+      }
+      openSettingsOverlay();
       return;
     }
 
-    // Save model config
-    if (tgt.id === "btn-save-config" || tgt.closest("#btn-save-config")) {
-      saveModelConfig();
-      return;
-    }
-
-    // Artifact overlay close
-    if (tgt.classList.contains("artifact-overlay") || tgt.id === "btn-close-artifact") {
+    // Artifact overlay close (backdrop click)
+    if (tgt.classList.contains("artifact-overlay")) {
       var ov = $(".artifact-overlay");
       if (ov) ov.remove();
       return;
@@ -367,7 +375,7 @@
     if (e.key === "Escape") {
       var ov = $(".artifact-overlay");
       if (ov) { ov.remove(); return; }
-      var cfg = $("#model-config-overlay");
+      var cfg = $("#settings-overlay");
       if (cfg && !cfg.hidden) { cfg.hidden = true; }
     }
   });
@@ -457,19 +465,13 @@
     var task = taskEl ? taskEl.value.trim() : "";
     if (!task) { notify("Please enter a task description", "warning"); return; }
 
-    var strong = $("#tier-strong");
-    var standard = $("#tier-standard");
-    var cheap = $("#tier-cheap");
+    var profileSel = $("#profile-select");
+    var profile = profileSel ? profileSel.value : "";
+    if (!profile) { notify("Please select a profile", "warning"); return; }
+
     var scout = $("#scout-concurrency");
 
-    var body = { task: task };
-    if (strong && strong.value) {
-      body.model_tiers = {
-        strong: strong.value,
-        standard: standard ? standard.value : "",
-        cheap: cheap ? cheap.value : "",
-      };
-    }
+    var body = { task: task, profile: profile };
     if (scout && scout.value) {
       body.scout_concurrency = parseInt(scout.value, 10) || 8;
     }
@@ -482,7 +484,6 @@
       .then(function (r) { return r.json(); })
       .then(function (d) {
         if (d.ok) {
-          // Navigate to / which renders live.html now that start_event is set
           window.location.href = "/";
         } else {
           notify(d.message || "Failed to start", "error");
@@ -547,35 +548,383 @@
       .catch(function () { notify("Network error", "error"); });
   }
 
-  function saveModelConfig() {
-    var strong = $("#cfg-strong");
-    var standard = $("#cfg-standard");
-    var cheap = $("#cfg-cheap");
-    var scout = $("#cfg-scout-concurrency");
+  // -- Settings overlay -------------------------------------------------------
 
-    fetch("/api/model-config", {
-      method: "PUT",
+  // Comment 2 fix: one-time binding guard for delegated settings listener
+  var settingsHandlersBound = false;
+
+  function openSettingsOverlay() {
+    var overlay = $("#settings-overlay");
+    if (!overlay) return;
+    overlay.hidden = false;
+
+    var body = $("#settings-overlay-body");
+    if (body) body.innerHTML = '<p class="settings-section-heading">Loading...</p>';
+
+    // Fetch probe data (for cascade dropdowns) and server-rendered body fragment
+    Promise.all([
+      fetch("/api/probe").then(function (r) { return r.json(); }),
+      fetch("/api/settings/body").then(function (r) { return r.text(); }),
+    ])
+      .then(function (results) {
+        cachedProbeData = results[0];
+        if (body) body.innerHTML = results[1];
+        bindSettingsHandlers();
+      })
+      .catch(function () {
+        notify("Failed to load settings", "error");
+      });
+  }
+
+  function bindCascadeDropdowns(formEl) {
+    if (!cachedProbeData) return;
+    var runners = cachedProbeData.runners || [];
+
+    formEl.querySelectorAll(".tier-runner-select").forEach(function (runnerSel) {
+      var tier = runnerSel.getAttribute("data-tier");
+      var modelSel = formEl.querySelector('.tier-model-select[data-tier="' + tier + '"]');
+      var thinkingSel = formEl.querySelector('.tier-thinking-select[data-tier="' + tier + '"]');
+      if (!modelSel || !thinkingSel) return;
+
+      // Comment 1 fix: read initial values from data attributes
+      var initialModel = modelSel.getAttribute("data-initial") || "";
+      var initialThinking = thinkingSel.getAttribute("data-initial") || "";
+
+      function populateModels() {
+        var rt = runnerSel.value;
+        var prev = modelSel.value || initialModel;
+        modelSel.innerHTML = '<option value="">-- model --</option>';
+        var matched = false;
+        runners.forEach(function (r) {
+          if (r.runner_type !== rt) return;
+          (r.models || []).forEach(function (m) {
+            var opt = document.createElement("option");
+            opt.value = m.alias;
+            opt.textContent = m.display_name || m.alias;
+            if (m.alias === prev) { opt.selected = true; matched = true; }
+            modelSel.appendChild(opt);
+          });
+        });
+        // Clear consumed initial value
+        initialModel = "";
+        populateThinking();
+      }
+
+      function populateThinking() {
+        var rt = runnerSel.value;
+        var model = modelSel.value;
+        var prev = thinkingSel.value || initialThinking;
+        thinkingSel.innerHTML = '<option value="">-- thinking --</option>';
+        var matched = false;
+        var firstOpt = null;
+        runners.forEach(function (r) {
+          if (r.runner_type !== rt) return;
+          (r.models || []).forEach(function (m) {
+            if (m.alias !== model) return;
+            (m.thinking_modes || []).forEach(function (tm) {
+              var opt = document.createElement("option");
+              opt.value = tm;
+              opt.textContent = tm;
+              if (!firstOpt) firstOpt = opt;
+              if (tm === prev) { opt.selected = true; matched = true; }
+              thinkingSel.appendChild(opt);
+            });
+          });
+        });
+        // Comment 4 fix: auto-select first valid thinking mode when previous is invalid
+        if (!matched && firstOpt) {
+          firstOpt.selected = true;
+        }
+        // Clear consumed initial value
+        initialThinking = "";
+      }
+
+      runnerSel.addEventListener("change", function () {
+        initialModel = "";
+        initialThinking = "";
+        populateModels();
+      });
+      modelSel.addEventListener("change", function () {
+        initialThinking = "";
+        populateThinking();
+      });
+
+      // Trigger initial cascade if runner is pre-selected
+      if (runnerSel.value) populateModels();
+    });
+  }
+
+  function bindSettingsHandlers() {
+    // New profile toggle
+    var btnNew = $("#btn-new-profile");
+    var newContainer = $("#new-profile-form-container");
+    if (btnNew && newContainer) {
+      btnNew.onclick = function () {
+        fetch("/api/settings/profile-form")
+          .then(function (r) { return r.text(); })
+          .then(function (html) {
+            newContainer.innerHTML = html;
+            newContainer.hidden = false;
+            btnNew.hidden = true;
+            bindCascadeDropdowns(newContainer);
+          })
+          .catch(function () { notify("Failed to load form", "error"); });
+      };
+    }
+
+    // New installation toggle
+    var btnNewInst = $("#btn-new-installation");
+    var newInstContainer = $("#new-installation-form-container");
+    if (btnNewInst && newInstContainer) {
+      btnNewInst.onclick = function () {
+        fetch("/api/settings/installation-form")
+          .then(function (r) { return r.text(); })
+          .then(function (html) {
+            newInstContainer.innerHTML = html;
+            newInstContainer.hidden = false;
+            btnNewInst.hidden = true;
+          })
+          .catch(function () { notify("Failed to load form", "error"); });
+      };
+    }
+
+    // Comment 2 fix: attach delegated listener exactly once
+    var body = $("#settings-overlay-body");
+    if (!body || settingsHandlersBound) return;
+    settingsHandlersBound = true;
+
+    body.addEventListener("click", function (e) {
+      var tgt = e.target;
+
+      // Cancel profile form
+      if (tgt.classList.contains("btn-cancel-profile")) {
+        var container = tgt.closest("#new-profile-form-container") || tgt.closest("#edit-profile-form-container");
+        if (container) {
+          container.hidden = true;
+          var btn = $("#btn-new-profile");
+          if (container.id === "new-profile-form-container" && btn) btn.hidden = false;
+        }
+        return;
+      }
+
+      // Cancel installation form
+      if (tgt.classList.contains("btn-cancel-inst")) {
+        var container = tgt.closest("#new-installation-form-container") || tgt.closest("#edit-installation-form-container");
+        if (container) {
+          container.hidden = true;
+          var btn = $("#btn-new-installation");
+          if (container.id === "new-installation-form-container" && btn) btn.hidden = false;
+        }
+        return;
+      }
+
+      // Save profile
+      if (tgt.classList.contains("btn-save-profile")) {
+        saveProfile(tgt);
+        return;
+      }
+
+      // Delete profile
+      if (tgt.classList.contains("btn-delete-profile")) {
+        var name = tgt.getAttribute("data-name");
+        fetch("/api/profiles/" + encodeURIComponent(name), { method: "DELETE" })
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            if (d.ok) { openSettingsOverlay(); refreshProfileSelect(); }
+            else notify(d.message || "Failed to delete", "error");
+          })
+          .catch(function () { notify("Network error", "error"); });
+        return;
+      }
+
+      // Edit profile -- fetch server-rendered form with initial tier values
+      if (tgt.classList.contains("btn-edit-profile")) {
+        var name = tgt.getAttribute("data-name");
+        var editContainer = $("#edit-profile-form-container");
+        if (!editContainer) return;
+        fetch("/api/settings/profile-form?edit=1&name=" + encodeURIComponent(name))
+          .then(function (r) { return r.text(); })
+          .then(function (html) {
+            editContainer.innerHTML = html;
+            editContainer.hidden = false;
+            bindCascadeDropdowns(editContainer);
+          })
+          .catch(function () { notify("Failed to load form", "error"); });
+        return;
+      }
+
+      // Delete installation
+      if (tgt.classList.contains("btn-delete-inst")) {
+        var alias = tgt.getAttribute("data-alias");
+        fetch("/api/agents/" + encodeURIComponent(alias), { method: "DELETE" })
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            if (d.ok) openSettingsOverlay();
+            else notify(d.message || "Failed to delete", "error");
+          })
+          .catch(function () { notify("Network error", "error"); });
+        return;
+      }
+
+      // Set active installation
+      if (tgt.classList.contains("btn-set-active-inst")) {
+        var alias = tgt.getAttribute("data-alias");
+        var rt = tgt.getAttribute("data-runner");
+        fetch("/api/agents/" + encodeURIComponent(rt) + "/active", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ alias: alias }),
+        })
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            if (d.ok) openSettingsOverlay();
+            else notify(d.message || "Failed to set active", "error");
+          })
+          .catch(function () { notify("Network error", "error"); });
+        return;
+      }
+
+      // Edit installation -- fetch server-rendered form
+      if (tgt.classList.contains("btn-edit-inst")) {
+        var alias = tgt.getAttribute("data-alias");
+        var editContainer = $("#edit-installation-form-container");
+        if (!editContainer) return;
+        fetch("/api/settings/installation-form?edit=1&alias=" + encodeURIComponent(alias))
+          .then(function (r) { return r.text(); })
+          .then(function (html) {
+            editContainer.innerHTML = html;
+            editContainer.hidden = false;
+          })
+          .catch(function () { notify("Failed to load form", "error"); });
+        return;
+      }
+
+      // Save installation
+      if (tgt.classList.contains("btn-save-inst")) {
+        saveInstallation(tgt);
+        return;
+      }
+
+      // Detect binary
+      if (tgt.classList.contains("btn-detect-binary")) {
+        var form = tgt.closest(".profile-form");
+        var rtSel = form ? form.querySelector(".inst-runner-select") : null;
+        var rt = rtSel ? rtSel.value : "";
+        if (!rt) { notify("Select a runner type first", "warning"); return; }
+        fetch("/api/agents/detect?runner_type=" + encodeURIComponent(rt))
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            var binInput = form ? form.querySelector(".inst-binary-input") : null;
+            if (binInput && d.path) binInput.value = d.path;
+            else if (!d.path) notify("Binary not found in PATH", "warning");
+          })
+          .catch(function () { notify("Detection failed", "error"); });
+        return;
+      }
+    });
+
+    // Refresh button
+    var btnRefresh = $("#btn-refresh-probe");
+    if (btnRefresh) {
+      btnRefresh.onclick = function () { openSettingsOverlay(); };
+    }
+  }
+
+  // Comment 1 fix: preserve unchanged tiers when editing profiles
+  function saveProfile(btn) {
+    var isEdit = btn.getAttribute("data-edit") === "1";
+    var form = btn.closest(".profile-form");
+    if (!form) return;
+
+    var nameInput = form.querySelector(".profile-name-input");
+    var name = isEdit ? btn.getAttribute("data-name") : (nameInput ? nameInput.value.trim() : "");
+    if (!name) { notify("Profile name is required", "warning"); return; }
+
+    var tiers = {};
+    ["strong", "standard", "cheap"].forEach(function (tier) {
+      var rt = form.querySelector('.tier-runner-select[data-tier="' + tier + '"]');
+      var model = form.querySelector('.tier-model-select[data-tier="' + tier + '"]');
+      var thinking = form.querySelector('.tier-thinking-select[data-tier="' + tier + '"]');
+      if (rt && rt.value && model && model.value) {
+        tiers[tier] = {
+          runner_type: rt.value,
+          model: model.value,
+          thinking: thinking ? thinking.value || "disabled" : "disabled",
+        };
+      }
+    });
+
+    var url = isEdit ? "/api/profiles/" + encodeURIComponent(name) : "/api/profiles";
+    var method = isEdit ? "PUT" : "POST";
+    var payload = isEdit ? { tiers: tiers } : { name: name, tiers: tiers };
+
+    fetch(url, {
+      method: method,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model_tiers: {
-          strong: strong ? strong.value : "",
-          standard: standard ? standard.value : "",
-          cheap: cheap ? cheap.value : "",
-        },
-        scout_concurrency: scout ? parseInt(scout.value, 10) || 8 : 8,
-      }),
+      body: JSON.stringify(payload),
     })
       .then(function (r) { return r.json(); })
       .then(function (d) {
-        if (d.ok) {
-          notify("Configuration saved", "info");
-          var overlay = $("#model-config-overlay");
-          if (overlay) overlay.hidden = true;
-        } else {
-          notify("Failed to save config", "error");
-        }
+        if (d.ok) { openSettingsOverlay(); refreshProfileSelect(); }
+        else notify(d.message || "Failed to save profile", "error");
       })
       .catch(function () { notify("Network error", "error"); });
+  }
+
+  function saveInstallation(btn) {
+    var isEdit = btn.getAttribute("data-edit") === "1";
+    var form = btn.closest(".profile-form");
+    if (!form) return;
+
+    var aliasInput = form.querySelector(".inst-alias-input");
+    var alias = aliasInput ? aliasInput.value.trim() : "";
+    if (!alias) { notify("Alias is required", "warning"); return; }
+
+    var rtSel = form.querySelector(".inst-runner-select");
+    var binInput = form.querySelector(".inst-binary-input");
+    var argsInput = form.querySelector(".inst-extra-args-input");
+
+    var payload = {
+      alias: alias,
+      runner_type: rtSel ? rtSel.value : "",
+      binary: binInput ? binInput.value.trim() : "",
+      extra_args: argsInput && argsInput.value.trim()
+        ? argsInput.value.trim().split(/\s+/) : [],
+    };
+
+    var url = isEdit ? "/api/agents/" + encodeURIComponent(alias) : "/api/agents";
+    var method = isEdit ? "PUT" : "POST";
+
+    fetch(url, {
+      method: method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d.ok) openSettingsOverlay();
+        else notify(d.message || "Failed to save installation", "error");
+      })
+      .catch(function () { notify("Network error", "error"); });
+  }
+
+  function refreshProfileSelect() {
+    fetch("/api/profiles")
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var sel = $("#profile-select");
+        if (!sel) return;
+        var prev = sel.value;
+        sel.innerHTML = "";
+        (d.profiles || []).forEach(function (p) {
+          var opt = document.createElement("option");
+          opt.value = p.name;
+          opt.textContent = p.name + (p.read_only ? " (built-in)" : "");
+          if (p.name === prev) opt.selected = true;
+          sel.appendChild(opt);
+        });
+      })
+      .catch(function () { /* ignore */ });
   }
 
   // -- Init -------------------------------------------------------------------

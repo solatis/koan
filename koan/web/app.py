@@ -211,9 +211,20 @@ async def landing_page(r: Request) -> Response:
 
     env = _get_jinja()
     tmpl = env.get_template("landing.html")
+
+    # Build profiles list (balanced first, then user profiles)
+    profiles = []
+    if st.balanced_profile:
+        profiles.append(_serialize_profile(st.balanced_profile, True))
+    for p in st.config.profiles:
+        profiles.append(_serialize_profile(p, False))
+
     html = tmpl.render(
         tiers=None,
         scout_concurrency=st.config.scout_concurrency,
+        profiles=profiles,
+        active_profile=st.config.active_profile,
+        has_runners=any(pr.available for pr in st.probe_results),
     )
     return Response(html, media_type="text/html")
 
@@ -776,6 +787,103 @@ async def api_agents_detect(r: Request) -> Response:
     return JSONResponse({"path": result})
 
 
+# -- Settings fragment endpoints ----------------------------------------------
+
+def _profile_tier_summary(p: dict) -> str:
+    tiers = p.get("tiers") or {}
+    parts = []
+    for t in ("strong", "standard", "cheap"):
+        if t in tiers:
+            parts.append(t + ": " + (tiers[t].get("model") or "?"))
+    return " | ".join(parts)
+
+
+async def api_settings_body(r: Request) -> Response:
+    st = _app_state(r)
+    env = _get_jinja()
+    tmpl = env.get_template("fragments/settings_body.html")
+
+    profiles = []
+    if st.balanced_profile:
+        sp = _serialize_profile(st.balanced_profile, True)
+        sp["tier_summary"] = _profile_tier_summary(sp)
+        profiles.append(sp)
+    for p in st.config.profiles:
+        sp = _serialize_profile(p, False)
+        sp["tier_summary"] = _profile_tier_summary(sp)
+        profiles.append(sp)
+
+    installations = []
+    for inst in st.config.agent_installations:
+        is_active = (st.config.active_installations or {}).get(inst.runner_type) == inst.alias
+        installations.append({
+            "alias": inst.alias,
+            "runner_type": inst.runner_type,
+            "binary": inst.binary,
+            "extra_args": inst.extra_args,
+            "is_active": is_active,
+        })
+
+    html = tmpl.render(profiles=profiles, installations=installations)
+    return Response(html, media_type="text/html")
+
+
+async def api_settings_profile_form(r: Request) -> Response:
+    st = _app_state(r)
+    env = _get_jinja()
+    tmpl = env.get_template("fragments/settings_profile_form.html")
+
+    name = r.query_params.get("name", "")
+    is_edit = r.query_params.get("edit", "0") == "1"
+
+    available_runners = [
+        _serialize_probe_result(pr) for pr in st.probe_results if pr.available
+    ]
+
+    tiers: dict = {}
+    if is_edit and name:
+        for p in st.config.profiles:
+            if p.name == name:
+                sp = _serialize_profile(p, False)
+                tiers = sp.get("tiers", {})
+                break
+
+    html = tmpl.render(
+        name=name, is_edit=is_edit, tiers=tiers,
+        available_runners=available_runners,
+    )
+    return Response(html, media_type="text/html")
+
+
+async def api_settings_installation_form(r: Request) -> Response:
+    st = _app_state(r)
+    env = _get_jinja()
+    tmpl = env.get_template("fragments/settings_installation_form.html")
+
+    alias = r.query_params.get("alias", "")
+    is_edit = r.query_params.get("edit", "0") == "1"
+
+    # Comment 3: use ALL runners, not just available ones
+    all_runners = [_serialize_probe_result(pr) for pr in st.probe_results]
+
+    runner_type = ""
+    binary = ""
+    extra_args = ""
+    if is_edit and alias:
+        for inst in st.config.agent_installations:
+            if inst.alias == alias:
+                runner_type = inst.runner_type
+                binary = inst.binary
+                extra_args = " ".join(inst.extra_args) if inst.extra_args else ""
+                break
+
+    html = tmpl.render(
+        alias=alias, is_edit=is_edit, runner_type=runner_type,
+        binary=binary, extra_args=extra_args, all_runners=all_runners,
+    )
+    return Response(html, media_type="text/html")
+
+
 # -- App factory --------------------------------------------------------------
 
 def _build_mcp(app_state: AppState):
@@ -817,6 +925,9 @@ def create_app(app_state: AppState) -> Starlette:
         Route("/api/agents/{runner_type}/active", api_agents_set_active, methods=["PUT"]),
         Route("/api/agents/{alias}", api_agents_update, methods=["PUT"]),
         Route("/api/agents/{alias}", api_agents_delete, methods=["DELETE"]),
+        Route("/api/settings/body", api_settings_body, methods=["GET"]),
+        Route("/api/settings/profile-form", api_settings_profile_form, methods=["GET"]),
+        Route("/api/settings/installation-form", api_settings_installation_form, methods=["GET"]),
         Mount("/static", app=StaticFiles(directory=str(_STATIC_DIR))),
     ]
 
