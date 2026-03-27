@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -22,6 +23,8 @@ from starlette.responses import StreamingResponse
 
 from ..artifacts import list_artifacts
 from ..epic_state import atomic_write_json
+from ..probe import ProbeResult
+from ..types import AgentInstallation, Profile, ProfileTier
 from .interactions import activate_next_interaction
 
 if TYPE_CHECKING:
@@ -161,6 +164,42 @@ def _build_agents_list(st: AppState) -> list[dict]:
     return result
 
 
+# -- Profile validation -------------------------------------------------------
+
+def _validate_profile_tiers(tiers_raw: dict, probe_results: list[ProbeResult]) -> str | None:
+    by_runner: dict[str, ProbeResult] = {pr.runner_type: pr for pr in probe_results}
+    for tier_name, tier_val in tiers_raw.items():
+        if not isinstance(tier_val, dict):
+            return f"tier '{tier_name}' must be an object"
+
+        rt = tier_val.get("runner_type", "")
+        model = tier_val.get("model", "")
+        thinking = tier_val.get("thinking", "disabled")
+
+        if not isinstance(rt, str) or not rt:
+            return f"tier '{tier_name}' requires a non-empty 'runner_type'"
+        if not isinstance(model, str) or not model:
+            return f"tier '{tier_name}' requires a non-empty 'model'"
+        if not isinstance(thinking, str) or not thinking:
+            return f"tier '{tier_name}' requires a non-empty 'thinking'"
+
+        pr = by_runner.get(rt)
+        if pr is None or not pr.available:
+            return f"runner_type '{rt}' is not available"
+
+        model_aliases = {m.alias for m in pr.models}
+        if model not in model_aliases:
+            return f"model '{model}' not found for runner '{rt}'"
+
+        for m in pr.models:
+            if m.alias == model:
+                if thinking not in m.thinking_modes:
+                    return f"thinking mode '{thinking}' not supported by model '{model}'"
+                break
+
+    return None
+
+
 # -- Route handlers -----------------------------------------------------------
 
 async def landing_page(r: Request) -> Response:
@@ -248,7 +287,34 @@ async def api_start_run(r: Request) -> Response:
             status_code=422,
         )
 
+    profile = body.get("profile", "")
+    if not isinstance(profile, str) or not profile.strip():
+        return JSONResponse(
+            {"error": "validation_error", "message": "profile is required"},
+            status_code=422,
+        )
+
     st = _app_state(r)
+
+    # Block when no runners available
+    if not any(pr.available for pr in st.probe_results):
+        return JSONResponse(
+            {"error": "no_runners",
+             "message": "No available runners. Install and authenticate at least one runner before starting a run."},
+            status_code=422,
+        )
+
+    # Validate profile exists
+    if profile != "balanced" and not any(p.name == profile for p in st.config.profiles):
+        return JSONResponse(
+            {"error": "validation_error", "message": f"profile '{profile}' not found"},
+            status_code=422,
+        )
+
+    # Persist profile selection
+    st.config.active_profile = profile
+    from ..config import save_koan_config
+    await save_koan_config(st.config)
 
     # Apply optional overrides
     scout_concurrency = body.get("scout_concurrency")
@@ -393,27 +459,321 @@ async def api_artifact_content(r: Request) -> Response:
     })
 
 
-async def api_model_config_get(r: Request) -> Response:
+# -- Probe & profile endpoints ------------------------------------------------
+
+def _serialize_model_info(m) -> dict:
+    return {
+        "alias": m.alias,
+        "display_name": m.display_name,
+        "thinking_modes": sorted(m.thinking_modes),
+        "tier_hint": m.tier_hint,
+    }
+
+
+def _serialize_probe_result(pr: ProbeResult) -> dict:
+    return {
+        "runner_type": pr.runner_type,
+        "available": pr.available,
+        "binary_path": pr.binary_path,
+        "version": pr.version,
+        "models": [_serialize_model_info(m) for m in pr.models],
+    }
+
+
+def _serialize_profile(p: Profile, read_only: bool) -> dict:
+    return {
+        "name": p.name,
+        "read_only": read_only,
+        "tiers": {
+            tier_name: {
+                "runner_type": pt.runner_type,
+                "model": pt.model,
+                "thinking": pt.thinking,
+            }
+            for tier_name, pt in p.tiers.items()
+        },
+    }
+
+
+async def api_probe(r: Request) -> Response:
     st = _app_state(r)
-    return JSONResponse({
-        "activeProfile": st.config.active_profile,
-        "scoutConcurrency": st.config.scout_concurrency,
-    })
+    runners = [_serialize_probe_result(pr) for pr in st.probe_results]
+    balanced = _serialize_profile(st.balanced_profile, True) if st.balanced_profile else None
+    return JSONResponse({"runners": runners, "balanced_profile": balanced})
 
 
-async def api_model_config_put(r: Request) -> Response:
+async def api_profiles_list(r: Request) -> Response:
+    st = _app_state(r)
+    profiles = []
+    if st.balanced_profile:
+        profiles.append(_serialize_profile(st.balanced_profile, True))
+    for p in st.config.profiles:
+        profiles.append(_serialize_profile(p, False))
+    return JSONResponse({"profiles": profiles})
+
+
+async def api_profiles_create(r: Request) -> Response:
     body = await r.json()
+    name = body.get("name", "")
+    tiers_raw = body.get("tiers", {})
+
+    if not isinstance(name, str) or not name.strip():
+        return JSONResponse(
+            {"error": "validation_error", "message": "name is required"},
+            status_code=422,
+        )
+    if name == "balanced":
+        return JSONResponse(
+            {"error": "validation_error", "message": "cannot use reserved name 'balanced'"},
+            status_code=422,
+        )
+    if any(p.name == name for p in _app_state(r).config.profiles):
+        return JSONResponse(
+            {"error": "validation_error", "message": f"profile '{name}' already exists"},
+            status_code=422,
+        )
 
     st = _app_state(r)
+    if not isinstance(tiers_raw, dict):
+        return JSONResponse(
+            {"error": "validation_error", "message": "tiers must be an object"},
+            status_code=422,
+        )
+    err = _validate_profile_tiers(tiers_raw, st.probe_results)
+    if err is not None:
+        return JSONResponse(
+            {"error": "validation_error", "message": err},
+            status_code=422,
+        )
 
-    sc = body.get("scout_concurrency")
-    if isinstance(sc, int) and sc > 0:
-        st.config.scout_concurrency = sc
+    tiers = {}
+    for tier_name, tier_val in tiers_raw.items():
+        tiers[tier_name] = ProfileTier(
+                runner_type=tier_val.get("runner_type", ""),
+                model=tier_val.get("model", ""),
+                thinking=tier_val.get("thinking", "disabled"),
+            )
+
+    st.config.profiles.append(Profile(name=name, tiers=tiers))
+    from ..config import save_koan_config
+    await save_koan_config(st.config)
+    return JSONResponse({"ok": True})
+
+
+async def api_profiles_update(r: Request) -> Response:
+    name = r.path_params["name"]
+    if name == "balanced":
+        return JSONResponse(
+            {"error": "read_only", "message": "balanced profile cannot be edited"},
+            status_code=422,
+        )
+
+    st = _app_state(r)
+    target = None
+    for p in st.config.profiles:
+        if p.name == name:
+            target = p
+            break
+    if target is None:
+        return JSONResponse({"error": "not_found", "message": f"profile '{name}' not found"}, status_code=404)
+
+    body = await r.json()
+    tiers_raw = body.get("tiers", {})
+    if not isinstance(tiers_raw, dict):
+        return JSONResponse(
+            {"error": "validation_error", "message": "tiers must be an object"},
+            status_code=422,
+        )
+    err = _validate_profile_tiers(tiers_raw, st.probe_results)
+    if err is not None:
+        return JSONResponse({"error": "validation_error", "message": err}, status_code=422)
+
+    new_tiers = {}
+    for tier_name, tier_val in tiers_raw.items():
+        new_tiers[tier_name] = ProfileTier(
+            runner_type=tier_val.get("runner_type", ""),
+            model=tier_val.get("model", ""),
+            thinking=tier_val.get("thinking", "disabled"),
+        )
+    target.tiers = new_tiers
 
     from ..config import save_koan_config
     await save_koan_config(st.config)
-
     return JSONResponse({"ok": True})
+
+
+async def api_profiles_delete(r: Request) -> Response:
+    name = r.path_params["name"]
+    if name == "balanced":
+        return JSONResponse(
+            {"error": "read_only", "message": "balanced profile cannot be deleted"},
+            status_code=400,
+        )
+
+    st = _app_state(r)
+    idx = None
+    for i, p in enumerate(st.config.profiles):
+        if p.name == name:
+            idx = i
+            break
+    if idx is None:
+        return JSONResponse({"error": "not_found", "message": f"profile '{name}' not found"}, status_code=404)
+
+    st.config.profiles.pop(idx)
+    if st.config.active_profile == name:
+        st.config.active_profile = "balanced"
+
+    from ..config import save_koan_config
+    await save_koan_config(st.config)
+    return JSONResponse({"ok": True})
+
+
+# -- Agent installation endpoints ---------------------------------------------
+
+async def api_agents_list(r: Request) -> Response:
+    st = _app_state(r)
+    installations = [
+        {
+            "alias": inst.alias,
+            "runner_type": inst.runner_type,
+            "binary": inst.binary,
+            "extra_args": inst.extra_args,
+        }
+        for inst in st.config.agent_installations
+    ]
+    return JSONResponse({
+        "installations": installations,
+        "active_installations": st.config.active_installations,
+    })
+
+
+async def api_agents_create(r: Request) -> Response:
+    body = await r.json()
+    alias = body.get("alias", "")
+    runner_type = body.get("runner_type", "")
+    binary = body.get("binary", "")
+    extra_args = body.get("extra_args", [])
+
+    if not isinstance(alias, str) or not alias.strip():
+        return JSONResponse(
+            {"error": "validation_error", "message": "alias is required"},
+            status_code=422,
+        )
+    if not isinstance(runner_type, str) or not runner_type.strip():
+        return JSONResponse(
+            {"error": "validation_error", "message": "runner_type is required"},
+            status_code=422,
+        )
+    if not isinstance(binary, str) or not binary.strip():
+        return JSONResponse(
+            {"error": "validation_error", "message": "binary is required"},
+            status_code=422,
+        )
+
+    st = _app_state(r)
+    if any(inst.alias == alias for inst in st.config.agent_installations):
+        return JSONResponse(
+            {"error": "validation_error", "message": f"alias '{alias}' already exists"},
+            status_code=422,
+        )
+
+    if not isinstance(extra_args, list):
+        extra_args = []
+
+    st.config.agent_installations.append(AgentInstallation(
+        alias=alias, runner_type=runner_type, binary=binary,
+        extra_args=[str(a) for a in extra_args],
+    ))
+    from ..config import save_koan_config
+    await save_koan_config(st.config)
+    return JSONResponse({"ok": True})
+
+
+async def api_agents_update(r: Request) -> Response:
+    alias = r.path_params["alias"]
+    st = _app_state(r)
+    target = None
+    for inst in st.config.agent_installations:
+        if inst.alias == alias:
+            target = inst
+            break
+    if target is None:
+        return JSONResponse({"error": "not_found", "message": f"installation '{alias}' not found"}, status_code=404)
+
+    body = await r.json()
+    if "binary" in body:
+        target.binary = body["binary"]
+    if "runner_type" in body:
+        target.runner_type = body["runner_type"]
+    if "extra_args" in body:
+        ea = body["extra_args"]
+        target.extra_args = [str(a) for a in ea] if isinstance(ea, list) else []
+
+    from ..config import save_koan_config
+    await save_koan_config(st.config)
+    return JSONResponse({"ok": True})
+
+
+async def api_agents_delete(r: Request) -> Response:
+    alias = r.path_params["alias"]
+    st = _app_state(r)
+    idx = None
+    for i, inst in enumerate(st.config.agent_installations):
+        if inst.alias == alias:
+            idx = i
+            break
+    if idx is None:
+        return JSONResponse({"error": "not_found", "message": f"installation '{alias}' not found"}, status_code=404)
+
+    removed = st.config.agent_installations.pop(idx)
+    # Clean up active_installations if this alias was active
+    for rt, active_alias in list(st.config.active_installations.items()):
+        if active_alias == alias:
+            del st.config.active_installations[rt]
+
+    from ..config import save_koan_config
+    await save_koan_config(st.config)
+    return JSONResponse({"ok": True})
+
+
+async def api_agents_set_active(r: Request) -> Response:
+    runner_type = r.path_params["runner_type"]
+    body = await r.json()
+    alias = body.get("alias", "")
+
+    if not isinstance(alias, str) or not alias.strip():
+        return JSONResponse(
+            {"error": "validation_error", "message": "alias is required"},
+            status_code=422,
+        )
+
+    st = _app_state(r)
+    found = any(
+        inst.alias == alias and inst.runner_type == runner_type
+        for inst in st.config.agent_installations
+    )
+    if not found:
+        return JSONResponse(
+            {"error": "validation_error",
+             "message": f"no installation with alias '{alias}' and runner_type '{runner_type}'"},
+            status_code=422,
+        )
+
+    st.config.active_installations[runner_type] = alias
+    from ..config import save_koan_config
+    await save_koan_config(st.config)
+    return JSONResponse({"ok": True})
+
+
+async def api_agents_detect(r: Request) -> Response:
+    runner_type = r.query_params.get("runner_type", "")
+    if not runner_type:
+        return JSONResponse(
+            {"error": "validation_error", "message": "runner_type query parameter is required"},
+            status_code=422,
+        )
+    result = shutil.which(runner_type)
+    return JSONResponse({"path": result})
 
 
 # -- App factory --------------------------------------------------------------
@@ -446,8 +806,17 @@ def create_app(app_state: AppState) -> Starlette:
         Route("/api/workflow-decision", api_workflow_decision, methods=["POST"]),
         Route("/api/artifacts", api_artifacts_list),
         Route("/api/artifacts/{path:path}", api_artifact_content),
-        Route("/api/model-config", api_model_config_get, methods=["GET"]),
-        Route("/api/model-config", api_model_config_put, methods=["PUT"]),
+        Route("/api/probe", api_probe),
+        Route("/api/profiles", api_profiles_list, methods=["GET"]),
+        Route("/api/profiles", api_profiles_create, methods=["POST"]),
+        Route("/api/profiles/{name}", api_profiles_update, methods=["PUT"]),
+        Route("/api/profiles/{name}", api_profiles_delete, methods=["DELETE"]),
+        Route("/api/agents", api_agents_list, methods=["GET"]),
+        Route("/api/agents", api_agents_create, methods=["POST"]),
+        Route("/api/agents/detect", api_agents_detect, methods=["GET"]),
+        Route("/api/agents/{runner_type}/active", api_agents_set_active, methods=["PUT"]),
+        Route("/api/agents/{alias}", api_agents_update, methods=["PUT"]),
+        Route("/api/agents/{alias}", api_agents_delete, methods=["DELETE"]),
         Mount("/static", app=StaticFiles(directory=str(_STATIC_DIR))),
     ]
 

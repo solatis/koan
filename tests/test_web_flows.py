@@ -13,8 +13,30 @@ import pytest
 from starlette.testclient import TestClient
 
 from koan.config import KoanConfig
+from koan.probe import ProbeResult
 from koan.state import AppState
+from koan.types import AgentInstallation, ModelInfo, Profile, ProfileTier
 from koan.web.app import create_app
+
+
+# -- Helpers ------------------------------------------------------------------
+
+def _make_probe_results() -> list[ProbeResult]:
+    return [
+        ProbeResult(
+            runner_type="claude", available=True, binary_path="/usr/bin/claude", version="1.0",
+            models=[
+                ModelInfo(alias="opus", display_name="Opus",
+                         thinking_modes=frozenset({"disabled", "low", "medium", "high", "xhigh"}),
+                         tier_hint="strong"),
+                ModelInfo(alias="sonnet", display_name="Sonnet",
+                         thinking_modes=frozenset({"disabled", "low", "medium", "high", "xhigh"}),
+                         tier_hint="standard"),
+            ],
+        ),
+        ProbeResult(runner_type="codex", available=False),
+        ProbeResult(runner_type="gemini", available=False),
+    ]
 
 
 # -- Fixtures -----------------------------------------------------------------
@@ -47,9 +69,10 @@ def test_landing_page_renders(client, app_state):
 # -- Start run ----------------------------------------------------------------
 
 def test_start_run_sets_event(client, app_state):
+    app_state.probe_results = _make_probe_results()
     resp = client.post(
         "/api/start-run",
-        json={"task": "build something"},
+        json={"task": "build something", "profile": "balanced"},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -61,6 +84,44 @@ def test_start_run_sets_event(client, app_state):
 def test_start_run_requires_task(client, app_state):
     resp = client.post("/api/start-run", json={"task": ""})
     assert resp.status_code == 422
+
+
+def test_start_run_requires_profile(client, app_state):
+    app_state.probe_results = _make_probe_results()
+    resp = client.post("/api/start-run", json={"task": "build something"})
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "validation_error"
+    assert "profile" in resp.json()["message"]
+
+
+def test_start_run_rejects_empty_profile(client, app_state):
+    app_state.probe_results = _make_probe_results()
+    resp = client.post("/api/start-run", json={"task": "build something", "profile": ""})
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "validation_error"
+    assert "profile" in resp.json()["message"]
+
+
+def test_start_run_blocked_no_runners(client, app_state):
+    app_state.probe_results = [
+        ProbeResult(runner_type="claude", available=False),
+        ProbeResult(runner_type="codex", available=False),
+        ProbeResult(runner_type="gemini", available=False),
+    ]
+    resp = client.post("/api/start-run", json={"task": "build something", "profile": "balanced"})
+    assert resp.status_code == 422
+    data = resp.json()
+    assert data["error"] == "no_runners"
+
+
+def test_start_run_persists_profile(client, app_state):
+    app_state.probe_results = _make_probe_results()
+    resp = client.post(
+        "/api/start-run",
+        json={"task": "build something", "profile": "balanced"},
+    )
+    assert resp.status_code == 200
+    assert app_state.config.active_profile == "balanced"
 
 
 # -- Artifacts ----------------------------------------------------------------
@@ -104,26 +165,160 @@ def test_path_traversal_blocked(client, app_state):
         assert resp.status_code in (400, 404)
 
 
-# -- Model config -------------------------------------------------------------
+# -- Probe endpoint -----------------------------------------------------------
 
-def test_model_config_get(client, app_state):
-    resp = client.get("/api/model-config")
+def test_probe_endpoint(client, app_state):
+    app_state.probe_results = _make_probe_results()
+    app_state.balanced_profile = Profile(name="balanced", tiers={
+        "strong": ProfileTier(runner_type="claude", model="opus", thinking="high"),
+    })
+
+    resp = client.get("/api/probe")
     assert resp.status_code == 200
     data = resp.json()
-    assert "activeProfile" in data
-    assert "scoutConcurrency" in data
+    assert "runners" in data
+    assert "balanced_profile" in data
+    assert len(data["runners"]) == 3
+    assert data["runners"][0]["runner_type"] == "claude"
+    assert len(data["runners"][0]["models"]) == 2
 
 
-def test_model_config_put(client, app_state):
-    resp = client.put(
-        "/api/model-config",
-        json={
-            "scout_concurrency": 4,
+# -- Profile endpoints --------------------------------------------------------
+
+def test_profiles_list_includes_balanced(client, app_state):
+    app_state.balanced_profile = Profile(name="balanced", tiers={
+        "strong": ProfileTier(runner_type="claude", model="opus", thinking="high"),
+    })
+
+    resp = client.get("/api/profiles")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert any(p["name"] == "balanced" and p["read_only"] is True for p in data["profiles"])
+
+
+def test_profiles_create_valid(client, app_state):
+    app_state.probe_results = _make_probe_results()
+
+    resp = client.post("/api/profiles", json={
+        "name": "myprofile",
+        "tiers": {
+            "strong": {"runner_type": "claude", "model": "opus", "thinking": "high"},
         },
-    )
+    })
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
-    assert app_state.config.scout_concurrency == 4
+    assert any(p.name == "myprofile" for p in app_state.config.profiles)
+
+
+def test_profiles_create_invalid_runner(client, app_state):
+    app_state.probe_results = _make_probe_results()
+
+    resp = client.post("/api/profiles", json={
+        "name": "bad-runner",
+        "tiers": {
+            "strong": {"runner_type": "codex", "model": "gpt-5", "thinking": "disabled"},
+        },
+    })
+    assert resp.status_code == 422
+    assert "not available" in resp.json()["message"]
+
+
+def test_profiles_create_invalid_model(client, app_state):
+    app_state.probe_results = _make_probe_results()
+
+    resp = client.post("/api/profiles", json={
+        "name": "bad-model",
+        "tiers": {
+            "strong": {"runner_type": "claude", "model": "nonexistent", "thinking": "disabled"},
+        },
+    })
+    assert resp.status_code == 422
+    assert "not found" in resp.json()["message"]
+
+
+def test_profiles_create_invalid_thinking(client, app_state):
+    app_state.probe_results = _make_probe_results()
+
+    resp = client.post("/api/profiles", json={
+        "name": "bad-thinking",
+        "tiers": {
+            "strong": {"runner_type": "claude", "model": "opus", "thinking": "turbo"},
+        },
+    })
+    assert resp.status_code == 422
+    assert "not supported" in resp.json()["message"]
+
+
+def test_profiles_update_balanced_rejected(client, app_state):
+    resp = client.put("/api/profiles/balanced", json={"tiers": {}})
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "read_only"
+
+
+def test_profiles_delete_balanced_rejected(client, app_state):
+    resp = client.delete("/api/profiles/balanced")
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "read_only"
+
+
+def test_profiles_create_non_dict_tiers(client, app_state):
+    app_state.probe_results = _make_probe_results()
+    resp = client.post("/api/profiles", json={
+        "name": "bad-tiers",
+        "tiers": [],
+    })
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "validation_error"
+    assert "object" in resp.json()["message"]
+
+
+def test_profiles_create_non_dict_tier_entry(client, app_state):
+    app_state.probe_results = _make_probe_results()
+    resp = client.post("/api/profiles", json={
+        "name": "bad-entry",
+        "tiers": {"strong": "bad"},
+    })
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "validation_error"
+    assert "must be an object" in resp.json()["message"]
+
+
+def test_profiles_update_non_dict_tiers(client, app_state):
+    app_state.probe_results = _make_probe_results()
+    app_state.config.profiles.append(Profile(name="myprofile", tiers={}))
+    resp = client.put("/api/profiles/myprofile", json={"tiers": "bad"})
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "validation_error"
+    assert "object" in resp.json()["message"]
+
+
+def test_profiles_delete_user_profile(client, app_state):
+    app_state.config.profiles.append(Profile(name="myprofile", tiers={}))
+    resp = client.delete("/api/profiles/myprofile")
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    assert not any(p.name == "myprofile" for p in app_state.config.profiles)
+
+
+# -- Agent detect endpoint ----------------------------------------------------
+
+def test_agents_detect_found(client, app_state):
+    with patch("koan.web.app.shutil.which", return_value="/usr/bin/claude"):
+        resp = client.get("/api/agents/detect?runner_type=claude")
+    assert resp.status_code == 200
+    assert resp.json()["path"] == "/usr/bin/claude"
+
+
+def test_agents_detect_not_found(client, app_state):
+    with patch("koan.web.app.shutil.which", return_value=None):
+        resp = client.get("/api/agents/detect?runner_type=claude")
+    assert resp.status_code == 200
+    assert resp.json()["path"] is None
+
+
+def test_agents_detect_missing_param(client, app_state):
+    resp = client.get("/api/agents/detect")
+    assert resp.status_code == 422
 
 
 # -- SSE replay ---------------------------------------------------------------
@@ -181,3 +376,10 @@ def test_workflow_interaction_sse_payload_shape(app_state):
     assert payload["target"] == "workspace-main-content"
     assert "workflow-option" in payload["html"]
     assert 'data-phase="tech-plan"' in payload["html"]
+
+
+# -- Old model-config route removed ------------------------------------------
+
+def test_model_config_removed(client, app_state):
+    resp = client.get("/api/model-config")
+    assert resp.status_code in (404, 405)

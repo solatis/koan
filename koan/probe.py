@@ -64,7 +64,14 @@ async def _probe_claude() -> ProbeResult:
     if rc_v != 0:
         return ProbeResult(runner_type="claude", available=False, binary_path=binary)
 
-    return ProbeResult(runner_type="claude", available=True, binary_path=binary, version=out_v.strip())
+    models: list[ModelInfo] = []
+    try:
+        from .runners.claude import ClaudeRunner
+        models = ClaudeRunner(subagent_dir="").list_models(binary)
+    except Exception:
+        pass
+
+    return ProbeResult(runner_type="claude", available=True, binary_path=binary, version=out_v.strip(), models=models)
 
 
 async def _probe_codex() -> ProbeResult:
@@ -80,7 +87,14 @@ async def _probe_codex() -> ProbeResult:
     if rc_v != 0:
         return ProbeResult(runner_type="codex", available=False, binary_path=binary)
 
-    return ProbeResult(runner_type="codex", available=True, binary_path=binary, version=out_v.strip())
+    models: list[ModelInfo] = []
+    try:
+        from .runners.codex import CodexRunner
+        models = CodexRunner().list_models(binary)
+    except Exception:
+        pass
+
+    return ProbeResult(runner_type="codex", available=True, binary_path=binary, version=out_v.strip(), models=models)
 
 
 async def _probe_gemini() -> ProbeResult:
@@ -91,11 +105,21 @@ async def _probe_gemini() -> ProbeResult:
     rc, out = await _run_cmd(["gemini", "--version"])
     version = out.strip() if rc == 0 else None
 
+    available = rc == 0
+    models: list[ModelInfo] = []
+    if available:
+        try:
+            from .runners.gemini import GeminiRunner
+            models = GeminiRunner(subagent_dir="").list_models(binary)
+        except Exception:
+            pass
+
     return ProbeResult(
         runner_type="gemini",
-        available=(rc == 0),
+        available=available,
         binary_path=binary,
         version=version,
+        models=models,
     )
 
 
