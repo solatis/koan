@@ -22,14 +22,14 @@ class GeminiRunner:
     def list_models(self, binary: str) -> list[ModelInfo]:
         return [
             ModelInfo(
-                alias="gemini-pro",
-                tier_hint="strong",
+                alias="gemini-pro", display_name="Gemini Pro",
                 thinking_modes=frozenset({"disabled", "low", "medium", "high"}),
+                tier_hint="strong",
             ),
             ModelInfo(
-                alias="gemini-flash",
-                tier_hint="cheap",
+                alias="gemini-flash", display_name="Gemini Flash",
                 thinking_modes=frozenset({"disabled", "low"}),
+                tier_hint="cheap",
             ),
         ]
 

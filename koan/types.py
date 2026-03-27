@@ -53,7 +53,7 @@ ThinkingMode = Literal["disabled", "low", "medium", "high", "xhigh"]
 class ModelInfo:
     alias: str
     display_name: str
-    thinking_modes: list[ThinkingMode]
+    thinking_modes: frozenset[ThinkingMode]
     tier_hint: ModelTier | None
 
 

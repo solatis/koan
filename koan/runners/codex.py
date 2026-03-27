@@ -16,14 +16,14 @@ class CodexRunner:
     def list_models(self, binary: str) -> list[ModelInfo]:
         return [
             ModelInfo(
-                alias="gpt-5",
-                tier_hint="strong",
+                alias="gpt-5", display_name="GPT-5",
                 thinking_modes=frozenset({"disabled"}),
+                tier_hint="strong",
             ),
             ModelInfo(
-                alias="gpt-5-mini",
-                tier_hint="cheap",
+                alias="gpt-5-mini", display_name="GPT-5 Mini",
                 thinking_modes=frozenset({"disabled"}),
+                tier_hint="cheap",
             ),
         ]
 

@@ -110,7 +110,7 @@ def test_model_config_get(client, app_state):
     resp = client.get("/api/model-config")
     assert resp.status_code == 200
     data = resp.json()
-    assert "tiers" in data
+    assert "activeProfile" in data
     assert "scoutConcurrency" in data
 
 
@@ -118,13 +118,11 @@ def test_model_config_put(client, app_state):
     resp = client.put(
         "/api/model-config",
         json={
-            "model_tiers": {"strong": "opus", "standard": "sonnet", "cheap": "haiku"},
             "scout_concurrency": 4,
         },
     )
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
-    assert app_state.config.model_tiers.strong == "opus"
     assert app_state.config.scout_concurrency == 4
 
 

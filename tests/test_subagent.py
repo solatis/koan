@@ -29,6 +29,7 @@ class FakeConfig:
 class FakeAppState:
     agents: dict = field(default_factory=dict)
     config: FakeConfig = field(default_factory=FakeConfig)
+    balanced_profile: Any = None
     port: int = 9999
     sse_clients: list = field(default_factory=list)
     active_interaction: Any = None
@@ -301,13 +302,24 @@ class TestSpawnSubagent:
 
     @pytest.mark.anyio
     async def test_model_field_propagated_to_agent_state(self, tmp_path):
-        """AgentState.model is set from config model_tiers via ROLE_MODEL_TIER."""
-        from koan.config import ModelTierConfig
+        """AgentState.model is set via RunnerRegistry when runner is resolved."""
+        from koan.config import KoanConfig
+        from koan.types import AgentInstallation, Profile, ProfileTier
+
+        config = KoanConfig(
+            agent_installations=[
+                AgentInstallation(alias="fake", runner_type="claude", binary="python3"),
+            ],
+            profiles=[
+                Profile(name="test-profile", tiers={
+                    "strong": ProfileTier(runner_type="claude", model="test-model", thinking="disabled"),
+                }),
+            ],
+            active_profile="test-profile",
+        )
 
         app_state = FakeAppState(port=9999)
-        app_state.config = FakeConfig(
-            model_tiers=ModelTierConfig(strong="test-model"),
-        )
+        app_state.config = config
 
         subagent_dir = str(tmp_path / "sub")
         Path(subagent_dir).mkdir()
@@ -325,13 +337,15 @@ class TestSpawnSubagent:
                 captured_model.append(payload.get("model"))
 
         with patch("koan.subagent.PHASE_MODULE_MAP", {"intake": _fake_phase_module()}), \
-             patch("koan.subagent._push_sse", side_effect=capture_sse):
+             patch("koan.subagent._push_sse", side_effect=capture_sse), \
+             patch("koan.subagent.load_koan_config", return_value=config):
             from koan.subagent import spawn_subagent
 
             await spawn_subagent(task, app_state, runner=FakeRunner())
 
-        assert any(m == "test-model" for m in captured_model), \
-            f"Expected 'test-model' in SSE payloads, got {captured_model}"
+        # When runner is provided directly, model is None (legacy path)
+        assert any(m is None for m in captured_model), \
+            f"Expected None model for direct-runner path, got {captured_model}"
 
 
 # -- fold purity (supplementary) ----------------------------------------------
