@@ -70,12 +70,28 @@ def _get_agent() -> AgentState:
     return agent
 
 
+def _log_tool_call(agent: AgentState, tool_name: str, summary: str = "") -> None:
+    """Push a tool-call log entry to SSE so the activity feed shows MCP calls."""
+    if _app_state is None:
+        return
+    from ..driver import push_sse
+    push_sse(_app_state, "logs", {
+        "line": {
+            "tool": tool_name,
+            "summary": summary,
+            "inFlight": True,
+        },
+        "agent_id": agent.agent_id,
+    })
+
+
 # -- Tool implementations -----------------------------------------------------
 
 @mcp.tool(name="koan_complete_step")
 async def koan_complete_step(thoughts: str = "") -> str:
     agent = _get_agent()
     _check_or_raise(agent, "koan_complete_step", {"thoughts": thoughts})
+    _log_tool_call(agent, "koan_complete_step", f"step {agent.step} → next")
 
     # Mark handshake observed (decoupled from stream parsing)
     agent.handshake_observed = True
@@ -125,6 +141,7 @@ async def koan_complete_step(thoughts: str = "") -> str:
 async def koan_set_confidence(level: str = "") -> str:
     agent = _get_agent()
     _check_or_raise(agent, "koan_set_confidence", {"level": level})
+    _log_tool_call(agent, "koan_set_confidence", level)
 
     valid_levels = {"high", "medium", "low"}
     if level not in valid_levels:
@@ -140,6 +157,7 @@ async def koan_set_confidence(level: str = "") -> str:
 async def koan_request_scouts(questions: list[dict] | None = None) -> str:
     agent = _get_agent()
     _check_or_raise(agent, "koan_request_scouts", {"questions": questions})
+    _log_tool_call(agent, "koan_request_scouts", f"{len(questions or [])} scouts")
 
     if not questions:
         return "No scouts requested."
@@ -201,6 +219,7 @@ async def koan_request_scouts(questions: list[dict] | None = None) -> str:
 async def koan_ask_question(questions: list[dict] | None = None) -> str:
     agent = _get_agent()
     _check_or_raise(agent, "koan_ask_question", {"questions": questions})
+    _log_tool_call(agent, "koan_ask_question", f"{len(questions or [])} questions")
     assert _app_state is not None, "app_state not initialized"
 
     future = await enqueue_interaction(agent, _app_state, "ask", {"questions": questions or []})
@@ -223,6 +242,7 @@ async def koan_ask_question(questions: list[dict] | None = None) -> str:
 async def koan_review_artifact(path: str = "", description: str = "") -> str:
     agent = _get_agent()
     _check_or_raise(agent, "koan_review_artifact", {"path": path, "description": description})
+    _log_tool_call(agent, "koan_review_artifact", description or path)
     assert _app_state is not None, "app_state not initialized"
 
     try:
@@ -250,10 +270,19 @@ async def koan_review_artifact(path: str = "", description: str = "") -> str:
 
 
 @mcp.tool(name="koan_propose_workflow")
-async def koan_propose_workflow(status: str = "", phases: list[dict] | None = None) -> str:
+async def koan_propose_workflow(status: str = "", phases: list | None = None) -> str:
     agent = _get_agent()
     _check_or_raise(agent, "koan_propose_workflow", {"status": status, "phases": phases})
+    _log_tool_call(agent, "koan_propose_workflow", "proposing phases")
     assert _app_state is not None, "app_state not initialized"
+
+    # Normalise phases: accept both list[str] and list[dict].
+    normalised: list[dict] = []
+    for p in (phases or []):
+        if isinstance(p, str):
+            normalised.append({"phase": p, "context": "", "recommended": False})
+        elif isinstance(p, dict):
+            normalised.append(p)
 
     # Build chat_turns with status_report + recommended_phases to match
     # the interaction_workflow.html template contract.
@@ -266,7 +295,7 @@ async def koan_propose_workflow(status: str = "", phases: list[dict] | None = No
                 "context": p.get("context", p.get("description", "")),
                 "recommended": p.get("recommended", False),
             }
-            for p in (phases or [])
+            for p in normalised
         ],
     }]
     future = await enqueue_interaction(
@@ -289,6 +318,7 @@ async def koan_propose_workflow(status: str = "", phases: list[dict] | None = No
 async def koan_set_next_phase(phase: str = "", instructions: str = "") -> str:
     agent = _get_agent()
     _check_or_raise(agent, "koan_set_next_phase", {"phase": phase, "instructions": instructions})
+    _log_tool_call(agent, "koan_set_next_phase", phase)
 
     from_phase = getattr(agent.phase_ctx, "completed_phase", None)
     if not is_valid_transition(from_phase, phase):
