@@ -1,6 +1,6 @@
 # Starlette app factory and route handlers.
 # Interaction endpoints resolve PendingInteraction futures from the queue.
-# SSE stream pushes pre-rendered HTML fragments for low-frequency events.
+# SSE stream pushes JSON payloads for all events (no HTML/Jinja2 rendering).
 
 from __future__ import annotations
 
@@ -13,10 +13,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from jinja2 import Environment, FileSystemLoader
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.responses import StreamingResponse
@@ -32,29 +31,18 @@ if TYPE_CHECKING:
 
 NOT_IMPL = Response("Not Implemented", status_code=501)
 
-_TEMPLATE_DIR = Path(__file__).parent / "templates"
 _STATIC_DIR = Path(__file__).parent / "static"
+
+# Vite build output directory. Populated by `cd frontend && npm run build`.
+# Route mounting is conditional on this directory existing so tests pass
+# without a build step.
+FRONTEND_DIST = Path(__file__).parent / "static" / "app"
 
 ALL_PHASES = [
     "intake", "brief-generation", "core-flows", "tech-plan",
     "ticket-breakdown", "cross-artifact-validation",
     "execution", "implementation-validation",
 ]
-
-
-# -- Jinja2 environment (module-level singleton) ----------------------------
-
-_jinja_env: Environment | None = None
-
-
-def _get_jinja() -> Environment:
-    global _jinja_env
-    if _jinja_env is None:
-        _jinja_env = Environment(
-            loader=FileSystemLoader(str(_TEMPLATE_DIR)),
-            autoescape=True,
-        )
-    return _jinja_env
 
 
 # -- Helpers ------------------------------------------------------------------
@@ -67,101 +55,12 @@ def _stale_response(msg: str = "Interaction no longer active") -> JSONResponse:
     return JSONResponse({"error": "stale_interaction", "message": msg}, status_code=409)
 
 
-def _done_phases(current: str) -> list[str]:
-    """Return list of phases that are done (before current in the ordered list)."""
-    result = []
-    for p in ALL_PHASES:
-        if p == current:
-            break
-        result.append(p)
-    return result
-
-
 def _format_size(bytes_val: int) -> str:
     if bytes_val < 1024:
         return f"{bytes_val} B"
     if bytes_val < 1024 * 1024:
         return f"{bytes_val // 1024} KB"
     return f"{bytes_val / (1024 * 1024):.1f} MB"
-
-
-def _format_elapsed_ms(ms: int) -> str:
-    s = ms // 1000
-    m = s // 60
-    s = s % 60
-    return f"{m}m {s:02d}s"
-
-
-def _format_tokens(sent: int, recv: int) -> str:
-    def _fmt(n: int) -> str:
-        if not n:
-            return "--"
-        if n < 1000:
-            return str(n)
-        return f"{n // 1000}k"
-    return f"{_fmt(sent)} / {_fmt(recv)}"
-
-
-def _build_artifact_tree(artifacts: list[dict]) -> dict:
-    """Group artifacts by their directory for tree rendering."""
-    tree: dict[str, list] = {}
-    for a in artifacts:
-        p = Path(a["path"])
-        folder = str(p.parent) if str(p.parent) != "." else "epic-root"
-        name = p.name
-        if folder not in tree:
-            tree[folder] = []
-        tree[folder].append({
-            "path": a["path"],
-            "name": name,
-            "formatted_size": _format_size(a["size"]),
-            "modified_display": time.strftime(
-                "%H:%M:%S", time.localtime(a["modified_at"])
-            ),
-        })
-    return tree
-
-
-def _build_subagent_display(st: AppState) -> dict | None:
-    """Build subagent display dict from the first active agent."""
-    for agent in st.agents.values():
-        elapsed_ms = int((time.time() - agent.started_at.timestamp()) * 1000)
-        return {
-            "role": agent.role,
-            "model": agent.model or "--",
-            "step": agent.step,
-            "step_name": (
-                agent.phase_module.STEP_NAMES.get(agent.step, f"step {agent.step}")
-                if agent.phase_module and hasattr(agent.phase_module, "STEP_NAMES")
-                else f"step {agent.step}"
-            ),
-            "tokens_display": _format_tokens(
-                agent.token_count.get("sent", 0),
-                agent.token_count.get("received", 0),
-            ),
-            "elapsed": _format_elapsed_ms(elapsed_ms),
-            "started_at_ms": int(agent.started_at.timestamp() * 1000),
-        }
-    return None
-
-
-def _build_agents_list(st: AppState) -> list[dict]:
-    """Build agent list for the monitor table."""
-    result = []
-    for agent in st.agents.values():
-        elapsed_ms = int((time.time() - agent.started_at.timestamp()) * 1000)
-        result.append({
-            "role": agent.role,
-            "model": agent.model or "--",
-            "status": "running",
-            "tokens_display": _format_tokens(
-                agent.token_count.get("sent", 0),
-                agent.token_count.get("received", 0),
-            ),
-            "elapsed": _format_elapsed_ms(elapsed_ms),
-            "doing": f"step {agent.step}",
-        })
-    return result
 
 
 # -- Profile validation -------------------------------------------------------
@@ -202,59 +101,20 @@ def _validate_profile_tiers(tiers_raw: dict, probe_results: list[ProbeResult]) -
 
 # -- Route handlers -----------------------------------------------------------
 
-async def landing_page(r: Request) -> Response:
-    st = _app_state(r)
-
-    # If run already started, render live view
-    if st.start_event.is_set():
-        return _render_live(st)
-
-    env = _get_jinja()
-    tmpl = env.get_template("landing.html")
-
-    # Build profiles list (balanced first, then user profiles)
-    profiles = []
-    if st.balanced_profile:
-        profiles.append(_serialize_profile(st.balanced_profile, True))
-    for p in st.config.profiles:
-        profiles.append(_serialize_profile(p, False))
-
-    html = tmpl.render(
-        tiers=None,
-        scout_concurrency=st.config.scout_concurrency,
-        profiles=profiles,
-        active_profile=st.config.active_profile,
-        has_runners=any(pr.available for pr in st.probe_results),
+async def spa_fallback(request: Request) -> Response:
+    # Return the built React app entry point for any path not matched above.
+    # React reads store state (runStarted) to decide which view to render.
+    # Note: Starlette's /{path:path} does match the empty path /, so this
+    # correctly handles both / and all sub-paths as the SPA fallback.
+    index_html = FRONTEND_DIST / "index.html"
+    if index_html.is_file():
+        return FileResponse(str(index_html))
+    # Return a minimal placeholder when the frontend hasn't been built yet.
+    # This keeps tests passing without requiring a prior `npm run build`.
+    return Response(
+        '<!doctype html><html><body><div id="root"></div></body></html>',
+        media_type="text/html",
     )
-    return Response(html, media_type="text/html")
-
-
-def _render_live(st: AppState) -> Response:
-    env = _get_jinja()
-    tmpl = env.get_template("live.html")
-
-    current_phase = st.phase or "intake"
-
-    artifacts = []
-    if st.epic_dir:
-        try:
-            artifacts = list_artifacts(st.epic_dir)
-        except Exception:
-            pass
-
-    html = tmpl.render(
-        phases=ALL_PHASES,
-        current_phase=current_phase,
-        done_phases=_done_phases(current_phase),
-        subagent=_build_subagent_display(st),
-        phase_status={"phase": current_phase},
-        agents=_build_agents_list(st),
-        artifacts=artifacts,
-        artifact_tree=_build_artifact_tree(artifacts),
-        tiers=None,
-        scout_concurrency=st.config.scout_concurrency,
-    )
-    return Response(html, media_type="text/html")
 
 
 async def sse_stream(r: Request) -> Response:
@@ -343,6 +203,13 @@ async def api_start_run(r: Request) -> Response:
         epic_dir / "task.json",
         {"task": task, "created_at": time.time()},
     )
+
+    # Write conversation.jsonl so the intake phase can read it
+    import aiofiles as _aiofiles
+    conv_line = json.dumps({"type": "message", "role": "user", "content": task})
+    conv_path = epic_dir / "conversation.jsonl"
+    async with _aiofiles.open(conv_path, "w") as _f:
+        await _f.write(conv_line + "\n")
 
     st.epic_dir = str(epic_dir)
     st.start_event.set()
@@ -512,6 +379,22 @@ async def _refresh_probe_state(st: AppState) -> None:
 
     st.probe_results = await probe_all_runners()
     st.balanced_profile = compute_balanced_profile(st.probe_results)
+
+    # Auto-create default installations for detected runners that lack one
+    existing_types = {inst.runner_type for inst in st.config.agent_installations}
+    changed = False
+    for pr in st.probe_results:
+        if pr.available and pr.binary_path and pr.runner_type not in existing_types:
+            st.config.agent_installations.append(AgentInstallation(
+                alias=f"{pr.runner_type}-default",
+                runner_type=pr.runner_type,
+                binary=pr.binary_path,
+                extra_args=[],
+            ))
+            changed = True
+    if changed:
+        from ..config import save_koan_config
+        await save_koan_config(st.config)
 
 
 async def api_probe(r: Request) -> Response:
@@ -746,7 +629,7 @@ async def api_agents_delete(r: Request) -> Response:
     if idx is None:
         return JSONResponse({"error": "not_found", "message": f"installation '{alias}' not found"}, status_code=404)
 
-    removed = st.config.agent_installations.pop(idx)
+    st.config.agent_installations.pop(idx)
     # Clean up active_installations if this alias was active
     for rt, active_alias in list(st.config.active_installations.items()):
         if active_alias == alias:
@@ -797,31 +680,16 @@ async def api_agents_detect(r: Request) -> Response:
     return JSONResponse({"path": result})
 
 
-# -- Settings fragment endpoints ----------------------------------------------
-
-def _profile_tier_summary(p: dict) -> str:
-    tiers = p.get("tiers") or {}
-    parts = []
-    for t in ("strong", "standard", "cheap"):
-        if t in tiers:
-            parts.append(t + ": " + (tiers[t].get("model") or "?"))
-    return " | ".join(parts)
-
+# -- Settings JSON endpoints --------------------------------------------------
 
 async def api_settings_body(r: Request) -> Response:
     st = _app_state(r)
-    env = _get_jinja()
-    tmpl = env.get_template("fragments/settings_body.html")
 
     profiles = []
     if st.balanced_profile:
-        sp = _serialize_profile(st.balanced_profile, True)
-        sp["tier_summary"] = _profile_tier_summary(sp)
-        profiles.append(sp)
+        profiles.append(_serialize_profile(st.balanced_profile, True))
     for p in st.config.profiles:
-        sp = _serialize_profile(p, False)
-        sp["tier_summary"] = _profile_tier_summary(sp)
-        profiles.append(sp)
+        profiles.append(_serialize_profile(p, False))
 
     installations = []
     for inst in st.config.agent_installations:
@@ -834,14 +702,16 @@ async def api_settings_body(r: Request) -> Response:
             "is_active": is_active,
         })
 
-    html = tmpl.render(profiles=profiles, installations=installations)
-    return Response(html, media_type="text/html")
+    return JSONResponse({
+        "profiles": profiles,
+        "installations": installations,
+        "activeInstallations": st.config.active_installations or {},
+        "scoutConcurrency": st.config.scout_concurrency,
+    })
 
 
 async def api_settings_profile_form(r: Request) -> Response:
     st = _app_state(r)
-    env = _get_jinja()
-    tmpl = env.get_template("fragments/settings_profile_form.html")
 
     name = r.query_params.get("name", "")
     is_edit = r.query_params.get("edit", "0") == "1"
@@ -858,62 +728,99 @@ async def api_settings_profile_form(r: Request) -> Response:
                 tiers = sp.get("tiers", {})
                 break
 
-    html = tmpl.render(
-        name=name, is_edit=is_edit, tiers=tiers,
-        available_runners=available_runners,
-    )
-    return Response(html, media_type="text/html")
+    return JSONResponse({
+        "name": name,
+        "tiers": tiers,
+        "availableRunners": available_runners,
+        "isEdit": is_edit,
+    })
 
 
 async def api_settings_installation_form(r: Request) -> Response:
     st = _app_state(r)
-    env = _get_jinja()
-    tmpl = env.get_template("fragments/settings_installation_form.html")
 
     alias = r.query_params.get("alias", "")
     is_edit = r.query_params.get("edit", "0") == "1"
 
-    # Comment 3: use ALL runners, not just available ones
+    # Use ALL runners, not just available ones
     all_runners = [_serialize_probe_result(pr) for pr in st.probe_results]
 
     runner_type = ""
     binary = ""
-    extra_args = ""
+    extra_args: list = []
     if is_edit and alias:
         for inst in st.config.agent_installations:
             if inst.alias == alias:
                 runner_type = inst.runner_type
                 binary = inst.binary
-                extra_args = " ".join(inst.extra_args) if inst.extra_args else ""
+                extra_args = inst.extra_args
                 break
 
-    html = tmpl.render(
-        alias=alias, is_edit=is_edit, runner_type=runner_type,
-        binary=binary, extra_args=extra_args, all_runners=all_runners,
-    )
-    return Response(html, media_type="text/html")
+    return JSONResponse({
+        "alias": alias,
+        "runnerType": runner_type,
+        "binary": binary,
+        "extraArgs": extra_args,
+        "allRunners": all_runners,
+        "isEdit": is_edit,
+    })
+
+
+async def api_settings_scout_concurrency(r: Request) -> Response:
+    body = await r.json()
+    value = body.get("scout_concurrency")
+    if not isinstance(value, int) or value < 1 or value > 32:
+        return JSONResponse(
+            {"error": "validation_error", "message": "scout_concurrency must be an integer between 1 and 32"},
+            status_code=422,
+        )
+    st = _app_state(r)
+    st.config.scout_concurrency = value
+    from ..config import save_koan_config
+    await save_koan_config(st.config)
+    return JSONResponse({"ok": True})
 
 
 # -- App factory --------------------------------------------------------------
 
 def _build_mcp(app_state: AppState):
     from .mcp_endpoint import build_mcp_asgi_app
-    return build_mcp_asgi_app(app_state)
+    wrapper, inner = build_mcp_asgi_app(app_state)
+    # Stash the inner StarletteWithLifespan so the parent lifespan can
+    # enter it (StreamableHTTPSessionManager needs its task-group running).
+    wrapper._mcp_inner = inner  # type: ignore[attr-defined]
+    return wrapper
 
 
 def create_app(app_state: AppState) -> Starlette:
+    # Build the MCP sub-app early so we can wire its lifespan.
+    mcp_app = _build_mcp(app_state)
+
     @asynccontextmanager
     async def lifespan(app):
         from ..driver import driver_main
         await _refresh_probe_state(app_state)
 
         asyncio.create_task(driver_main(app_state))
-        yield
+
+        # Open browser once after server is listening
+        if app_state.open_browser:
+            app_state.open_browser = False  # one-shot guard
+
+            async def _open_browser():
+                await asyncio.sleep(0.3)  # let uvicorn bind the socket
+                import webbrowser
+                await asyncio.to_thread(webbrowser.open, f"http://127.0.0.1:{app_state.port}")
+
+            asyncio.create_task(_open_browser())
+
+        # Enter the fastmcp app's lifespan so the
+        # StreamableHTTPSessionManager task-group is running.
+        async with mcp_app._mcp_inner.lifespan(app):  # type: ignore[attr-defined]
+            yield
 
     routes = [
-        Route("/", landing_page),
-        Route("/events", sse_stream),
-        Mount("/mcp", app=_build_mcp(app_state)),
+        Mount("/mcp", app=mcp_app),
         Route("/api/start-run", api_start_run, methods=["POST"]),
         Route("/api/answer", api_answer, methods=["POST"]),
         Route("/api/artifact-review", api_artifact_review, methods=["POST"]),
@@ -932,10 +839,27 @@ def create_app(app_state: AppState) -> Starlette:
         Route("/api/agents/{alias}", api_agents_update, methods=["PUT"]),
         Route("/api/agents/{alias}", api_agents_delete, methods=["DELETE"]),
         Route("/api/settings/body", api_settings_body, methods=["GET"]),
+        Route("/api/settings/scout-concurrency", api_settings_scout_concurrency, methods=["PUT"]),
         Route("/api/settings/profile-form", api_settings_profile_form, methods=["GET"]),
         Route("/api/settings/installation-form", api_settings_installation_form, methods=["GET"]),
-        Mount("/static", app=StaticFiles(directory=str(_STATIC_DIR))),
+        Route("/events", sse_stream),
     ]
+
+    # Mount the built React app if available. Conditional to allow tests to
+    # run without a prior `npm run build`.
+    if FRONTEND_DIST.exists() and FRONTEND_DIST.is_dir():
+        routes.append(
+            Mount("/static/app", app=StaticFiles(directory=str(FRONTEND_DIST), html=False))
+        )
+
+    # Legacy static files (remaining assets in koan/web/static/ outside app/)
+    if _STATIC_DIR.exists():
+        routes.append(Mount("/static", app=StaticFiles(directory=str(_STATIC_DIR))))
+
+    # SPA fallback must be LAST — catches all paths not matched above.
+    # Starlette's /{path:path} matches the empty path / as well, so both
+    # the root URL and any deep link resolve to the React app's index.html.
+    routes.append(Route("/{path:path}", spa_fallback))
 
     app = Starlette(routes=routes, lifespan=lifespan)
     app.state.app_state = app_state

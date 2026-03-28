@@ -337,8 +337,7 @@ class TestSpawnSubagent:
                 captured_model.append(payload.get("model"))
 
         with patch("koan.subagent.PHASE_MODULE_MAP", {"intake": _fake_phase_module()}), \
-             patch("koan.subagent._push_sse", side_effect=capture_sse), \
-             patch("koan.subagent.load_koan_config", return_value=config):
+             patch("koan.subagent._push_sse", side_effect=capture_sse):
             from koan.subagent import spawn_subagent
 
             await spawn_subagent(task, app_state, runner=FakeRunner())
@@ -642,6 +641,7 @@ class TestBinaryNotFoundSpawn:
         )
 
         app_state = FakeAppState(port=9999)
+        app_state.config = config
         subagent_dir = str(tmp_path / "sub")
         Path(subagent_dir).mkdir()
 
@@ -658,8 +658,7 @@ class TestBinaryNotFoundSpawn:
                 sse_payloads.append(payload)
 
         with patch("koan.subagent.PHASE_MODULE_MAP", {"intake": _fake_phase_module()}), \
-             patch("koan.subagent._push_sse", side_effect=capture_sse), \
-             patch("koan.subagent.load_koan_config", return_value=config):
+             patch("koan.subagent._push_sse", side_effect=capture_sse):
             from koan.subagent import spawn_subagent
 
             exit_code = await spawn_subagent(task, app_state)

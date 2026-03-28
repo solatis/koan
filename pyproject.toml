@@ -6,7 +6,6 @@ dependencies = [
     "starlette",
     "uvicorn[standard]",
     "fastmcp",
-    "jinja2",
     "aiofiles",
 ]
 
