@@ -104,6 +104,8 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
 # -- Lifecycle -----------------------------------------------------------------
 
 def get_next_step(step: int, ctx: PhaseContext) -> int | None:
+    if step == 0:
+        return 1
     if step == 1:
         return 2
     if step == 2:
