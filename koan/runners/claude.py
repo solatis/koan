@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 from ..types import AgentInstallation, ModelInfo, ThinkingMode
-from .base import RunnerDiagnostic, RunnerError, StreamEvent
+from .base import KOAN_MCP_TOOLS, RunnerDiagnostic, RunnerError, StreamEvent
 
 THINKING_BUDGET: dict[ThinkingMode, int] = {
     "low": 1024,
@@ -15,6 +15,28 @@ THINKING_BUDGET: dict[ThinkingMode, int] = {
     "high": 16000,
     "xhigh": 32000,
 }
+
+# Canonical tool name mappings for Claude's tool vocabulary.
+_TOOL_NAME_MAP: dict[str, str] = {
+    "Read": "read",
+    "Write": "write",
+    "Edit": "edit",
+    "MultiEdit": "edit",
+    "Bash": "bash",
+    "Glob": "grep",
+    "Grep": "grep",
+    "LS": "ls",
+    "TodoRead": "todo_read",
+    "TodoWrite": "todo_write",
+    "WebFetch": "web_fetch",
+    "WebSearch": "web_search",
+}
+
+
+def _normalize_tool_name(name: str | None) -> str | None:
+    if name is None:
+        return None
+    return _TOOL_NAME_MAP.get(name, name.lower())
 
 
 class ClaudeRunner:
@@ -118,13 +140,25 @@ class ClaudeRunner:
             if block_type == "text":
                 events.append(StreamEvent(type="token_delta", content=block.get("text", "")))
             elif block_type == "tool_use":
+                raw_name = block.get("name")
+                canonical = _normalize_tool_name(raw_name)
+                # Drop koan MCP tool events -- the MCP endpoint is authoritative
+                if canonical in KOAN_MCP_TOOLS:
+                    continue
                 events.append(StreamEvent(
                     type="tool_call",
-                    tool_name=block.get("name"),
+                    tool_name=canonical,
                     tool_args=block.get("input"),
                 ))
             elif block_type == "thinking":
-                events.append(StreamEvent(type="thinking", is_thinking=True))
+                # Claude stream-json thinking blocks use the "thinking" key for content,
+                # not "text" (which is used by text blocks). Fall back to "text" as a
+                # safety net for format variations.
+                events.append(StreamEvent(
+                    type="thinking",
+                    is_thinking=True,
+                    content=block.get("thinking") or block.get("text"),
+                ))
         return events
 
     def _parse_result(self, data: dict) -> StreamEvent | None:

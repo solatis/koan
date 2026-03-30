@@ -6,7 +6,22 @@ from __future__ import annotations
 import json
 
 from ..types import AgentInstallation, ModelInfo, ThinkingMode
-from .base import RunnerDiagnostic, RunnerError, StreamEvent
+from .base import KOAN_MCP_TOOLS, RunnerDiagnostic, RunnerError, StreamEvent
+
+# Canonical tool name mappings for Codex's tool vocabulary.
+_TOOL_NAME_MAP: dict[str, str] = {
+    "read_file": "read",
+    "write_file": "write",
+    "apply_patch": "edit",
+    "shell": "bash",
+    "search_files": "grep",
+}
+
+
+def _normalize_tool_name(name: str | None) -> str | None:
+    if name is None:
+        return None
+    return _TOOL_NAME_MAP.get(name, name.lower())
 
 
 class CodexRunner:
@@ -66,8 +81,6 @@ class CodexRunner:
         if evt_type == "turn.started":
             return [StreamEvent(type="thinking", is_thinking=True)]
         if evt_type == "turn.completed":
-            usage = data.get("usage") or {}
-            # Emit token counts when available
             content = data.get("answer")
             return [StreamEvent(type="turn_complete", is_thinking=True, content=content)]
         if evt_type == "turn.failed":
@@ -82,9 +95,13 @@ class CodexRunner:
                 if text:
                     return [StreamEvent(type="token_delta", content=text)]
             elif item_type == "function_call":
+                raw_name = item.get("name") or item.get("call_id", "tool")
+                canonical = _normalize_tool_name(raw_name)
+                if canonical in KOAN_MCP_TOOLS:
+                    return []
                 return [StreamEvent(
                     type="tool_call",
-                    tool_name=item.get("name") or item.get("call_id", "tool"),
+                    tool_name=canonical,
                     content=item.get("arguments", ""),
                 )]
             elif item_type == "function_call_output":

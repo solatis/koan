@@ -7,7 +7,23 @@ import json
 from pathlib import Path
 
 from ..types import AgentInstallation, ModelInfo, ThinkingMode
-from .base import RunnerDiagnostic, RunnerError, StreamEvent
+from .base import KOAN_MCP_TOOLS, RunnerDiagnostic, RunnerError, StreamEvent
+
+# Canonical tool name mappings for Gemini's tool vocabulary.
+_TOOL_NAME_MAP: dict[str, str] = {
+    "read_file": "read",
+    "write_file": "write",
+    "replace_file_content": "edit",
+    "run_bash_command": "bash",
+    "search_in_file": "grep",
+    "list_directory": "ls",
+}
+
+
+def _normalize_tool_name(name: str | None) -> str | None:
+    if name is None:
+        return None
+    return _TOOL_NAME_MAP.get(name, name.lower())
 
 
 class GeminiRunner:
@@ -77,9 +93,13 @@ class GeminiRunner:
         if evt_type == "message":
             return [StreamEvent(type="token_delta", content=data.get("content", ""))]
         if evt_type == "tool_use":
+            raw_name = data.get("name")
+            canonical = _normalize_tool_name(raw_name)
+            if canonical in KOAN_MCP_TOOLS:
+                return []
             return [StreamEvent(
                 type="tool_call",
-                tool_name=data.get("name"),
+                tool_name=canonical,
                 tool_args=data.get("input"),
             )]
         if evt_type == "result":
