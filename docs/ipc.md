@@ -76,8 +76,7 @@ The `PendingInteraction` object stored in `AgentState.pending_tool`:
 
 - **One pending interaction at a time** per agent. A second blocking tool call
   while one is pending returns an error.
-- **No polling** -- the Future model replaces the previous file-polling design.
-  Resolution is immediate when the external actor responds.
+- **No polling** -- resolution is immediate when the external actor responds.
 - **The subagent's LLM turn is blocked** while the Future is pending. The MCP
   HTTP connection is held open; the LLM cannot call other tools until the
   response arrives.
@@ -91,7 +90,7 @@ subagent calls koan_ask_question({ questions: [...] })
   -> MCP endpoint checks permissions
   -> creates PendingInteraction { type: "ask", future: asyncio.Future() }
   -> stores in AgentState.pending_tool
-  -> pushes SSE "ask" event to browsers
+  -> pushes SSE `questions_asked` event to browsers
   -> awaits Future
 
 user sees question form in web UI
@@ -166,7 +165,7 @@ subagent calls koan_review_artifact({ path: ".../brief.md" })
   -> MCP endpoint checks permissions
   -> reads file content from path
   -> creates PendingInteraction { type: "artifact-review", future: asyncio.Future() }
-  -> pushes SSE "artifact-review" event to browsers (with rendered content)
+  -> pushes SSE `artifact_review_requested` event to browsers (with rendered content)
   -> awaits Future
 
 user sees rendered markdown in web UI

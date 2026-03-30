@@ -1,6 +1,6 @@
 # Koan Architecture
 
-Koan is a deterministic pipeline that spawns isolated LLM subagents to plan and
+Koan is a deterministic workflow that spawns isolated LLM subagents to plan and
 execute complex coding tasks. This document captures the design invariants,
 principles, and pitfalls that govern the codebase.
 
@@ -13,6 +13,8 @@ principles, and pitfalls that govern the codebase.
 - [Token Streaming](./token-streaming.md) -- runner stdout parsing, SSE delta path
 - [State & Driver](./state.md) -- the driver/LLM boundary, JSON vs markdown
   ownership, epic and story state, routing rules
+- [Projections](./projections.md) -- versioned event log, fold function,
+  projection shape, SSE protocol, version-negotiated catch-up
 - [Intake Loop](./intake-loop.md) -- confidence-gated investigation loop,
   non-linear step progression, prompt engineering principles
 - [Epic Brief](./epic-brief.md) -- brief artifact, brief-writer subagent, downstream references
@@ -107,12 +109,11 @@ Each subagent receives only the minimum context for its task:
 - The **system prompt** establishes role identity and rules, but no task details
 - **Task details** arrive via step 1 guidance (returned by the first tool call)
 
-This is not just tidiness -- it is load-bearing. A previous design injected
-step 1 guidance into the first user message, but that front-loaded complex
-instructions before the LLM had established the `koan_complete_step` calling
-pattern. Weaker models produced text output and exited without entering the
-workflow. Step guidance is now delivered exclusively through `koan_complete_step`
-return values.
+This is not just tidiness -- it is load-bearing. Injecting step 1 guidance
+into the first user message front-loads complex instructions before the LLM has
+established the `koan_complete_step` calling pattern. Weaker models produce
+text output and exit without entering the workflow. Step guidance is delivered
+exclusively through `koan_complete_step` return values.
 
 ### 6. Directory-as-contract
 
@@ -168,95 +169,106 @@ When a tool call arrives via HTTP, the MCP endpoint:
 4. If allowed, dispatches to the tool handler
 5. Returns the result as the MCP tool response
 
-This replaces the previous TypeScript pattern of registering tools at extension
-init and checking permissions via event hooks. The Python model is simpler:
-tools are HTTP handlers, permissions are checked per-call.
+Tools are HTTP handlers; permissions are checked per-call.
 
 ---
 
-## Event-Sourced Audit
+## Two Fold Systems
 
-Each subagent's audit state is maintained in-process by the driver. The event
-log (`events.jsonl`) is append-only, and the projection (`state.json`) is
-eagerly materialized after each event.
+Koan uses two independent fold systems that share the same structural pattern
+(pure fold function, append-only log) but serve different purposes:
 
-```
-tool call arrives via MCP -> driver handles it -> emits audit event
-  -> fold(events) -> state.json written atomically
-  -> SSE event pushed directly to connected browsers
-```
+### Audit fold (`koan/audit/fold.py`)
 
-### Rules
+Tracks the internal execution of each individual subagent. Input: per-subagent
+audit events written to `events.jsonl`. Output: per-subagent `Projection`
+materialized to `state.json`. One fold instance per running subagent.
+Consumed by debugging and post-mortem analysis.
+
+### Projection fold (`koan/projections.py`)
+
+Tracks the complete frontend-visible state of the entire workflow run. Input:
+workflow-level projection events emitted by `ProjectionStore.push_event()`.
+Output: a single in-memory `Projection` covering all agents, run state, and
+UI interactions. Consumed by the browser frontend via SSE.
+
+When adding new observable state, decide which system it belongs to:
+- State visible only in logs/debugging → audit fold
+- State visible in the browser UI → projection fold
+
+See [projections.md](./projections.md) for the full event model, fold
+specification, and SSE protocol.
+
+### Rules for both folds
 
 - **`fold()` is pure** -- given the same event sequence, it must produce the same
   projection. No I/O, no randomness, no side effects inside `fold()`.
 - **New event types require a fold handler.** Unknown events are silently ignored
   (forward compatibility), but a new event that is not folded contributes nothing
-  to the projection and will not be visible in the UI.
-- **Projection is eagerly materialized.** It is written atomically after every
-  event. The web server reads the projection from in-process state; `state.json`
-  on disk is for debugging and post-mortem.
-- **SSE is pushed directly.** There is no polling loop. When a tool handler
-  emits an audit event, the SSE push happens in the same call chain.
-
-### Adding new observable state
-
-When adding a new piece of state that the UI should see, wire three layers:
-
-1. **Emit an audit event** -- add a typed event in `koan/audit/events.py`
-2. **Update `fold()`** -- handle the new event type in `koan/audit/fold.py`
-3. **Push SSE** -- emit the SSE event from the tool handler or state transition
-   in `koan/web/app.py`
-
-The HTMX frontend receives SSE events and swaps server-rendered HTML fragments.
-
-**Exception -- ephemeral display data:** High-frequency data with no persistence
-value (e.g., token deltas) should bypass the audit pipeline and push directly
-to SSE. See [token-streaming.md](./token-streaming.md) for the alternate path.
+  to the projection.
+- **Projection is eagerly materialized.** Updated after every `push_event()`.
+- **Events are facts, not snapshots.** Events record what happened; the fold
+  derives current state from those facts. Do not store derived state as an event.
 
 ---
 
 ## SSE Event Lifecycle
 
-State flows from LLM tool calls to the browser through a direct push pipeline.
+State flows from LLM tool calls to the browser through the projection system.
 
 ```
 [LLM calls tool via HTTP MCP]
      |
 [MCP endpoint handles call, emits audit event]
      |
-[fold() updates projection, state.json written atomically]
+[fold() updates audit projection, state.json written atomically]
      |
-[SSE event pushed to connected browsers]  <- koan/web/app.py
+[push_event() called with workflow-level event]
      |
-[HTMX receives SSE, swaps server-rendered fragment]
+[ProjectionStore: append to log, fold projection, broadcast to SSE subscribers]
+     |
+[Browser receives versioned SSE event, applies frontend fold]
 ```
 
-### Concrete example: `koan_set_confidence`
+### Concrete example: `koan_complete_step`
 
 ```
-LLM calls koan_set_confidence({ level: "high" }) via MCP
+LLM calls koan_complete_step({ thoughts: "..." }) via MCP
   -> MCP endpoint checks permissions
-  -> emits confidence_change audit event
-  -> fold: projection.intake_confidence = "high", projection.intake_iteration = 2
-  -> write_state(projection) -> state.json
-  -> push SSE "intake-progress" event to connected browsers
-  -> HTMX swaps confidence visualization fragment
-  -> returns "Confidence set to high." as MCP tool result
+  -> emits step_advance audit event (audit fold)
+  -> audit fold: projection.step = 2, projection.step_name = "Decompose"
+  -> write_state(audit projection) -> state.json
+  -> push_event("agent_step_advanced", {step: 2, step_name: "Decompose"}, agent_id="abc")
+  -> ProjectionStore appends event v=47, folds projection, broadcasts to SSE subscribers
+  -> browser receives: event: agent_step_advanced / data: {"version": 47, "agent_id": "abc", ...}
+  -> frontend fold: primaryAgent.step = 2, primaryAgent.stepName = "Decompose"
+  -> returns step 2 instructions as MCP tool result
 ```
 
-### Replay on reconnect
+### Version-negotiated catch-up
 
-The web server buffers the last value of every stateful SSE event type. On
-reconnect, all buffered events are written to the new client. This ensures
-the browser always has current state after a network drop, without requiring
-a full page reload.
+The `/events` endpoint accepts `?since=N`. On first connect (`since=0`), the
+server sends a `snapshot` SSE event containing the full materialized projection
+at the current version. On reconnect (`since=N`), the server replays events
+with version > N, then streams live events.
+
+```
+event: snapshot
+data: {"version": 42, "state": { ...full projection... }}
+
+event: agent_spawned
+data: {"version": 43, "agent_id": "...", "role": "intake", ...}
+```
+
+This ensures the browser always has complete state after a page reload or
+network drop, without requiring a full page reload or losing accumulated state
+(activity log, notifications, streaming buffer).
 
 ---
 
 ## Pitfalls
 
-Lessons learned from previous failures. Check new changes against these.
+Known invariant violations and their consequences. Check new changes against these.
 
 ### Don't put task content in spawn prompts
 
@@ -267,10 +279,10 @@ happened with haiku-class models and is not recoverable.
 
 ### Don't add `escalated` as a story status
 
-Escalation is handled via `koan_ask_question` (MCP tool call -> web UI -> user
-answers -> MCP response). A separate `escalated` status was tried and created
-a dead routing path -- the driver had nowhere clean to send it without
-duplicating the ask UI flow.
+Escalation flows through `koan_ask_question` (MCP tool call -> web UI -> user
+answers -> MCP response). A separate `escalated` status creates a dead routing
+path -- the driver has nowhere clean to send it without duplicating the ask UI
+flow.
 
 ### Don't add `scouting` as an epic phase
 
@@ -377,6 +389,17 @@ If information is needed by a subagent, write it to `task.json` in the
 subagent directory before spawning. CLI flags are for bootstrap only. The
 directory-as-contract invariant exists specifically to prevent this.
 
+### Don't store derived state as an event
+
+Events record facts — things that happened. Derived state belongs in the fold
+function, not in the event log.
+
+**Bad:** Emitting a `subagent_idle` event to signal "no agent is running."
+"No agent" is derived from `agent_exited`, not a fact in itself. Storing it as
+an event conflates the log with the projection.
+
+**Good:** Emitting `agent_exited`. The fold derives `primary_agent = None`.
+
 ### Don't put high-frequency ephemeral data through the audit pipeline
 
 Token deltas and similar high-frequency signals arrive at hundreds of events
@@ -384,3 +407,8 @@ per second. Routing them through the audit pipeline would mean hundreds of
 append + fold + atomic-write cycles per second for data that has no persistence
 value. The runner stdout parsing path exists for exactly this case. See
 [token-streaming.md](./token-streaming.md).
+
+Note: `stream_delta` events (the projection system's name for token deltas) DO
+go through the projection fold, but the fold only appends to an in-memory
+string — no disk I/O. The distinction is between the audit pipeline (disk
+writes per event) and the projection fold (in-memory only).

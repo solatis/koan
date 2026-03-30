@@ -338,8 +338,8 @@ tool call arrives via MCP
 ```
 
 Agent registration and deregistration are tracked in the in-process
-`AgentState` registry. SSE events for agent lifecycle (`agent-start`,
-`agent-complete`) are pushed when agents are registered/deregistered.
+`AgentState` registry. SSE events for agent lifecycle (`agent_spawned`,
+`agent_exited`) are pushed when agents are registered/deregistered.
 
 Intake sub-phase derivation happens server-side based on step number:
 

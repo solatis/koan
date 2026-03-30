@@ -8,11 +8,12 @@ Spoke documents:
 - [docs/ipc.md](docs/ipc.md) -- HTTP MCP tool calls, blocking interactions, scout spawning
 - [docs/state.md](docs/state.md) -- driver/LLM boundary, epic and story state, routing rules
 - [docs/intake-loop.md](docs/intake-loop.md) -- confidence-gated loop, non-linear step progression, prompt engineering
+- [docs/projections.md](docs/projections.md) -- versioned event log, fold function, projection shape, SSE protocol, version-negotiated catch-up
 - [docs/epic-brief.md](docs/epic-brief.md) -- brief artifact, brief-writer subagent, downstream references
 - [docs/artifact-review.md](docs/artifact-review.md) -- artifact review protocol, review loop, reusability
 - [docs/token-streaming.md](docs/token-streaming.md) -- runner stdout parsing, SSE delta path
 
-**Pipeline phases:** `intake` -> `brief-generation` -> `core-flows` -> `tech-plan` -> `ticket-breakdown` -> `cross-artifact-validation` -> `execution` -> `implementation-validation` -> `completed`
+**Workflow phases:** `intake` -> `brief-generation` -> `core-flows` -> `tech-plan` -> `ticket-breakdown` -> `cross-artifact-validation` -> `execution` -> `implementation-validation` -> `completed`
 
 ---
 

@@ -183,9 +183,10 @@ Both events are folded into the `state.json` projection:
 - `confidence_change` -> `intake_confidence`, `intake_iteration`
 - `iteration_start` -> `intake_iteration`
 
-SSE events are pushed directly from the tool handlers and step engine -- no
-polling loop. When the driver handles a `koan_set_confidence` call or detects
-a loop-back, it pushes an `intake-progress` SSE event to connected browsers.
+Audit events are pushed directly from the tool handlers and step engine -- no
+polling loop. Browser-visible intake state (current phase, confidence level) is
+derived from `agent_step_advanced` and `phase_started` projection events, which
+the frontend renders from the Zustand store.
 
 ---
 

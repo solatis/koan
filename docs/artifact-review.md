@@ -2,7 +2,7 @@
 
 Protocol for presenting a written artifact to the user and collecting feedback.
 Used by the brief-writer phase; reusable for any future markdown artifact that
-requires a review-revise loop before pipeline advancement.
+requires a review-revise loop before workflow advancement.
 
 > Parent doc: [architecture.md](./architecture.md)
 >
@@ -27,7 +27,7 @@ When `koan_review_artifact` is called via MCP, the tool handler:
 1. Reads the file at `path` to obtain raw markdown content
 2. Creates a `PendingInteraction` with type `"artifact-review"` and an `asyncio.Future`
 3. Stores it in `AgentState.pending_tool`
-4. Pushes SSE `"artifact-review"` event to connected browsers
+4. Pushes SSE `artifact_review_requested` event to connected browsers
 5. Awaits the Future -- the MCP HTTP connection stays open
 6. When the user responds (Accept or feedback), the web endpoint resolves the Future
 7. Returns feedback string to the LLM as the MCP tool result
@@ -79,9 +79,9 @@ decide how to proceed.
 
 ## Web UI Component
 
-The artifact review is rendered as a server-side HTML fragment via
-`koan/web/templates/fragments/interaction_artifact_review.html`. The template
-receives the raw markdown content and renders it server-side.
+The artifact review is rendered by the `ArtifactReview.tsx` React component.
+The component subscribes to `active_interaction` in the Zustand store and
+renders when an `artifact_review_requested` event sets it.
 
 **Layout:**
 
@@ -101,10 +101,10 @@ receives the raw markdown content and renders it server-side.
 
 **Behavior:**
 
-- Server renders markdown content in the HTML fragment
+- Component renders markdown content client-side
 - "Accept" -> `POST /api/artifact-review` with `{ feedback: "Accept" }`
 - "Send Feedback" -> `POST /api/artifact-review` with `{ feedback: text }`
-- HTMX swaps the fragment on SSE events (new review, review cleared)
+- Component unmounts when `artifact_reviewed` event clears `active_interaction`
 
 ---
 
@@ -120,10 +120,10 @@ validation failure or missing pending interaction.
 
 ## SSE Events
 
-| Event                       | Direction         | Payload                                               |
-| --------------------------- | ----------------- | ----------------------------------------------------- |
-| `artifact-review`           | server -> browser | `{ request_id, artifact_path, content, description }` |
-| `artifact-review-cancelled` | server -> browser | `{ request_id }`                                      |
+| Event                        | Direction         | Payload                                                  |
+| ---------------------------- | ----------------- | -------------------------------------------------------- |
+| `artifact_review_requested`  | server -> browser | `{ token, path, content, description }` (sets `active_interaction`) |
+| `artifact_reviewed`          | server -> browser | `{ token, ?accepted, ?response, cancelled }` (clears `active_interaction`) |
 
 SSE events are pushed directly from the tool handler. On browser reconnect,
 pending reviews are replayed so the user does not lose the review form.
@@ -136,7 +136,7 @@ pending reviews are replayed so the user does not lose the review form.
 subagent calls koan_review_artifact({ path: ".../brief.md" }) via MCP
   -> MCP endpoint reads brief.md content
   -> creates PendingInteraction { type: "artifact-review", future: Future() }
-  -> pushes SSE "artifact-review" event to browsers
+  -> pushes SSE `artifact_review_requested` event to browsers
   -> awaits Future
 
 user sees rendered markdown in web UI
