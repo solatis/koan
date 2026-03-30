@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import aiofiles
 
@@ -20,6 +20,7 @@ from .epic_state import (
     save_epic_state,
     save_story_state,
 )
+from .events import build_artifact_diff
 from .lib.phase_dag import (
     PHASE_DESCRIPTIONS,
     get_successor_phases,
@@ -83,145 +84,19 @@ def route_from_state(stories: list[dict]) -> dict:
     return {"action": "error", "error": "no actionable stories found"}
 
 
-# -- JSON payload builders ----------------------------------------------------
+# -- Artifact diff helper ------------------------------------------------------
 
-def _build_subagent_json(app_state: AppState) -> dict:
-    """Return primary agent state as a JSON-serialisable dict.
-
-    Raw values only — no pre-formatted strings. The React client formats
-    elapsed time via useElapsed() and token counts via formatTokens().
-    step_name is resolved here because the client has no access to
-    phase_module.STEP_NAMES.
-    """
-    for agent in app_state.agents.values():
-        if not agent.is_primary:
-            continue
-        return {
-            "agent_id": agent.agent_id,
-            "role": agent.role,
-            "model": agent.model,
-            "step": agent.step,
-            # Resolved server-side; falls back to "step N" if not in STEP_NAMES.
-            "step_name": (
-                agent.phase_module.STEP_NAMES.get(agent.step, f"step {agent.step}")
-                if agent.phase_module and hasattr(agent.phase_module, "STEP_NAMES")
-                else f"step {agent.step}"
-            ),
-            # UTC epoch milliseconds; client uses Date.now() - startedAt for elapsed.
-            "started_at_ms": int(agent.started_at.timestamp() * 1000),
-            # Raw counts; client formats as "12k / 4k" or similar.
-            "tokens_sent": agent.token_count.get("sent", 0),
-            "tokens_received": agent.token_count.get("received", 0),
-        }
-    return {"agent_id": None}  # no primary agent active
-
-
-def _build_agents_json(app_state: AppState) -> list[dict]:
-    """Return scout (non-primary) agents as a list for the monitor table.
-
-    Same raw-values convention as _build_subagent_json.
-    agent_id is included so the frontend can key the Record<string, AgentInfo>.
-    """
-    result = []
-    for agent in app_state.agents.values():
-        if agent.is_primary:
-            continue
-        result.append({
-            "agent_id": agent.agent_id,
-            "role": agent.role,
-            "model": agent.model,
-            "step": agent.step,
-            "step_name": f"step {agent.step}",  # scouts don't have STEP_NAMES
-            "started_at_ms": int(agent.started_at.timestamp() * 1000),
-            "tokens_sent": agent.token_count.get("sent", 0),
-            "tokens_received": agent.token_count.get("received", 0),
-        })
-    return result
-
-
-def _build_artifacts_json(app_state: AppState) -> list[dict]:
-    """Return artifact list as JSON-serialisable dicts.
-
-    Flat list; the frontend groups into a directory tree via the
-    useArtifactTree selector. Sizes are raw bytes (client formats).
-    modifiedAt is UTC epoch milliseconds for consistency with startedAt.
-    """
+def _push_artifact_diff(app_state: AppState) -> None:
+    """Scan epic artifacts and emit per-file diff events against current projection."""
     if not app_state.epic_dir:
-        return []
+        return
     try:
-        return [
-            {
-                "path": a["path"],
-                "size": a["size"],
-                "modifiedAt": int(a["modified_at"] * 1000),
-            }
-            for a in list_artifacts(app_state.epic_dir)
-        ]
+        new_artifacts = list_artifacts(app_state.epic_dir)
     except Exception:
-        return []
-
-
-# -- SSE push -----------------------------------------------------------------
-
-def push_sse(app_state: AppState, event_type: str, payload: Any) -> None:
-    """Push an SSE event to all connected clients with replay caching."""
-
-    # --- Side effects and payload enrichment ----------------------------------
-
-    if event_type == "phase":
-        # app_state.phase is read by _build_subagent_json and other helpers.
-        # This assignment was previously inside _render_fragment(); preserving
-        # it here ensures all subsequent subagent payloads reflect the correct
-        # phase.
-        phase = payload if isinstance(payload, str) else payload.get("phase", "")
-        app_state.phase = phase
-        payload = {"phase": phase}
-
-    elif event_type in ("subagent", "subagent-idle"):
-        # Rebuild from AppState to guarantee consistent shape.
-        # Returns {"agent_id": None} when no primary agent is active.
-        payload = _build_subagent_json(app_state)
-
-    elif event_type == "agents":
-        # Full scout list — the frontend does a wholesale replace.
-        payload = {"agents": _build_agents_json(app_state)}
-
-    elif event_type == "artifacts":
-        # Full artifact list — the frontend re-renders from this snapshot.
-        payload = {"artifacts": _build_artifacts_json(app_state)}
-
-    elif event_type == "intake-progress":
-        # Pass through subPhase/confidence/summary from caller.
-        payload = payload if isinstance(payload, dict) else {}
-
-    elif event_type == "pipeline-end":
-        # Convert artifacts to camelCase modifiedAt (milliseconds) so the
-        # frontend receives a consistent shape from both 'artifacts' and
-        # 'pipeline-end' events.
-        if isinstance(payload, dict) and "artifacts" in payload:
-            converted = []
-            for a in payload["artifacts"]:
-                converted.append({
-                    "path": a["path"],
-                    "size": a["size"],
-                    "modifiedAt": int(a.get("modified_at", 0) * 1000),
-                })
-            payload = {**payload, "artifacts": converted}
-
-    # --- Cache stateful events for replay to reconnecting clients -------------
-    STATEFUL_EVENTS = {
-        "phase", "subagent", "agents", "artifacts",
-        "interaction", "intake-progress", "pipeline-end",
-    }
-    if event_type in STATEFUL_EVENTS:
-        app_state.last_sse_values[event_type] = payload
-
-    # --- Enqueue to all connected SSE clients ---------------------------------
-    for queue in app_state.sse_clients:
-        try:
-            queue.put_nowait((event_type, payload))
-        except Exception:
-            pass  # queue full or closed -- skip
+        return
+    old = app_state.projection_store.projection.artifacts
+    for event_type, payload in build_artifact_diff(old, new_artifacts):
+        app_state.projection_store.push_event(event_type, payload)
 
 
 # -- Workflow status ----------------------------------------------------------
@@ -322,7 +197,7 @@ async def run_story_execution(
 
     # Planner
     await save_story_state(epic_dir, story_id, {"storyId": story_id, "status": "planning", "updatedAt": _now()})
-    push_sse(app_state, "story", {"storyId": story_id, "status": "planning"})
+    # story events deferred -- execution phase UI is a known gap
 
     planner_dir = await ensure_subagent_directory(
         epic_dir, f"planner-{story_id}-{int(time.time() * 1000)}"
@@ -345,7 +220,6 @@ async def run_story_execution(
     # Executor (skip if planner failed)
     if planner_ok:
         await save_story_state(epic_dir, story_id, {"storyId": story_id, "status": "executing", "updatedAt": _now()})
-        push_sse(app_state, "story", {"storyId": story_id, "status": "executing"})
 
         executor_dir = await ensure_subagent_directory(
             epic_dir, f"executor-{story_id}-{int(time.time() * 1000)}"
@@ -363,7 +237,6 @@ async def run_story_execution(
 
     # Post-execution orchestrator
     await save_story_state(epic_dir, story_id, {"storyId": story_id, "status": "verifying", "updatedAt": _now()})
-    push_sse(app_state, "story", {"storyId": story_id, "status": "verifying"})
 
     orch_dir = await ensure_subagent_directory(
         epic_dir, f"orch-post-{story_id}-{int(time.time() * 1000)}"
@@ -393,7 +266,6 @@ async def run_story_execution(
             "failureSummary": "post-execution orchestrator exited without committing a verdict",
             "updatedAt": _now(),
         })
-        push_sse(app_state, "story", {"storyId": story_id, "status": "retry"})
 
     return True
 
@@ -414,7 +286,6 @@ async def run_story_reexecution(
 
     # Executor with retry context
     await save_story_state(epic_dir, story_id, {"storyId": story_id, "status": "executing", "updatedAt": _now()})
-    push_sse(app_state, "story", {"storyId": story_id, "status": "executing"})
 
     executor_dir = await ensure_subagent_directory(
         epic_dir, f"executor-{story_id}-retry-{retry_count}-{int(time.time() * 1000)}"
@@ -435,7 +306,6 @@ async def run_story_reexecution(
 
     # Post-execution orchestrator
     await save_story_state(epic_dir, story_id, {"storyId": story_id, "status": "verifying", "updatedAt": _now()})
-    push_sse(app_state, "story", {"storyId": story_id, "status": "verifying"})
 
     orch_dir = await ensure_subagent_directory(
         epic_dir, f"orch-post-{story_id}-retry-{retry_count}-{int(time.time() * 1000)}"
@@ -463,7 +333,6 @@ async def run_story_reexecution(
             "failureSummary": "post-execution orchestrator exited without committing a verdict",
             "updatedAt": _now(),
         })
-        push_sse(app_state, "story", {"storyId": story_id, "status": "retry"})
 
     return True
 
@@ -513,9 +382,6 @@ async def run_story_loop(app_state: AppState, instructions: str | None) -> dict:
             max_retries = story.get("maxRetries", DEFAULT_MAX_RETRIES)
             if retry_count >= max_retries:
                 log.warning("story %s exceeded retry budget, skipping", sid)
-                # save_story_state merges with existing state ({**existing, **updates}),
-                # so maxRetries and other fields not listed here are preserved from
-                # the prior write.
                 await save_story_state(
                     epic_dir, sid,
                     {
@@ -525,12 +391,8 @@ async def run_story_loop(app_state: AppState, instructions: str | None) -> dict:
                         "updatedAt": _now(),
                     },
                 )
-                push_sse(app_state, "story", {"storyId": sid, "status": "skipped"})
             else:
                 log.info("retrying story %s (attempt %d)", sid, retry_count + 1)
-                # save_story_state merges with existing state ({**existing, **updates}),
-                # so maxRetries and other fields not listed here are preserved from
-                # the prior write.
                 await save_story_state(
                     epic_dir, sid,
                     {
@@ -607,10 +469,13 @@ async def driver_main(app_state: AppState) -> None:
     while phase != "completed":
         epic_state = await load_epic_state(epic_dir)
         await save_epic_state(epic_dir, {**epic_state, "phase": phase})
-        push_sse(app_state, "phase", phase)
 
-        # Push artifacts update at start of each phase
-        push_sse(app_state, "artifacts", {})
+        # Set app_state.phase before emitting phase_started (driver mutation, not projection)
+        app_state.phase = phase
+        app_state.projection_store.push_event("phase_started", {"phase": phase})
+
+        # Push artifact diff at start of each phase
+        _push_artifact_diff(app_state)
 
         if is_stub_phase(phase):
             pass  # carry forward pending_instructions
@@ -618,10 +483,11 @@ async def driver_main(app_state: AppState) -> None:
             ok = await run_phase(phase, app_state, pending_instructions)
             pending_instructions = None
             if not ok:
-                push_sse(app_state, "pipeline-end", {
+                app_state.projection_store.push_event("workflow_completed", {
                     "success": False,
                     "phase": phase,
                     "error": f"Phase {phase} failed",
+                    "summary": f"Phase {phase} failed",
                 })
                 return
 
@@ -637,10 +503,11 @@ async def driver_main(app_state: AppState) -> None:
         app_state.frozen_logs = list(app_state.frozen_logs)
         decision = await run_workflow_orchestrator(phase, successors, app_state)
         if not decision:
-            push_sse(app_state, "pipeline-end", {
+            app_state.projection_store.push_event("workflow_completed", {
                 "success": False,
                 "phase": phase,
                 "error": "Workflow orchestrator failed",
+                "summary": "Workflow orchestrator failed",
             })
             return
         phase = decision["next_phase"]
@@ -648,11 +515,13 @@ async def driver_main(app_state: AppState) -> None:
 
     epic_state = await load_epic_state(epic_dir)
     await save_epic_state(epic_dir, {**epic_state, "phase": "completed"})
-    push_sse(app_state, "phase", "completed")
+    app_state.phase = "completed"
+    app_state.projection_store.push_event("phase_started", {"phase": "completed"})
 
-    # Push completion event with artifact list
-    push_sse(app_state, "pipeline-end", {
+    # Final artifact diff before completion
+    _push_artifact_diff(app_state)
+
+    app_state.projection_store.push_event("workflow_completed", {
         "success": True,
         "summary": "All phases completed successfully",
-        "artifacts": list_artifacts(epic_dir),
     })

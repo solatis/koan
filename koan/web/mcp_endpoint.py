@@ -3,7 +3,9 @@
 # Exposes build_mcp_asgi_app() which returns an ASGI sub-app that:
 #   1. Validates agent_id from query params before reaching fastmcp.
 #   2. Runs check_permission() on every tool call.
-#   3. Implements koan_complete_step, koan_set_confidence, koan_request_scouts.
+#   3. Implements koan_complete_step, koan_set_confidence, koan_request_scouts,
+#      koan_ask_question, koan_review_artifact, koan_propose_workflow,
+#      koan_set_next_phase.
 
 from __future__ import annotations
 
@@ -70,19 +72,40 @@ def _get_agent() -> AgentState:
     return agent
 
 
-def _log_tool_call(agent: AgentState, tool_name: str, summary: str = "") -> None:
-    """Push a tool-call log entry to SSE so the activity feed shows MCP calls."""
+def begin_tool_call(
+    agent: AgentState,
+    tool: str,
+    args: dict | str,
+    summary: str = "",
+) -> str:
+    """Emit tool_called event and return call_id. No-op if app_state is not set."""
+    call_id = str(uuid.uuid4())
+    if _app_state is None:
+        return call_id
+    from ..events import build_tool_called
+    _app_state.projection_store.push_event(
+        "tool_called",
+        build_tool_called(call_id, tool, args, summary),
+        agent_id=agent.agent_id,
+    )
+    return call_id
+
+
+def end_tool_call(
+    agent: AgentState,
+    call_id: str,
+    tool: str,
+    result: str | None = None,
+) -> None:
+    """Emit tool_completed event. No-op if app_state is not set."""
     if _app_state is None:
         return
-    from ..driver import push_sse
-    push_sse(_app_state, "logs", {
-        "line": {
-            "tool": tool_name,
-            "summary": summary,
-            "inFlight": True,
-        },
-        "agent_id": agent.agent_id,
-    })
+    from ..events import build_tool_completed
+    _app_state.projection_store.push_event(
+        "tool_completed",
+        build_tool_completed(call_id, tool, result),
+        agent_id=agent.agent_id,
+    )
 
 
 # -- Tool implementations -----------------------------------------------------
@@ -91,265 +114,316 @@ def _log_tool_call(agent: AgentState, tool_name: str, summary: str = "") -> None
 async def koan_complete_step(thoughts: str = "") -> str:
     agent = _get_agent()
     _check_or_raise(agent, "koan_complete_step", {"thoughts": thoughts})
-    _log_tool_call(agent, "koan_complete_step", f"step {agent.step} → next")
 
-    # Mark handshake observed (decoupled from stream parsing)
-    agent.handshake_observed = True
+    call_id = begin_tool_call(agent, "koan_complete_step", {"thoughts": thoughts}, f"step {agent.step} → next")
+    result_str: str | None = None
+    try:
+        # Mark handshake observed (decoupled from stream parsing)
+        agent.handshake_observed = True
 
-    phase_module = agent.phase_module
-    ctx = agent.phase_ctx
-    current_step = agent.step
+        phase_module = agent.phase_module
+        ctx = agent.phase_ctx
+        current_step = agent.step
 
-    # Validate current step completion
-    err = phase_module.validate_step_completion(current_step, ctx)
-    if err:
-        raise ToolError(
-            json.dumps({"error": "step_validation_failed", "message": err})
-        )
+        # Validate current step completion
+        err = phase_module.validate_step_completion(current_step, ctx)
+        if err:
+            raise ToolError(
+                json.dumps({"error": "step_validation_failed", "message": err})
+            )
 
-    # Get next step
-    next_step = phase_module.get_next_step(current_step, ctx)
+        # Get next step
+        next_step = phase_module.get_next_step(current_step, ctx)
 
-    # Loop-back handling
-    if next_step is not None and next_step <= current_step:
-        await phase_module.on_loop_back(current_step, next_step, ctx)
+        # Loop-back handling
+        if next_step is not None and next_step <= current_step:
+            await phase_module.on_loop_back(current_step, next_step, ctx)
 
-    # Advance step
-    agent.step = next_step if next_step is not None else current_step
+        # Advance step
+        agent.step = next_step if next_step is not None else current_step
 
-    # Determine step name for audit
-    step_names = getattr(phase_module, "STEP_NAMES", {})
-    step_name = step_names.get(next_step if next_step is not None else current_step, "")
+        # Determine step name
+        step_names = getattr(phase_module, "STEP_NAMES", {})
+        step_num = next_step if next_step is not None else current_step
+        step_name = step_names.get(step_num, "")
 
-    # Emit audit event
-    if agent.event_log is not None:
-        await agent.event_log.emit_step_transition(
-            next_step if next_step is not None else current_step,
-            step_name,
-            phase_module.TOTAL_STEPS,
-        )
+        # Emit audit event
+        if agent.event_log is not None:
+            await agent.event_log.emit_step_transition(
+                step_num,
+                step_name,
+                phase_module.TOTAL_STEPS,
+            )
 
-    # Return guidance or completion signal
-    if next_step is None:
-        return "Phase complete."
+        # Emit agent_step_advanced to projection
+        if _app_state is not None:
+            from ..events import build_step_advanced
+            _app_state.projection_store.push_event(
+                "agent_step_advanced",
+                build_step_advanced(step_num, step_name),
+                agent_id=agent.agent_id,
+            )
 
-    guidance = phase_module.step_guidance(next_step, ctx)
-    return format_step(guidance)
+        # Return guidance or completion signal
+        if next_step is None:
+            result_str = "Phase complete."
+            return result_str
+
+        guidance = phase_module.step_guidance(next_step, ctx)
+        result_str = format_step(guidance)
+        return result_str
+    finally:
+        end_tool_call(agent, call_id, "koan_complete_step", result_str)
 
 
 @mcp.tool(name="koan_set_confidence")
 async def koan_set_confidence(level: str = "") -> str:
     agent = _get_agent()
     _check_or_raise(agent, "koan_set_confidence", {"level": level})
-    _log_tool_call(agent, "koan_set_confidence", level)
 
-    valid_levels = {"high", "medium", "low"}
-    if level not in valid_levels:
-        raise ToolError(
-            json.dumps({"error": "invalid_confidence", "message": f"level must be one of {valid_levels}"})
-        )
+    call_id = begin_tool_call(agent, "koan_set_confidence", {"level": level}, level)
+    result_str: str | None = None
+    try:
+        valid_levels = {"high", "medium", "low"}
+        if level not in valid_levels:
+            raise ToolError(
+                json.dumps({"error": "invalid_confidence", "message": f"level must be one of {valid_levels}"})
+            )
 
-    agent.phase_ctx.intake_confidence = level
-    return f"Confidence set to {level}."
+        agent.phase_ctx.intake_confidence = level
+        result_str = f"Confidence set to {level}."
+        return result_str
+    finally:
+        end_tool_call(agent, call_id, "koan_set_confidence", result_str)
 
 
 @mcp.tool(name="koan_request_scouts")
 async def koan_request_scouts(questions: list[dict] | None = None) -> str:
     agent = _get_agent()
     _check_or_raise(agent, "koan_request_scouts", {"questions": questions})
-    _log_tool_call(agent, "koan_request_scouts", f"{len(questions or [])} scouts")
 
-    if not questions:
-        return "No scouts requested."
+    call_id = begin_tool_call(
+        agent, "koan_request_scouts", {"questions": questions or []},
+        f"{len(questions or [])} scouts",
+    )
+    result_str: str | None = None
+    try:
+        if not questions:
+            result_str = "No scouts requested."
+            return result_str
 
-    assert _app_state is not None, "app_state not initialized"
+        assert _app_state is not None, "app_state not initialized"
 
-    semaphore = asyncio.Semaphore(_app_state.config.scout_concurrency)
-    epic_dir = agent.phase_ctx.epic_dir
+        semaphore = asyncio.Semaphore(_app_state.config.scout_concurrency)
+        epic_dir = agent.phase_ctx.epic_dir
 
-    scout_tasks = []
-    for q in questions:
-        scout_id = q.get("id", str(uuid.uuid4())[:8])
-        subagent_dir = await ensure_subagent_directory(
-            epic_dir, f"scout-{scout_id}-{uuid.uuid4().hex[:8]}"
-        )
-        scout_tasks.append({
-            "role": "scout",
-            "epic_dir": epic_dir,
-            "subagent_dir": subagent_dir,
-            "question": q.get("prompt", ""),
-            "output_file": "findings.md",
-            "investigator_role": q.get("role", "investigator"),
-        })
+        scout_tasks = []
+        for q in questions:
+            scout_id = q.get("id", str(uuid.uuid4())[:8])
+            subagent_dir = await ensure_subagent_directory(
+                epic_dir, f"scout-{scout_id}-{uuid.uuid4().hex[:8]}"
+            )
+            scout_tasks.append({
+                "role": "scout",
+                "epic_dir": epic_dir,
+                "subagent_dir": subagent_dir,
+                "question": q.get("prompt", ""),
+                "output_file": "findings.md",
+                "investigator_role": q.get("role", "investigator"),
+            })
 
-    async def run_scout(scout_task: dict) -> str | None:
-        async with semaphore:
-            from ..subagent import spawn_subagent
+        async def run_scout(scout_task: dict) -> str | None:
+            async with semaphore:
+                from ..subagent import spawn_subagent
 
-            exit_code = await spawn_subagent(scout_task, _app_state)
+                exit_code = await spawn_subagent(scout_task, _app_state)
 
-            # Require state.json with status=="completed" (regardless of exit code)
-            state_path = Path(scout_task["subagent_dir"]) / "state.json"
-            try:
-                async with aiofiles.open(state_path, "r") as f:
-                    projection = json.loads(await f.read())
-            except (FileNotFoundError, json.JSONDecodeError):
-                return None
-            if projection.get("status") != "completed":
-                return None
+                # Require state.json with status=="completed"
+                state_path = Path(scout_task["subagent_dir"]) / "state.json"
+                try:
+                    async with aiofiles.open(state_path, "r") as f:
+                        projection = json.loads(await f.read())
+                except (FileNotFoundError, json.JSONDecodeError):
+                    return None
+                if projection.get("status") != "completed":
+                    return None
 
-            # Read findings
-            findings_path = Path(scout_task["subagent_dir"]) / "findings.md"
-            try:
-                async with aiofiles.open(findings_path, "r") as f:
-                    return await f.read()
-            except FileNotFoundError:
-                return None
+                findings_path = Path(scout_task["subagent_dir"]) / "findings.md"
+                try:
+                    async with aiofiles.open(findings_path, "r") as f:
+                        return await f.read()
+                except FileNotFoundError:
+                    return None
 
-    results = await asyncio.gather(*[run_scout(t) for t in scout_tasks])
-    findings = [r for r in results if r is not None]
+        results = await asyncio.gather(*[run_scout(t) for t in scout_tasks])
+        findings = [r for r in results if r is not None]
 
-    if not findings:
-        return "No findings returned."
+        if not findings:
+            result_str = "No findings returned."
+            return result_str
 
-    return "\n\n---\n\n".join(findings)
+        result_str = "\n\n---\n\n".join(findings)
+        return result_str
+    finally:
+        end_tool_call(agent, call_id, "koan_request_scouts", result_str)
 
 
 @mcp.tool(name="koan_ask_question")
 async def koan_ask_question(questions: list[dict] | None = None) -> str:
     agent = _get_agent()
     _check_or_raise(agent, "koan_ask_question", {"questions": questions})
-    _log_tool_call(agent, "koan_ask_question", f"{len(questions or [])} questions")
-    assert _app_state is not None, "app_state not initialized"
 
-    future = await enqueue_interaction(agent, _app_state, "ask", {"questions": questions or []})
-    result = await future
+    call_id = begin_tool_call(
+        agent, "koan_ask_question", {"questions": questions or []},
+        f"{len(questions or [])} questions",
+    )
+    result_str: str | None = None
+    try:
+        assert _app_state is not None, "app_state not initialized"
 
-    if isinstance(result, dict) and "error" in result:
-        raise ToolError(json.dumps(result))
+        future = await enqueue_interaction(agent, _app_state, "ask", {"questions": questions or []})
+        result = await future
 
-    answers = result.get("answers", [])
-    questions_list = questions or []
-    lines = []
-    for i, a in enumerate(answers):
-        q_text = questions_list[i].get("question", f"Q{i+1}") if i < len(questions_list) else f"Q{i+1}"
-        a_text = a.get("answer", "") if isinstance(a, dict) else str(a)
-        lines.append(f"Q: {q_text}\nA: {a_text}")
-    return "\n\n".join(lines) if lines else "No answers provided."
+        if isinstance(result, dict) and "error" in result:
+            raise ToolError(json.dumps(result))
+
+        answers = result.get("answers", [])
+        questions_list = questions or []
+        lines = []
+        for i, a in enumerate(answers):
+            q_text = questions_list[i].get("question", f"Q{i+1}") if i < len(questions_list) else f"Q{i+1}"
+            a_text = a.get("answer", "") if isinstance(a, dict) else str(a)
+            lines.append(f"Q: {q_text}\nA: {a_text}")
+        result_str = "\n\n".join(lines) if lines else "No answers provided."
+        return result_str
+    finally:
+        end_tool_call(agent, call_id, "koan_ask_question", result_str)
 
 
 @mcp.tool(name="koan_review_artifact")
 async def koan_review_artifact(path: str = "", description: str = "") -> str:
     agent = _get_agent()
     _check_or_raise(agent, "koan_review_artifact", {"path": path, "description": description})
-    _log_tool_call(agent, "koan_review_artifact", description or path)
-    assert _app_state is not None, "app_state not initialized"
 
-    try:
-        async with aiofiles.open(path, "r") as f:
-            content = await f.read()
-    except FileNotFoundError:
-        raise ToolError(
-            json.dumps({"error": "file_not_found", "message": f"Artifact not found: {path}"})
-        )
-
-    future = await enqueue_interaction(
-        agent, _app_state, "artifact-review",
-        {"path": path, "description": description, "content": content},
+    call_id = begin_tool_call(
+        agent, "koan_review_artifact", {"path": path, "description": description},
+        description or path,
     )
-    result = await future
+    result_str: str | None = None
+    try:
+        assert _app_state is not None, "app_state not initialized"
 
-    if isinstance(result, dict) and "error" in result:
-        raise ToolError(json.dumps(result))
+        try:
+            async with aiofiles.open(path, "r") as f:
+                content = await f.read()
+        except FileNotFoundError:
+            raise ToolError(
+                json.dumps({"error": "file_not_found", "message": f"Artifact not found: {path}"})
+            )
 
-    response = result.get("response", "")
-    accepted = result.get("accepted", response == "" or response.strip().lower() in ("", "ok", "approved", "lgtm", "accept"))
-    agent.phase_ctx.last_review_accepted = accepted
+        future = await enqueue_interaction(
+            agent, _app_state, "artifact-review",
+            {"path": path, "description": description, "content": content},
+        )
+        result = await future
 
-    return "ACCEPTED" if accepted else f"REVISION REQUESTED: {response}"
+        if isinstance(result, dict) and "error" in result:
+            raise ToolError(json.dumps(result))
+
+        response = result.get("response", "")
+        accepted = result.get("accepted", response == "" or response.strip().lower() in ("", "ok", "approved", "lgtm", "accept"))
+        agent.phase_ctx.last_review_accepted = accepted
+
+        result_str = "ACCEPTED" if accepted else f"REVISION REQUESTED: {response}"
+        return result_str
+    finally:
+        end_tool_call(agent, call_id, "koan_review_artifact", result_str)
 
 
 @mcp.tool(name="koan_propose_workflow")
 async def koan_propose_workflow(status: str = "", phases: list | None = None) -> str:
     agent = _get_agent()
     _check_or_raise(agent, "koan_propose_workflow", {"status": status, "phases": phases})
-    _log_tool_call(agent, "koan_propose_workflow", "proposing phases")
-    assert _app_state is not None, "app_state not initialized"
 
-    # Normalise phases: accept both list[str] and list[dict].
-    normalised: list[dict] = []
-    for p in (phases or []):
-        if isinstance(p, str):
-            normalised.append({"phase": p, "context": "", "recommended": False})
-        elif isinstance(p, dict):
-            normalised.append(p)
-
-    # Build chat_turns with status_report + recommended_phases to match
-    # the interaction_workflow.html template contract.
-    chat_turns = [{
-        "role": "orchestrator",
-        "status_report": status,
-        "recommended_phases": [
-            {
-                "phase": p.get("phase", p.get("name", "")),
-                "context": p.get("context", p.get("description", "")),
-                "recommended": p.get("recommended", False),
-            }
-            for p in normalised
-        ],
-    }]
-    future = await enqueue_interaction(
-        agent, _app_state, "workflow-decision",
-        {"chat_turns": chat_turns},
+    call_id = begin_tool_call(
+        agent, "koan_propose_workflow", {"status": status, "phases": phases or []},
+        "proposing phases",
     )
-    result = await future
+    result_str: str | None = None
+    try:
+        assert _app_state is not None, "app_state not initialized"
 
-    if isinstance(result, dict) and "error" in result:
-        raise ToolError(json.dumps(result))
+        # Normalise phases: accept both list[str] and list[dict].
+        normalised: list[dict] = []
+        for p in (phases or []):
+            if isinstance(p, str):
+                normalised.append({"phase": p, "context": "", "recommended": False})
+            elif isinstance(p, dict):
+                normalised.append(p)
 
-    agent.phase_ctx.proposal_made = True
+        chat_turns = [{
+            "role": "orchestrator",
+            "status_report": status,
+            "recommended_phases": [
+                {
+                    "phase": p.get("phase", p.get("name", "")),
+                    "context": p.get("context", p.get("description", "")),
+                    "recommended": p.get("recommended", False),
+                }
+                for p in normalised
+            ],
+        }]
+        future = await enqueue_interaction(
+            agent, _app_state, "workflow-decision",
+            {"chat_turns": chat_turns},
+        )
+        result = await future
 
-    phase = result.get("phase", "")
-    context = result.get("context", "")
-    return f"Selected: {phase}\n{context}".strip()
+        if isinstance(result, dict) and "error" in result:
+            raise ToolError(json.dumps(result))
+
+        agent.phase_ctx.proposal_made = True
+
+        phase = result.get("phase", "")
+        context = result.get("context", "")
+        result_str = f"Selected: {phase}\n{context}".strip()
+        return result_str
+    finally:
+        end_tool_call(agent, call_id, "koan_propose_workflow", result_str)
 
 
 @mcp.tool(name="koan_set_next_phase")
 async def koan_set_next_phase(phase: str = "", instructions: str = "") -> str:
     agent = _get_agent()
     _check_or_raise(agent, "koan_set_next_phase", {"phase": phase, "instructions": instructions})
-    _log_tool_call(agent, "koan_set_next_phase", phase)
 
-    from_phase = getattr(agent.phase_ctx, "completed_phase", None)
-    if not is_valid_transition(from_phase, phase):
-        raise ToolError(
-            json.dumps({
-                "error": "invalid_transition",
-                "message": f"Transition {from_phase} -> {phase} is not valid",
-            })
-        )
+    call_id = begin_tool_call(
+        agent, "koan_set_next_phase", {"phase": phase, "instructions": instructions}, phase,
+    )
+    result_str: str | None = None
+    try:
+        from_phase = getattr(agent.phase_ctx, "completed_phase", None)
+        if not is_valid_transition(from_phase, phase):
+            raise ToolError(
+                json.dumps({
+                    "error": "invalid_transition",
+                    "message": f"Transition {from_phase} -> {phase} is not valid",
+                })
+            )
 
-    out_path = Path(agent.phase_ctx.subagent_dir) / "workflow-decision.json"
-    await atomic_write_json(out_path, {"next_phase": phase, "instructions": instructions})
-    agent.phase_ctx.next_phase_set = True
-    return f"Phase set to {phase}."
+        out_path = Path(agent.phase_ctx.subagent_dir) / "workflow-decision.json"
+        await atomic_write_json(out_path, {"next_phase": phase, "instructions": instructions})
+        agent.phase_ctx.next_phase_set = True
+        result_str = f"Phase set to {phase}."
+        return result_str
+    finally:
+        end_tool_call(agent, call_id, "koan_set_next_phase", result_str)
 
 
 # -- ASGI wrapper --------------------------------------------------------------
 
 def build_mcp_asgi_app(app_state: AppState):
-    """Return an ASGI app that validates agent_id then delegates to fastmcp.
-
-    Returns (asgi_wrapper, inner_app) where inner_app is the
-    StarletteWithLifespan from fastmcp.  The caller MUST enter
-    ``inner_app.lifespan`` inside the parent app's own lifespan so
-    that the StreamableHTTPSessionManager task-group is running before
-    the first MCP request arrives.
-
-    The inner app is created with ``path="/"`` because it is mounted
-    under ``Mount("/mcp", ...)``, which strips the ``/mcp`` prefix
-    before forwarding to us.
-    """
+    """Return an ASGI app that validates agent_id then delegates to fastmcp."""
     global _app_state
     _app_state = app_state
 

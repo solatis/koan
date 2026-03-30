@@ -17,11 +17,44 @@ if TYPE_CHECKING:
     from ..state import AgentState, AppState
 
 
-# -- SSE push (lazy import to avoid circular deps) ----------------------------
+# -- Request event emitter ----------------------------------------------------
 
-def _push_sse(app_state: AppState, event_type: str, payload: dict) -> None:
-    from ..driver import push_sse
-    push_sse(app_state, event_type, payload)
+def _emit_interaction_request(app_state: AppState, interaction: PendingInteraction) -> None:
+    """Emit the typed request event for an interaction becoming active."""
+    from ..events import (
+        build_artifact_review_requested,
+        build_questions_asked,
+        build_workflow_decision_requested,
+    )
+
+    store = app_state.projection_store
+    token = interaction.token
+    payload = interaction.payload
+    agent_id = interaction.agent_id
+
+    if interaction.type == "ask":
+        store.push_event(
+            "questions_asked",
+            build_questions_asked(token, payload.get("questions", [])),
+            agent_id=agent_id,
+        )
+    elif interaction.type == "artifact-review":
+        store.push_event(
+            "artifact_review_requested",
+            build_artifact_review_requested(
+                token,
+                payload.get("path", ""),
+                payload.get("description", ""),
+                payload.get("content", ""),
+            ),
+            agent_id=agent_id,
+        )
+    elif interaction.type == "workflow-decision":
+        store.push_event(
+            "workflow_decision_requested",
+            build_workflow_decision_requested(token, payload.get("chat_turns", [])),
+            agent_id=agent_id,
+        )
 
 
 # -- Queue helpers ------------------------------------------------------------
@@ -50,7 +83,7 @@ async def enqueue_interaction(
 
     if app_state.active_interaction is None:
         app_state.active_interaction = interaction
-        _push_sse(app_state, "interaction", {"type": interaction_type, "token": interaction.token, **payload})
+        _emit_interaction_request(app_state, interaction)
     else:
         app_state.interaction_queue.append(interaction)
 
@@ -58,11 +91,10 @@ async def enqueue_interaction(
 
 
 def activate_next_interaction(app_state: AppState) -> None:
-    _push_sse(app_state, "interaction", {"type": "cleared"})
-
+    """Promote the next queued interaction to active, emitting its request event."""
     if app_state.interaction_queue:
         nxt = app_state.interaction_queue.popleft()
         app_state.active_interaction = nxt
-        _push_sse(app_state, "interaction", {"type": nxt.type, "token": nxt.token, **nxt.payload})
+        _emit_interaction_request(app_state, nxt)
     else:
         app_state.active_interaction = None

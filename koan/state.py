@@ -16,6 +16,7 @@ def _utcnow() -> datetime:
 
 from .config import KoanConfig
 from .probe import ProbeResult
+from .projections import ProjectionStore
 from .types import EpicPhase, Profile, SubagentRole
 
 
@@ -52,7 +53,7 @@ class AppState:
     epic_dir: str | None = None
     start_event: asyncio.Event = field(default_factory=asyncio.Event)
     agents: dict[str, AgentState] = field(default_factory=dict)
-    sse_clients: list = field(default_factory=list)
+    projection_store: ProjectionStore = field(default_factory=ProjectionStore)
     active_interaction: PendingInteraction | None = None
     interaction_queue: deque[PendingInteraction] = field(default_factory=deque)
     interaction_queue_max: int = 8
@@ -63,4 +64,3 @@ class AppState:
     port: int = 8000
     open_browser: bool = True
     config_write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    last_sse_values: dict[str, Any] = field(default_factory=dict)

@@ -25,6 +25,11 @@ from ..epic_state import atomic_write_json
 from ..probe import ProbeResult
 from ..types import AgentInstallation, Profile, ProfileTier
 from .interactions import activate_next_interaction
+from ..events import (
+    build_artifact_reviewed,
+    build_questions_answered,
+    build_workflow_decided,
+)
 
 if TYPE_CHECKING:
     from ..state import AppState
@@ -119,23 +124,40 @@ async def spa_fallback(request: Request) -> Response:
 
 async def sse_stream(r: Request) -> Response:
     st = _app_state(r)
+    store = st.projection_store
+
+    since_str = r.query_params.get("since", "0")
+    try:
+        since = int(since_str)
+    except ValueError:
+        since = 0
 
     async def event_generator():
-        queue: asyncio.Queue = asyncio.Queue()
-        st.sse_clients.append(queue)
-        try:
-            # Replay last known state
-            for event_type, payload in st.last_sse_values.items():
-                yield _sse_event(event_type, payload)
+        # Stale client: send fatal_error and close (not HTTP error -- EventSource
+        # cannot read non-200 bodies and would retry with same stale version).
+        if since > 0 and since > store.version:
+            yield _sse_event("fatal_error", {"reason": "version_not_available"})
+            return
 
-            # Stream live events
+        # Subscribe before snapshot -- no await between subscribe and get_snapshot
+        # so no events can be missed between the two operations.
+        queue = store.subscribe()
+        try:
+            if since == 0:
+                yield _sse_event("snapshot", store.get_snapshot())
+            else:
+                for event in store.events_since(since):
+                    data = {"version": event.version, "agent_id": event.agent_id, **event.payload}
+                    yield _sse_event(event.event_type, data)
+
             while True:
-                event_type, payload = await queue.get()
-                yield _sse_event(event_type, payload)
+                event = await queue.get()
+                data = {"version": event.version, "agent_id": event.agent_id, **event.payload}
+                yield _sse_event(event.event_type, data)
         except asyncio.CancelledError:
             pass
         finally:
-            st.sse_clients.remove(queue)
+            store.unsubscribe(queue)
 
     return StreamingResponse(
         event_generator(),
@@ -228,6 +250,11 @@ async def api_answer(r: Request) -> Response:
         return _stale_response()
 
     interaction = active
+    st.projection_store.push_event(
+        "questions_answered",
+        build_questions_answered(interaction.token, answers, cancelled=False),
+        agent_id=interaction.agent_id,
+    )
     activate_next_interaction(st)
     interaction.future.set_result({"answers": answers})
     return JSONResponse({"ok": True})
@@ -245,6 +272,11 @@ async def api_artifact_review(r: Request) -> Response:
         return _stale_response()
 
     interaction = active
+    st.projection_store.push_event(
+        "artifact_reviewed",
+        build_artifact_reviewed(interaction.token, accepted=accepted, response=response, cancelled=False),
+        agent_id=interaction.agent_id,
+    )
     activate_next_interaction(st)
     interaction.future.set_result({"response": response, "accepted": accepted})
     return JSONResponse({"ok": True})
@@ -283,6 +315,11 @@ async def api_workflow_decision(r: Request) -> Response:
         )
 
     interaction = active
+    st.projection_store.push_event(
+        "workflow_decided",
+        build_workflow_decided(interaction.token, decision={"phase": phase, "context": context}, cancelled=False),
+        agent_id=interaction.agent_id,
+    )
     activate_next_interaction(st)
     interaction.future.set_result({"phase": phase, "context": context})
     return JSONResponse({"ok": True})

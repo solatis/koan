@@ -14,6 +14,16 @@ import aiofiles
 
 from .audit import EventLog
 from .epic_state import ensure_subagent_directory
+from .events import (
+    build_agent_exited,
+    build_agent_spawn_failed,
+    build_agent_spawned,
+    build_artifact_reviewed,
+    build_questions_answered,
+    build_tool_called,
+    build_tool_completed,
+    build_workflow_decided,
+)
 from .logger import get_logger
 from .phases import PHASE_MODULE_MAP, PhaseContext
 from .runners import RunnerDiagnostic, RunnerError
@@ -70,6 +80,7 @@ def _build_phase_ctx(task: dict, subagent_dir: str) -> PhaseContext:
 async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None = None) -> int:
     role = task["role"]
     agent_id = str(uuid.uuid4())
+    store = app_state.projection_store
 
     # Own directory creation -- derive if not provided, ensure it exists
     subagent_dir = task.get("subagent_dir", "")
@@ -103,7 +114,7 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
             model = model_alias
         except RunnerError as e:
             log.error("runner resolution failed for %s: %s", role, e.diagnostic.message)
-            # Emit diagnostics via EventLog if possible, otherwise emit pre-log diagnostic
+            # Write diagnostic to EventLog
             try:
                 event_log = EventLog(subagent_dir, role, phase=role, model=None)
                 await event_log.open()
@@ -111,16 +122,10 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
                 await event_log.close()
             except Exception:
                 log.warning("failed to write diagnostic event log for %s", role)
-            _push_sse(app_state, "notification", {
-                "type": "runner_error",
-                "agent_id": agent_id,
-                "role": role,
-                "code": e.diagnostic.code,
-                "runner": e.diagnostic.runner,
-                "stage": e.diagnostic.stage,
-                "message": e.diagnostic.message,
-                "details": e.diagnostic.details,
-            })
+            store.push_event(
+                "agent_spawn_failed",
+                build_agent_spawn_failed(role, e.diagnostic),
+            )
             return 1
     else:
         model = None
@@ -161,11 +166,11 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
     )
     app_state.agents[agent_id] = agent
 
-    # Emit phase start
+    # Emit phase start to audit log
     await event_log.emit_phase_start(phase_module.TOTAL_STEPS)
 
-    # Build command -- use full 5-arg signature when registry-resolved,
-    # fall back to legacy 3-arg for externally provided runners.
+    # Build command before emitting agent_spawned -- if build_command fails, no
+    # agent_spawned event is emitted (per plan: "the agent was never launched").
     try:
         if installation is not None and thinking_mode is not None:
             cmd = runner.build_command(
@@ -175,19 +180,16 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
             cmd = runner.build_command(boot_prompt(role), mcp_url, model)
     except RunnerError as e:
         await event_log.emit_runner_diagnostic(e.diagnostic)
-        _push_sse(app_state, "notification", {
-            "type": "runner_error",
-            "agent_id": agent_id,
-            "role": role,
-            "code": e.diagnostic.code,
-            "runner": e.diagnostic.runner,
-            "stage": e.diagnostic.stage,
-            "message": e.diagnostic.message,
-            "details": e.diagnostic.details,
-        })
+        store.push_event(
+            "agent_spawn_failed",
+            build_agent_spawn_failed(role, e.diagnostic),
+        )
         await event_log.close()
         del app_state.agents[agent_id]
         return 1
+
+    # Emit agent_spawned only after build_command succeeds -- process is about to start
+    store.push_event("agent_spawned", build_agent_spawned(agent), agent_id=agent_id)
 
     # Spawn process
     log.info("spawning %s (agent_id=%s): %s", role, agent_id, " ".join(cmd))
@@ -198,72 +200,54 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
         cwd=subagent_dir,
     )
 
-    # Emit agent spawn to SSE
-    _push_sse(app_state, "subagent", {
-        "agent_id": agent_id,
-        "role": role,
-        "model": model,
-        "step": 0,
-        "startedAt": agent.started_at.isoformat(),
-    })
-    _push_sse(app_state, "agents", {
-        "agents": [{"agent_id": a.agent_id, "role": a.role} for a in app_state.agents.values()]
-    })
-
-    # Stream tracking (telemetry only -- handshake detected via MCP path)
+    # Stream tracking
     async def stream_stdout():
         assert proc.stdout is not None
-        last_tool: str | None = None
+        last_tool_name: str | None = None
+        last_call_id: str | None = None
+
         async for raw in proc.stdout:
             line = raw.decode("utf-8", errors="replace").rstrip("\n")
             events = runner.parse_stream_event(line)
             for ev in events:
                 if ev.type == "token_delta":
                     agent.token_count["received"] = agent.token_count.get("received", 0) + len(ev.content or "")
-                    _push_sse(app_state, "token-delta", {
-                        "delta": ev.content,
-                        "agent_id": agent_id,
-                    })
+                    store.push_event("stream_delta", {"delta": ev.content or ""}, agent_id=agent_id)
                 elif ev.type == "thinking":
-                    _push_sse(app_state, "logs", {
-                        "line": {
-                            "tool": "",
-                            "summary": "thinking...",
-                            "inFlight": True,
-                            "ts": _now_iso(),
-                        },
-                        "agent_id": agent_id,
-                    })
+                    store.push_event("thinking", {"delta": ev.content or ""}, agent_id=agent_id)
                 elif ev.type == "tool_call":
-                    # tool_call events carry tool metadata (not input tokens),
-                    # so no token counter is incremented here.
                     # Close previous in-flight tool
-                    if last_tool:
-                        _push_sse(app_state, "logs", {
-                            "line": {
-                                "tool": last_tool,
-                                "summary": "completed",
-                                "inFlight": False,
-                            },
-                            "agent_id": agent_id,
-                        })
-                    last_tool = ev.tool_name
-                    _push_sse(app_state, "logs", {
-                        "line": {
-                            "tool": ev.tool_name or "tool",
-                            "summary": ev.content or "",
-                            "inFlight": True,
-                        },
-                        "agent_id": agent_id,
-                    })
-                else:
-                    _push_sse(app_state, "stream", {
-                        "agent_id": agent_id,
-                        "role": role,
-                        "type": ev.type,
-                        "content": ev.content,
-                        "tool_name": ev.tool_name,
-                    })
+                    if last_call_id is not None and last_tool_name is not None:
+                        store.push_event(
+                            "tool_completed",
+                            build_tool_completed(last_call_id, last_tool_name),
+                            agent_id=agent_id,
+                        )
+                    # Open new tool call
+                    call_id = str(uuid.uuid4())
+                    tool_name = ev.tool_name or "tool"
+                    store.push_event(
+                        "tool_called",
+                        build_tool_called(call_id, tool_name, ev.tool_args or {}, ev.content or ""),
+                        agent_id=agent_id,
+                    )
+                    last_call_id = call_id
+                    last_tool_name = tool_name
+                elif ev.type == "turn_complete":
+                    # Dropped -- stream_cleared at stdout EOF covers end-of-stream
+                    pass
+                # All other unrecognized types are silently dropped
+
+        # Close any in-flight tool at stdout EOF
+        if last_call_id is not None and last_tool_name is not None:
+            store.push_event(
+                "tool_completed",
+                build_tool_completed(last_call_id, last_tool_name),
+                agent_id=agent_id,
+            )
+
+        # Tombstone: mark end of this agent's stream
+        store.push_event("stream_cleared", {}, agent_id=agent_id)
 
     async def drain_stderr():
         assert proc.stderr is not None
@@ -283,7 +267,8 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
     if stderr_output.strip():
         log.warning("stderr from %s (agent_id=%s): %s", role, agent_id, stderr_output[:500])
 
-    # Handshake check (uses MCP-path flag, works for all runners)
+    # Handshake check
+    error_str: str | None = None
     if not agent.handshake_observed:
         diag = RunnerDiagnostic(
             code="bootstrap_failure",
@@ -292,80 +277,83 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
             message="Process exited before first koan_complete_step call",
         )
         await event_log.emit_runner_diagnostic(diag)
-        _push_sse(app_state, "notification", {
-            "type": "bootstrap_failure",
-            "agent_id": agent_id,
-            "role": role,
-            "code": diag.code,
-            "runner": diag.runner,
-            "stage": diag.stage,
-            "message": diag.message,
-            "details": diag.details,
-        })
+        error_str = "bootstrap_failure"
         exit_code = 1
 
     # Cleanup: resolve pending interactions for this agent
     _cancel_pending_interactions(agent_id, app_state)
 
-    # Finalize
+    # Finalize audit log
     outcome = "completed" if exit_code == 0 else "failed"
     await event_log.emit_phase_end(outcome)
     await event_log.close()
     del app_state.agents[agent_id]
 
-    # Emit subagent-idle and updated agents list
-    _push_sse(app_state, "subagent-idle", {})
-    _push_sse(app_state, "agents", {
-        "agents": [{"agent_id": a.agent_id, "role": a.role} for a in app_state.agents.values()]
-    })
+    # Emit agent_exited to projection
+    token_usage = {
+        "input_tokens": agent.token_count.get("sent", 0),
+        "output_tokens": agent.token_count.get("received", 0),
+    }
+    store.push_event(
+        "agent_exited",
+        build_agent_exited(exit_code, error=error_str, usage=token_usage),
+        agent_id=agent_id,
+    )
 
     log.info("%s (agent_id=%s) exited with code %d", role, agent_id, exit_code)
     return exit_code
 
 
-# -- SSE push helper -----------------------------------------------------------
-
-def _push_sse(app_state: AppState, event_type: str, payload: dict) -> None:
-    """Forward to driver.push_sse (imported lazily to avoid circular imports)."""
-    from .driver import push_sse
-    push_sse(app_state, event_type, payload)
-
-
 # -- Interaction cleanup -------------------------------------------------------
 
 def _cancel_pending_interactions(agent_id: str, app_state: AppState) -> None:
-    """Resolve any pending/queued blocking interactions for this agent."""
+    """Resolve any pending/queued blocking interactions for this agent.
+
+    Queued interactions are cancelled silently (no projection event).
+    The active interaction (if it belongs to this agent) emits a typed
+    cancellation resolution event.
+    """
     from .web.interactions import activate_next_interaction
 
     error_result = {"error": "agent_exited", "message": "Agent process exited"}
+    store = app_state.projection_store
 
-    # Collect and cancel all interactions belonging to agent_id (queue first,
-    # then active) before promoting any next interaction.  This prevents
-    # activate_next_interaction() from promoting another queued interaction
-    # from the same exiting agent into the active slot.
-
+    # Cancel queued interactions belonging to this agent silently
     remaining = []
     for item in app_state.interaction_queue:
         if item.agent_id == agent_id:
             if not item.future.done():
                 item.future.set_result(error_result)
-            _push_sse(app_state, "notification", {
-                "type": "interaction_cancelled",
-                "agent_id": agent_id,
-                "message": "Interaction cancelled: agent process exited",
-            })
+            # No projection event for queued (never-active) interactions
         else:
             remaining.append(item)
     app_state.interaction_queue.clear()
     app_state.interaction_queue.extend(remaining)
 
+    # Cancel active interaction with a typed cancellation event
     active = app_state.active_interaction
     if active is not None and active.agent_id == agent_id:
+        token = active.token
+
+        if active.type == "ask":
+            store.push_event(
+                "questions_answered",
+                build_questions_answered(token, answers=None, cancelled=True),
+                agent_id=agent_id,
+            )
+        elif active.type == "artifact-review":
+            store.push_event(
+                "artifact_reviewed",
+                build_artifact_reviewed(token, accepted=None, response=None, cancelled=True),
+                agent_id=agent_id,
+            )
+        elif active.type == "workflow-decision":
+            store.push_event(
+                "workflow_decided",
+                build_workflow_decided(token, decision=None, cancelled=True),
+                agent_id=agent_id,
+            )
+
         if not active.future.done():
             active.future.set_result(error_result)
-        _push_sse(app_state, "notification", {
-            "type": "interaction_cancelled",
-            "agent_id": agent_id,
-            "message": "Interaction cancelled: agent process exited",
-        })
         activate_next_interaction(app_state)
