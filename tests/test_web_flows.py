@@ -499,7 +499,7 @@ class TestProbeRefresh:
             ProbeResult(runner_type="codex", available=True),
         ]
         fresh_profile = Profile(name="balanced", tiers={
-            "strong": ProfileTier(runner_type="codex", model="gpt-5", thinking="high"),
+            "strong": ProfileTier(runner_type="claude", model="opus", thinking="high"),
         })
 
         # Pre-populate with stale data

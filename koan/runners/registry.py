@@ -40,7 +40,7 @@ _NEEDS_SUBAGENT_DIR = frozenset({"claude", "gemini"})
 # -- Balanced profile priority table -------------------------------------------
 
 _TIER_PRIORITY: dict[ModelTier, list[tuple[str, str]]] = {
-    "strong": [("codex", "gpt-5"), ("claude", "opus"), ("gemini", "gemini-pro")],
+    "strong": [("claude", "opus"), ("codex", "gpt-5"), ("gemini", "gemini-pro")],
     "standard": [("claude", "sonnet"), ("codex", "gpt-5"), ("gemini", "gemini-pro")],
     "cheap": [("claude", "haiku"), ("codex", "gpt-5-mini"), ("gemini", "gemini-flash")],
 }

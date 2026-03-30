@@ -64,10 +64,9 @@ class TestComputeBalancedProfile:
         ]
         p = compute_balanced_profile(probes)
         assert p.name == "balanced"
-        assert p.tiers["strong"].runner_type == "codex"
-        assert p.tiers["strong"].model == "gpt-5"
-        # codex only supports disabled -- thinking is clamped
-        assert p.tiers["strong"].thinking == "disabled"
+        assert p.tiers["strong"].runner_type == "claude"
+        assert p.tiers["strong"].model == "opus"
+        assert p.tiers["strong"].thinking == "high"
         assert p.tiers["standard"].runner_type == "claude"
         assert p.tiers["standard"].model == "sonnet"
         assert p.tiers["standard"].thinking == "medium"
@@ -83,7 +82,7 @@ class TestComputeBalancedProfile:
             ProbeResult(runner_type="gemini", available=True),
         ]
         p = compute_balanced_profile(probes)
-        assert p.tiers["strong"].runner_type == "codex"
+        assert p.tiers["strong"].runner_type == "claude"
         assert p.tiers["strong"].thinking == "high"  # no model info -> default
 
     def test_only_claude_available(self):
@@ -121,13 +120,14 @@ class TestComputeBalancedProfile:
         assert p.name == "balanced"
         assert p.tiers == {}
 
-    def test_codex_preferred_for_strong(self):
+    def test_claude_preferred_for_strong(self):
         probes = [
             ProbeResult(runner_type="claude", available=True, models=_claude_models()),
             ProbeResult(runner_type="codex", available=True, models=_codex_models()),
         ]
         p = compute_balanced_profile(probes)
-        assert p.tiers["strong"].runner_type == "codex"
+        assert p.tiers["strong"].runner_type == "claude"
+        assert p.tiers["strong"].model == "opus"
 
     def test_claude_preferred_for_standard(self):
         probes = [
