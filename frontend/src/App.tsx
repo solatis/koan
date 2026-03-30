@@ -44,18 +44,23 @@ function WorkspaceMain() {
 export default function App() {
   const runStarted = useStore(s => s.runStarted)
   const settingsOpen = useStore(s => s.settingsOpen)
+  const fatalError = useStore(s => s.fatalError)
 
   useEffect(() => {
     let es: EventSource | null = null
     let retryDelay = 500
 
     function connect() {
+      // Do not reconnect after a fatal_error (server restart / stale version).
+      // User must reload the page.
+      if (useStore.getState().fatalError) return
+
       es = connectSSE(useStore)
       // Override the onerror set inside connectSSE to schedule our retry.
       es.onerror = () => {
         useStore.getState().setConnected(false)
         es?.close()
-        // Exponential backoff capped at 5s, matching the old koan.js behaviour.
+        // Exponential backoff capped at 5s.
         setTimeout(connect, retryDelay)
         retryDelay = Math.min(retryDelay * 2, 5000)
       }
@@ -67,11 +72,23 @@ export default function App() {
 
     connect()
 
-    // Cleanup on unmount — prevents duplicate SSE connections in React StrictMode.
+    // Cleanup on unmount -- prevents duplicate SSE connections in React StrictMode.
     return () => {
       es?.close()
     }
   }, []) // Empty dep array: connect once, reconnect is managed inside
+
+  if (fatalError) {
+    return (
+      <div className="app">
+        <Header />
+        <div style={{ padding: '2rem', textAlign: 'center' }}>
+          <p>Connection lost. The server restarted or the session expired.</p>
+          <button onClick={() => window.location.reload()}>Reload page</button>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="app">
