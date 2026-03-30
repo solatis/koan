@@ -60,6 +60,7 @@ class CodexRunner:
 
         cmd = [
             installation.binary, "exec", "--json",
+            "--dangerously-bypass-approvals-and-sandbox",
             "-c", f"mcp_servers.koan.url={mcp_url}",
             boot_prompt,
         ]
