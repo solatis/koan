@@ -1,4 +1,4 @@
-import { Profile, Installation } from '../store/index'
+import { Installation } from '../store/index'
 
 // -- Helpers -----------------------------------------------------------------
 
@@ -122,21 +122,6 @@ export interface RunnerInfo {
   models: ModelInfo[]
 }
 
-export interface ProbeResult {
-  runners: RunnerInfo[]
-  balanced_profile: Profile | null
-}
-
-export async function getProbe(refresh = false): Promise<ProbeResult> {
-  return get(`/api/probe${refresh ? '?refresh=1' : ''}`)
-}
-
-// -- Profiles ----------------------------------------------------------------
-
-export async function getProfiles(): Promise<{ profiles: Profile[] }> {
-  return get('/api/profiles')
-}
-
 export async function createProfile(
   name: string,
   tiers: Record<string, { runner_type: string; model: string; thinking: string }>,
@@ -184,29 +169,11 @@ export async function deleteAgent(alias: string) {
   return del<{ ok: boolean; message?: string }>(`/api/agents/${encodeURIComponent(alias)}`)
 }
 
-export async function setActiveAgent(runner_type: string, alias: string) {
-  return put<{ ok: boolean; message?: string }>(
-    `/api/agents/${encodeURIComponent(runner_type)}/active`,
-    { alias },
-  )
-}
-
 export async function detectAgent(runner_type: string): Promise<{ path: string | null }> {
   return get(`/api/agents/detect?runner_type=${encodeURIComponent(runner_type)}`)
 }
 
 // -- Settings ----------------------------------------------------------------
-
-export interface SettingsBody {
-  profiles: Profile[]
-  installations: Installation[]
-  activeInstallations: Record<string, string>
-  scoutConcurrency: number
-}
-
-export async function getSettingsBody(): Promise<SettingsBody> {
-  return get('/api/settings/body')
-}
 
 export async function saveScoutConcurrency(value: number) {
   return put<{ ok: boolean; message?: string }>('/api/settings/scout-concurrency', {
