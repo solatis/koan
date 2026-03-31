@@ -9,6 +9,8 @@ export const ALL_PHASES = [
 
 // -- Domain types ------------------------------------------------------------
 
+export type AgentStatus = 'running' | 'done' | 'failed'
+
 export interface AgentInfo {
   agentId: string
   role: string
@@ -18,6 +20,8 @@ export interface AgentInfo {
   startedAt: number   // UTC epoch milliseconds
   tokensSent: number
   tokensReceived: number
+  status: AgentStatus
+  error?: string
 }
 
 export interface ArtifactFile {
@@ -134,6 +138,8 @@ function transformAgent(a: Record<string, unknown>): AgentInfo {
     startedAt:      (a['started_at_ms'] as number) ?? 0,
     tokensSent:     (a['input_tokens'] as number) ?? 0,
     tokensReceived: (a['output_tokens'] as number) ?? 0,
+    status:         (a['status'] as AgentStatus) ?? 'running',
+    error:          a['error'] as string | undefined,
   }
 }
 
@@ -501,6 +507,7 @@ export const useStore = create<KoanState>((set) => ({
             startedAt:      (event['started_at_ms'] as number) ?? 0,
             tokensSent:     0,
             tokensReceived: 0,
+            status:         'running',
           }
           if (isPrimary) {
             return { ...base, primaryAgent: agent }
@@ -577,20 +584,21 @@ export const useStore = create<KoanState>((set) => ({
 
           // Mirror backend _accumulate_usage: apply final token delta before
           // moving the agent to completedAgents.
-          function applyUsage(agent: AgentInfo): AgentInfo {
-            if (!usage) return agent
-            return {
+          const exitStatus: AgentStatus = error ? 'failed' : 'done'
+          function finalize(agent: AgentInfo): AgentInfo {
+            const a = usage ? {
               ...agent,
               tokensSent:     agent.tokensSent     + (usage['input_tokens']  ?? 0),
               tokensReceived: agent.tokensReceived  + (usage['output_tokens'] ?? 0),
-            }
+            } : agent
+            return { ...a, status: exitStatus, error: error ?? undefined }
           }
 
           if (s.primaryAgent?.agentId === agentId) {
-            const finalAgent = applyUsage(s.primaryAgent)
+            const finalAgent = finalize(s.primaryAgent)
             return { ...base, primaryAgent: null, completedAgents: [...s.completedAgents, finalAgent], notifications: newNotifs }
           } else if (agentId && agentId in s.scouts) {
-            const finalAgent = applyUsage(s.scouts[agentId])
+            const finalAgent = finalize(s.scouts[agentId])
             const { [agentId]: _, ...rest } = s.scouts
             return { ...base, scouts: rest, completedAgents: [...s.completedAgents, finalAgent], notifications: newNotifs }
           }
