@@ -212,7 +212,7 @@
 .agent-row-failed  { /* full opacity — errors are important */ }
 
 .agent-row-icon   { width: 14px; text-align: center; flex-shrink: 0; }
-.agent-row-name   { width: 90px; flex-shrink: 0; }
+.agent-row-name   { min-width: 90px; max-width: 200px; flex-shrink: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .agent-row-model  { width: 70px; flex-shrink: 0; color: var(--text-muted); }
 .agent-row-tokens { width: 60px; flex-shrink: 0; text-align: right; color: var(--text-muted); }
 .agent-row-time   { width: 55px; flex-shrink: 0; text-align: right; color: var(--text-muted); font-size: var(--font-size-xs); }
