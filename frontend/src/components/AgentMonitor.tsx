@@ -81,6 +81,10 @@ export function AgentMonitor() {
   const total = running.length + done.length + failed.length + queuedScouts.length
   if (total === 0) return null
 
+  // Collapse to just the counter bar when nothing is active
+  const hasActive = running.length > 0 || queuedScouts.length > 0
+  const collapsed = !hasActive
+
   return (
     <div id="monitor" className="monitor">
       <div className="monitor-inner">
@@ -91,40 +95,44 @@ export function AgentMonitor() {
           failed={failed.length}
         />
 
-        {running.length > 0 && (
+        {!collapsed && (
           <>
-            <SectionHeader icon="●" label="running" className="section-running" />
-            {running.map(a => <AgentRow key={a.agentId} agent={a} />)}
-          </>
-        )}
+            {running.length > 0 && (
+              <>
+                <SectionHeader icon="●" label="running" className="section-running" />
+                {running.map(a => <AgentRow key={a.agentId} agent={a} />)}
+              </>
+            )}
 
-        {queuedScouts.length > 0 && (
-          <>
-            <SectionHeader icon="○" label="queued" className="section-queued" />
-            {queuedScouts.map((q, i) => (
-              <div key={i} className="agent-row agent-row-queued">
-                <span className="agent-row-icon agent-status-queued">○</span>
-                <span className="agent-row-name agent-name-queued">{q.label || 'scout'}</span>
-                <span className="agent-row-model">--</span>
-                <span className="agent-row-tokens">--</span>
-                <span className="agent-row-time">--</span>
-                <span className="agent-row-doing agent-doing-dim">queued</span>
-              </div>
-            ))}
-          </>
-        )}
+            {queuedScouts.length > 0 && (
+              <>
+                <SectionHeader icon="○" label="queued" className="section-queued" />
+                {queuedScouts.map((q, i) => (
+                  <div key={i} className="agent-row agent-row-queued">
+                    <span className="agent-row-icon agent-status-queued">○</span>
+                    <span className="agent-row-name agent-name-queued">{q.label || 'scout'}</span>
+                    <span className="agent-row-model">--</span>
+                    <span className="agent-row-tokens">--</span>
+                    <span className="agent-row-time">--</span>
+                    <span className="agent-row-doing agent-doing-dim">queued</span>
+                  </div>
+                ))}
+              </>
+            )}
 
-        {done.length > 0 && (
-          <>
-            <SectionHeader icon="✓" label="done" className="section-done" />
-            {done.map(a => <AgentRow key={a.agentId} agent={a} />)}
-          </>
-        )}
+            {done.length > 0 && (
+              <>
+                <SectionHeader icon="✓" label="done" className="section-done" />
+                {done.map(a => <AgentRow key={a.agentId} agent={a} />)}
+              </>
+            )}
 
-        {failed.length > 0 && (
-          <>
-            <SectionHeader icon="✘" label="failed" className="section-failed" />
-            {failed.map(a => <AgentRow key={a.agentId} agent={a} />)}
+            {failed.length > 0 && (
+              <>
+                <SectionHeader icon="✘" label="failed" className="section-failed" />
+                {failed.map(a => <AgentRow key={a.agentId} agent={a} />)}
+              </>
+            )}
           </>
         )}
       </div>

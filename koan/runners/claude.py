@@ -169,6 +169,12 @@ class ClaudeRunner:
         if not isinstance(inner, dict):
             return []
         inner_type = inner.get("type")
+        if inner_type == "message_start":
+            # New assistant turn — reset the flag so that if this turn
+            # doesn't produce content_block_delta events (e.g. after a
+            # long MCP call), the assistant message fallback kicks in.
+            self._saw_stream_events = False
+            return []
         if inner_type == "content_block_delta":
             self._saw_stream_events = True
             delta = inner.get("delta", {})

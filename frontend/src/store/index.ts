@@ -842,10 +842,31 @@ export const useStore = create<KoanState>((set) => ({
         // ── Interactions ───────────────────────────────────────────────────
 
         case 'questions_asked': {
+          // Normalize questions: options may arrive as strings or dicts
+          // with varying key names from the LLM.
+          const rawQs = (event['questions'] as Record<string, unknown>[]) ?? []
+          const questions: AskQuestion[] = rawQs.map(q => {
+            const rawOpts = (q['options'] ?? []) as (string | Record<string, unknown>)[]
+            const options: AskOption[] = rawOpts.map(o => {
+              if (typeof o === 'string') return { value: o, label: o }
+              const label = (o['label'] ?? o['text'] ?? o['value'] ?? o['option'] ?? '') as string
+              const value = (o['value'] ?? o['label'] ?? o['text'] ?? label) as string
+              return {
+                value,
+                label,
+                recommended: (o['recommended'] as boolean) ?? false,
+              }
+            })
+            return {
+              question: (q['question'] ?? q['text'] ?? q['prompt'] ?? '') as string,
+              multi: (q['multi'] as boolean) ?? false,
+              options,
+              allow_other: (q['allow_other'] as boolean) ?? undefined,
+              context: (q['context'] ?? q['description'] ?? q['rationale']) as string | undefined,
+            }
+          })
           const interaction: Interaction = {
-            type:      'ask',
-            token:     event['token'] as string,
-            questions: (event['questions'] as AskQuestion[]) ?? [],
+            type: 'ask', token: event['token'] as string, questions,
           }
           return { ...base, activeInteraction: interaction }
         }
