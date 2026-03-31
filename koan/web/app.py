@@ -520,6 +520,13 @@ async def _refresh_probe_state(st: AppState, broadcast: bool = True) -> None:
     st.probe_results = await probe_all_runners()
     st.balanced_profile = compute_balanced_profile(st.probe_results)
 
+    # --yolo: per-runner permission-skipping flags for default installations
+    _YOLO_ARGS: dict[str, list[str]] = {
+        "claude": ["--dangerously-skip-permissions"],
+        "codex": ["--dangerously-bypass-approvals-and-sandbox"],
+        "gemini": ["--yolo"],
+    }
+
     # Auto-create or update default installations from probe results
     existing_types = {inst.runner_type for inst in st.config.agent_installations}
     changed = False
@@ -528,11 +535,12 @@ async def _refresh_probe_state(st: AppState, broadcast: bool = True) -> None:
     for pr in st.probe_results:
         if pr.available and pr.binary_path:
             if pr.runner_type not in existing_types:
+                extra = _YOLO_ARGS.get(pr.runner_type, []) if st.yolo else []
                 inst = AgentInstallation(
                     alias=f"{pr.runner_type}-default",
                     runner_type=pr.runner_type,
                     binary=pr.binary_path,
-                    extra_args=[],
+                    extra_args=extra,
                 )
                 st.config.agent_installations.append(inst)
                 new_insts.append(inst)
@@ -540,8 +548,16 @@ async def _refresh_probe_state(st: AppState, broadcast: bool = True) -> None:
             else:
                 for inst in st.config.agent_installations:
                     if inst.runner_type == pr.runner_type and inst.alias == f"{pr.runner_type}-default":
+                        need_update = False
                         if inst.binary != pr.binary_path:
                             inst.binary = pr.binary_path
+                            need_update = True
+                        # Sync yolo flags on default installations
+                        yolo_args = _YOLO_ARGS.get(pr.runner_type, []) if st.yolo else []
+                        if yolo_args and not all(a in inst.extra_args for a in yolo_args):
+                            inst.extra_args = list({*inst.extra_args, *yolo_args})
+                            need_update = True
+                        if need_update:
                             modified_insts.append(inst)
                             changed = True
     if changed:
