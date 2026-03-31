@@ -547,7 +547,7 @@ class TestConfigEvents:
 
     def test_installation_created_appends(self):
         p = Projection()
-        inst = {"alias": "claude-default", "runner_type": "claude", "binary": "/usr/bin/claude", "extra_args": []}
+        inst = {"alias": "claude-default", "runner_type": "claude", "binary": "/fake/bin/claude", "extra_args": []}
         p2 = fold(p, self._e("installation_created", inst))
         assert len(p2.config_installations) == 1
         assert p2.config_installations[0]["alias"] == "claude-default"
@@ -560,24 +560,11 @@ class TestConfigEvents:
         assert len(p2.config_installations) == 1
         assert p2.config_installations[0]["binary"] == "/new/claude"
 
-    def test_installation_removed_removes_and_cleans_active(self):
-        inst = {"alias": "my-claude", "runner_type": "claude", "binary": "/usr/bin/claude", "extra_args": []}
-        p = Projection(
-            config_installations=[inst],
-            config_active_installations={"claude": "my-claude"},
-        )
+    def test_installation_removed(self):
+        inst = {"alias": "my-claude", "runner_type": "claude", "binary": "/fake/bin/claude", "extra_args": []}
+        p = Projection(config_installations=[inst])
         p2 = fold(p, self._e("installation_removed", {"alias": "my-claude"}))
         assert p2.config_installations == []
-        assert "claude" not in p2.config_active_installations
-
-    def test_installation_removed_does_not_clean_unrelated_active(self):
-        inst = {"alias": "my-claude", "runner_type": "claude", "binary": "/usr/bin/claude", "extra_args": []}
-        p = Projection(
-            config_installations=[inst],
-            config_active_installations={"claude": "other-claude"},
-        )
-        p2 = fold(p, self._e("installation_removed", {"alias": "my-claude"}))
-        assert p2.config_active_installations == {"claude": "other-claude"}
 
     def test_profile_created_appends(self):
         p = Projection()
@@ -614,16 +601,6 @@ class TestConfigEvents:
         p = Projection()
         p2 = fold(p, self._e("active_profile_changed", {"name": "fast"}))
         assert p2.config_active_profile == "fast"
-
-    def test_active_installation_changed(self):
-        p = Projection()
-        p2 = fold(p, self._e("active_installation_changed", {"runner_type": "claude", "alias": "my-claude"}))
-        assert p2.config_active_installations == {"claude": "my-claude"}
-
-    def test_active_installation_changed_updates_existing(self):
-        p = Projection(config_active_installations={"claude": "old", "codex": "codex-default"})
-        p2 = fold(p, self._e("active_installation_changed", {"runner_type": "claude", "alias": "new"}))
-        assert p2.config_active_installations == {"claude": "new", "codex": "codex-default"}
 
     def test_scout_concurrency_changed(self):
         p = Projection()

@@ -182,7 +182,6 @@ interface KoanState {
   // Configuration — sourced from projection events, always up to date
   configProfiles: Profile[]
   configInstallations: Installation[]
-  configActiveInstallations: Record<string, string>
   configActiveProfile: string
   configScoutConcurrency: number
   configRunners: RunnerInfo[]
@@ -237,7 +236,6 @@ export const useStore = create<KoanState>((set) => ({
   // Configuration defaults
   configProfiles: [],
   configInstallations: [],
-  configActiveInstallations: {},
   configActiveProfile: 'balanced',
   configScoutConcurrency: 8,
   configRunners: [],
@@ -385,7 +383,6 @@ export const useStore = create<KoanState>((set) => ({
       // Configuration
       configProfiles,
       configInstallations,
-      configActiveInstallations: (state['config_active_installations'] ?? {}) as Record<string, string>,
       configActiveProfile: (state['config_active_profile'] as string) ?? 'balanced',
       configScoutConcurrency: (state['config_scout_concurrency'] as number) ?? 8,
       configRunners: (state['config_runners'] ?? []) as RunnerInfo[],
@@ -631,12 +628,7 @@ export const useStore = create<KoanState>((set) => ({
 
         case 'installation_removed': {
           const alias = event['alias'] as string
-          const newInsts = s.configInstallations.filter(i => i.alias !== alias)
-          const newActive = { ...s.configActiveInstallations }
-          for (const [rt, a] of Object.entries(newActive)) {
-            if (a === alias) delete newActive[rt]
-          }
-          return { ...base, configInstallations: newInsts, configActiveInstallations: newActive }
+          return { ...base, configInstallations: s.configInstallations.filter(i => i.alias !== alias) }
         }
 
         case 'profile_created': {
@@ -674,15 +666,6 @@ export const useStore = create<KoanState>((set) => ({
 
         case 'active_profile_changed': {
           return { ...base, configActiveProfile: (event['name'] as string) ?? 'balanced' }
-        }
-
-        case 'active_installation_changed': {
-          const rt    = event['runner_type'] as string
-          const alias = event['alias'] as string
-          return {
-            ...base,
-            configActiveInstallations: { ...s.configActiveInstallations, [rt]: alias },
-          }
         }
 
         case 'scout_concurrency_changed': {

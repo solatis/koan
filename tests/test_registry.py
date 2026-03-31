@@ -141,21 +141,18 @@ class TestComputeBalancedProfile:
 # -- RunnerRegistry.get_installation ------------------------------------------
 
 class TestGetInstallation:
-    def _make_config(self, installations, active=None):
-        return KoanConfig(
-            agent_installations=installations,
-            active_installations=active or {},
-        )
+    def _make_config(self, installations):
+        return KoanConfig(agent_installations=installations)
 
-    def test_active_installation_resolved(self):
-        inst = AgentInstallation(alias="my-claude", runner_type="claude", binary="/usr/bin/claude")
-        config = self._make_config([inst], active={"claude": "my-claude"})
+    def test_run_installation_resolved(self):
+        inst = AgentInstallation(alias="my-claude", runner_type="claude", binary="/fake/bin/claude")
+        config = self._make_config([inst])
         reg = RunnerRegistry()
-        result = reg.get_installation("claude", config)
+        result = reg.get_installation("claude", config, run_installations={"claude": "my-claude"})
         assert result is inst
 
     def test_fallback_to_first_installation(self):
-        inst = AgentInstallation(alias="default-codex", runner_type="codex", binary="/usr/bin/codex")
+        inst = AgentInstallation(alias="default-codex", runner_type="codex", binary="/fake/bin/codex")
         config = self._make_config([inst])
         reg = RunnerRegistry()
         result = reg.get_installation("codex", config)
@@ -168,18 +165,18 @@ class TestGetInstallation:
             reg.get_installation("claude", config)
         assert exc_info.value.diagnostic.code == "no_installation"
 
-    def test_active_alias_configured_but_missing_raises(self):
-        inst = AgentInstallation(alias="real-claude", runner_type="claude", binary="/usr/bin/claude")
-        config = self._make_config([inst], active={"claude": "ghost-alias"})
+    def test_run_alias_configured_but_missing_raises(self):
+        inst = AgentInstallation(alias="real-claude", runner_type="claude", binary="/fake/bin/claude")
+        config = self._make_config([inst])
         reg = RunnerRegistry()
         with pytest.raises(RunnerError) as exc_info:
-            reg.get_installation("claude", config)
+            reg.get_installation("claude", config, run_installations={"claude": "ghost-alias"})
         assert exc_info.value.diagnostic.code == "no_installation"
         assert "ghost-alias" in exc_info.value.diagnostic.message
 
     def test_fallback_only_when_no_active_alias(self):
-        inst = AgentInstallation(alias="default-codex", runner_type="codex", binary="/usr/bin/codex")
-        config = self._make_config([inst], active={})
+        inst = AgentInstallation(alias="default-codex", runner_type="codex", binary="/fake/bin/codex")
+        config = self._make_config([inst])
         reg = RunnerRegistry()
         result = reg.get_installation("codex", config)
         assert result is inst
@@ -188,19 +185,16 @@ class TestGetInstallation:
 # -- RunnerRegistry.resolve_installation ---------------------------------------
 
 class TestResolveInstallation:
-    def _make_config(self, installations, active=None):
-        return KoanConfig(
-            agent_installations=installations,
-            active_installations=active or {},
-        )
+    def _make_config(self, installations):
+        return KoanConfig(agent_installations=installations)
 
-    def test_returns_active_when_binary_exists(self, tmp_path):
+    def test_returns_installation_when_binary_exists(self, tmp_path):
         binary = tmp_path / "claude"
         binary.touch()
         inst = AgentInstallation(alias="my-claude", runner_type="claude", binary=str(binary))
-        config = self._make_config([inst], active={"claude": "my-claude"})
+        config = self._make_config([inst])
         reg = RunnerRegistry()
-        result = reg.resolve_installation("claude", config)
+        result = reg.resolve_installation("claude", config, run_installations={"claude": "my-claude"})
         assert result is inst
 
     def test_raises_when_binary_missing(self):

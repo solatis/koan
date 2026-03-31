@@ -83,8 +83,13 @@ class RunnerRegistry:
             return cls(subagent_dir=subagent_dir)
         return cls()
 
-    def get_installation(self, runner_type: str, config: KoanConfig) -> AgentInstallation:
-        alias = config.active_installations.get(runner_type)
+    def get_installation(
+        self,
+        runner_type: str,
+        config: KoanConfig,
+        run_installations: dict[str, str] | None = None,
+    ) -> AgentInstallation:
+        alias = (run_installations or {}).get(runner_type)
         if alias:
             for inst in config.agent_installations:
                 if inst.alias == alias and inst.runner_type == runner_type:
@@ -93,11 +98,11 @@ class RunnerRegistry:
                 code="no_installation",
                 runner=runner_type,
                 stage="get_installation",
-                message=f"Active installation alias '{alias}' not found for runner '{runner_type}'",
+                message=f"Installation alias '{alias}' not found for runner '{runner_type}'",
                 details={"runner_type": runner_type, "alias": alias},
             ))
 
-        # No active alias configured -- fall back to first installation of this type
+        # No alias specified -- fall back to first installation of this type
         for inst in config.agent_installations:
             if inst.runner_type == runner_type:
                 return inst
@@ -110,13 +115,18 @@ class RunnerRegistry:
             details={"runner_type": runner_type},
         ))
 
-    def resolve_installation(self, runner_type: str, config: KoanConfig) -> AgentInstallation:
+    def resolve_installation(
+        self,
+        runner_type: str,
+        config: KoanConfig,
+        run_installations: dict[str, str] | None = None,
+    ) -> AgentInstallation:
         """Resolve a working installation for *runner_type*.
 
         Returns the installation after validating its binary exists on disk.
         Raises RunnerError if the installation is missing or the binary is not found.
         """
-        inst = self.get_installation(runner_type, config)
+        inst = self.get_installation(runner_type, config, run_installations)
         if not Path(inst.binary).exists():
             raise RunnerError(RunnerDiagnostic(
                 code="binary_not_found",
@@ -135,6 +145,7 @@ class RunnerRegistry:
         role: SubagentRole,
         config: KoanConfig,
         balanced_profile: Profile | None = None,
+        run_installations: dict[str, str] | None = None,
     ) -> tuple[AgentInstallation, str, ThinkingMode]:
         tier = ROLE_MODEL_TIER.get(role, "standard")
 
@@ -165,7 +176,9 @@ class RunnerRegistry:
                 message=f"Profile '{profile.name}' has no tier '{tier}'",
             ))
 
-        installation = self.resolve_installation(profile_tier.runner_type, config)
+        installation = self.resolve_installation(
+            profile_tier.runner_type, config, run_installations,
+        )
         return installation, profile_tier.model, profile_tier.thinking
 
 

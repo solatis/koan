@@ -65,6 +65,9 @@ class AppState:
     open_browser: bool = True
     initial_prompt: str = ""
     config_write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Installation selections for the current run: runner_type -> alias.
+    # Set when a run starts; cleared when a new run begins.
+    run_installations: dict[str, str] = field(default_factory=dict)
     # Track running subprocess handles so shutdown can kill them.
     _active_processes: dict[str, asyncio.subprocess.Process] = field(
         default_factory=dict, repr=False,

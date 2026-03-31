@@ -37,6 +37,7 @@ class FakeAppState:
     frozen_logs: list = field(default_factory=list)
     epic_dir: str | None = None
     projection_store: object = field(default_factory=lambda: __import__('koan.projections', fromlist=['ProjectionStore']).ProjectionStore())
+    run_installations: dict = field(default_factory=dict)
     _active_processes: dict = field(default_factory=dict)
 
 

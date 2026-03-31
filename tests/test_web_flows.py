@@ -24,7 +24,7 @@ from koan.web.app import create_app
 def _make_probe_results() -> list[ProbeResult]:
     return [
         ProbeResult(
-            runner_type="claude", available=True, binary_path="/usr/bin/claude", version="1.0",
+            runner_type="claude", available=True, binary_path="/fake/bin/claude", version="1.0",
             models=[
                 ModelInfo(alias="opus", display_name="Opus",
                          thinking_modes=frozenset({"disabled", "low", "medium", "high", "xhigh"}),
@@ -179,7 +179,7 @@ def test_start_run_accepts_installation_selection(client, app_state, tmp_path):
         "installations": {"claude": "my-claude"},
     })
     assert resp.status_code == 200
-    assert app_state.config.active_installations["claude"] == "my-claude"
+    assert app_state.run_installations["claude"] == "my-claude"
 
 
 def test_start_run_rejects_missing_binary(client, app_state):
@@ -189,7 +189,7 @@ def test_start_run_rejects_missing_binary(client, app_state):
     app_state.config.agent_installations = [
         AgentInstallation(alias="broken", runner_type="claude", binary="/nonexistent/claude"),
     ]
-    app_state.config.active_installations = {"claude": "broken"}
+    app_state.run_installations = {"claude": "broken"}
     resp = client.post("/api/start-run", json={
         "task": "build something",
         "profile": "balanced",
@@ -547,13 +547,12 @@ def test_start_run_unknown_profile_rejected(client, app_state):
 
 def test_agents_list(client, app_state):
     app_state.config.agent_installations.append(AgentInstallation(
-        alias="my-claude", runner_type="claude", binary="/usr/bin/claude", extra_args=[],
+        alias="my-claude", runner_type="claude", binary="/fake/bin/claude", extra_args=[],
     ))
     resp = client.get("/api/agents")
     assert resp.status_code == 200
     data = resp.json()
     assert "installations" in data
-    assert "active_installations" in data
     aliases = [inst["alias"] for inst in data["installations"]]
     assert "my-claude" in aliases
     assert len(data["installations"]) >= 1
@@ -563,7 +562,7 @@ def test_agents_create_and_delete(client, app_state):
     resp = client.post("/api/agents", json={
         "alias": "test-agent",
         "runner_type": "claude",
-        "binary": "/usr/bin/claude",
+        "binary": "/fake/bin/claude",
         "extra_args": [],
     })
     assert resp.status_code == 200
@@ -581,7 +580,7 @@ def test_agents_create_and_delete(client, app_state):
 class TestProbeRefresh:
     def test_probe_refresh_triggers_restate(self, client, app_state):
         fresh_probes = [
-            ProbeResult(runner_type="claude", available=True, binary_path="/usr/bin/claude", version="2.0"),
+            ProbeResult(runner_type="claude", available=True, binary_path="/fake/bin/claude", version="2.0"),
             ProbeResult(runner_type="codex", available=True),
         ]
         fresh_profile = Profile(name="balanced", tiers={
@@ -616,15 +615,6 @@ class TestProbeRefresh:
         data = resp.json()
         assert len(data["runners"]) == 3
 
-
-def test_agents_set_active(client, app_state):
-    app_state.config.agent_installations.append(AgentInstallation(
-        alias="my-claude", runner_type="claude", binary="/usr/bin/claude", extra_args=[],
-    ))
-    resp = client.put("/api/agents/claude/active", json={"alias": "my-claude"})
-    assert resp.status_code == 200
-    assert resp.json()["ok"] is True
-    assert app_state.config.active_installations.get("claude") == "my-claude"
 
 
 # -- SSE endpoint HTTP-level tests -------------------------------------------

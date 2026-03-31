@@ -19,7 +19,6 @@ CONFIG_PATH = Path.home() / ".koan" / "config.json"
 @dataclass
 class KoanConfig:
     agent_installations: list[AgentInstallation] = field(default_factory=list)
-    active_installations: dict[str, str] = field(default_factory=dict)
     profiles: list[Profile] = field(default_factory=list)
     active_profile: str = "balanced"
     scout_concurrency: int = 8
@@ -128,12 +127,6 @@ async def load_koan_config() -> KoanConfig:
         log.warning("config.json top-level value is not an object; treating config as absent.")
         return defaults
 
-    # Silently ignore legacy modelTiers key
-
-    active_installations = parsed.get("activeInstallations", {})
-    if not isinstance(active_installations, dict):
-        active_installations = {}
-
     active_profile = parsed.get("activeProfile", "balanced")
     if not isinstance(active_profile, str) or not active_profile:
         active_profile = "balanced"
@@ -143,7 +136,6 @@ async def load_koan_config() -> KoanConfig:
 
     return KoanConfig(
         agent_installations=_parse_agent_installations(parsed.get("agentInstallations", [])),
-        active_installations={str(k): str(v) for k, v in active_installations.items()},
         profiles=profiles,
         active_profile=active_profile,
         scout_concurrency=_parse_scout_concurrency(parsed),
@@ -161,8 +153,9 @@ async def save_koan_config(config: KoanConfig) -> None:
         except (FileNotFoundError, json.JSONDecodeError):
             pass
 
-        # Remove legacy key
+        # Remove legacy keys
         existing.pop("modelTiers", None)
+        existing.pop("activeInstallations", None)
 
         # Serialize agent_installations
         existing["agentInstallations"] = [
@@ -174,9 +167,6 @@ async def save_koan_config(config: KoanConfig) -> None:
             }
             for inst in config.agent_installations
         ]
-
-        # Serialize active_installations
-        existing["activeInstallations"] = config.active_installations
 
         # Serialize active_profile (omit if default)
         if config.active_profile != "balanced":

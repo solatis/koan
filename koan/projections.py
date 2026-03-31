@@ -46,7 +46,6 @@ EventType = Literal[
     "profile_modified",
     "profile_removed",
     "active_profile_changed",
-    "active_installation_changed",
     "scout_concurrency_changed",
 ]
 
@@ -98,7 +97,6 @@ class Projection(BaseModel):
     config_runners: list[dict] = Field(default_factory=list)
     config_profiles: list[dict] = Field(default_factory=list)
     config_installations: list[dict] = Field(default_factory=list)
-    config_active_installations: dict[str, str] = Field(default_factory=dict)
     config_active_profile: str = "balanced"
     config_scout_concurrency: int = 8
 
@@ -352,23 +350,11 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
 
             case "installation_removed":
                 alias = payload.get("alias", "")
-                # Find runner_type before removing (needed to clean active_installations)
-                removed_rt = next(
-                    (inst.get("runner_type") for inst in projection.config_installations
-                     if inst.get("alias") == alias),
-                    None,
-                )
                 new_insts = [
                     inst for inst in projection.config_installations
                     if inst.get("alias") != alias
                 ]
-                new_active = dict(projection.config_active_installations)
-                if removed_rt and new_active.get(removed_rt) == alias:
-                    del new_active[removed_rt]
-                return projection.model_copy(update={
-                    "config_installations": new_insts,
-                    "config_active_installations": new_active,
-                })
+                return projection.model_copy(update={"config_installations": new_insts})
 
             case "profile_created":
                 new_profile = {
@@ -407,16 +393,6 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
             case "active_profile_changed":
                 return projection.model_copy(update={
                     "config_active_profile": payload.get("name", "balanced"),
-                })
-
-            case "active_installation_changed":
-                new_active = dict(projection.config_active_installations)
-                rt = payload.get("runner_type", "")
-                alias = payload.get("alias", "")
-                if rt:
-                    new_active[rt] = alias
-                return projection.model_copy(update={
-                    "config_active_installations": new_active,
                 })
 
             case "scout_concurrency_changed":

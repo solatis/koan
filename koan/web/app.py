@@ -40,7 +40,6 @@ from ..events import (
     build_profile_modified,
     build_profile_removed,
     build_active_profile_changed,
-    build_active_installation_changed,
     build_scout_concurrency_changed,
 )
 
@@ -226,7 +225,6 @@ async def api_start_run_preflight(r: Request) -> Response:
                     "alias": inst.alias,
                     "binary": inst.binary,
                     "binary_valid": Path(inst.binary).exists(),
-                    "is_active": st.config.active_installations.get(rt) == inst.alias,
                     "extra_args": inst.extra_args,
                 })
         installations_by_type[rt] = insts
@@ -287,7 +285,7 @@ async def api_start_run(r: Request) -> Response:
                     status_code=422,
                 )
         for rt, alias in installations.items():
-            st.config.active_installations[rt] = alias
+            st.run_installations[rt] = alias
 
     # Pre-validate installations for every runner type the profile requires
     from ..runners.registry import RunnerRegistry
@@ -299,7 +297,7 @@ async def api_start_run(r: Request) -> Response:
             continue
         checked_types.add(tier.runner_type)
         try:
-            registry.resolve_installation(tier.runner_type, st.config)
+            registry.resolve_installation(tier.runner_type, st.config, st.run_installations)
         except RunnerError as e:
             return JSONResponse(
                 {"error": e.diagnostic.code,
@@ -313,11 +311,6 @@ async def api_start_run(r: Request) -> Response:
     from ..config import save_koan_config
     await save_koan_config(st.config)
     st.projection_store.push_event("active_profile_changed", build_active_profile_changed(profile))
-    if isinstance(installations, dict):
-        for rt, alias in installations.items():
-            st.projection_store.push_event(
-                "active_installation_changed", build_active_installation_changed(rt, alias),
-            )
 
     # Apply optional overrides
     scout_concurrency = body.get("scout_concurrency")
@@ -603,10 +596,6 @@ def _push_initial_config_events(st: AppState) -> None:
             build_installation_created(inst.alias, inst.runner_type, inst.binary, inst.extra_args),
         )
 
-    # Active installation selections
-    for rt, alias in st.config.active_installations.items():
-        store.push_event("active_installation_changed", build_active_installation_changed(rt, alias))
-
     # Active profile
     store.push_event("active_profile_changed", build_active_profile_changed(st.config.active_profile))
 
@@ -771,10 +760,7 @@ async def api_agents_list(r: Request) -> Response:
         }
         for inst in st.config.agent_installations
     ]
-    return JSONResponse({
-        "installations": installations,
-        "active_installations": st.config.active_installations,
-    })
+    return JSONResponse({"installations": installations})
 
 
 async def api_agents_create(r: Request) -> Response:
@@ -865,46 +851,10 @@ async def api_agents_delete(r: Request) -> Response:
         return JSONResponse({"error": "not_found", "message": f"installation '{alias}' not found"}, status_code=404)
 
     st.config.agent_installations.pop(idx)
-    # Clean up active_installations if this alias was active
-    for rt, active_alias in list(st.config.active_installations.items()):
-        if active_alias == alias:
-            del st.config.active_installations[rt]
 
     from ..config import save_koan_config
     await save_koan_config(st.config)
     st.projection_store.push_event("installation_removed", build_installation_removed(alias))
-    return JSONResponse({"ok": True})
-
-
-async def api_agents_set_active(r: Request) -> Response:
-    runner_type = r.path_params["runner_type"]
-    body = await r.json()
-    alias = body.get("alias", "")
-
-    if not isinstance(alias, str) or not alias.strip():
-        return JSONResponse(
-            {"error": "validation_error", "message": "alias is required"},
-            status_code=422,
-        )
-
-    st = _app_state(r)
-    found = any(
-        inst.alias == alias and inst.runner_type == runner_type
-        for inst in st.config.agent_installations
-    )
-    if not found:
-        return JSONResponse(
-            {"error": "validation_error",
-             "message": f"no installation with alias '{alias}' and runner_type '{runner_type}'"},
-            status_code=422,
-        )
-
-    st.config.active_installations[runner_type] = alias
-    from ..config import save_koan_config
-    await save_koan_config(st.config)
-    st.projection_store.push_event(
-        "active_installation_changed", build_active_installation_changed(runner_type, alias),
-    )
     return JSONResponse({"ok": True})
 
 
@@ -932,19 +882,16 @@ async def api_settings_body(r: Request) -> Response:
 
     installations = []
     for inst in st.config.agent_installations:
-        is_active = (st.config.active_installations or {}).get(inst.runner_type) == inst.alias
         installations.append({
             "alias": inst.alias,
             "runner_type": inst.runner_type,
             "binary": inst.binary,
             "extra_args": inst.extra_args,
-            "is_active": is_active,
         })
 
     return JSONResponse({
         "profiles": profiles,
         "installations": installations,
-        "activeInstallations": st.config.active_installations or {},
         "scoutConcurrency": st.config.scout_concurrency,
     })
 
@@ -1108,7 +1055,6 @@ def create_app(app_state: AppState) -> Starlette:
         Route("/api/agents", api_agents_list, methods=["GET"]),
         Route("/api/agents", api_agents_create, methods=["POST"]),
         Route("/api/agents/detect", api_agents_detect, methods=["GET"]),
-        Route("/api/agents/{runner_type}/active", api_agents_set_active, methods=["PUT"]),
         Route("/api/agents/{alias}", api_agents_update, methods=["PUT"]),
         Route("/api/agents/{alias}", api_agents_delete, methods=["DELETE"]),
         Route("/api/settings/body", api_settings_body, methods=["GET"]),

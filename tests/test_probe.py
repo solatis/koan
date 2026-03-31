@@ -24,15 +24,15 @@ class TestProbeClaudeBinaryNotFound:
 class TestProbeClaudeAuthFailure:
     @pytest.mark.anyio
     async def test_bad_exit_code(self):
-        with patch("koan.probe.shutil.which", return_value="/usr/bin/claude"), \
+        with patch("koan.probe.shutil.which", return_value="/fake/bin/claude"), \
              patch("koan.probe._run_cmd", new_callable=AsyncMock, return_value=(1, "", "")):
             r = await _probe_claude()
         assert r.available is False
-        assert r.binary_path == "/usr/bin/claude"
+        assert r.binary_path == "/fake/bin/claude"
 
     @pytest.mark.anyio
     async def test_bad_json(self):
-        with patch("koan.probe.shutil.which", return_value="/usr/bin/claude"), \
+        with patch("koan.probe.shutil.which", return_value="/fake/bin/claude"), \
              patch("koan.probe._run_cmd", new_callable=AsyncMock, return_value=(0, "not json", "")):
             r = await _probe_claude()
         assert r.available is False
@@ -40,7 +40,7 @@ class TestProbeClaudeAuthFailure:
     @pytest.mark.anyio
     async def test_not_logged_in(self):
         body = json.dumps({"loggedIn": False})
-        with patch("koan.probe.shutil.which", return_value="/usr/bin/claude"), \
+        with patch("koan.probe.shutil.which", return_value="/fake/bin/claude"), \
              patch("koan.probe._run_cmd", new_callable=AsyncMock, return_value=(0, body, "")):
             r = await _probe_claude()
         assert r.available is False
@@ -49,7 +49,7 @@ class TestProbeClaudeAuthFailure:
 class TestProbeClaudeTimeout:
     @pytest.mark.anyio
     async def test_auth_timeout(self):
-        with patch("koan.probe.shutil.which", return_value="/usr/bin/claude"), \
+        with patch("koan.probe.shutil.which", return_value="/fake/bin/claude"), \
              patch("koan.probe._run_cmd", new_callable=AsyncMock, return_value=(-1, "", "")):
             r = await _probe_claude()
         assert r.available is False
@@ -67,11 +67,11 @@ class TestProbeClaudeSuccess:
                 return (0, "claude 1.2.3\n", "")
             return (-1, "", "")
 
-        with patch("koan.probe.shutil.which", return_value="/usr/bin/claude"), \
+        with patch("koan.probe.shutil.which", return_value="/fake/bin/claude"), \
              patch("koan.probe._run_cmd", side_effect=fake_run_cmd):
             r = await _probe_claude()
         assert r.available is True
-        assert r.binary_path == "/usr/bin/claude"
+        assert r.binary_path == "/fake/bin/claude"
         assert r.version == "claude 1.2.3"
 
 
@@ -87,11 +87,11 @@ class TestProbeClaudeVersionFailure:
                 return (1, "", "")
             return (-1, "", "")
 
-        with patch("koan.probe.shutil.which", return_value="/usr/bin/claude"), \
+        with patch("koan.probe.shutil.which", return_value="/fake/bin/claude"), \
              patch("koan.probe._run_cmd", side_effect=fake_run_cmd):
             r = await _probe_claude()
         assert r.available is False
-        assert r.binary_path == "/usr/bin/claude"
+        assert r.binary_path == "/fake/bin/claude"
         assert r.version is None
 
     @pytest.mark.anyio
@@ -105,11 +105,11 @@ class TestProbeClaudeVersionFailure:
                 return (-1, "", "")
             return (-1, "", "")
 
-        with patch("koan.probe.shutil.which", return_value="/usr/bin/claude"), \
+        with patch("koan.probe.shutil.which", return_value="/fake/bin/claude"), \
              patch("koan.probe._run_cmd", side_effect=fake_run_cmd):
             r = await _probe_claude()
         assert r.available is False
-        assert r.binary_path == "/usr/bin/claude"
+        assert r.binary_path == "/fake/bin/claude"
 
 
 # -- Codex probe ---------------------------------------------------------------
@@ -127,14 +127,14 @@ class TestProbeCodexBinaryNotFound:
 class TestProbeCodexAuthFailure:
     @pytest.mark.anyio
     async def test_bad_exit_code(self):
-        with patch("koan.probe.shutil.which", return_value="/usr/bin/codex"), \
+        with patch("koan.probe.shutil.which", return_value="/fake/bin/codex"), \
              patch("koan.probe._run_cmd", new_callable=AsyncMock, return_value=(1, "", "")):
             r = await _probe_codex()
         assert r.available is False
 
     @pytest.mark.anyio
     async def test_no_logged_in_string(self):
-        with patch("koan.probe.shutil.which", return_value="/usr/bin/codex"), \
+        with patch("koan.probe.shutil.which", return_value="/fake/bin/codex"), \
              patch("koan.probe._run_cmd", new_callable=AsyncMock, return_value=(0, "Not authenticated", "")):
             r = await _probe_codex()
         assert r.available is False
@@ -143,7 +143,7 @@ class TestProbeCodexAuthFailure:
 class TestProbeCodexTimeout:
     @pytest.mark.anyio
     async def test_auth_timeout(self):
-        with patch("koan.probe.shutil.which", return_value="/usr/bin/codex"), \
+        with patch("koan.probe.shutil.which", return_value="/fake/bin/codex"), \
              patch("koan.probe._run_cmd", new_callable=AsyncMock, return_value=(-1, "", "")):
             r = await _probe_codex()
         assert r.available is False
@@ -170,16 +170,16 @@ class TestProbeCodexSuccess:
                 return (0, "codex 0.5.1\n", "")
             return (-1, "", "")
 
-        with patch("koan.probe.shutil.which", return_value="/usr/bin/codex"), \
+        with patch("koan.probe.shutil.which", return_value="/fake/bin/codex"), \
              patch("koan.probe._run_cmd", side_effect=fake_run_cmd):
             r = await _probe_codex()
         assert r.available is True
 
-        with patch("koan.probe.shutil.which", return_value="/usr/bin/codex"), \
+        with patch("koan.probe.shutil.which", return_value="/fake/bin/codex"), \
              patch("koan.probe._run_cmd", side_effect=fake_run_cmd):
             r = await _probe_codex()
         assert r.available is True
-        assert r.binary_path == "/usr/bin/codex"
+        assert r.binary_path == "/fake/bin/codex"
         assert r.version == "codex 0.5.1"
 
 
@@ -193,11 +193,11 @@ class TestProbeCodexVersionFailure:
                 return (1, "", "")
             return (-1, "", "")
 
-        with patch("koan.probe.shutil.which", return_value="/usr/bin/codex"), \
+        with patch("koan.probe.shutil.which", return_value="/fake/bin/codex"), \
              patch("koan.probe._run_cmd", side_effect=fake_run_cmd):
             r = await _probe_codex()
         assert r.available is False
-        assert r.binary_path == "/usr/bin/codex"
+        assert r.binary_path == "/fake/bin/codex"
         assert r.version is None
 
     @pytest.mark.anyio
@@ -209,11 +209,11 @@ class TestProbeCodexVersionFailure:
                 return (-1, "", "")
             return (-1, "", "")
 
-        with patch("koan.probe.shutil.which", return_value="/usr/bin/codex"), \
+        with patch("koan.probe.shutil.which", return_value="/fake/bin/codex"), \
              patch("koan.probe._run_cmd", side_effect=fake_run_cmd):
             r = await _probe_codex()
         assert r.available is False
-        assert r.binary_path == "/usr/bin/codex"
+        assert r.binary_path == "/fake/bin/codex"
 
 
 # -- Gemini probe --------------------------------------------------------------
@@ -231,7 +231,7 @@ class TestProbeGeminiBinaryNotFound:
 class TestProbeGeminiAuthFailure:
     @pytest.mark.anyio
     async def test_bad_exit_code(self):
-        with patch("koan.probe.shutil.which", return_value="/usr/bin/gemini"), \
+        with patch("koan.probe.shutil.which", return_value="/fake/bin/gemini"), \
              patch("koan.probe._run_cmd", new_callable=AsyncMock, return_value=(1, "", "")):
             r = await _probe_gemini()
         assert r.available is False
@@ -240,7 +240,7 @@ class TestProbeGeminiAuthFailure:
 class TestProbeGeminiTimeout:
     @pytest.mark.anyio
     async def test_version_timeout(self):
-        with patch("koan.probe.shutil.which", return_value="/usr/bin/gemini"), \
+        with patch("koan.probe.shutil.which", return_value="/fake/bin/gemini"), \
              patch("koan.probe._run_cmd", new_callable=AsyncMock, return_value=(-1, "", "")):
             r = await _probe_gemini()
         assert r.available is False
@@ -249,11 +249,11 @@ class TestProbeGeminiTimeout:
 class TestProbeGeminiSuccess:
     @pytest.mark.anyio
     async def test_full_probe(self):
-        with patch("koan.probe.shutil.which", return_value="/usr/bin/gemini"), \
+        with patch("koan.probe.shutil.which", return_value="/fake/bin/gemini"), \
              patch("koan.probe._run_cmd", new_callable=AsyncMock, return_value=(0, "gemini 2.0.0\n", "")):
             r = await _probe_gemini()
         assert r.available is True
-        assert r.binary_path == "/usr/bin/gemini"
+        assert r.binary_path == "/fake/bin/gemini"
         assert r.version == "gemini 2.0.0"
 
 

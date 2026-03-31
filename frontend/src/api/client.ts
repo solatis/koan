@@ -61,7 +61,6 @@ export interface PreflightInstallation {
   alias: string
   binary: string
   binary_valid: boolean
-  is_active: boolean
   extra_args: string[]
 }
 
@@ -144,7 +143,6 @@ export async function deleteProfile(name: string) {
 
 export async function getAgents(): Promise<{
   installations: Installation[]
-  active_installations: Record<string, string>
 }> {
   return get('/api/agents')
 }

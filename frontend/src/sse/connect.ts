@@ -51,7 +51,7 @@ export function connectSSE(store: KoanStore): EventSource {
     'probe_completed',
     'installation_created', 'installation_modified', 'installation_removed',
     'profile_created', 'profile_modified', 'profile_removed',
-    'active_profile_changed', 'active_installation_changed',
+    'active_profile_changed',
     'scout_concurrency_changed',
   ]
 

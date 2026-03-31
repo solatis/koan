@@ -224,9 +224,6 @@ def build_active_profile_changed(name: str) -> dict:
     return {"name": name}
 
 
-def build_active_installation_changed(runner_type: str, alias: str) -> dict:
-    return {"runner_type": runner_type, "alias": alias}
-
 
 def build_scout_concurrency_changed(value: int) -> dict:
     return {"value": value}

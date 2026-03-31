@@ -13,7 +13,6 @@ export function LandingPage() {
   // Read from store (fed by SSE — always current, no API fetch needed)
   const profiles = useStore(s => s.configProfiles)
   const installations = useStore(s => s.configInstallations)
-  const activeInstallations = useStore(s => s.configActiveInstallations)
   const runners = useStore(s => s.configRunners)
   const storeScoutConcurrency = useStore(s => s.configScoutConcurrency)
 
@@ -78,14 +77,14 @@ export function LandingPage() {
     const selections: Record<string, string> = {}
     for (const rt of preflight.required_runner_types) {
       const insts = preflight.installations[rt] || []
-      // Prefer the active installation, else first available
-      const active = insts.find(i => activeInstallations[rt] === i.alias)
+      // Prefer the {rt}-default installation, else first available
+      const defaultInst = insts.find(i => i.alias === `${rt}-default`)
       const first = insts[0]
-      if (active) selections[rt] = active.alias
+      if (defaultInst) selections[rt] = defaultInst.alias
       else if (first) selections[rt] = first.alias
     }
     setSelectedInstallations(selections)
-  }, [preflight, activeInstallations])
+  }, [preflight])
 
   const installationsReady = preflight
     ? preflight.required_runner_types.every(rt => selectedInstallations[rt])
