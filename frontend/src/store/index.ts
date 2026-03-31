@@ -693,6 +693,12 @@ export const useStore = create<KoanState>((set) => ({
         }
 
         case 'tool_read': {
+          if (agentId && agentId in s.scouts && agentId !== s.primaryAgent?.agentId) {
+            const f = (event['file'] as string) ?? ''
+            const l = (event['lines'] as string) ?? ''
+            const lastTool = l ? `read ${f}:${l}` : `read ${f}`
+            return { ...base, scouts: { ...s.scouts, [agentId]: { ...s.scouts[agentId], lastTool } } }
+          }
           if (agentId !== s.primaryAgent?.agentId) return base
           const newLog = flushBuffers(s)
           newLog.push({
@@ -707,6 +713,9 @@ export const useStore = create<KoanState>((set) => ({
         }
 
         case 'tool_write': {
+          if (agentId && agentId in s.scouts && agentId !== s.primaryAgent?.agentId) {
+            return { ...base, scouts: { ...s.scouts, [agentId]: { ...s.scouts[agentId], lastTool: `write ${(event['file'] as string) ?? ''}` } } }
+          }
           if (agentId !== s.primaryAgent?.agentId) return base
           const newLog = flushBuffers(s)
           newLog.push({
@@ -720,6 +729,9 @@ export const useStore = create<KoanState>((set) => ({
         }
 
         case 'tool_edit': {
+          if (agentId && agentId in s.scouts && agentId !== s.primaryAgent?.agentId) {
+            return { ...base, scouts: { ...s.scouts, [agentId]: { ...s.scouts[agentId], lastTool: `edit ${(event['file'] as string) ?? ''}` } } }
+          }
           if (agentId !== s.primaryAgent?.agentId) return base
           const newLog = flushBuffers(s)
           newLog.push({
@@ -733,6 +745,9 @@ export const useStore = create<KoanState>((set) => ({
         }
 
         case 'tool_bash': {
+          if (agentId && agentId in s.scouts && agentId !== s.primaryAgent?.agentId) {
+            return { ...base, scouts: { ...s.scouts, [agentId]: { ...s.scouts[agentId], lastTool: `bash ${(event['command'] as string) ?? ''}` } } }
+          }
           if (agentId !== s.primaryAgent?.agentId) return base
           const newLog = flushBuffers(s)
           newLog.push({
@@ -746,6 +761,9 @@ export const useStore = create<KoanState>((set) => ({
         }
 
         case 'tool_grep': {
+          if (agentId && agentId in s.scouts && agentId !== s.primaryAgent?.agentId) {
+            return { ...base, scouts: { ...s.scouts, [agentId]: { ...s.scouts[agentId], lastTool: `grep ${(event['pattern'] as string) ?? ''}` } } }
+          }
           if (agentId !== s.primaryAgent?.agentId) return base
           const newLog = flushBuffers(s)
           newLog.push({
@@ -759,6 +777,9 @@ export const useStore = create<KoanState>((set) => ({
         }
 
         case 'tool_ls': {
+          if (agentId && agentId in s.scouts && agentId !== s.primaryAgent?.agentId) {
+            return { ...base, scouts: { ...s.scouts, [agentId]: { ...s.scouts[agentId], lastTool: `ls ${(event['path'] as string) ?? ''}` } } }
+          }
           if (agentId !== s.primaryAgent?.agentId) return base
           const newLog = flushBuffers(s)
           newLog.push({
