@@ -347,7 +347,7 @@ class TestClaudeRunnerListModels:
         runner = ClaudeRunner(subagent_dir="/tmp/x")
         models = runner.list_models("claude")
         haiku = [m for m in models if m.alias == "haiku"][0]
-        assert haiku.thinking_modes == frozenset({"disabled", "low"})
+        assert haiku.thinking_modes == frozenset({"disabled", "low", "medium", "high"})
 
     def test_opus_all_thinking_modes(self):
         runner = ClaudeRunner(subagent_dir="/tmp/x")

@@ -63,7 +63,7 @@ class ClaudeRunner:
             ),
             ModelInfo(
                 alias="haiku", display_name="Haiku",
-                thinking_modes=frozenset({"disabled", "low"}),
+                thinking_modes=frozenset({"disabled", "low", "medium", "high"}),
                 tier_hint="cheap",
             ),
         ]
