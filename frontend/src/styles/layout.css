@@ -223,9 +223,7 @@
 .activity-tool {
   color: var(--text-muted);
   flex-shrink: 0;
-  max-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  width: 42px;
   white-space: nowrap;
 }
 
@@ -291,7 +289,6 @@
 
 .activity-detail {
   color: var(--text-ghost);
-  font-size: var(--font-size-xs);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
