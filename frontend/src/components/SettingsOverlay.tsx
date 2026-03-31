@@ -462,50 +462,44 @@ export function SettingsOverlay() {
               Agent Installations
             </div>
             {runnerTypes.map(rt => (
-              <div key={rt} style={{ marginBottom: 16 }}>
-                <div style={{ fontWeight: 500, marginBottom: 4 }}>{rt}</div>
-                <div className="installation-cards">
-                  {installationsByType[rt].map(inst => {
-                    const isDefault = inst.alias === `${rt}-default`
-                    return (
-                      <div key={inst.alias} className="installation-card">
-                        <span className="installation-card-alias">
-                          {inst.alias}
-                          {isDefault && ' [default]'}
-                        </span>
-                        <span className="installation-card-meta">
-                          {inst.binary || '--'}
-                        </span>
-                        {inst.extra_args && inst.extra_args.length > 0 && (
-                          <span className="installation-card-meta">
-                            {inst.extra_args.join(' ')}
-                          </span>
-                        )}
-                        <span className="profile-row-actions">
+              <div key={rt} style={{ marginBottom: 12 }}>
+                <div style={{ fontWeight: 600, fontSize: 13, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: 4 }}>{rt}</div>
+                {installationsByType[rt].map(inst => {
+                  const isDefault = inst.alias === `${rt}-default`
+                  return (
+                    <div key={inst.alias} className="profile-row">
+                      <span className="profile-row-name">
+                        {inst.alias}
+                        {isDefault && ' [default]'}
+                      </span>
+                      <span className="profile-row-tiers">
+                        {inst.binary || '--'}
+                        {inst.extra_args && inst.extra_args.length > 0 && ` ${inst.extra_args.join(' ')}`}
+                      </span>
+                      <span className="profile-row-actions">
+                        <button
+                          className="btn btn-secondary"
+                          style={{ padding: '4px 10px', fontSize: 13 }}
+                          onClick={() => {
+                            setShowNewInstallation(false)
+                            setEditingInstallation(inst.alias)
+                          }}
+                        >
+                          Edit
+                        </button>
+                        {!isDefault && (
                           <button
                             className="btn btn-secondary"
-                            style={{ padding: '3px 8px', fontSize: 12 }}
-                            onClick={() => {
-                              setShowNewInstallation(false)
-                              setEditingInstallation(inst.alias)
-                            }}
+                            style={{ padding: '4px 10px', fontSize: 13 }}
+                            onClick={() => handleDeleteInstallation(inst.alias)}
                           >
-                            Edit
+                            Delete
                           </button>
-                          {!isDefault && (
-                            <button
-                              className="btn btn-secondary"
-                              style={{ padding: '3px 8px', fontSize: 12 }}
-                              onClick={() => handleDeleteInstallation(inst.alias)}
-                            >
-                              Delete
-                            </button>
-                          )}
-                        </span>
-                      </div>
-                    )
-                  })}
-                </div>
+                        )}
+                      </span>
+                    </div>
+                  )
+                })}
               </div>
             ))}
 
