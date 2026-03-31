@@ -9,11 +9,12 @@ from pathlib import Path
 from ..types import AgentInstallation, ModelInfo, ThinkingMode
 from .base import KOAN_MCP_TOOLS, RunnerDiagnostic, RunnerError, StreamEvent
 
-THINKING_BUDGET: dict[ThinkingMode, int] = {
-    "low": 1024,
-    "medium": 8000,
-    "high": 16000,
-    "xhigh": 32000,
+# Map internal thinking mode names to Claude CLI --effort values.
+_EFFORT_MAP: dict[ThinkingMode, str] = {
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "max",  # opus only
 }
 
 # Canonical tool name mappings for Claude's tool vocabulary.
@@ -49,12 +50,17 @@ class ClaudeRunner:
         self.subagent_dir = subagent_dir
 
     def list_models(self, binary: str) -> list[ModelInfo]:
-        all_modes: frozenset[ThinkingMode] = frozenset(
-            {"disabled", "low", "medium", "high", "xhigh"}
-        )
         return [
-            ModelInfo(alias="opus", display_name="Opus", thinking_modes=all_modes, tier_hint="strong"),
-            ModelInfo(alias="sonnet", display_name="Sonnet", thinking_modes=all_modes, tier_hint="standard"),
+            ModelInfo(
+                alias="opus", display_name="Opus",
+                thinking_modes=frozenset({"disabled", "low", "medium", "high", "xhigh"}),
+                tier_hint="strong",
+            ),
+            ModelInfo(
+                alias="sonnet", display_name="Sonnet",
+                thinking_modes=frozenset({"disabled", "low", "medium", "high"}),
+                tier_hint="standard",
+            ),
             ModelInfo(
                 alias="haiku", display_name="Haiku",
                 thinking_modes=frozenset({"disabled", "low"}),
@@ -102,7 +108,7 @@ class ClaudeRunner:
             "--mcp-config", str(config_path),
         ]
         if thinking != "disabled":
-            cmd.extend(["--thinking-budget-tokens", str(THINKING_BUDGET[thinking])])
+            cmd.extend(["--effort", _EFFORT_MAP[thinking]])
         cmd.extend(["--model", model])
         cmd.extend(installation.extra_args)
         return cmd

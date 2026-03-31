@@ -300,39 +300,39 @@ class TestClaudeRunnerThinkingMode:
         cmd = runner.build_command(
             "p", "http://x/mcp", _install("claude"), "opus", "disabled",
         )
-        assert "--thinking-budget-tokens" not in cmd
+        assert "--effort" not in cmd
 
-    def test_low_budget(self, tmp_path):
+    def test_effort_low(self, tmp_path):
         runner = ClaudeRunner(subagent_dir=str(tmp_path))
         cmd = runner.build_command(
             "p", "http://x/mcp", _install("claude"), "opus", "low",
         )
-        idx = cmd.index("--thinking-budget-tokens")
-        assert cmd[idx + 1] == "1024"
+        idx = cmd.index("--effort")
+        assert cmd[idx + 1] == "low"
 
-    def test_medium_budget(self, tmp_path):
+    def test_effort_medium(self, tmp_path):
         runner = ClaudeRunner(subagent_dir=str(tmp_path))
         cmd = runner.build_command(
             "p", "http://x/mcp", _install("claude"), "opus", "medium",
         )
-        idx = cmd.index("--thinking-budget-tokens")
-        assert cmd[idx + 1] == "8000"
+        idx = cmd.index("--effort")
+        assert cmd[idx + 1] == "medium"
 
-    def test_high_budget(self, tmp_path):
+    def test_effort_high(self, tmp_path):
         runner = ClaudeRunner(subagent_dir=str(tmp_path))
         cmd = runner.build_command(
             "p", "http://x/mcp", _install("claude"), "opus", "high",
         )
-        idx = cmd.index("--thinking-budget-tokens")
-        assert cmd[idx + 1] == "16000"
+        idx = cmd.index("--effort")
+        assert cmd[idx + 1] == "high"
 
-    def test_xhigh_budget(self, tmp_path):
+    def test_effort_max_opus(self, tmp_path):
         runner = ClaudeRunner(subagent_dir=str(tmp_path))
         cmd = runner.build_command(
             "p", "http://x/mcp", _install("claude"), "opus", "xhigh",
         )
-        idx = cmd.index("--thinking-budget-tokens")
-        assert cmd[idx + 1] == "32000"
+        idx = cmd.index("--effort")
+        assert cmd[idx + 1] == "max"
 
 
 # -- ClaudeRunner: list_models -------------------------------------------------
@@ -359,7 +359,7 @@ class TestClaudeRunnerListModels:
         runner = ClaudeRunner(subagent_dir="/tmp/x")
         models = runner.list_models("claude")
         sonnet = [m for m in models if m.alias == "sonnet"][0]
-        assert sonnet.thinking_modes == frozenset({"disabled", "low", "medium", "high", "xhigh"})
+        assert sonnet.thinking_modes == frozenset({"disabled", "low", "medium", "high"})
 
 
 # -- ClaudeRunner: extra_args --------------------------------------------------
