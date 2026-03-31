@@ -29,6 +29,16 @@ from ..events import (
     build_artifact_reviewed,
     build_questions_answered,
     build_workflow_decided,
+    build_probe_completed,
+    build_installation_created,
+    build_installation_modified,
+    build_installation_removed,
+    build_profile_created,
+    build_profile_modified,
+    build_profile_removed,
+    build_active_profile_changed,
+    build_active_installation_changed,
+    build_scout_concurrency_changed,
 )
 
 if TYPE_CHECKING:
@@ -299,12 +309,19 @@ async def api_start_run(r: Request) -> Response:
     st.config.active_profile = profile
     from ..config import save_koan_config
     await save_koan_config(st.config)
+    st.projection_store.push_event("active_profile_changed", build_active_profile_changed(profile))
+    if isinstance(installations, dict):
+        for rt, alias in installations.items():
+            st.projection_store.push_event(
+                "active_installation_changed", build_active_installation_changed(rt, alias),
+            )
 
     # Apply optional overrides
     scout_concurrency = body.get("scout_concurrency")
     if isinstance(scout_concurrency, int) and scout_concurrency > 0:
         st.config.scout_concurrency = scout_concurrency
         await save_koan_config(st.config)
+        st.projection_store.push_event("scout_concurrency_changed", build_scout_concurrency_changed(scout_concurrency))
 
     # Create epic directory
     epic_id = f"{int(time.time())}-{uuid.uuid4().hex[:8]}"
@@ -500,7 +517,7 @@ def _serialize_profile(p: Profile, read_only: bool) -> dict:
     }
 
 
-async def _refresh_probe_state(st: AppState) -> None:
+async def _refresh_probe_state(st: AppState, broadcast: bool = True) -> None:
     from ..probe import probe_all_runners
     from ..runners.registry import compute_balanced_profile
 
@@ -510,26 +527,88 @@ async def _refresh_probe_state(st: AppState) -> None:
     # Auto-create or update default installations from probe results
     existing_types = {inst.runner_type for inst in st.config.agent_installations}
     changed = False
+    new_insts: list[AgentInstallation] = []
+    modified_insts: list[AgentInstallation] = []
     for pr in st.probe_results:
         if pr.available and pr.binary_path:
             if pr.runner_type not in existing_types:
-                st.config.agent_installations.append(AgentInstallation(
+                inst = AgentInstallation(
                     alias=f"{pr.runner_type}-default",
                     runner_type=pr.runner_type,
                     binary=pr.binary_path,
                     extra_args=[],
-                ))
+                )
+                st.config.agent_installations.append(inst)
+                new_insts.append(inst)
                 changed = True
             else:
-                # Refresh binary path for auto-created default installations
                 for inst in st.config.agent_installations:
                     if inst.runner_type == pr.runner_type and inst.alias == f"{pr.runner_type}-default":
                         if inst.binary != pr.binary_path:
                             inst.binary = pr.binary_path
+                            modified_insts.append(inst)
                             changed = True
     if changed:
         from ..config import save_koan_config
         await save_koan_config(st.config)
+
+    if broadcast:
+        runners = [_serialize_probe_result(pr) for pr in st.probe_results]
+        st.projection_store.push_event("probe_completed", build_probe_completed(runners))
+        if st.balanced_profile:
+            tiers = _serialize_profile(st.balanced_profile, True)["tiers"]
+            st.projection_store.push_event(
+                "profile_modified",
+                build_profile_modified("balanced", True, tiers),
+            )
+        for inst in new_insts:
+            st.projection_store.push_event(
+                "installation_created",
+                build_installation_created(inst.alias, inst.runner_type, inst.binary, inst.extra_args),
+            )
+        for inst in modified_insts:
+            st.projection_store.push_event(
+                "installation_modified",
+                build_installation_modified(inst.alias, inst.runner_type, inst.binary, inst.extra_args),
+            )
+
+
+def _push_initial_config_events(st: AppState) -> None:
+    """Push full config state into the projection on startup.
+
+    Called after _refresh_probe_state(broadcast=False) so all state is ready.
+    Emits one event per config fact so the snapshot captures complete config.
+    """
+    store = st.projection_store
+
+    # Runners from probe
+    runners = [_serialize_probe_result(pr) for pr in st.probe_results]
+    store.push_event("probe_completed", build_probe_completed(runners))
+
+    # Profiles (balanced first, then user-defined)
+    if st.balanced_profile:
+        tiers = _serialize_profile(st.balanced_profile, True)["tiers"]
+        store.push_event("profile_created", build_profile_created("balanced", True, tiers))
+    for p in st.config.profiles:
+        sp = _serialize_profile(p, False)
+        store.push_event("profile_created", build_profile_created(p.name, False, sp["tiers"]))
+
+    # Installations
+    for inst in st.config.agent_installations:
+        store.push_event(
+            "installation_created",
+            build_installation_created(inst.alias, inst.runner_type, inst.binary, inst.extra_args),
+        )
+
+    # Active installation selections
+    for rt, alias in st.config.active_installations.items():
+        store.push_event("active_installation_changed", build_active_installation_changed(rt, alias))
+
+    # Active profile
+    store.push_event("active_profile_changed", build_active_profile_changed(st.config.active_profile))
+
+    # Scout concurrency
+    store.push_event("scout_concurrency_changed", build_scout_concurrency_changed(st.config.scout_concurrency))
 
 
 async def api_probe(r: Request) -> Response:
@@ -593,9 +672,12 @@ async def api_profiles_create(r: Request) -> Response:
                 thinking=tier_val.get("thinking", "disabled"),
             )
 
-    st.config.profiles.append(Profile(name=name, tiers=tiers))
+    new_profile = Profile(name=name, tiers=tiers)
+    st.config.profiles.append(new_profile)
     from ..config import save_koan_config
     await save_koan_config(st.config)
+    sp = _serialize_profile(new_profile, False)
+    st.projection_store.push_event("profile_created", build_profile_created(name, False, sp["tiers"]))
     return JSONResponse({"ok": True})
 
 
@@ -638,6 +720,8 @@ async def api_profiles_update(r: Request) -> Response:
 
     from ..config import save_koan_config
     await save_koan_config(st.config)
+    sp = _serialize_profile(target, False)
+    st.projection_store.push_event("profile_modified", build_profile_modified(name, False, sp["tiers"]))
     return JSONResponse({"ok": True})
 
 
@@ -659,11 +743,15 @@ async def api_profiles_delete(r: Request) -> Response:
         return JSONResponse({"error": "not_found", "message": f"profile '{name}' not found"}, status_code=404)
 
     st.config.profiles.pop(idx)
-    if st.config.active_profile == name:
+    reset_active = st.config.active_profile == name
+    if reset_active:
         st.config.active_profile = "balanced"
 
     from ..config import save_koan_config
     await save_koan_config(st.config)
+    st.projection_store.push_event("profile_removed", build_profile_removed(name))
+    if reset_active:
+        st.projection_store.push_event("active_profile_changed", build_active_profile_changed("balanced"))
     return JSONResponse({"ok": True})
 
 
@@ -719,12 +807,17 @@ async def api_agents_create(r: Request) -> Response:
     if not isinstance(extra_args, list):
         extra_args = []
 
+    clean_args = [str(a) for a in extra_args]
     st.config.agent_installations.append(AgentInstallation(
         alias=alias, runner_type=runner_type, binary=binary,
-        extra_args=[str(a) for a in extra_args],
+        extra_args=clean_args,
     ))
     from ..config import save_koan_config
     await save_koan_config(st.config)
+    st.projection_store.push_event(
+        "installation_created",
+        build_installation_created(alias, runner_type, binary, clean_args),
+    )
     return JSONResponse({"ok": True})
 
 
@@ -750,6 +843,10 @@ async def api_agents_update(r: Request) -> Response:
 
     from ..config import save_koan_config
     await save_koan_config(st.config)
+    st.projection_store.push_event(
+        "installation_modified",
+        build_installation_modified(target.alias, target.runner_type, target.binary, target.extra_args),
+    )
     return JSONResponse({"ok": True})
 
 
@@ -772,6 +869,7 @@ async def api_agents_delete(r: Request) -> Response:
 
     from ..config import save_koan_config
     await save_koan_config(st.config)
+    st.projection_store.push_event("installation_removed", build_installation_removed(alias))
     return JSONResponse({"ok": True})
 
 
@@ -801,6 +899,9 @@ async def api_agents_set_active(r: Request) -> Response:
     st.config.active_installations[runner_type] = alias
     from ..config import save_koan_config
     await save_koan_config(st.config)
+    st.projection_store.push_event(
+        "active_installation_changed", build_active_installation_changed(runner_type, alias),
+    )
     return JSONResponse({"ok": True})
 
 
@@ -913,6 +1014,7 @@ async def api_settings_scout_concurrency(r: Request) -> Response:
     st.config.scout_concurrency = value
     from ..config import save_koan_config
     await save_koan_config(st.config)
+    st.projection_store.push_event("scout_concurrency_changed", build_scout_concurrency_changed(value))
     return JSONResponse({"ok": True})
 
 
@@ -941,7 +1043,8 @@ def create_app(app_state: AppState) -> Starlette:
     @asynccontextmanager
     async def lifespan(app):
         from ..driver import driver_main
-        await _refresh_probe_state(app_state)
+        await _refresh_probe_state(app_state, broadcast=False)
+        _push_initial_config_events(app_state)
 
         asyncio.create_task(driver_main(app_state))
 
