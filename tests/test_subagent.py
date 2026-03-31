@@ -638,8 +638,7 @@ class TestBinaryNotFoundSpawn:
             "subagent_dir": subagent_dir,
         }
 
-        with patch("koan.subagent.PHASE_MODULE_MAP", {"intake": _fake_phase_module()}), \
-             patch("koan.runners.registry.shutil.which", return_value=None):
+        with patch("koan.subagent.PHASE_MODULE_MAP", {"intake": _fake_phase_module()}):
             from koan.subagent import spawn_subagent
 
             exit_code = await spawn_subagent(task, app_state)
@@ -650,7 +649,7 @@ class TestBinaryNotFoundSpawn:
         notifs = app_state.projection_store.projection.notifications
         spawn_fails = [n for n in notifs if n.get("type") == "agent_spawn_failed"]
         assert len(spawn_fails) >= 1
-        assert spawn_fails[0]["error_code"] == "no_installation"
+        assert spawn_fails[0]["error_code"] == "binary_not_found"
 
         # Verify events.jsonl contains a runner_diagnostic
         events_path = Path(subagent_dir) / "events.jsonl"
@@ -658,4 +657,4 @@ class TestBinaryNotFoundSpawn:
         lines = events_path.read_text().strip().split("\n")
         diag_events = [json.loads(l) for l in lines if "runner_diagnostic" in l]
         assert len(diag_events) >= 1
-        assert diag_events[0]["code"] == "no_installation"
+        assert diag_events[0]["code"] == "binary_not_found"

@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-import logging
-import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -113,51 +111,24 @@ class RunnerRegistry:
         ))
 
     def resolve_installation(self, runner_type: str, config: KoanConfig) -> AgentInstallation:
-        """Resolve a working installation for *runner_type* with fallback.
+        """Resolve a working installation for *runner_type*.
 
-        Priority: active installation -> any installation of same type -> PATH lookup.
-        Each candidate is validated by checking that its binary exists on disk.
+        Returns the installation after validating its binary exists on disk.
+        Raises RunnerError if the installation is missing or the binary is not found.
         """
-        log = logging.getLogger("koan.registry")
-
-        # 1. Try the active (or first) installation from config
-        try:
-            inst = self.get_installation(runner_type, config)
-            if Path(inst.binary).exists():
-                return inst
-            log.warning(
-                "active %s installation '%s' binary missing (%s); trying alternatives",
-                runner_type, inst.alias, inst.binary,
-            )
-        except RunnerError:
-            pass
-
-        # 2. Try any other installation of this runner type
-        for inst in config.agent_installations:
-            if inst.runner_type == runner_type and Path(inst.binary).exists():
-                log.info("falling back to %s installation '%s'", runner_type, inst.alias)
-                return inst
-
-        # 3. Dynamic resolution from PATH
-        binary = shutil.which(runner_type)
-        if binary:
-            log.info("resolved %s from PATH: %s", runner_type, binary)
-            return AgentInstallation(
-                alias=f"{runner_type}-resolved",
-                runner_type=runner_type,
-                binary=binary,
-            )
-
-        raise RunnerError(RunnerDiagnostic(
-            code="no_installation",
-            runner=runner_type,
-            stage="resolve_installation",
-            message=(
-                f"No working {runner_type} installation found. "
-                f"Ensure '{runner_type}' is installed and on your PATH."
-            ),
-            details={"runner_type": runner_type},
-        ))
+        inst = self.get_installation(runner_type, config)
+        if not Path(inst.binary).exists():
+            raise RunnerError(RunnerDiagnostic(
+                code="binary_not_found",
+                runner=runner_type,
+                stage="resolve_installation",
+                message=(
+                    f"Binary not found for {runner_type} installation '{inst.alias}': {inst.binary}. "
+                    f"Update the installation in Settings or re-detect the binary."
+                ),
+                details={"runner_type": runner_type, "alias": inst.alias, "binary": inst.binary},
+            ))
+        return inst
 
     def resolve_agent_config(
         self,
