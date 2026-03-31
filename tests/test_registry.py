@@ -185,6 +185,61 @@ class TestGetInstallation:
         assert result is inst
 
 
+# -- RunnerRegistry.resolve_installation ---------------------------------------
+
+class TestResolveInstallation:
+    def _make_config(self, installations, active=None):
+        return KoanConfig(
+            agent_installations=installations,
+            active_installations=active or {},
+        )
+
+    def test_returns_active_when_binary_exists(self, tmp_path):
+        binary = tmp_path / "claude"
+        binary.touch()
+        inst = AgentInstallation(alias="my-claude", runner_type="claude", binary=str(binary))
+        config = self._make_config([inst], active={"claude": "my-claude"})
+        reg = RunnerRegistry()
+        result = reg.resolve_installation("claude", config)
+        assert result is inst
+
+    def test_falls_back_to_other_installation_when_active_binary_missing(self, tmp_path):
+        good_binary = tmp_path / "claude"
+        good_binary.touch()
+        bad = AgentInstallation(alias="broken", runner_type="claude", binary="/nonexistent/claude")
+        good = AgentInstallation(alias="working", runner_type="claude", binary=str(good_binary))
+        config = self._make_config([bad, good], active={"claude": "broken"})
+        reg = RunnerRegistry()
+        result = reg.resolve_installation("claude", config)
+        assert result is good
+
+    def test_falls_back_to_which_when_all_binaries_missing(self, monkeypatch):
+        inst = AgentInstallation(alias="bad", runner_type="claude", binary="/nonexistent/claude")
+        config = self._make_config([inst])
+        monkeypatch.setattr("koan.runners.registry.shutil.which", lambda cmd: "/resolved/claude")
+        reg = RunnerRegistry()
+        result = reg.resolve_installation("claude", config)
+        assert result.binary == "/resolved/claude"
+        assert result.alias == "claude-resolved"
+
+    def test_raises_when_nothing_works(self, monkeypatch):
+        inst = AgentInstallation(alias="bad", runner_type="claude", binary="/nonexistent/claude")
+        config = self._make_config([inst])
+        monkeypatch.setattr("koan.runners.registry.shutil.which", lambda cmd: None)
+        reg = RunnerRegistry()
+        with pytest.raises(RunnerError) as exc_info:
+            reg.resolve_installation("claude", config)
+        assert exc_info.value.diagnostic.code == "no_installation"
+
+    def test_raises_when_no_installations_and_not_on_path(self, monkeypatch):
+        config = self._make_config([])
+        monkeypatch.setattr("koan.runners.registry.shutil.which", lambda cmd: None)
+        reg = RunnerRegistry()
+        with pytest.raises(RunnerError) as exc_info:
+            reg.resolve_installation("claude", config)
+        assert exc_info.value.diagnostic.code == "no_installation"
+
+
 # -- save_koan_config write lock -----------------------------------------------
 
 class TestWriteLock:
