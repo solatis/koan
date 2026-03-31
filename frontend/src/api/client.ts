@@ -43,12 +43,36 @@ export async function startRun(
   task: string,
   profile: string,
   scoutConcurrency?: number,
+  installations?: Record<string, string>,
 ): Promise<StartRunResult> {
   const body: Record<string, unknown> = { task, profile }
   if (scoutConcurrency !== undefined) {
     body['scout_concurrency'] = scoutConcurrency
   }
+  if (installations && Object.keys(installations).length > 0) {
+    body['installations'] = installations
+  }
   return post('/api/start-run', body)
+}
+
+// -- Start-run preflight -----------------------------------------------------
+
+export interface PreflightInstallation {
+  alias: string
+  binary: string
+  binary_valid: boolean
+  is_active: boolean
+  extra_args: string[]
+}
+
+export interface StartRunPreflight {
+  profile: string
+  required_runner_types: string[]
+  installations: Record<string, PreflightInstallation[]>
+}
+
+export async function getStartRunPreflight(profile: string): Promise<StartRunPreflight> {
+  return get(`/api/start-run/preflight?profile=${encodeURIComponent(profile)}`)
 }
 
 // -- Interactions ------------------------------------------------------------

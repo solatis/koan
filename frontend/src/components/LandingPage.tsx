@@ -11,6 +11,11 @@ export function LandingPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Installation selection driven by profile
+  const [preflight, setPreflight] = useState<api.StartRunPreflight | null>(null)
+  const [preflightLoading, setPreflightLoading] = useState(false)
+  const [selectedInstallations, setSelectedInstallations] = useState<Record<string, string>>({})
+
   useEffect(() => {
     Promise.all([api.getProfiles(), api.getProbe(), api.getInitialPrompt()]).then(
       ([profilesData, probeData, promptData]) => {
@@ -26,6 +31,37 @@ export function LandingPage() {
     )
   }, [])
 
+  // Fetch preflight when profile changes
+  useEffect(() => {
+    if (!profile) {
+      setPreflight(null)
+      setSelectedInstallations({})
+      return
+    }
+    setPreflightLoading(true)
+    api.getStartRunPreflight(profile).then(data => {
+      setPreflight(data)
+      // Auto-select: prefer the active installation if valid, else first valid
+      const selections: Record<string, string> = {}
+      for (const [rt, insts] of Object.entries(data.installations)) {
+        const active = insts.find(i => i.is_active && i.binary_valid)
+        const firstValid = insts.find(i => i.binary_valid)
+        if (active) selections[rt] = active.alias
+        else if (firstValid) selections[rt] = firstValid.alias
+      }
+      setSelectedInstallations(selections)
+      setPreflightLoading(false)
+    }).catch(() => {
+      setPreflight(null)
+      setPreflightLoading(false)
+    })
+  }, [profile])
+
+  // All required runner types must have a selected installation
+  const installationsReady = preflight
+    ? preflight.required_runner_types.every(rt => selectedInstallations[rt])
+    : false
+
   const handleStart = async () => {
     const trimmedTask = task.trim()
     if (!trimmedTask) {
@@ -36,10 +72,16 @@ export function LandingPage() {
       setError('Please select a profile')
       return
     }
+    if (!installationsReady) {
+      setError('Please select an installation for each required runner type')
+      return
+    }
     setError(null)
     setLoading(true)
     try {
-      const result = await api.startRun(trimmedTask, profile, scoutConcurrency)
+      const result = await api.startRun(
+        trimmedTask, profile, scoutConcurrency, selectedInstallations,
+      )
       if (!result.ok) {
         setError(result.message ?? 'Failed to start run')
       }
@@ -86,6 +128,49 @@ export function LandingPage() {
             </select>
           </div>
 
+          {preflight && !preflightLoading && preflight.required_runner_types.length > 0 && (
+            <div className="model-config-section">
+              <h3 className="model-config-section-heading">Agent Installations</h3>
+              {preflight.required_runner_types.map(rt => {
+                const insts = preflight.installations[rt] || []
+                const selected = selectedInstallations[rt] || ''
+                const hasNoValid = insts.length > 0 && !insts.some(i => i.binary_valid)
+                return (
+                  <div key={rt} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                    <span style={{ minWidth: 70, fontWeight: 500 }}>{rt}</span>
+                    <select
+                      className="model-tier-select"
+                      value={selected}
+                      onChange={e => setSelectedInstallations(prev => ({...prev, [rt]: e.target.value}))}
+                      style={{ flex: 1 }}
+                    >
+                      <option value="">-- select installation --</option>
+                      {insts.map(inst => (
+                        <option
+                          key={inst.alias}
+                          value={inst.alias}
+                          disabled={!inst.binary_valid}
+                        >
+                          {inst.alias} ({inst.binary}){!inst.binary_valid ? ' ✘ missing' : ''}
+                        </option>
+                      ))}
+                    </select>
+                    {insts.length === 0 && (
+                      <span className="no-runners-msg" style={{ fontSize: 13 }}>
+                        No installations. Add one in Settings.
+                      </span>
+                    )}
+                    {hasNoValid && (
+                      <span className="no-runners-msg" style={{ fontSize: 13 }}>
+                        All binaries missing. Update paths in Settings.
+                      </span>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
           <div className="model-config-section">
             <h3 className="model-config-section-heading">Scout Concurrency</h3>
             <input
@@ -105,7 +190,7 @@ export function LandingPage() {
             <button
               id="btn-start-run"
               className="btn btn-primary"
-              disabled={!hasRunners || loading}
+              disabled={!hasRunners || loading || !installationsReady}
               title={
                 !hasRunners
                   ? 'No available runners. Install and authenticate at least one runner in Settings.'
