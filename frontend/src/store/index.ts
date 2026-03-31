@@ -361,8 +361,12 @@ export const useStore = create<KoanState>((set) => ({
 
     // Transform activity_log
     // The backend fold appends tool_called, tool_completed, thinking, and
-    // agent_step_advanced as raw entries. Reconstruct the rich view with
-    // thinking cards and step markers.
+    // agent_step_advanced as raw entries. Reconstruct the rich view:
+    //  - Filter to primary agent only (scout events shown in monitor)
+    //  - Merge consecutive thinking deltas into single cards
+    //  - Skip koan MCP tools (rendered as step headers)
+    const primaryAgentId = (rawPrimary?.['agent_id'] as string | undefined)
+        ?? (rawCompleted.find(a => (a['is_primary'] as boolean) ?? false)?.['agent_id'] as string | undefined)
     const rawLog = (state['activity_log'] ?? []) as Record<string, unknown>[]
     const completedCallIds = new Set(
       rawLog
@@ -370,8 +374,15 @@ export const useStore = create<KoanState>((set) => ({
         .map(e => e['call_id'] as string)
         .filter(Boolean)
     )
-    const activityLog: ActivityEntry[] = rawLog
-      .filter(e => e['event_type'] !== 'tool_completed')
+    // Build flat entries, filtering to primary agent
+    const flatEntries: ActivityEntry[] = rawLog
+      .filter(e => {
+        if (e['event_type'] === 'tool_completed') return false
+        // Filter to primary agent if known
+        const eid = e['agent_id'] as string | undefined
+        if (primaryAgentId && eid && eid !== primaryAgentId) return false
+        return true
+      })
       .flatMap((e): ActivityEntry[] => {
         const evtType = e['event_type'] as string
         const callId = e['call_id'] as string | undefined
@@ -383,8 +394,10 @@ export const useStore = create<KoanState>((set) => ({
             thinkingContent: (e['delta'] as string) ?? '' }]
         }
         if (evtType === 'agent_step_advanced') {
+          const step = e['step'] as number
+          if (step < 1) return [] // skip bootstrap
           return [{ type: 'step', tool: '', summary: '', inFlight: false,
-            step: e['step'] as number,
+            step,
             stepName: (e['step_name'] as string) ?? '',
             totalSteps: e['total_steps'] as number | undefined }]
         }
@@ -414,7 +427,6 @@ export const useStore = create<KoanState>((set) => ({
         }
         if (evtType === 'tool_called') {
           const toolName = (e['tool'] as string) ?? ''
-          // Skip koan MCP tools — rendered as step headers
           if (toolName.startsWith('koan_') || toolName.startsWith('mcp__koan')) return []
           return [{ type: 'tool', tool: toolName,
             summary: (e['summary'] as string) ?? '', inFlight, callId,
@@ -422,6 +434,19 @@ export const useStore = create<KoanState>((set) => ({
         }
         return []
       })
+    // Merge consecutive thinking entries into single cards
+    const activityLog: ActivityEntry[] = []
+    for (const entry of flatEntries) {
+      if (entry.type === 'thinking') {
+        const prev = activityLog[activityLog.length - 1]
+        if (prev?.type === 'thinking') {
+          // Merge into previous thinking card
+          prev.thinkingContent = (prev.thinkingContent ?? '') + (entry.thinkingContent ?? '')
+          continue
+        }
+      }
+      activityLog.push(entry)
+    }
 
     const completion = state['completion'] as CompletionInfo | null
 
