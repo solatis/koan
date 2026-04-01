@@ -124,7 +124,13 @@ es.addEventListener('delta', (e) => {
 
 That is the **entire** frontend sync implementation. No `applyEvent`. No 33-case switch. No fold logic. No buffer flushing. No agent filtering. No `completedCallIds` sets.
 
-`mapProjectionToStore` is a pure mapping from Python snake_case field names to the Zustand store's shape. It does not interpret, filter, or transform — it renames fields.
+`mapProjectionToStore` is a pure mapping from Python snake_case field names to the Zustand store's shape. It does not interpret, filter, or transform — it renames fields. Example: `state.primary_agent` → `primaryAgent`, `state.config_active_profile` → `configActiveProfile`. Agent and artifact sub-objects go through lightweight transform helpers (`transformAgent`, `transformArtifact`) that handle field renaming and type coercion from JSON to TypeScript types.
+
+**`projectionState`** is a module-level variable in `connect.ts` that holds the current raw projection dict (the last received snapshot or the result of applying all patches). It is the source of truth for patch application — patches mutate it, and `mapProjectionToStore` reads from it. It is separate from the Zustand store because `fast-json-patch` operates on plain JS objects, not Zustand state. On snapshot, it is replaced wholesale. On patch, it is mutated in-place (RFC 6902 `applyPatch` is destructive by default; the immutable variant produces a new object).
+
+**Error handling:** If `jsonpatch.apply` fails (malformed patch, version gap, or stale state), the client cannot safely continue — its local state may be inconsistent. The correct recovery is to force a reconnect with `since=0` to get a fresh snapshot. The error handler should: log the error, close the EventSource, reset `lastVersion` to 0, and reconnect. This is analogous to how `fatal_error` is handled today.
+
+**Ordering guarantee:** SSE messages are delivered in order over a single HTTP connection. Patches cannot arrive out of order. If the connection drops, the client reconnects and receives a fresh snapshot — there is no partial patch replay to misorder. The `version` field in each message is for diagnostics only; the client does not need to reorder messages.
 
 ---
 
@@ -293,7 +299,7 @@ class AgentProjection(BaseModel):
 
 ---
 
-## Event Types (33 total)
+## Event Types (36 total)
 
 ### Lifecycle (7)
 
@@ -307,7 +313,7 @@ class AgentProjection(BaseModel):
 | `workflow_completed` | `{success, summary?, error?}` |
 | `scout_queued` | `{scout_id, label, model?}` |
 
-### Activity (13)
+### Activity (11)
 
 | Event | Payload |
 |-------|---------|
@@ -445,6 +451,63 @@ class AgentProjection(BaseModel):
 **Library trust:** `jsonpatch` (Python, 10+ years, well-maintained) and `fast-json-patch` (JavaScript, RFC 6902 compliant, widely used). Both are mature.
 
 **Snapshot size:** At 50MB, the initial snapshot takes ~1 second on localhost. This is acceptable for a local tool. If it becomes a problem, the snapshot can be gzip-compressed (SSE supports `Content-Encoding: gzip`).
+
+---
+
+## Documentation Updates
+
+These changes require corresponding updates to existing docs. Do not defer — out-of-date docs create invisible knowledge debt.
+
+### `docs/projections.md`
+
+1. **Projection model:** Replace `activity_log: list[dict]` with `conversation: list[ConversationEntry]` and `thinking_buffer: str`. Add the full `ConversationEntry` union definition with all 10 entry types.
+2. **SSE protocol section:** Replace the current "snapshot + raw events" description with the new three-message protocol (`snapshot`, `patch`, `delta`). Include the connection lifecycle diagram from this plan.
+3. **Fold rules table:** Rewrite the activity section — replace "append raw event to activity_log" with the actual fold rules (buffer accumulation, flush triggers, in-flight tracking, agent filtering, koan MCP filtering).
+4. **"Why catch-up uses snapshots":** Document the bandwidth analysis: thinking delta patches at 200KB/s vs 600B/s for raw deltas. Document the memory cost of storing 500K patches. This decision must be visible, not inferred.
+5. **Event types:** Add `scout_queued` and the 6 typed tool events (`tool_read` through `tool_ls`) which are currently missing.
+6. **`AgentProjection`:** Add `status`, `error`, `last_tool`, `label` fields.
+7. **Remove:** The "Why activity_log stores raw events" section — that rationale is obsolete.
+
+### `docs/architecture.md`
+
+Add a principle to the projection invariant section:
+
+> **The fold runs only in Python.** The frontend applies server-computed JSON Patches mechanically. It has no fold logic, no event interpretation, and no business rules. When the frontend's view of state differs from the backend's, the bug is in the fold or the patch computation — not in the frontend.
+
+This replaces any "symmetric fold invariant" language, which implied two folds that needed to stay in sync.
+
+### `koan/projections.py`
+
+Add module-level docstring:
+```
+ProjectionStore maintains:
+  - events: append-only audit log of all VersionedEvents
+  - projection: materialized view produced by fold() — the source of truth
+  - prev_state: model_dump() of the previous projection, used for JSON Patch computation
+
+push_event() folds the event, computes a JSON Patch against prev_state,
+and broadcasts either a patch or a delta message (for thinking/stream_delta).
+The fold is the only place where business logic runs. The frontend applies
+patches mechanically.
+```
+
+### `frontend/src/sse/connect.ts`
+
+After the change, the file should have a comment explaining:
+```
+State sync protocol:
+  snapshot  → replace entire projectionState and Zustand store
+  patch     → apply RFC 6902 patch to projectionState, then re-map to store
+  delta     → append string delta to thinking_buffer or stream_buffer directly
+
+projectionState is the raw dict that patches operate on.
+mapProjectionToStore() renames fields for the Zustand store.
+The frontend has no fold logic — all business rules live in the Python fold.
+```
+
+### `AGENTS.md` — no changes required
+
+The six core invariants are unchanged. The new architecture is a refinement of how Invariant 5 (projections) is implemented, not a change to the invariant itself.
 
 ---
 
