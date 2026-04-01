@@ -13,10 +13,11 @@ export function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-export function tierSummary(tiers: Record<string, { model?: string }>): string {
+// tiers is now Record<string, string> — role → installation alias
+export function tierSummary(tiers: Record<string, string>): string {
   const parts: string[] = []
-  for (const t of ['strong', 'standard', 'cheap']) {
-    if (tiers[t]?.model) parts.push(`${t}: ${tiers[t].model}`)
+  for (const [role, alias] of Object.entries(tiers)) {
+    if (alias) parts.push(`${role}: ${alias}`)
   }
-  return parts.join(' | ') || '--'
+  return parts.slice(0, 3).join(' | ') || '--'
 }

@@ -1,68 +1,45 @@
+import { applyPatch } from 'fast-json-patch'
 import { KoanStore } from '../store/index'
 
-// connectSSE opens an EventSource using version-negotiated catch-up:
-//   ?since=0  → server sends a snapshot event, then live events
-//   ?since=N  → server replays events N+1..M, then live events
+// Module-level projection dict for patch application.
+// fast-json-patch operates on plain JS objects. Patches mutate this object,
+// then we spread the result into the Zustand store.
+let storeState: Record<string, unknown> = {}
+
+// connectSSE opens an EventSource using always-snapshot catch-up:
+//   ?since=0  → server always sends a snapshot event, then live patches
+//   ?since=N  → if N !== server.version, still sends snapshot; then live patches
 //
 // Returns the EventSource so the caller can close it on unmount or reconnect.
-// Does NOT schedule its own reconnect -- App.tsx owns that lifecycle.
+// Does NOT schedule its own reconnect — App.tsx owns that lifecycle.
 export function connectSSE(store: KoanStore): EventSource {
   const lastVersion = store.getState().lastVersion
   const es = new EventSource(`/events?since=${lastVersion}`)
 
   store.getState().setConnected(true)
 
-  // ── Snapshot: atomic state replace (since=0) ───────────────────────────
-
+  // -- Snapshot: replace entire store state atomically ----------------------
   es.addEventListener('snapshot', (e) => {
-    const data = JSON.parse((e as MessageEvent).data) as Record<string, unknown>
-    store.getState().applySnapshot(data)
+    const { version, state } = JSON.parse((e as MessageEvent).data)
+    storeState = state
+    store.setState({ lastVersion: version, ...state })
   })
 
-  // ── Fatal error: server cannot serve the requested version ─────────────
-  // Sent when ?since=N references a version the server no longer has
-  // (e.g. after server restart). Close without reconnect; App.tsx renders
-  // a "reload required" banner.
-
-  es.addEventListener('fatal_error', () => {
-    store.getState().setFatalError(true)
-    store.getState().setConnected(false)
-    es.close()
-    // App.tsx overrides onerror -- but this is a named event, not an error.
-    // We do NOT call the reconnect path here. App.tsx checks fatalError
-    // in the reconnect scheduler and skips reconnect when it is set.
+  // -- Patch: apply RFC 6902 JSON Patch to store state ----------------------
+  es.addEventListener('patch', (e) => {
+    try {
+      const { version, patch } = JSON.parse((e as MessageEvent).data)
+      // mutate:false returns a new document object — avoids mutating state
+      // that Zustand may still reference for the current render cycle.
+      storeState = applyPatch(storeState, patch, false, false).newDocument
+      store.setState({ lastVersion: version, ...storeState })
+    } catch (err) {
+      console.error('Patch failed, reconnecting for fresh snapshot:', err)
+      es.close()
+      store.setState({ lastVersion: 0 })  // force snapshot on reconnect
+      // App.tsx onerror handler schedules the reconnect
+    }
   })
-
-  // ── All other events: incremental fold ────────────────────────────────
-
-  const KNOWN_EVENTS = [
-    // Lifecycle
-    'phase_started', 'agent_spawned', 'agent_spawn_failed', 'scout_queued',
-    'agent_step_advanced', 'agent_exited', 'workflow_completed',
-    // Activity
-    'tool_called', 'tool_completed',
-    'tool_read', 'tool_write', 'tool_edit', 'tool_bash', 'tool_grep', 'tool_ls',
-    'thinking', 'stream_delta', 'stream_cleared',
-    // Interactions
-    'questions_asked', 'questions_answered',
-    'artifact_review_requested', 'artifact_reviewed',
-    'workflow_decision_requested', 'workflow_decided',
-    // Resources
-    'artifact_created', 'artifact_modified', 'artifact_removed',
-    // Configuration
-    'probe_completed',
-    'installation_created', 'installation_modified', 'installation_removed',
-    'profile_created', 'profile_modified', 'profile_removed',
-    'active_profile_changed',
-    'scout_concurrency_changed',
-  ]
-
-  for (const eventType of KNOWN_EVENTS) {
-    es.addEventListener(eventType, (e) => {
-      const data = JSON.parse((e as MessageEvent).data) as Record<string, unknown>
-      store.getState().applyEvent({ event_type: eventType, ...data })
-    })
-  }
 
   // onerror is overridden by App.tsx to schedule reconnects.
   es.onerror = () => {

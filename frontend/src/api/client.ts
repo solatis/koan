@@ -1,5 +1,3 @@
-import { Installation } from '../store/index'
-
 // -- Helpers -----------------------------------------------------------------
 
 async function post<T>(url: string, body: unknown): Promise<T> {
@@ -55,25 +53,6 @@ export async function startRun(
   return post('/api/start-run', body)
 }
 
-// -- Start-run preflight -----------------------------------------------------
-
-export interface PreflightInstallation {
-  alias: string
-  binary: string
-  binary_valid: boolean
-  extra_args: string[]
-}
-
-export interface StartRunPreflight {
-  profile: string
-  required_runner_types: string[]
-  installations: Record<string, PreflightInstallation[]>
-}
-
-export async function getStartRunPreflight(profile: string): Promise<StartRunPreflight> {
-  return get(`/api/start-run/preflight?profile=${encodeURIComponent(profile)}`)
-}
-
 // -- Interactions ------------------------------------------------------------
 
 export async function submitAnswer(answers: unknown[], token: string) {
@@ -121,6 +100,12 @@ export interface RunnerInfo {
   models: ModelInfo[]
 }
 
+export async function getProbeInfo(): Promise<{ runners: RunnerInfo[] }> {
+  return get('/api/probe')
+}
+
+// -- Profiles ----------------------------------------------------------------
+
 export async function createProfile(
   name: string,
   tiers: Record<string, { runner_type: string; model: string; thinking: string }>,
@@ -140,12 +125,6 @@ export async function deleteProfile(name: string) {
 }
 
 // -- Agent installations -----------------------------------------------------
-
-export async function getAgents(): Promise<{
-  installations: Installation[]
-}> {
-  return get('/api/agents')
-}
 
 export async function createAgent(params: {
   alias: string
