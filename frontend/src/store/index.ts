@@ -136,6 +136,30 @@ function interactionTypeToFrontend(interactionType: string): string {
   }
 }
 
+// Normalize raw questions from the backend (options may be strings or dicts)
+function normalizeAskQuestions(rawQs: Record<string, unknown>[]): AskQuestion[] {
+  return rawQs.map(q => {
+    const rawOpts = (q['options'] ?? []) as (string | Record<string, unknown>)[]
+    const options: AskOption[] = rawOpts.map(o => {
+      if (typeof o === 'string') return { value: o, label: o }
+      const label = (o['label'] ?? o['text'] ?? o['value'] ?? o['option'] ?? '') as string
+      const value = (o['value'] ?? o['label'] ?? o['text'] ?? label) as string
+      return {
+        value,
+        label,
+        recommended: (o['recommended'] as boolean) ?? false,
+      }
+    })
+    return {
+      question: (q['question'] ?? q['text'] ?? q['prompt'] ?? '') as string,
+      multi: (q['multi'] as boolean) ?? false,
+      options,
+      allow_other: (q['allow_other'] as boolean) ?? undefined,
+      context: (q['context'] ?? q['description'] ?? q['rationale']) as string | undefined,
+    }
+  })
+}
+
 function transformAgent(a: Record<string, unknown>): AgentInfo {
   return {
     agentId:        a['agent_id'] as string,
@@ -341,12 +365,18 @@ export const useStore = create<KoanState>((set) => ({
     }
 
     // Transform active_interaction: strip backend's interaction_type discriminator,
-    // map to frontend Interaction.type.
+    // map to frontend Interaction.type, and normalize questions if present.
     let activeInteraction: Interaction | null = null
     const rawInteraction = state['active_interaction'] as Record<string, unknown> | null
     if (rawInteraction) {
       const itype = interactionTypeToFrontend(rawInteraction['interaction_type'] as string)
       const { interaction_type: _drop, ...interactionPayload } = rawInteraction
+      // Normalize ask interactions: options may be raw strings in the snapshot
+      if (itype === 'ask' && Array.isArray(interactionPayload['questions'])) {
+        interactionPayload['questions'] = normalizeAskQuestions(
+          interactionPayload['questions'] as Record<string, unknown>[],
+        )
+      }
       activeInteraction = { type: itype as Interaction['type'], ...interactionPayload } as Interaction
     }
 
@@ -870,26 +900,7 @@ export const useStore = create<KoanState>((set) => ({
           // Normalize questions: options may arrive as strings or dicts
           // with varying key names from the LLM.
           const rawQs = (event['questions'] as Record<string, unknown>[]) ?? []
-          const questions: AskQuestion[] = rawQs.map(q => {
-            const rawOpts = (q['options'] ?? []) as (string | Record<string, unknown>)[]
-            const options: AskOption[] = rawOpts.map(o => {
-              if (typeof o === 'string') return { value: o, label: o }
-              const label = (o['label'] ?? o['text'] ?? o['value'] ?? o['option'] ?? '') as string
-              const value = (o['value'] ?? o['label'] ?? o['text'] ?? label) as string
-              return {
-                value,
-                label,
-                recommended: (o['recommended'] as boolean) ?? false,
-              }
-            })
-            return {
-              question: (q['question'] ?? q['text'] ?? q['prompt'] ?? '') as string,
-              multi: (q['multi'] as boolean) ?? false,
-              options,
-              allow_other: (q['allow_other'] as boolean) ?? undefined,
-              context: (q['context'] ?? q['description'] ?? q['rationale']) as string | undefined,
-            }
-          })
+          const questions = normalizeAskQuestions(rawQs)
           const interaction: Interaction = {
             type: 'ask', token: event['token'] as string, questions,
           }
