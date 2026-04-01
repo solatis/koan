@@ -94,7 +94,13 @@ def _push_artifact_diff(app_state: AppState) -> None:
         new_artifacts = list_artifacts(app_state.epic_dir)
     except Exception:
         return
-    old = app_state.projection_store.projection.artifacts
+    run = app_state.projection_store.projection.run
+    if run is None:
+        old = {}
+    else:
+        # build_artifact_diff expects dict[str, dict] with 'modified_at' and 'size' keys
+        old = {path: {"path": info.path, "size": info.size, "modified_at": info.modified_at}
+               for path, info in run.artifacts.items()}
     for event_type, payload in build_artifact_diff(old, new_artifacts):
         app_state.projection_store.push_event(event_type, payload)
 

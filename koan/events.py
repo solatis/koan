@@ -11,6 +11,18 @@ if TYPE_CHECKING:
     from .state import AgentState
 
 
+def build_run_started(
+    profile: str,
+    installations: dict[str, str],
+    scout_concurrency: int,
+) -> dict:
+    return {
+        "profile": profile,
+        "installations": installations,
+        "scout_concurrency": scout_concurrency,
+    }
+
+
 def build_agent_spawned(agent: AgentState) -> dict:
     return {
         "agent_id": agent.agent_id,
@@ -216,8 +228,13 @@ def build_workflow_decided(
 
 # -- Configuration event builders ---------------------------------------------
 
-def build_probe_completed(runners: list[dict]) -> dict:
-    return {"runners": runners}
+def build_probe_completed(results: dict[str, bool]) -> dict:
+    """Build probe_completed payload.
+
+    Args:
+        results: mapping of installation alias → available (bool).
+    """
+    return {"results": results}
 
 
 def build_installation_created(
@@ -258,10 +275,11 @@ def build_profile_removed(name: str) -> dict:
     return {"name": name}
 
 
-def build_active_profile_changed(name: str) -> dict:
+def build_default_profile_changed(name: str) -> dict:
     return {"name": name}
 
 
-
-def build_scout_concurrency_changed(value: int) -> dict:
+def build_default_scout_concurrency_changed(value: int) -> dict:
     return {"value": value}
+
+

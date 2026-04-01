@@ -1,19 +1,36 @@
-# Projection event-sourcing machinery.
-# Pure -- zero koan domain imports. All fold logic lives here.
+# Projection event-sourcing machinery: server-authoritative state with JSON Patch.
+#
+# Architecture: the fold runs only in Python. The frontend receives a full snapshot on
+# connect, then RFC 6902 JSON Patch operations after each event. It has no fold logic.
+#
+# ProjectionStore holds three things:
+#   events      -- append-only audit log, never modified
+#   projection  -- materialized state, recomputed on every push_event
+#   prev_state  -- to_wire() output from before the last fold, used to compute patches
+#
+# push_event flow: append to log → fold → to_wire → make_patch → broadcast plain dicts.
+# All paths are uniform; no branching by event type. CamelCase wire format via KoanBaseModel.
 
 from __future__ import annotations
 
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+import jsonpatch
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic.alias_generators import to_camel
 
 log = logging.getLogger("koan.projections")
 
+# ---------------------------------------------------------------------------
+# Event type registry
+# ---------------------------------------------------------------------------
+
 EventType = Literal[
     # Lifecycle
+    "run_started",
     "phase_started",
     "agent_spawned",
     "agent_spawn_failed",
@@ -33,7 +50,7 @@ EventType = Literal[
     "thinking",
     "stream_delta",
     "stream_cleared",
-    # Interactions
+    # Focus (interactions)
     "questions_asked",
     "questions_answered",
     "artifact_review_requested",
@@ -44,7 +61,7 @@ EventType = Literal[
     "artifact_created",
     "artifact_modified",
     "artifact_removed",
-    # Configuration
+    # Settings
     "probe_completed",
     "installation_created",
     "installation_modified",
@@ -52,85 +69,348 @@ EventType = Literal[
     "profile_created",
     "profile_modified",
     "profile_removed",
-    "active_profile_changed",
-    "scout_concurrency_changed",
+    "default_profile_changed",
+    "default_scout_concurrency_changed",
 ]
 
 
+# ---------------------------------------------------------------------------
+# Wire serialization base
+# ---------------------------------------------------------------------------
+
+class KoanBaseModel(BaseModel):
+    """Base model for all projection classes.
+
+    alias_generator converts snake_case field names to camelCase at serialization.
+    populate_by_name=True lets Python code use snake_case attributes normally;
+    only to_wire() output is camelCase.
+    """
+
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+    )
+
+    def to_wire(self) -> dict:
+        """Serialize to camelCase dict for snapshots and JSON Patch computation.
+
+        Always call this at serialization boundaries, never model_dump() directly.
+        snake_case keys from model_dump() break patch paths on the frontend.
+        """
+        return self.model_dump(by_alias=True)
+
+
+# ---------------------------------------------------------------------------
+# Versioned event envelope (audit log; NOT KoanBaseModel — never sent to wire)
+# ---------------------------------------------------------------------------
+
 class VersionedEvent(BaseModel):
     version: int
-    event_type: str  # EventType string; stored as str so unknown types deserialise safely
+    event_type: str  # stored as str so unknown types deserialise without error
     timestamp: str
     agent_id: str | None = None
     payload: dict
 
 
-class AgentProjection(BaseModel):
-    agent_id: str
-    role: str
-    model: str | None = None
-    step: int = 0
-    step_name: str = ""
-    started_at_ms: int = 0
-    input_tokens: int = 0
+# ---------------------------------------------------------------------------
+# ConversationEntry discriminated union
+# ---------------------------------------------------------------------------
+
+class ThinkingEntry(KoanBaseModel):
+    type: Literal["thinking"] = "thinking"
+    content: str                           # full accumulated thinking text
+
+class TextEntry(KoanBaseModel):
+    type: Literal["text"] = "text"
+    text: str                              # full accumulated output text
+
+class StepEntry(KoanBaseModel):
+    type: Literal["step"] = "step"
+    step: int
+    step_name: str
+    total_steps: int | None = None
+
+class BaseToolEntry(KoanBaseModel):
+    """Shared fields for all tool entries."""
+    call_id: str                           # unique per tool invocation
+    in_flight: bool                        # True until tool_completed
+
+class ToolReadEntry(BaseToolEntry):
+    type: Literal["tool_read"] = "tool_read"
+    file: str                              # path that was read
+    lines: str = ""                        # line range, e.g. "1-50"
+
+class ToolWriteEntry(BaseToolEntry):
+    type: Literal["tool_write"] = "tool_write"
+    file: str                              # path that was created or overwritten
+
+class ToolEditEntry(BaseToolEntry):
+    type: Literal["tool_edit"] = "tool_edit"
+    file: str                              # path that was edited in-place
+
+class ToolBashEntry(BaseToolEntry):
+    type: Literal["tool_bash"] = "tool_bash"
+    command: str                           # shell command executed
+
+class ToolGrepEntry(BaseToolEntry):
+    type: Literal["tool_grep"] = "tool_grep"
+    pattern: str                           # search pattern
+
+class ToolLsEntry(BaseToolEntry):
+    type: Literal["tool_ls"] = "tool_ls"
+    path: str                              # directory listed
+
+class ToolGenericEntry(BaseToolEntry):
+    """Catch-all for tools without a typed variant (e.g. custom MCP tools)."""
+    type: Literal["tool_generic"] = "tool_generic"
+    tool_name: str                         # original tool name from the LLM
+    summary: str = ""                      # human-readable one-liner from the runner parser
+
+ConversationEntry = Annotated[
+    ThinkingEntry | TextEntry | StepEntry |
+    ToolReadEntry | ToolWriteEntry | ToolEditEntry |
+    ToolBashEntry | ToolGrepEntry | ToolLsEntry | ToolGenericEntry,
+    Field(discriminator="type"),
+]
+
+
+# ---------------------------------------------------------------------------
+# Conversation — per agent
+# ---------------------------------------------------------------------------
+
+class Conversation(KoanBaseModel):
+    entries: list[ConversationEntry] = []
+    pending_thinking: str = ""             # in-progress reasoning, not yet flushed to ThinkingEntry
+    pending_text: str = ""                 # in-progress text output, not yet flushed to TextEntry
+    is_thinking: bool = False              # True while thinking deltas are arriving
+    input_tokens: int = 0                  # accumulated from agent_step_advanced usage
     output_tokens: int = 0
 
 
-class Projection(BaseModel):
-    # Run state
-    run_started: bool = False
+# ---------------------------------------------------------------------------
+# Focus discriminated union
+# ---------------------------------------------------------------------------
+
+class ConversationFocus(KoanBaseModel):
+    """Default state: rendering an agent's conversation."""
+    type: Literal["conversation"] = "conversation"
+    agent_id: str
+
+class QuestionFocus(KoanBaseModel):
+    """Agent is blocked, needs user input."""
+    type: Literal["question"] = "question"
+    agent_id: str
+    token: str
+    questions: list[dict] = []
+
+class ReviewFocus(KoanBaseModel):
+    """Agent is blocked, artifact needs review."""
+    type: Literal["review"] = "review"
+    agent_id: str
+    token: str
+    path: str = ""
+    description: str = ""
+    content: str = ""
+
+class DecisionFocus(KoanBaseModel):
+    """Workflow decision needed from user."""
+    type: Literal["decision"] = "decision"
+    agent_id: str
+    token: str
+    chat_turns: list[dict] = []
+
+Focus = Annotated[
+    ConversationFocus | QuestionFocus | ReviewFocus | DecisionFocus,
+    Field(discriminator="type"),
+]
+
+
+# ---------------------------------------------------------------------------
+# Agent
+# ---------------------------------------------------------------------------
+
+class Agent(KoanBaseModel):
+    # Identity — set at queue/spawn time, never changes
+    agent_id: str
+    role: str
+    label: str = ""
+    model: str | None = None
+    is_primary: bool = False
+
+    # Lifecycle — state machine: queued → running → done | failed
+    status: Literal["queued", "running", "done", "failed"] = "queued"
+    error: str | None = None
+    started_at_ms: int = 0
+
+    # Progress — updated during execution, shown in agent monitor
+    step: int = 0
+    step_name: str = ""
+    last_tool: str = ""
+
+    # Content
+    conversation: Conversation = Field(default_factory=Conversation)
+
+
+# ---------------------------------------------------------------------------
+# Settings and run configuration
+# ---------------------------------------------------------------------------
+
+class Installation(KoanBaseModel):
+    """A configured LLM CLI installation."""
+    alias: str
+    runner_type: str
+    binary: str
+    extra_args: list[str] = []
+    available: bool = False                # probe result: binary exists and responds
+
+class Profile(KoanBaseModel):
+    """Maps roles to installations for a workflow run."""
+    name: str
+    read_only: bool = False
+    tiers: dict[str, str] = {}             # role → installation alias
+
+class Settings(KoanBaseModel):
+    installations: dict[str, Installation] = {}   # alias → Installation
+    profiles: dict[str, Profile] = {}             # name → Profile
+    default_profile: str = "balanced"
+    default_scout_concurrency: int = 8
+
+class RunConfig(KoanBaseModel):
+    """Resolved configuration frozen at run start."""
+    profile: str
+    installations: dict[str, str] = {}     # role → installation alias
+    scout_concurrency: int = 8
+
+
+# ---------------------------------------------------------------------------
+# Supporting types
+# ---------------------------------------------------------------------------
+
+class ArtifactInfo(KoanBaseModel):
+    path: str
+    size: int = 0
+    modified_at: int = 0                   # milliseconds since epoch
+
+class CompletionInfo(KoanBaseModel):
+    success: bool
+    summary: str = ""
+    error: str | None = None
+
+class Notification(KoanBaseModel):
+    message: str
+    level: Literal["info", "warning", "error"] = "info"
+    timestamp_ms: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Run and top-level Projection
+# ---------------------------------------------------------------------------
+
+class Run(KoanBaseModel):
+    config: RunConfig
     phase: str = ""
+    agents: dict[str, Agent] = {}          # all agents by ID — queued, running, done, failed
+    focus: Focus | None = None             # None before first agent spawns
+    artifacts: dict[str, ArtifactInfo] = {}
+    completion: CompletionInfo | None = None
 
-    # Agents
-    primary_agent: AgentProjection | None = None
-    scouts: dict[str, AgentProjection] = Field(default_factory=dict)
-    completed_agents: list[AgentProjection] = Field(default_factory=list)
+class Projection(KoanBaseModel):
+    settings: Settings = Field(default_factory=Settings)
+    run: Run | None = None                 # None → show landing page
+    notifications: list[Notification] = []
 
-    # Activity (raw events appended as-is: tool_called, tool_completed, thinking)
-    activity_log: list[dict] = Field(default_factory=list)
-    stream_buffer: str = ""
 
-    # Interactions
-    active_interaction: dict | None = None
-
-    # Resources
-    artifacts: dict[str, dict] = Field(default_factory=dict)  # keyed by path
-    notifications: list[dict] = Field(default_factory=list)   # derived from error events
-
-    queued_scouts: list[dict] = Field(default_factory=list)
-
-    # Completion
-    completion: dict | None = None
-
-    # Configuration
-    config_runners: list[dict] = Field(default_factory=list)
-    config_profiles: list[dict] = Field(default_factory=list)
-    config_installations: list[dict] = Field(default_factory=list)
-    config_active_profile: str = "balanced"
-    config_scout_concurrency: int = 8
-
+# ---------------------------------------------------------------------------
+# Fold helpers
+# ---------------------------------------------------------------------------
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _accumulate_usage(agent: AgentProjection, usage: dict | None) -> AgentProjection:
-    if not usage:
-        return agent
-    return agent.model_copy(update={
-        "input_tokens": agent.input_tokens + usage.get("input_tokens", 0),
-        "output_tokens": agent.output_tokens + usage.get("output_tokens", 0),
+def _flush_conversation(conv: Conversation) -> Conversation:
+    """Flush both pending fields into completed entries.
+
+    Creates a ThinkingEntry from pending_thinking and/or TextEntry from pending_text,
+    appends them to entries, and resets both pending fields and is_thinking.
+    """
+    new_entries = list(conv.entries)
+    if conv.pending_thinking:
+        new_entries.append(ThinkingEntry(content=conv.pending_thinking))
+    if conv.pending_text:
+        new_entries.append(TextEntry(text=conv.pending_text))
+    return conv.model_copy(update={
+        "entries": new_entries,
+        "pending_thinking": "",
+        "pending_text": "",
+        "is_thinking": False,
     })
 
 
+def _flush_pending_text(conv: Conversation) -> Conversation:
+    """Flush only pending_text into a TextEntry (used when thinking starts)."""
+    if not conv.pending_text:
+        return conv.model_copy(update={"is_thinking": True})
+    return conv.model_copy(update={
+        "entries": [*conv.entries, TextEntry(text=conv.pending_text)],
+        "pending_text": "",
+        "is_thinking": True,
+    })
+
+
+def _flush_pending_thinking(conv: Conversation) -> Conversation:
+    """Flush only pending_thinking into a ThinkingEntry (used when text starts)."""
+    if not conv.pending_thinking:
+        return conv.model_copy(update={"is_thinking": False})
+    return conv.model_copy(update={
+        "entries": [*conv.entries, ThinkingEntry(content=conv.pending_thinking)],
+        "pending_thinking": "",
+        "is_thinking": False,
+    })
+
+
+def _get_agent(run: Run, agent_id: str | None) -> Agent | None:
+    if not agent_id or run is None:
+        return None
+    return run.agents.get(agent_id)
+
+
+def _primary_agent_id(run: Run) -> str | None:
+    """Return the agent_id of the primary agent, or None."""
+    if run is None:
+        return None
+    for agent in run.agents.values():
+        if agent.is_primary and agent.status == "running":
+            return agent.agent_id
+    # Fall back to any primary agent (e.g. if it just exited)
+    for agent in run.agents.values():
+        if agent.is_primary:
+            return agent.agent_id
+    return None
+
+
+
+
+def _update_agent_conversation(run: Run, agent_id: str, new_conv: Conversation, **extra) -> Run:
+    """Return a new Run with the agent's conversation replaced and optional extra updates."""
+    agent = run.agents.get(agent_id)
+    if agent is None:
+        return run
+    new_agent = agent.model_copy(update={"conversation": new_conv, **extra})
+    new_agents = dict(run.agents)
+    new_agents[agent_id] = new_agent
+    return run.model_copy(update={"agents": new_agents})
+
+
+# ---------------------------------------------------------------------------
+# Fold
+# ---------------------------------------------------------------------------
+
 def fold(projection: Projection, event: VersionedEvent) -> Projection:
-    """Pure fold: (Projection, VersionedEvent) -> Projection.
+    """Pure fold: (Projection, VersionedEvent) → Projection.
 
     Unknown event types return projection unchanged with a logged warning.
-    Unknown agent_ids for agent-specific events return projection unchanged with a logged warning.
-    Any exception within a handler returns projection unchanged, with the exception logged.
-    The event is always appended to the log before fold() is called; fold exceptions do not
-    prevent appending.
+    Any exception returns projection unchanged with the exception logged.
     """
     event_type = event.event_type
     payload = event.payload
@@ -139,304 +419,637 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
     try:
         match event_type:
 
-            # ── Lifecycle ──────────────────────────────────────────────────────
+            # ── Run lifecycle ──────────────────────────────────────────────
+
+            case "run_started":
+                config = RunConfig(
+                    profile=payload.get("profile", ""),
+                    installations=payload.get("installations", {}),
+                    scout_concurrency=payload.get("scout_concurrency", 8),
+                )
+                return projection.model_copy(update={"run": Run(config=config)})
 
             case "phase_started":
-                return projection.model_copy(update={
-                    "phase": payload.get("phase", ""),
-                    "run_started": True,
-                })
+                if projection.run is None:
+                    log.warning("fold phase_started: run is None, skipping")
+                    return projection
+                new_run = projection.run.model_copy(update={"phase": payload.get("phase", "")})
+                return projection.model_copy(update={"run": new_run})
 
-            case "agent_spawned":
-                eid = agent_id or payload.get("agent_id", "")
-                new_agent = AgentProjection(
-                    agent_id=eid,
-                    role=payload.get("role", ""),
-                    model=payload.get("model"),
-                    step=0,
-                    started_at_ms=payload.get("started_at_ms", 0),
+            case "workflow_completed":
+                if projection.run is None:
+                    log.warning("fold workflow_completed: run is None, skipping")
+                    return projection
+                completion = CompletionInfo(
+                    success=payload.get("success", False),
+                    summary=payload.get("summary", ""),
+                    error=payload.get("error"),
                 )
-                if payload.get("is_primary", True):
-                    return projection.model_copy(update={"primary_agent": new_agent})
-                else:
-                    new_scouts = dict(projection.scouts)
-                    new_scouts[eid] = new_agent
-                    # Remove from queued_scouts when scout starts running
-                    lbl = payload.get("label", "")
-                    new_queued = [s for s in projection.queued_scouts if s.get("label") != lbl]
-                    return projection.model_copy(update={"scouts": new_scouts, "queued_scouts": new_queued})
+                new_run = projection.run.model_copy(update={"completion": completion})
+                return projection.model_copy(update={"run": new_run})
+
+            # ── Agent lifecycle ────────────────────────────────────────────
 
             case "scout_queued":
-                entry = {
-                    "scout_id": payload.get("scout_id", ""),
-                    "label": payload.get("label", ""),
-                    "model": payload.get("model"),
-                }
-                return projection.model_copy(update={
-                    "queued_scouts": [*projection.queued_scouts, entry],
-                })
+                if projection.run is None:
+                    log.warning("fold scout_queued: run is None, skipping")
+                    return projection
+                scout_id = payload.get("scout_id", "")
+                new_agent = Agent(
+                    agent_id=scout_id,
+                    role="scout",
+                    label=payload.get("label", ""),
+                    model=payload.get("model"),
+                    status="queued",
+                )
+                new_agents = dict(projection.run.agents)
+                new_agents[scout_id] = new_agent
+                new_run = projection.run.model_copy(update={"agents": new_agents})
+                return projection.model_copy(update={"run": new_run})
 
-            case "agent_spawn_failed":
-                notification = {
-                    "type": "agent_spawn_failed",
-                    "role": payload.get("role", ""),
-                    "error_code": payload.get("error_code", ""),
-                    "message": payload.get("message", ""),
-                    "details": payload.get("details"),
-                }
-                return projection.model_copy(update={
-                    "notifications": [*projection.notifications, notification],
-                })
+            case "agent_spawned":
+                if projection.run is None:
+                    log.warning("fold agent_spawned: run is None, skipping")
+                    return projection
+                eid = agent_id or payload.get("agent_id", "")
+                is_primary = payload.get("is_primary", False)
+                new_agents = dict(projection.run.agents)
 
-            case "agent_step_advanced":
-                usage = payload.get("usage")
-                step = payload.get("step", 0)
-                step_name = payload.get("step_name", "")
-
-                # Append to activity_log so snapshots include step markers
-                step_entry = {"event_type": event_type, "agent_id": agent_id, **payload}
-                new_log = [*projection.activity_log, step_entry]
-
-                if projection.primary_agent and projection.primary_agent.agent_id == agent_id:
-                    updated = projection.primary_agent.model_copy(update={
-                        "step": step,
-                        "step_name": step_name,
-                    })
-                    updated = _accumulate_usage(updated, usage)
-                    return projection.model_copy(update={
-                        "primary_agent": updated,
-                        "activity_log": new_log,
-                    })
-                elif agent_id and agent_id in projection.scouts:
-                    updated = projection.scouts[agent_id].model_copy(update={
-                        "step": step,
-                        "step_name": step_name,
-                    })
-                    updated = _accumulate_usage(updated, usage)
-                    new_scouts = dict(projection.scouts)
-                    new_scouts[agent_id] = updated
-                    return projection.model_copy(update={
-                        "scouts": new_scouts,
-                        "activity_log": new_log,
+                if eid in new_agents:
+                    # Scout was previously queued — transition to running
+                    existing = new_agents[eid]
+                    new_agents[eid] = existing.model_copy(update={
+                        "status": "running",
+                        "started_at_ms": payload.get("started_at_ms", 0),
+                        "role": payload.get("role", existing.role),
+                        "label": payload.get("label", existing.label),
+                        "model": payload.get("model", existing.model),
                     })
                 else:
-                    log.warning("fold agent_step_advanced: unknown agent_id=%s", agent_id)
-                    return projection.model_copy(update={"activity_log": new_log})
+                    # New agent (primary agents are always new)
+                    new_agents[eid] = Agent(
+                        agent_id=eid,
+                        role=payload.get("role", ""),
+                        label=payload.get("label", ""),
+                        model=payload.get("model"),
+                        is_primary=is_primary,
+                        status="running",
+                        started_at_ms=payload.get("started_at_ms", 0),
+                    )
+
+                new_run = projection.run.model_copy(update={"agents": new_agents})
+
+                # Set ConversationFocus when primary agent spawns
+                if is_primary:
+                    new_run = new_run.model_copy(update={
+                        "focus": ConversationFocus(agent_id=eid),
+                    })
+
+                return projection.model_copy(update={"run": new_run})
 
             case "agent_exited":
-                usage = payload.get("usage")
                 error = payload.get("error")
-
-                new_notifications = list(projection.notifications)
-                if error:
-                    new_notifications.append({
-                        "type": "agent_exited_error",
-                        "agent_id": agent_id,
-                        "exit_code": payload.get("exit_code", 1),
-                        "error": error,
-                    })
-
-                new_completed = list(projection.completed_agents)
-
-                if projection.primary_agent and projection.primary_agent.agent_id == agent_id:
-                    # Accumulate final tokens, preserve in completed_agents, then clear
-                    final_agent = _accumulate_usage(projection.primary_agent, usage)
-                    new_completed.append(final_agent)
+                # Append error notification regardless of run/agent state — the fact
+                # of a failed exit is worth preserving even if the agent wasn't tracked.
+                if error and (projection.run is None or not agent_id or
+                              agent_id not in (projection.run.agents if projection.run else {})):
+                    notif = Notification(
+                        message=f"Agent exited with error: {error}",
+                        level="error",
+                        timestamp_ms=int(datetime.now(timezone.utc).timestamp() * 1000),
+                    )
                     return projection.model_copy(update={
-                        "primary_agent": None,
-                        "completed_agents": new_completed,
-                        "notifications": new_notifications,
+                        "notifications": [*projection.notifications, notif],
                     })
-                elif agent_id and agent_id in projection.scouts:
-                    final_agent = _accumulate_usage(projection.scouts[agent_id], usage)
-                    new_completed.append(final_agent)
-                    new_scouts = {k: v for k, v in projection.scouts.items() if k != agent_id}
-                    return projection.model_copy(update={
-                        "scouts": new_scouts,
-                        "completed_agents": new_completed,
-                        "notifications": new_notifications,
-                    })
-                else:
-                    # Unknown agent_id: return unchanged per plan semantics.
-                    # Error notifications are still recorded — the fact of an
-                    # error exit is worth preserving even if the agent wasn't
-                    # tracked (e.g. late-arriving event after projection reset).
-                    if new_notifications != projection.notifications:
-                        log.warning("fold agent_exited: unknown agent_id=%s, preserving error notification", agent_id)
-                        return projection.model_copy(update={"notifications": new_notifications})
+                if projection.run is None or not agent_id:
+                    return projection
+                agent = projection.run.agents.get(agent_id)
+                if agent is None:
                     log.warning("fold agent_exited: unknown agent_id=%s", agent_id)
                     return projection
 
-            case "workflow_completed":
-                return projection.model_copy(update={"completion": payload})
+                exit_code = payload.get("exit_code", 0)
+                usage = payload.get("usage")
+                status: Literal["done", "failed"] = "failed" if error or exit_code != 0 else "done"
 
-            # ── Activity ───────────────────────────────────────────────────────
+                # Accumulate final usage into conversation
+                new_conv = agent.conversation
+                if usage:
+                    new_conv = new_conv.model_copy(update={
+                        "input_tokens": new_conv.input_tokens + usage.get("input_tokens", 0),
+                        "output_tokens": new_conv.output_tokens + usage.get("output_tokens", 0),
+                    })
 
-            case "tool_called":
-                entry = {"event_type": event_type, "agent_id": agent_id, **payload}
+                new_agent = agent.model_copy(update={
+                    "status": status,
+                    "error": error,
+                    "conversation": new_conv,
+                })
+                new_agents = dict(projection.run.agents)
+                new_agents[agent_id] = new_agent
+                new_run = projection.run.model_copy(update={"agents": new_agents})
+                new_projection = projection.model_copy(update={"run": new_run})
+
+                # Append error notification
+                if error:
+                    notif = Notification(
+                        message=f"Agent {agent_id} exited with error: {error}",
+                        level="error",
+                        timestamp_ms=int(datetime.now(timezone.utc).timestamp() * 1000),
+                    )
+                    new_projection = new_projection.model_copy(update={
+                        "notifications": [*new_projection.notifications, notif],
+                    })
+                return new_projection
+
+            case "agent_spawn_failed":
+                notif = Notification(
+                    message=payload.get("message", "Agent spawn failed"),
+                    level="error",
+                    timestamp_ms=int(datetime.now(timezone.utc).timestamp() * 1000),
+                )
                 return projection.model_copy(update={
-                    "activity_log": [*projection.activity_log, entry],
+                    "notifications": [*projection.notifications, notif],
                 })
 
-            case "tool_completed":
-                entry = {"event_type": event_type, "agent_id": agent_id, **payload}
-                return projection.model_copy(update={
-                    "activity_log": [*projection.activity_log, entry],
-                })
-
-            case "tool_read" | "tool_write" | "tool_edit" | "tool_bash" | "tool_grep" | "tool_ls":
-                entry = {"event_type": event_type, "agent_id": agent_id, **payload}
-                return projection.model_copy(update={
-                    "activity_log": [*projection.activity_log, entry],
-                })
+            # ── Agent conversation ─────────────────────────────────────────
 
             case "thinking":
-                entry = {"event_type": event_type, "agent_id": agent_id, **payload}
+                if projection.run is None or not agent_id:
+                    return projection
+                agent = projection.run.agents.get(agent_id)
+                if agent is None:
+                    return projection
+                delta = payload.get("delta", "")
+                # Flush pending_text → TextEntry, then accumulate thinking delta
+                new_conv = _flush_pending_text(agent.conversation)
+                new_conv = new_conv.model_copy(update={
+                    "pending_thinking": new_conv.pending_thinking + delta,
+                    "is_thinking": True,
+                })
                 return projection.model_copy(update={
-                    "activity_log": [*projection.activity_log, entry],
+                    "run": _update_agent_conversation(projection.run, agent_id, new_conv),
                 })
 
             case "stream_delta":
+                if projection.run is None or not agent_id:
+                    return projection
+                agent = projection.run.agents.get(agent_id)
+                if agent is None:
+                    return projection
+                delta = payload.get("delta", "")
+                # Flush pending_thinking → ThinkingEntry, then accumulate text delta
+                new_conv = _flush_pending_thinking(agent.conversation)
+                new_conv = new_conv.model_copy(update={
+                    "pending_text": new_conv.pending_text + delta,
+                    "is_thinking": False,
+                })
                 return projection.model_copy(update={
-                    "stream_buffer": projection.stream_buffer + payload.get("delta", ""),
+                    "run": _update_agent_conversation(projection.run, agent_id, new_conv),
                 })
 
             case "stream_cleared":
-                return projection.model_copy(update={"stream_buffer": ""})
+                if projection.run is None or not agent_id:
+                    return projection
+                agent = projection.run.agents.get(agent_id)
+                if agent is None:
+                    return projection
+                new_conv = _flush_conversation(agent.conversation)
+                return projection.model_copy(update={
+                    "run": _update_agent_conversation(projection.run, agent_id, new_conv),
+                })
 
-            # ── Interactions ───────────────────────────────────────────────────
+            case "tool_called":
+                if projection.run is None or not agent_id:
+                    return projection
+                agent = projection.run.agents.get(agent_id)
+                if agent is None:
+                    return projection
+                tool_name = payload.get("tool", "")
+                # Skip koan MCP tools — they are infrastructure, not user-visible activity
+                if tool_name.startswith("koan_") or tool_name.startswith("mcp__koan"):
+                    return projection
+                call_id = payload.get("call_id", "")
+                summary = payload.get("summary", "")
+                last_tool = f"{tool_name} {summary}".strip() if summary else tool_name
+                new_conv = _flush_conversation(agent.conversation)
+                new_entry = ToolGenericEntry(
+                    call_id=call_id,
+                    in_flight=True,
+                    tool_name=tool_name,
+                    summary=summary,
+                )
+                new_conv = new_conv.model_copy(update={
+                    "entries": [*new_conv.entries, new_entry],
+                })
+                return projection.model_copy(update={
+                    "run": _update_agent_conversation(projection.run, agent_id, new_conv,
+                                                      last_tool=last_tool),
+                })
+
+            case "tool_read":
+                if projection.run is None or not agent_id:
+                    return projection
+                agent = projection.run.agents.get(agent_id)
+                if agent is None:
+                    return projection
+                file = payload.get("file", "")
+                lines = payload.get("lines", "")
+                last_tool = f"read {file}:{lines}" if lines else f"read {file}"
+                new_conv = _flush_conversation(agent.conversation)
+                new_entry = ToolReadEntry(
+                    call_id=payload.get("call_id", ""),
+                    in_flight=True,
+                    file=file,
+                    lines=lines,
+                )
+                new_conv = new_conv.model_copy(update={
+                    "entries": [*new_conv.entries, new_entry],
+                })
+                return projection.model_copy(update={
+                    "run": _update_agent_conversation(projection.run, agent_id, new_conv,
+                                                      last_tool=last_tool),
+                })
+
+            case "tool_write":
+                if projection.run is None or not agent_id:
+                    return projection
+                agent = projection.run.agents.get(agent_id)
+                if agent is None:
+                    return projection
+                file = payload.get("file", "")
+                new_conv = _flush_conversation(agent.conversation)
+                new_entry = ToolWriteEntry(
+                    call_id=payload.get("call_id", ""),
+                    in_flight=True,
+                    file=file,
+                )
+                new_conv = new_conv.model_copy(update={
+                    "entries": [*new_conv.entries, new_entry],
+                })
+                return projection.model_copy(update={
+                    "run": _update_agent_conversation(projection.run, agent_id, new_conv,
+                                                      last_tool=f"write {file}"),
+                })
+
+            case "tool_edit":
+                if projection.run is None or not agent_id:
+                    return projection
+                agent = projection.run.agents.get(agent_id)
+                if agent is None:
+                    return projection
+                file = payload.get("file", "")
+                new_conv = _flush_conversation(agent.conversation)
+                new_entry = ToolEditEntry(
+                    call_id=payload.get("call_id", ""),
+                    in_flight=True,
+                    file=file,
+                )
+                new_conv = new_conv.model_copy(update={
+                    "entries": [*new_conv.entries, new_entry],
+                })
+                return projection.model_copy(update={
+                    "run": _update_agent_conversation(projection.run, agent_id, new_conv,
+                                                      last_tool=f"edit {file}"),
+                })
+
+            case "tool_bash":
+                if projection.run is None or not agent_id:
+                    return projection
+                agent = projection.run.agents.get(agent_id)
+                if agent is None:
+                    return projection
+                command = payload.get("command", "")
+                new_conv = _flush_conversation(agent.conversation)
+                new_entry = ToolBashEntry(
+                    call_id=payload.get("call_id", ""),
+                    in_flight=True,
+                    command=command,
+                )
+                new_conv = new_conv.model_copy(update={
+                    "entries": [*new_conv.entries, new_entry],
+                })
+                return projection.model_copy(update={
+                    "run": _update_agent_conversation(projection.run, agent_id, new_conv,
+                                                      last_tool=f"bash {command}"),
+                })
+
+            case "tool_grep":
+                if projection.run is None or not agent_id:
+                    return projection
+                agent = projection.run.agents.get(agent_id)
+                if agent is None:
+                    return projection
+                pattern = payload.get("pattern", "")
+                new_conv = _flush_conversation(agent.conversation)
+                new_entry = ToolGrepEntry(
+                    call_id=payload.get("call_id", ""),
+                    in_flight=True,
+                    pattern=pattern,
+                )
+                new_conv = new_conv.model_copy(update={
+                    "entries": [*new_conv.entries, new_entry],
+                })
+                return projection.model_copy(update={
+                    "run": _update_agent_conversation(projection.run, agent_id, new_conv,
+                                                      last_tool=f"grep {pattern}"),
+                })
+
+            case "tool_ls":
+                if projection.run is None or not agent_id:
+                    return projection
+                agent = projection.run.agents.get(agent_id)
+                if agent is None:
+                    return projection
+                path = payload.get("path", "")
+                new_conv = _flush_conversation(agent.conversation)
+                new_entry = ToolLsEntry(
+                    call_id=payload.get("call_id", ""),
+                    in_flight=True,
+                    path=path,
+                )
+                new_conv = new_conv.model_copy(update={
+                    "entries": [*new_conv.entries, new_entry],
+                })
+                return projection.model_copy(update={
+                    "run": _update_agent_conversation(projection.run, agent_id, new_conv,
+                                                      last_tool=f"ls {path}"),
+                })
+
+            case "tool_completed":
+                if projection.run is None or not agent_id:
+                    return projection
+                agent = projection.run.agents.get(agent_id)
+                if agent is None:
+                    return projection
+                call_id = payload.get("call_id", "")
+                # Scan entries for the matching in-flight tool entry and mark it done
+                new_entries = []
+                for entry in agent.conversation.entries:
+                    if isinstance(entry, BaseToolEntry) and entry.call_id == call_id:
+                        new_entries.append(entry.model_copy(update={"in_flight": False}))
+                    else:
+                        new_entries.append(entry)
+                new_conv = agent.conversation.model_copy(update={"entries": new_entries})
+                return projection.model_copy(update={
+                    "run": _update_agent_conversation(projection.run, agent_id, new_conv),
+                })
+
+            case "agent_step_advanced":
+                if projection.run is None or not agent_id:
+                    return projection
+                agent = projection.run.agents.get(agent_id)
+                if agent is None:
+                    log.warning("fold agent_step_advanced: unknown agent_id=%s", agent_id)
+                    return projection
+
+                step = payload.get("step", 0)
+                step_name = payload.get("step_name", "")
+                total_steps = payload.get("total_steps")
+                usage = payload.get("usage")
+
+                # Flush both pending fields, optionally append StepEntry
+                new_conv = _flush_conversation(agent.conversation)
+                if step >= 1:
+                    new_conv = new_conv.model_copy(update={
+                        "entries": [*new_conv.entries, StepEntry(
+                            step=step,
+                            step_name=step_name,
+                            total_steps=total_steps,
+                        )],
+                    })
+
+                # Accumulate token usage from step
+                if usage:
+                    new_conv = new_conv.model_copy(update={
+                        "input_tokens": new_conv.input_tokens + usage.get("input_tokens", 0),
+                        "output_tokens": new_conv.output_tokens + usage.get("output_tokens", 0),
+                    })
+
+                return projection.model_copy(update={
+                    "run": _update_agent_conversation(projection.run, agent_id, new_conv,
+                                                      step=step, step_name=step_name),
+                })
+
+            # ── Focus transitions ──────────────────────────────────────────
 
             case "questions_asked":
-                active = {"interaction_type": "questions_asked", **payload}
-                return projection.model_copy(update={"active_interaction": active})
+                if projection.run is None or not agent_id:
+                    return projection
+                new_focus = QuestionFocus(
+                    agent_id=agent_id,
+                    token=payload.get("token", ""),
+                    questions=payload.get("questions", []),
+                )
+                new_run = projection.run.model_copy(update={"focus": new_focus})
+                return projection.model_copy(update={"run": new_run})
 
             case "questions_answered":
-                return projection.model_copy(update={"active_interaction": None})
+                if projection.run is None:
+                    return projection
+                pid = _primary_agent_id(projection.run)
+                if pid is None:
+                    return projection
+                new_run = projection.run.model_copy(update={
+                    "focus": ConversationFocus(agent_id=pid),
+                })
+                return projection.model_copy(update={"run": new_run})
 
             case "artifact_review_requested":
-                active = {"interaction_type": "artifact_review_requested", **payload}
-                return projection.model_copy(update={"active_interaction": active})
+                if projection.run is None or not agent_id:
+                    return projection
+                new_focus = ReviewFocus(
+                    agent_id=agent_id,
+                    token=payload.get("token", ""),
+                    path=payload.get("path", ""),
+                    description=payload.get("description", ""),
+                    content=payload.get("content", ""),
+                )
+                new_run = projection.run.model_copy(update={"focus": new_focus})
+                return projection.model_copy(update={"run": new_run})
 
             case "artifact_reviewed":
-                return projection.model_copy(update={"active_interaction": None})
+                if projection.run is None:
+                    return projection
+                pid = _primary_agent_id(projection.run)
+                if pid is None:
+                    return projection
+                new_run = projection.run.model_copy(update={
+                    "focus": ConversationFocus(agent_id=pid),
+                })
+                return projection.model_copy(update={"run": new_run})
 
             case "workflow_decision_requested":
-                active = {"interaction_type": "workflow_decision_requested", **payload}
-                return projection.model_copy(update={"active_interaction": active})
+                if projection.run is None or not agent_id:
+                    return projection
+                new_focus = DecisionFocus(
+                    agent_id=agent_id,
+                    token=payload.get("token", ""),
+                    chat_turns=payload.get("chat_turns", []),
+                )
+                new_run = projection.run.model_copy(update={"focus": new_focus})
+                return projection.model_copy(update={"run": new_run})
 
             case "workflow_decided":
-                return projection.model_copy(update={"active_interaction": None})
+                if projection.run is None:
+                    return projection
+                pid = _primary_agent_id(projection.run)
+                if pid is None:
+                    return projection
+                new_run = projection.run.model_copy(update={
+                    "focus": ConversationFocus(agent_id=pid),
+                })
+                return projection.model_copy(update={"run": new_run})
 
-            # ── Resources ──────────────────────────────────────────────────────
+            # ── Resources ─────────────────────────────────────────────────
 
             case "artifact_created":
+                if projection.run is None:
+                    return projection
                 path = payload.get("path", "")
-                new_artifacts = dict(projection.artifacts)
-                new_artifacts[path] = {
-                    "path": path,
-                    "size": payload.get("size", 0),
-                    "modified_at": payload.get("modified_at", 0),
-                }
-                return projection.model_copy(update={"artifacts": new_artifacts})
+                info = ArtifactInfo(
+                    path=path,
+                    size=payload.get("size", 0),
+                    modified_at=payload.get("modified_at", 0),
+                )
+                new_artifacts = dict(projection.run.artifacts)
+                new_artifacts[path] = info
+                new_run = projection.run.model_copy(update={"artifacts": new_artifacts})
+                return projection.model_copy(update={"run": new_run})
 
             case "artifact_modified":
+                if projection.run is None:
+                    return projection
                 path = payload.get("path", "")
-                new_artifacts = dict(projection.artifacts)
-                new_artifacts[path] = {
-                    "path": path,
-                    "size": payload.get("size", 0),
-                    "modified_at": payload.get("modified_at", 0),
-                }
-                return projection.model_copy(update={"artifacts": new_artifacts})
+                info = ArtifactInfo(
+                    path=path,
+                    size=payload.get("size", 0),
+                    modified_at=payload.get("modified_at", 0),
+                )
+                new_artifacts = dict(projection.run.artifacts)
+                new_artifacts[path] = info
+                new_run = projection.run.model_copy(update={"artifacts": new_artifacts})
+                return projection.model_copy(update={"run": new_run})
 
             case "artifact_removed":
+                if projection.run is None:
+                    return projection
                 path = payload.get("path", "")
-                new_artifacts = {k: v for k, v in projection.artifacts.items() if k != path}
-                return projection.model_copy(update={"artifacts": new_artifacts})
+                new_artifacts = {k: v for k, v in projection.run.artifacts.items() if k != path}
+                new_run = projection.run.model_copy(update={"artifacts": new_artifacts})
+                return projection.model_copy(update={"run": new_run})
 
-            # ── Configuration ──────────────────────────────────────────────────
+            # ── Settings ──────────────────────────────────────────────────
 
             case "probe_completed":
-                return projection.model_copy(update={
-                    "config_runners": payload.get("runners", []),
-                })
+                # Payload: {results: {alias: bool, ...}}
+                results: dict[str, bool] = payload.get("results", {})
+                new_insts = dict(projection.settings.installations)
+                for alias, available in results.items():
+                    if alias in new_insts:
+                        new_insts[alias] = new_insts[alias].model_copy(update={"available": available})
+                new_settings = projection.settings.model_copy(update={"installations": new_insts})
+                return projection.model_copy(update={"settings": new_settings})
 
             case "installation_created":
-                new_inst = {
-                    "alias": payload.get("alias", ""),
-                    "runner_type": payload.get("runner_type", ""),
-                    "binary": payload.get("binary", ""),
-                    "extra_args": payload.get("extra_args", []),
-                }
-                return projection.model_copy(update={
-                    "config_installations": [*projection.config_installations, new_inst],
-                })
+                alias = payload.get("alias", "")
+                inst = Installation(
+                    alias=alias,
+                    runner_type=payload.get("runner_type", ""),
+                    binary=payload.get("binary", ""),
+                    extra_args=payload.get("extra_args", []),
+                    available=False,  # availability set by probe_completed
+                )
+                new_insts = dict(projection.settings.installations)
+                new_insts[alias] = inst
+                new_settings = projection.settings.model_copy(update={"installations": new_insts})
+                return projection.model_copy(update={"settings": new_settings})
 
             case "installation_modified":
                 alias = payload.get("alias", "")
-                updated_inst = {
-                    "alias": alias,
-                    "runner_type": payload.get("runner_type", ""),
-                    "binary": payload.get("binary", ""),
-                    "extra_args": payload.get("extra_args", []),
-                }
-                new_insts = [
-                    updated_inst if inst.get("alias") == alias else inst
-                    for inst in projection.config_installations
-                ]
-                return projection.model_copy(update={"config_installations": new_insts})
+                existing = projection.settings.installations.get(alias)
+                available = existing.available if existing else False
+                inst = Installation(
+                    alias=alias,
+                    runner_type=payload.get("runner_type", ""),
+                    binary=payload.get("binary", ""),
+                    extra_args=payload.get("extra_args", []),
+                    available=available,  # preserve probe result
+                )
+                new_insts = dict(projection.settings.installations)
+                new_insts[alias] = inst
+                new_settings = projection.settings.model_copy(update={"installations": new_insts})
+                return projection.model_copy(update={"settings": new_settings})
 
             case "installation_removed":
                 alias = payload.get("alias", "")
-                new_insts = [
-                    inst for inst in projection.config_installations
-                    if inst.get("alias") != alias
-                ]
-                return projection.model_copy(update={"config_installations": new_insts})
+                new_insts = {k: v for k, v in projection.settings.installations.items() if k != alias}
+                new_settings = projection.settings.model_copy(update={"installations": new_insts})
+                return projection.model_copy(update={"settings": new_settings})
 
             case "profile_created":
-                new_profile = {
-                    "name": payload.get("name", ""),
-                    "read_only": payload.get("read_only", False),
-                    "tiers": payload.get("tiers", {}),
-                }
-                return projection.model_copy(update={
-                    "config_profiles": [*projection.config_profiles, new_profile],
-                })
+                name = payload.get("name", "")
+                # tiers in the projection are stored as dict[str, str] (role → alias).
+                # The payload tiers may be nested dicts from the old ProfileTier structure
+                # or simple string values from the new structure. Normalise to str.
+                raw_tiers = payload.get("tiers", {})
+                tiers: dict[str, str] = {}
+                for role, val in raw_tiers.items():
+                    if isinstance(val, str):
+                        tiers[role] = val
+                    elif isinstance(val, dict):
+                        # Legacy: extract alias or runner_type as a best-effort fallback
+                        tiers[role] = val.get("alias", val.get("runner_type", str(val)))
+                    else:
+                        tiers[role] = str(val)
+                profile = Profile(
+                    name=name,
+                    read_only=payload.get("read_only", False),
+                    tiers=tiers,
+                )
+                new_profiles = dict(projection.settings.profiles)
+                new_profiles[name] = profile
+                new_settings = projection.settings.model_copy(update={"profiles": new_profiles})
+                return projection.model_copy(update={"settings": new_settings})
 
             case "profile_modified":
                 name = payload.get("name", "")
-                updated_profile = {
-                    "name": name,
-                    "read_only": payload.get("read_only", False),
-                    "tiers": payload.get("tiers", {}),
-                }
-                if any(p.get("name") == name for p in projection.config_profiles):
-                    new_profiles = [
-                        updated_profile if p.get("name") == name else p
-                        for p in projection.config_profiles
-                    ]
-                else:
-                    # First time (e.g. balanced on startup)
-                    new_profiles = [*projection.config_profiles, updated_profile]
-                return projection.model_copy(update={"config_profiles": new_profiles})
+                raw_tiers = payload.get("tiers", {})
+                tiers = {}
+                for role, val in raw_tiers.items():
+                    if isinstance(val, str):
+                        tiers[role] = val
+                    elif isinstance(val, dict):
+                        tiers[role] = val.get("alias", val.get("runner_type", str(val)))
+                    else:
+                        tiers[role] = str(val)
+                profile = Profile(
+                    name=name,
+                    read_only=payload.get("read_only", False),
+                    tiers=tiers,
+                )
+                new_profiles = dict(projection.settings.profiles)
+                new_profiles[name] = profile
+                new_settings = projection.settings.model_copy(update={"profiles": new_profiles})
+                return projection.model_copy(update={"settings": new_settings})
 
             case "profile_removed":
                 name = payload.get("name", "")
-                new_profiles = [
-                    p for p in projection.config_profiles if p.get("name") != name
-                ]
-                return projection.model_copy(update={"config_profiles": new_profiles})
+                new_profiles = {k: v for k, v in projection.settings.profiles.items() if k != name}
+                new_settings = projection.settings.model_copy(update={"profiles": new_profiles})
+                return projection.model_copy(update={"settings": new_settings})
 
-            case "active_profile_changed":
-                return projection.model_copy(update={
-                    "config_active_profile": payload.get("name", "balanced"),
+            case "default_profile_changed":
+                new_settings = projection.settings.model_copy(update={
+                    "default_profile": payload.get("name", "balanced"),
                 })
+                return projection.model_copy(update={"settings": new_settings})
 
-            case "scout_concurrency_changed":
-                return projection.model_copy(update={
-                    "config_scout_concurrency": payload.get("value", 8),
+            case "default_scout_concurrency_changed":
+                new_settings = projection.settings.model_copy(update={
+                    "default_scout_concurrency": payload.get("value", 8),
                 })
+                return projection.model_copy(update={"settings": new_settings})
 
             case _:
                 log.warning("fold: unknown event_type=%r", event_type)
@@ -444,20 +1057,35 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
 
     except Exception:
         log.exception(
-            "fold: exception handling event_type=%r version=%d event=%r",
-            event_type, event.version, event,
+            "fold: exception handling event_type=%r version=%d",
+            event_type, event.version,
         )
         return projection
 
 
+# ---------------------------------------------------------------------------
+# ProjectionStore
+# ---------------------------------------------------------------------------
+
 class ProjectionStore:
-    """In-memory versioned event log + materialized projection + asyncio.Queue subscribers."""
+    """In-memory versioned event log + materialized projection + JSON Patch broadcaster.
+
+    push_event flow:
+      1. Increment version and append VersionedEvent to audit log.
+      2. Fold event into projection.
+      3. Compute RFC 6902 JSON Patch between prev_state and new_state (both camelCase).
+      4. If patch is non-empty, broadcast {type, version, patch} dict to all subscriber queues.
+
+    Subscriber queues receive plain dicts (not VersionedEvent objects) — the dict shape
+    matches the SSE JSON payload so sse_stream() can forward it directly.
+    """
 
     def __init__(self) -> None:
         self.events: list[VersionedEvent] = []
         self.projection: Projection = Projection()
         self.version: int = 0
-        self.subscribers: list[asyncio.Queue] = []
+        self.subscribers: set[asyncio.Queue] = set()
+        self.prev_state: dict = self.projection.to_wire()
 
     def push_event(
         self,
@@ -465,7 +1093,7 @@ class ProjectionStore:
         payload: dict,
         agent_id: str | None = None,
     ) -> VersionedEvent:
-        """Append event, fold into projection, broadcast to subscribers."""
+        """Append event, fold into projection, compute patch, broadcast to subscribers."""
         self.version += 1
         event = VersionedEvent(
             version=self.version,
@@ -476,7 +1104,7 @@ class ProjectionStore:
         )
         self.events.append(event)
 
-        # Fold — event is in the log regardless of fold success
+        old_state = self.prev_state
         try:
             self.projection = fold(self.projection, event)
         except Exception:
@@ -485,10 +1113,25 @@ class ProjectionStore:
                 self.version, event_type,
             )
 
-        # Broadcast — snapshot list to avoid RuntimeError on concurrent subscribe/unsubscribe
+        new_state = self.projection.to_wire()
+        self.prev_state = new_state
+
+        patch = jsonpatch.make_patch(old_state, new_state)
+        if not patch:
+            # No state change — koan MCP tools and other filtered events land here.
+            # Subscribers stay at the same version; no broadcast needed.
+            return event
+
+        msg: dict = {
+            "type": "patch",
+            "version": self.version,
+            "patch": patch.patch,  # list of RFC 6902 operation dicts
+        }
+        # Snapshot subscribers before iterating — defensive against concurrent
+        # add/remove (asyncio, not threading, but still good practice).
         for q in list(self.subscribers):
             try:
-                q.put_nowait(event)
+                q.put_nowait(msg)
             except asyncio.QueueFull:
                 log.warning(
                     "ProjectionStore: subscriber queue full, dropping event version=%d",
@@ -500,25 +1143,18 @@ class ProjectionStore:
         return event
 
     def get_snapshot(self) -> dict:
-        """Return {version, state} for SSE snapshot."""
+        """Return {version, state} for SSE snapshot. State is camelCase via to_wire()."""
         return {
             "version": self.version,
-            "state": self.projection.model_dump(),
+            "state": self.projection.to_wire(),
         }
 
-    def events_since(self, version: int) -> list[VersionedEvent]:
-        """Return all events with version > given version."""
-        return [e for e in self.events if e.version > version]
-
     def subscribe(self) -> asyncio.Queue:
-        """Create and register a subscriber queue."""
+        """Create and register a subscriber queue. Returns the queue."""
         q: asyncio.Queue = asyncio.Queue()
-        self.subscribers.append(q)
+        self.subscribers.add(q)
         return q
 
     def unsubscribe(self, queue: asyncio.Queue) -> None:
         """Remove a subscriber queue."""
-        try:
-            self.subscribers.remove(queue)
-        except ValueError:
-            pass
+        self.subscribers.discard(queue)
