@@ -475,10 +475,28 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 is_primary = payload.get("is_primary", False)
                 new_agents = dict(projection.run.agents)
 
+                # Look up by agent_id first (exact match), then fall back
+                # to label match.  scout_queued keys agents by label
+                # (e.g. "database-and-testing") while agent_spawned keys
+                # by UUID, so the secondary lookup bridges the two.
+                queued_key: str | None = None
                 if eid in new_agents:
-                    # Scout was previously queued — transition to running
-                    existing = new_agents[eid]
+                    queued_key = eid
+                else:
+                    spawn_label = payload.get("label", "")
+                    if spawn_label:
+                        for k, a in new_agents.items():
+                            if a.label == spawn_label and a.status == "queued":
+                                queued_key = k
+                                break
+
+                if queued_key is not None:
+                    # Transition queued -> running. Re-key under the real
+                    # agent_id so all subsequent events (which use the UUID)
+                    # find the right entry.
+                    existing = new_agents.pop(queued_key)
                     new_agents[eid] = existing.model_copy(update={
+                        "agent_id": eid,
                         "status": "running",
                         "started_at_ms": payload.get("started_at_ms", 0),
                         "role": payload.get("role", existing.role),

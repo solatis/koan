@@ -153,17 +153,40 @@ class TestFoldAgentLifecycle:
         assert isinstance(r.run.focus, ConversationFocus)
         assert r.run.focus.agent_id == "a1"
 
-    def test_agent_spawned_scout_transitions_from_queued(self):
+    def test_agent_spawned_scout_transitions_from_queued_same_id(self):
         p = _proj_with_run()
         # Queue the scout first
         p = fold(p, _e("scout_queued", {"scout_id": "s1", "label": "eng", "model": "haiku"}))
         assert p.run.agents["s1"].status == "queued"
-        # Spawn it
+        # Spawn with the same id
         r = fold(p, _e("agent_spawned", {
             "agent_id": "s1", "role": "scout", "is_primary": False, "started_at_ms": 2000,
         }, agent_id="s1"))
         assert r.run.agents["s1"].status == "running"
         assert r.run.agents["s1"].started_at_ms == 2000
+
+    def test_agent_spawned_scout_transitions_by_label_when_id_differs(self):
+        """scout_queued keys by label, agent_spawned keys by UUID.
+        The fold must match by label and re-key under the UUID."""
+        p = _proj_with_run()
+        # Queue keyed by label
+        p = fold(p, _e("scout_queued", {"scout_id": "eng", "label": "eng", "model": "haiku"}))
+        assert "eng" in p.run.agents
+        assert p.run.agents["eng"].status == "queued"
+        # Spawn with a UUID — different key
+        uuid_id = "aaaa-bbbb-cccc"
+        r = fold(p, _e("agent_spawned", {
+            "agent_id": uuid_id, "role": "scout", "label": "eng",
+            "is_primary": False, "started_at_ms": 3000, "model": "haiku",
+        }, agent_id=uuid_id))
+        # Old label key should be gone, new UUID key should exist
+        assert "eng" not in r.run.agents
+        assert uuid_id in r.run.agents
+        assert r.run.agents[uuid_id].status == "running"
+        assert r.run.agents[uuid_id].agent_id == uuid_id
+        assert r.run.agents[uuid_id].label == "eng"
+        # Only one agent entry, not two
+        assert len(r.run.agents) == 1
 
     def test_scout_queued_adds_agent_with_queued_status(self):
         p = _proj_with_run()
