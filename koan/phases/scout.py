@@ -46,7 +46,13 @@ SYSTEM_PROMPT = (
     "- MUST NOT express opinions about code quality.\n"
     "- MUST NOT produce implementation plans or design ideas.\n"
     "- MUST include file paths and line numbers when referencing code.\n"
-    "- MUST include relevant code excerpts (verbatim) to support each finding.\n"
+    "- MUST reference code precisely: file:line, function signature or key line.\n"
+    "  Do NOT copy full function bodies or paste large code blocks.\n"
+    "- Use compressed notation throughout your report:\n"
+    "  Signatures: `file.go:42 func Compile(*Rule) (*CompiledRule, error)`\n"
+    "  Structs: `CompiledRule{RuleID, Name, Action, SampleRate, OrGroups}`\n"
+    "  Enums: `Action: Observe|Drop|Fail`\n"
+    "  Call chains: `cmd/main.go -> NewService() -> engine.Start()`\n"
     "- SHOULD be thorough within the question scope: follow references, check related files.\n"
     "- SHOULD note explicitly when something is NOT present (e.g., \"No tests found for this module\").\n"
     "\n"
@@ -118,21 +124,30 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "",
                 f"**Output file:** {output_file}",
                 "",
-                "Write a markdown file with these exact sections:",
+                "Write a compressed findings file. Optimize for signal density -- every line",
+                "should carry information the intake agent needs. No prose padding.",
                 "",
                 "## Question",
-                "Restate the assigned question verbatim.",
+                "Restate the assigned question in one line.",
                 "",
                 "## Findings",
-                "Factual observations that answer the question. Use sub-sections if the answer has multiple parts.",
-                "Cite file paths and line numbers for every claim. Include code snippets where relevant.",
-                "Every finding must be backed by a file you actually read -- no inferred claims.",
+                "Use compressed notation throughout:",
+                "- One bullet per finding. File:line reference required.",
+                "- Function signatures as: `file:line func Name(args) returns`",
+                "- Struct fields as: `TypeName{Field1, Field2, Field3}`",
+                "- Enum values as: `EnumName: Val1|Val2|Val3`",
+                "- Call chains as: `caller.go:10 -> middleware.go:25 -> handler.go:40`",
+                "- Group related facts under a sub-heading, not one finding per sub-section.",
                 "",
-                "## Files Examined",
-                "List every file you read during this investigation.",
+                "Example of target density:",
+                "  ### Rule Engine",
+                "  - compile.go:109 `Compile(*Rule) (*CompiledRule, error)` -- validates, sorts by cost",
+                "  - evaluate.go:52 `Evaluate(*CompiledRule, json.RawMessage) (MatchResult, error)` -- DNF short-circuit",
+                "  - CompiledRule{RuleID, Name, Action, SampleRate, OrGroups, Priority}",
+                "  - Action: Observe|Drop|Fail",
                 "",
                 "## Gaps",
-                "Note anything you could not determine. If no gaps, write: (none)",
+                "Bullet list. If none: (none)",
             ],
         )
 
