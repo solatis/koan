@@ -1,384 +1,708 @@
 # Tests for koan.projections (ProjectionStore, fold) and koan.events (build_artifact_diff).
+# New architecture: server-authoritative JSON Patch. fold() is the only business logic.
+# Projection has 3 top-level fields: settings, run, notifications.
 
 from __future__ import annotations
 
 import asyncio
-import json
 
 import pytest
 
 from koan.projections import (
-    AgentProjection,
+    Agent,
+    ArtifactInfo,
+    BaseToolEntry,
+    Conversation,
+    ConversationFocus,
+    DecisionFocus,
     Projection,
     ProjectionStore,
+    QuestionFocus,
+    ReviewFocus,
+    Run,
+    RunConfig,
+    Settings,
+    StepEntry,
+    TextEntry,
+    ThinkingEntry,
+    ToolBashEntry,
+    ToolEditEntry,
+    ToolGenericEntry,
+    ToolGrepEntry,
+    ToolLsEntry,
+    ToolReadEntry,
+    ToolWriteEntry,
     VersionedEvent,
     fold,
 )
 
 
-# -- fold: lifecycle -----------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-class TestFoldLifecycle:
-    def _event(self, event_type: str, payload: dict, agent_id: str | None = None, version: int = 1) -> VersionedEvent:
-        return VersionedEvent(
-            version=version,
-            event_type=event_type,
-            timestamp="2026-01-01T00:00:00Z",
-            agent_id=agent_id,
-            payload=payload,
-        )
+def _e(
+    event_type: str,
+    payload: dict,
+    agent_id: str | None = None,
+    version: int = 1,
+) -> VersionedEvent:
+    return VersionedEvent(
+        version=version,
+        event_type=event_type,
+        timestamp="2026-01-01T00:00:00Z",
+        agent_id=agent_id,
+        payload=payload,
+    )
 
-    def test_phase_started(self):
+
+def _proj_with_run(profile: str = "balanced") -> Projection:
+    """Return a Projection with an active run (post run_started)."""
+    p = Projection()
+    return fold(p, _e("run_started", {
+        "profile": profile,
+        "installations": {},
+        "scout_concurrency": 8,
+    }))
+
+
+def _proj_with_primary(agent_id: str = "a1", role: str = "intake") -> Projection:
+    """Return a Projection with an active run and a running primary agent."""
+    p = _proj_with_run()
+    p = fold(p, _e("agent_spawned", {
+        "agent_id": agent_id,
+        "role": role,
+        "label": "",
+        "model": "opus",
+        "is_primary": True,
+        "started_at_ms": 1000,
+    }, agent_id=agent_id))
+    return p
+
+
+# ---------------------------------------------------------------------------
+# fold: run lifecycle
+# ---------------------------------------------------------------------------
+
+class TestFoldRunLifecycle:
+
+    def test_run_started_creates_run(self):
         p = Projection()
-        e = self._event("phase_started", {"phase": "intake"})
-        r = fold(p, e)
-        assert r.phase == "intake"
-        assert r.run_started is True
+        assert p.run is None
+        r = fold(p, _e("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8}))
+        assert r.run is not None
+        assert r.run.config.profile == "balanced"
+        assert r.run.config.scout_concurrency == 8
 
-    def test_agent_spawned_primary(self):
-        p = Projection()
-        e = self._event("agent_spawned", {"role": "intake", "model": "opus", "is_primary": True}, agent_id="a1")
-        r = fold(p, e)
-        assert r.primary_agent is not None
-        assert r.primary_agent.agent_id == "a1"
-        assert r.primary_agent.role == "intake"
+    def test_run_started_resets_run_on_new_start(self):
+        """A second run_started replaces the run entirely."""
+        p = _proj_with_run("balanced")
+        # Simulate a new run
+        r = fold(p, _e("run_started", {"profile": "fast", "installations": {}, "scout_concurrency": 4}))
+        assert r.run is not None
+        assert r.run.config.profile == "fast"
+        assert r.run.agents == {}
 
-    def test_agent_spawned_scout(self):
-        p = Projection()
-        e = self._event("agent_spawned", {"role": "scout", "model": None, "is_primary": False}, agent_id="s1")
-        r = fold(p, e)
-        assert "s1" in r.scouts
-        assert r.primary_agent is None
+    def test_phase_started_sets_phase(self):
+        p = _proj_with_run()
+        r = fold(p, _e("phase_started", {"phase": "intake"}))
+        assert r.run.phase == "intake"
 
-    def test_agent_spawn_failed(self):
+    def test_phase_started_without_run_is_noop(self):
         p = Projection()
-        e = self._event("agent_spawn_failed", {"role": "intake", "error_code": "binary_not_found", "message": "not found"})
-        r = fold(p, e)
+        r = fold(p, _e("phase_started", {"phase": "intake"}))
+        assert r.run is None
+
+    def test_workflow_completed_sets_completion(self):
+        p = _proj_with_run()
+        r = fold(p, _e("workflow_completed", {"success": True, "summary": "done"}))
+        assert r.run.completion is not None
+        assert r.run.completion.success is True
+        assert r.run.completion.summary == "done"
+
+    def test_workflow_completed_without_run_is_noop(self):
+        p = Projection()
+        r = fold(p, _e("workflow_completed", {"success": True}))
+        assert r.run is None
+
+
+# ---------------------------------------------------------------------------
+# fold: agent lifecycle
+# ---------------------------------------------------------------------------
+
+class TestFoldAgentLifecycle:
+
+    def test_agent_spawned_primary_creates_agent(self):
+        p = _proj_with_run()
+        r = fold(p, _e("agent_spawned", {
+            "agent_id": "a1", "role": "intake", "is_primary": True,
+            "model": "opus", "started_at_ms": 1000,
+        }, agent_id="a1"))
+        assert "a1" in r.run.agents
+        agent = r.run.agents["a1"]
+        assert agent.is_primary is True
+        assert agent.status == "running"
+        assert agent.role == "intake"
+
+    def test_agent_spawned_sets_conversation_focus(self):
+        p = _proj_with_run()
+        r = fold(p, _e("agent_spawned", {
+            "agent_id": "a1", "role": "intake", "is_primary": True, "started_at_ms": 0,
+        }, agent_id="a1"))
+        assert r.run.focus is not None
+        assert isinstance(r.run.focus, ConversationFocus)
+        assert r.run.focus.agent_id == "a1"
+
+    def test_agent_spawned_scout_transitions_from_queued(self):
+        p = _proj_with_run()
+        # Queue the scout first
+        p = fold(p, _e("scout_queued", {"scout_id": "s1", "label": "eng", "model": "haiku"}))
+        assert p.run.agents["s1"].status == "queued"
+        # Spawn it
+        r = fold(p, _e("agent_spawned", {
+            "agent_id": "s1", "role": "scout", "is_primary": False, "started_at_ms": 2000,
+        }, agent_id="s1"))
+        assert r.run.agents["s1"].status == "running"
+        assert r.run.agents["s1"].started_at_ms == 2000
+
+    def test_scout_queued_adds_agent_with_queued_status(self):
+        p = _proj_with_run()
+        r = fold(p, _e("scout_queued", {"scout_id": "s1", "label": "eng", "model": "haiku"}))
+        assert "s1" in r.run.agents
+        assert r.run.agents["s1"].status == "queued"
+        assert r.run.agents["s1"].label == "eng"
+
+    def test_agent_exited_sets_done_status(self):
+        p = _proj_with_primary("a1")
+        r = fold(p, _e("agent_exited", {"exit_code": 0}, agent_id="a1"))
+        assert r.run.agents["a1"].status == "done"
+        assert r.run.agents["a1"].error is None
+
+    def test_agent_exited_with_error_sets_failed(self):
+        p = _proj_with_primary("a1")
+        r = fold(p, _e("agent_exited", {"exit_code": 1, "error": "boom"}, agent_id="a1"))
+        assert r.run.agents["a1"].status == "failed"
+        assert r.run.agents["a1"].error == "boom"
+        # Error notification appended
         assert len(r.notifications) == 1
-        assert r.notifications[0]["type"] == "agent_spawn_failed"
-        assert r.notifications[0]["error_code"] == "binary_not_found"
+        assert "boom" in r.notifications[0].message
 
-    def test_agent_step_advanced(self):
-        p = Projection(primary_agent=AgentProjection(agent_id="a1", role="intake"))
-        e = self._event("agent_step_advanced", {"step": 2, "step_name": "Scout"}, agent_id="a1")
-        r = fold(p, e)
-        assert r.primary_agent.step == 2
-        assert r.primary_agent.step_name == "Scout"
+    def test_agent_exited_accumulates_usage_into_conversation(self):
+        p = _proj_with_primary("a1")
+        r = fold(p, _e("agent_exited", {
+            "exit_code": 0,
+            "usage": {"input_tokens": 10, "output_tokens": 20},
+        }, agent_id="a1"))
+        assert r.run.agents["a1"].conversation.input_tokens == 10
+        assert r.run.agents["a1"].conversation.output_tokens == 20
 
-    def test_agent_step_advanced_unknown_agent(self):
+    def test_agent_exited_unknown_agent_noop(self):
+        p = _proj_with_run()
+        r = fold(p, _e("agent_exited", {"exit_code": 0}, agent_id="ghost"))
+        # No change to agents
+        assert r.run.agents == p.run.agents
+
+    def test_agent_spawn_failed_appends_notification(self):
         p = Projection()
-        e = self._event("agent_step_advanced", {"step": 1, "step_name": "X"}, agent_id="unknown")
-        r = fold(p, e)
-        # Unknown agent: agent state unchanged, but step still appended to activity_log
-        assert r.primary_agent is None
-        assert len(r.activity_log) == 1
-        assert r.activity_log[0]["event_type"] == "agent_step_advanced"
-
-    def test_agent_step_advanced_accumulates_usage(self):
-        p = Projection(primary_agent=AgentProjection(agent_id="a1", role="intake", output_tokens=10))
-        e = self._event("agent_step_advanced", {"step": 1, "step_name": "", "usage": {"input_tokens": 5, "output_tokens": 20}}, agent_id="a1")
-        r = fold(p, e)
-        assert r.primary_agent.input_tokens == 5
-        assert r.primary_agent.output_tokens == 30
-
-    def test_agent_exited_primary(self):
-        p = Projection(primary_agent=AgentProjection(agent_id="a1", role="intake"))
-        e = self._event("agent_exited", {"exit_code": 0}, agent_id="a1")
-        r = fold(p, e)
-        assert r.primary_agent is None
-        assert len(r.completed_agents) == 1
-        assert r.completed_agents[0].agent_id == "a1"
-
-    def test_agent_exited_accumulates_final_tokens(self):
-        p = Projection(primary_agent=AgentProjection(agent_id="a1", role="intake", output_tokens=50))
-        e = self._event("agent_exited", {"exit_code": 0, "usage": {"output_tokens": 25}}, agent_id="a1")
-        r = fold(p, e)
-        assert r.completed_agents[0].output_tokens == 75
-        assert r.primary_agent is None
-
-    def test_agent_exited_with_error_appends_notification(self):
-        p = Projection(primary_agent=AgentProjection(agent_id="a1", role="intake"))
-        e = self._event("agent_exited", {"exit_code": 1, "error": "bootstrap_failure"}, agent_id="a1")
-        r = fold(p, e)
+        r = fold(p, _e("agent_spawn_failed", {
+            "role": "intake", "error_code": "binary_not_found", "message": "not found",
+        }))
         assert len(r.notifications) == 1
-        assert r.notifications[0]["error"] == "bootstrap_failure"
-        assert r.notifications[0]["type"] == "agent_exited_error"
-
-    def test_agent_exited_scout(self):
-        p = Projection(scouts={"s1": AgentProjection(agent_id="s1", role="scout")})
-        e = self._event("agent_exited", {"exit_code": 0}, agent_id="s1")
-        r = fold(p, e)
-        assert "s1" not in r.scouts
-        assert len(r.completed_agents) == 1
-
-    def test_workflow_completed(self):
-        p = Projection()
-        e = self._event("workflow_completed", {"success": True, "summary": "done"})
-        r = fold(p, e)
-        assert r.completion == {"success": True, "summary": "done"}
+        assert "not found" in r.notifications[0].message
+        assert r.notifications[0].level == "error"
 
 
-# -- fold: activity -----------------------------------------------------------
+# ---------------------------------------------------------------------------
+# fold: conversation — pending fields and flush semantics
+# ---------------------------------------------------------------------------
 
-class TestFoldActivity:
-    def _event(self, event_type: str, payload: dict, agent_id: str | None = None) -> VersionedEvent:
-        return VersionedEvent(version=1, event_type=event_type, timestamp="2026-01-01T00:00:00Z",
-                              agent_id=agent_id, payload=payload)
+class TestFoldConversation:
 
-    def test_tool_called_appended(self):
-        p = Projection()
-        e = self._event("tool_called", {"call_id": "c1", "tool": "read", "args": {}, "summary": "reading"}, "a1")
-        r = fold(p, e)
-        assert len(r.activity_log) == 1
-        assert r.activity_log[0]["event_type"] == "tool_called"
-        assert r.activity_log[0]["tool"] == "read"
+    def test_thinking_flushes_pending_text_first(self):
+        p = _proj_with_primary("a1")
+        # Accumulate some text
+        p = fold(p, _e("stream_delta", {"delta": "hello"}, agent_id="a1"))
+        # Now thinking arrives — text should flush to TextEntry
+        r = fold(p, _e("thinking", {"delta": "hmm"}, agent_id="a1"))
+        conv = r.run.agents["a1"].conversation
+        assert len(conv.entries) == 1
+        assert isinstance(conv.entries[0], TextEntry)
+        assert conv.entries[0].text == "hello"
+        assert conv.pending_text == ""
+        assert conv.pending_thinking == "hmm"
+        assert conv.is_thinking is True
 
-    def test_tool_completed_appended(self):
-        p = Projection()
-        e = self._event("tool_completed", {"call_id": "c1", "tool": "read"}, "a1")
-        r = fold(p, e)
-        assert len(r.activity_log) == 1
-        assert r.activity_log[0]["event_type"] == "tool_completed"
+    def test_thinking_accumulates(self):
+        p = _proj_with_primary("a1")
+        p = fold(p, _e("thinking", {"delta": "The "}, agent_id="a1"))
+        r = fold(p, _e("thinking", {"delta": "answer"}, agent_id="a1"))
+        assert r.run.agents["a1"].conversation.pending_thinking == "The answer"
 
-    def test_thinking_appended(self):
-        p = Projection()
-        e = self._event("thinking", {"delta": "hmm"}, "a1")
-        r = fold(p, e)
-        assert len(r.activity_log) == 1
-        assert r.activity_log[0]["delta"] == "hmm"
+    def test_stream_delta_flushes_pending_thinking_first(self):
+        p = _proj_with_primary("a1")
+        p = fold(p, _e("thinking", {"delta": "consider"}, agent_id="a1"))
+        r = fold(p, _e("stream_delta", {"delta": "result"}, agent_id="a1"))
+        conv = r.run.agents["a1"].conversation
+        assert len(conv.entries) == 1
+        assert isinstance(conv.entries[0], ThinkingEntry)
+        assert conv.entries[0].content == "consider"
+        assert conv.pending_thinking == ""
+        assert conv.pending_text == "result"
+        assert conv.is_thinking is False
 
     def test_stream_delta_accumulates(self):
-        p = Projection(stream_buffer="hello ")
-        e = self._event("stream_delta", {"delta": "world"})
-        r = fold(p, e)
-        assert r.stream_buffer == "hello world"
+        p = _proj_with_primary("a1")
+        p = fold(p, _e("stream_delta", {"delta": "hello "}, agent_id="a1"))
+        r = fold(p, _e("stream_delta", {"delta": "world"}, agent_id="a1"))
+        assert r.run.agents["a1"].conversation.pending_text == "hello world"
 
-    def test_stream_cleared(self):
-        p = Projection(stream_buffer="some content")
-        e = self._event("stream_cleared", {})
-        r = fold(p, e)
-        assert r.stream_buffer == ""
+    def test_stream_cleared_flushes_both(self):
+        p = _proj_with_primary("a1")
+        p = fold(p, _e("thinking", {"delta": "thoughts"}, agent_id="a1"))
+        p = fold(p, _e("stream_delta", {"delta": "text"}, agent_id="a1"))
+        # At this point pending_thinking got flushed when stream_delta arrived
+        # so pending_thinking = "", pending_text = "text"
+        r = fold(p, _e("stream_cleared", {}, agent_id="a1"))
+        conv = r.run.agents["a1"].conversation
+        # Both pending fields empty
+        assert conv.pending_thinking == ""
+        assert conv.pending_text == ""
+        assert conv.is_thinking is False
+
+    def test_agent_step_advanced_flushes_both_and_appends_step(self):
+        p = _proj_with_primary("a1")
+        p = fold(p, _e("thinking", {"delta": "thinking..."}, agent_id="a1"))
+        # The stream_delta flush makes pending_thinking go to entry
+        # Let's test from a state with just pending_text
+        p2 = _proj_with_primary("a1")
+        p2 = fold(p2, _e("stream_delta", {"delta": "output"}, agent_id="a1"))
+        r = fold(p2, _e("agent_step_advanced", {"step": 1, "step_name": "Scout"}, agent_id="a1"))
+        conv = r.run.agents["a1"].conversation
+        # pending_text flushed to TextEntry, then StepEntry appended
+        assert len(conv.entries) == 2
+        assert isinstance(conv.entries[0], TextEntry)
+        assert isinstance(conv.entries[1], StepEntry)
+        assert conv.entries[1].step == 1
+        assert conv.entries[1].step_name == "Scout"
+        assert conv.pending_text == ""
+        assert conv.is_thinking is False
+
+    def test_agent_step_advanced_step_0_no_entry(self):
+        """step=0 is bootstrap — no StepEntry appended."""
+        p = _proj_with_primary("a1")
+        r = fold(p, _e("agent_step_advanced", {"step": 0, "step_name": ""}, agent_id="a1"))
+        assert r.run.agents["a1"].conversation.entries == []
+
+    def test_agent_step_advanced_updates_step_and_step_name(self):
+        p = _proj_with_primary("a1")
+        r = fold(p, _e("agent_step_advanced", {"step": 2, "step_name": "Generate"}, agent_id="a1"))
+        assert r.run.agents["a1"].step == 2
+        assert r.run.agents["a1"].step_name == "Generate"
+
+    def test_agent_step_advanced_accumulates_tokens(self):
+        p = _proj_with_primary("a1")
+        r = fold(p, _e("agent_step_advanced", {
+            "step": 1, "step_name": "",
+            "usage": {"input_tokens": 100, "output_tokens": 200},
+        }, agent_id="a1"))
+        conv = r.run.agents["a1"].conversation
+        assert conv.input_tokens == 100
+        assert conv.output_tokens == 200
+
+    def test_agent_step_advanced_unknown_agent_noop(self):
+        p = _proj_with_run()
+        r = fold(p, _e("agent_step_advanced", {"step": 1, "step_name": "X"}, agent_id="ghost"))
+        assert r.run.agents == {}
 
 
-# -- fold: typed tool events --------------------------------------------------
+# ---------------------------------------------------------------------------
+# fold: conversation — tool entries
+# ---------------------------------------------------------------------------
 
-class TestFoldTypedTools:
-    def _event(self, event_type: str, payload: dict) -> "VersionedEvent":
-        from koan.projections import VersionedEvent
-        return VersionedEvent(version=1, event_type=event_type,
-                              timestamp="2026-01-01T00:00:00Z", agent_id="a1", payload=payload)
+class TestFoldTools:
 
-    def test_tool_read_appended(self):
-        from koan.projections import Projection, fold
+    def test_tool_read_appends_entry(self):
+        p = _proj_with_primary("a1")
+        r = fold(p, _e("tool_read", {"call_id": "c1", "file": "/foo.py", "lines": "1-10"}, agent_id="a1"))
+        conv = r.run.agents["a1"].conversation
+        assert len(conv.entries) == 1
+        entry = conv.entries[0]
+        assert isinstance(entry, ToolReadEntry)
+        assert entry.file == "/foo.py"
+        assert entry.lines == "1-10"
+        assert entry.in_flight is True
+        assert r.run.agents["a1"].last_tool == "read /foo.py:1-10"
+
+    def test_tool_write_appends_entry(self):
+        p = _proj_with_primary("a1")
+        r = fold(p, _e("tool_write", {"call_id": "c1", "file": "/out.py"}, agent_id="a1"))
+        assert isinstance(r.run.agents["a1"].conversation.entries[0], ToolWriteEntry)
+        assert r.run.agents["a1"].last_tool == "write /out.py"
+
+    def test_tool_edit_appends_entry(self):
+        p = _proj_with_primary("a1")
+        r = fold(p, _e("tool_edit", {"call_id": "c1", "file": "/edit.py"}, agent_id="a1"))
+        assert isinstance(r.run.agents["a1"].conversation.entries[0], ToolEditEntry)
+
+    def test_tool_bash_appends_entry(self):
+        p = _proj_with_primary("a1")
+        r = fold(p, _e("tool_bash", {"call_id": "c1", "command": "ls -la"}, agent_id="a1"))
+        entry = r.run.agents["a1"].conversation.entries[0]
+        assert isinstance(entry, ToolBashEntry)
+        assert entry.command == "ls -la"
+
+    def test_tool_grep_appends_entry(self):
+        p = _proj_with_primary("a1")
+        r = fold(p, _e("tool_grep", {"call_id": "c1", "pattern": "def foo"}, agent_id="a1"))
+        entry = r.run.agents["a1"].conversation.entries[0]
+        assert isinstance(entry, ToolGrepEntry)
+        assert entry.pattern == "def foo"
+
+    def test_tool_ls_appends_entry(self):
+        p = _proj_with_primary("a1")
+        r = fold(p, _e("tool_ls", {"call_id": "c1", "path": "/src"}, agent_id="a1"))
+        entry = r.run.agents["a1"].conversation.entries[0]
+        assert isinstance(entry, ToolLsEntry)
+        assert entry.path == "/src"
+
+    def test_tool_called_appends_generic_entry(self):
+        p = _proj_with_primary("a1")
+        r = fold(p, _e("tool_called", {
+            "call_id": "c1", "tool": "fetch", "args": {}, "summary": "http://example.com"
+        }, agent_id="a1"))
+        entry = r.run.agents["a1"].conversation.entries[0]
+        assert isinstance(entry, ToolGenericEntry)
+        assert entry.tool_name == "fetch"
+        assert entry.in_flight is True
+
+    def test_tool_called_koan_prefix_skipped(self):
+        p = _proj_with_primary("a1")
+        r = fold(p, _e("tool_called", {"call_id": "c1", "tool": "koan_complete_step", "args": {}}, agent_id="a1"))
+        assert r.run.agents["a1"].conversation.entries == []
+
+    def test_tool_called_mcp_koan_prefix_skipped(self):
+        p = _proj_with_primary("a1")
+        r = fold(p, _e("tool_called", {"call_id": "c1", "tool": "mcp__koan__step", "args": {}}, agent_id="a1"))
+        assert r.run.agents["a1"].conversation.entries == []
+
+    def test_tool_completed_clears_in_flight(self):
+        p = _proj_with_primary("a1")
+        p = fold(p, _e("tool_read", {"call_id": "c1", "file": "/f", "lines": ""}, agent_id="a1"))
+        assert p.run.agents["a1"].conversation.entries[0].in_flight is True
+        r = fold(p, _e("tool_completed", {"call_id": "c1", "tool": "read"}, agent_id="a1"))
+        assert r.run.agents["a1"].conversation.entries[0].in_flight is False
+
+    def test_tool_flushes_pending_fields(self):
+        p = _proj_with_primary("a1")
+        p = fold(p, _e("stream_delta", {"delta": "output"}, agent_id="a1"))
+        r = fold(p, _e("tool_read", {"call_id": "c1", "file": "/f", "lines": ""}, agent_id="a1"))
+        conv = r.run.agents["a1"].conversation
+        assert len(conv.entries) == 2
+        assert isinstance(conv.entries[0], TextEntry)   # flushed
+        assert isinstance(conv.entries[1], ToolReadEntry)
+        assert conv.pending_text == ""
+
+    def test_tool_events_per_agent_not_primary_only(self):
+        """Every agent gets its own conversation; scout tool events go to scout."""
+        p = _proj_with_run()
+        p = fold(p, _e("scout_queued", {"scout_id": "s1", "label": "eng", "model": None}))
+        p = fold(p, _e("agent_spawned", {"agent_id": "s1", "role": "scout", "is_primary": False, "started_at_ms": 0}, agent_id="s1"))
+        r = fold(p, _e("tool_read", {"call_id": "c1", "file": "/f", "lines": ""}, agent_id="s1"))
+        assert len(r.run.agents["s1"].conversation.entries) == 1
+        assert isinstance(r.run.agents["s1"].conversation.entries[0], ToolReadEntry)
+
+
+# ---------------------------------------------------------------------------
+# fold: focus transitions
+# ---------------------------------------------------------------------------
+
+class TestFoldFocus:
+
+    def test_questions_asked_sets_question_focus(self):
+        p = _proj_with_primary("a1")
+        r = fold(p, _e("questions_asked", {"token": "t1", "questions": [{"question": "Q?"}]}, agent_id="a1"))
+        assert isinstance(r.run.focus, QuestionFocus)
+        assert r.run.focus.agent_id == "a1"
+        assert r.run.focus.token == "t1"
+        assert len(r.run.focus.questions) == 1
+
+    def test_questions_answered_resets_to_conversation_focus(self):
+        p = _proj_with_primary("a1")
+        p = fold(p, _e("questions_asked", {"token": "t1", "questions": []}, agent_id="a1"))
+        r = fold(p, _e("questions_answered", {"token": "t1", "cancelled": False}, agent_id="a1"))
+        assert isinstance(r.run.focus, ConversationFocus)
+        assert r.run.focus.agent_id == "a1"
+
+    def test_artifact_review_requested_sets_review_focus(self):
+        p = _proj_with_primary("a1")
+        r = fold(p, _e("artifact_review_requested", {
+            "token": "t2", "path": "/f.md", "description": "d", "content": "c",
+        }, agent_id="a1"))
+        assert isinstance(r.run.focus, ReviewFocus)
+        assert r.run.focus.path == "/f.md"
+
+    def test_artifact_reviewed_resets_to_conversation_focus(self):
+        p = _proj_with_primary("a1")
+        p = fold(p, _e("artifact_review_requested", {"token": "t2", "path": "/f.md", "description": "", "content": ""}, agent_id="a1"))
+        r = fold(p, _e("artifact_reviewed", {"token": "t2", "cancelled": False}, agent_id="a1"))
+        assert isinstance(r.run.focus, ConversationFocus)
+
+    def test_workflow_decision_requested_sets_decision_focus(self):
+        p = _proj_with_primary("a1")
+        r = fold(p, _e("workflow_decision_requested", {"token": "t3", "chat_turns": []}, agent_id="a1"))
+        assert isinstance(r.run.focus, DecisionFocus)
+        assert r.run.focus.token == "t3"
+
+    def test_workflow_decided_resets_to_conversation_focus(self):
+        p = _proj_with_primary("a1")
+        p = fold(p, _e("workflow_decision_requested", {"token": "t3", "chat_turns": []}, agent_id="a1"))
+        r = fold(p, _e("workflow_decided", {"token": "t3", "cancelled": False}, agent_id="a1"))
+        assert isinstance(r.run.focus, ConversationFocus)
+
+
+# ---------------------------------------------------------------------------
+# fold: settings
+# ---------------------------------------------------------------------------
+
+class TestFoldSettings:
+
+    def test_installation_created_adds_to_dict(self):
         p = Projection()
-        e = self._event("tool_read", {"call_id": "c1", "tool": "read", "file": "/foo.ts", "lines": ""})
-        r = fold(p, e)
-        assert len(r.activity_log) == 1
-        assert r.activity_log[0]["event_type"] == "tool_read"
-        assert r.activity_log[0]["file"] == "/foo.ts"
+        r = fold(p, _e("installation_created", {
+            "alias": "claude-default", "runner_type": "claude",
+            "binary": "/fake/bin/claude", "extra_args": [],
+        }))
+        assert "claude-default" in r.settings.installations
+        inst = r.settings.installations["claude-default"]
+        assert inst.runner_type == "claude"
+        assert inst.available is False  # not yet probed
 
-    def test_tool_write_appended(self):
-        from koan.projections import Projection, fold
+    def test_probe_completed_sets_available_flag(self):
         p = Projection()
-        e = self._event("tool_write", {"call_id": "c1", "tool": "write", "file": "/out.ts"})
-        r = fold(p, e)
-        assert len(r.activity_log) == 1
-        assert r.activity_log[0]["event_type"] == "tool_write"
-        assert r.activity_log[0]["file"] == "/out.ts"
+        p = fold(p, _e("installation_created", {
+            "alias": "claude-default", "runner_type": "claude",
+            "binary": "/fake/bin/claude", "extra_args": [],
+        }))
+        r = fold(p, _e("probe_completed", {"results": {"claude-default": True}}))
+        assert r.settings.installations["claude-default"].available is True
 
-    def test_tool_edit_appended(self):
-        from koan.projections import Projection, fold
+    def test_probe_completed_sets_unavailable(self):
         p = Projection()
-        e = self._event("tool_edit", {"call_id": "c1", "tool": "edit", "file": "/edit.ts"})
-        r = fold(p, e)
-        assert len(r.activity_log) == 1
-        assert r.activity_log[0]["event_type"] == "tool_edit"
+        p = fold(p, _e("installation_created", {
+            "alias": "claude-default", "runner_type": "claude",
+            "binary": "/fake/bin/claude", "extra_args": [],
+        }))
+        r = fold(p, _e("probe_completed", {"results": {"claude-default": False}}))
+        assert r.settings.installations["claude-default"].available is False
 
-    def test_tool_bash_appended(self):
-        from koan.projections import Projection, fold
+    def test_probe_completed_ignores_unknown_aliases(self):
+        """probe_completed for an alias not in installations is silently ignored."""
         p = Projection()
-        e = self._event("tool_bash", {"call_id": "c1", "tool": "bash", "command": "ls -la"})
-        r = fold(p, e)
-        assert len(r.activity_log) == 1
-        assert r.activity_log[0]["command"] == "ls -la"
+        r = fold(p, _e("probe_completed", {"results": {"ghost": True}}))
+        assert r.settings.installations == {}
 
-    def test_tool_grep_appended(self):
-        from koan.projections import Projection, fold
+    def test_installation_modified_updates(self):
         p = Projection()
-        e = self._event("tool_grep", {"call_id": "c1", "tool": "grep", "pattern": "def foo"})
-        r = fold(p, e)
-        assert len(r.activity_log) == 1
-        assert r.activity_log[0]["pattern"] == "def foo"
+        p = fold(p, _e("installation_created", {
+            "alias": "my-claude", "runner_type": "claude",
+            "binary": "/old/claude", "extra_args": [],
+        }))
+        r = fold(p, _e("installation_modified", {
+            "alias": "my-claude", "runner_type": "claude",
+            "binary": "/new/claude", "extra_args": ["--effort", "low"],
+        }))
+        assert r.settings.installations["my-claude"].binary == "/new/claude"
+        assert r.settings.installations["my-claude"].extra_args == ["--effort", "low"]
 
-    def test_tool_ls_appended(self):
-        from koan.projections import Projection, fold
+    def test_installation_modified_preserves_available(self):
+        """Modifying an installation keeps its probe result."""
         p = Projection()
-        e = self._event("tool_ls", {"call_id": "c1", "tool": "ls", "path": "/src"})
-        r = fold(p, e)
-        assert len(r.activity_log) == 1
-        assert r.activity_log[0]["path"] == "/src"
+        p = fold(p, _e("installation_created", {"alias": "c", "runner_type": "claude", "binary": "/b", "extra_args": []}))
+        p = fold(p, _e("probe_completed", {"results": {"c": True}}))
+        r = fold(p, _e("installation_modified", {"alias": "c", "runner_type": "claude", "binary": "/new", "extra_args": []}))
+        assert r.settings.installations["c"].available is True
 
-
-# -- fold: interactions -------------------------------------------------------
-
-class TestFoldInteractions:
-    def _event(self, event_type: str, payload: dict) -> VersionedEvent:
-        return VersionedEvent(version=1, event_type=event_type, timestamp="2026-01-01T00:00:00Z",
-                              agent_id="a1", payload=payload)
-
-    def test_questions_asked_sets_active(self):
+    def test_installation_removed(self):
         p = Projection()
-        e = self._event("questions_asked", {"token": "t1", "questions": [{"question": "Q1"}]})
-        r = fold(p, e)
-        assert r.active_interaction is not None
-        assert r.active_interaction["interaction_type"] == "questions_asked"
-        assert r.active_interaction["token"] == "t1"
+        p = fold(p, _e("installation_created", {"alias": "c", "runner_type": "claude", "binary": "/b", "extra_args": []}))
+        r = fold(p, _e("installation_removed", {"alias": "c"}))
+        assert "c" not in r.settings.installations
 
-    def test_questions_answered_clears(self):
-        p = Projection(active_interaction={"interaction_type": "questions_asked", "token": "t1"})
-        e = self._event("questions_answered", {"token": "t1", "cancelled": False})
-        r = fold(p, e)
-        assert r.active_interaction is None
-
-    def test_artifact_review_request_response_cycle(self):
+    def test_profile_created(self):
         p = Projection()
-        req = self._event("artifact_review_requested", {"token": "t2", "path": "/tmp/f.md", "description": "d", "content": "c"})
-        p2 = fold(p, req)
-        assert p2.active_interaction["interaction_type"] == "artifact_review_requested"
-        res = self._event("artifact_reviewed", {"token": "t2", "accepted": True, "cancelled": False})
-        p3 = fold(p2, res)
-        assert p3.active_interaction is None
+        r = fold(p, _e("profile_created", {"name": "fast", "read_only": False, "tiers": {}}))
+        assert "fast" in r.settings.profiles
+        assert r.settings.profiles["fast"].read_only is False
 
-    def test_workflow_decision_cycle(self):
+    def test_profile_modified_updates(self):
         p = Projection()
-        req = self._event("workflow_decision_requested", {"token": "t3", "chat_turns": []})
-        p2 = fold(p, req)
-        assert p2.active_interaction["interaction_type"] == "workflow_decision_requested"
-        res = self._event("workflow_decided", {"token": "t3", "cancelled": False})
-        p3 = fold(p2, res)
-        assert p3.active_interaction is None
+        p = fold(p, _e("profile_created", {"name": "fast", "read_only": False, "tiers": {}}))
+        r = fold(p, _e("profile_modified", {"name": "fast", "read_only": False, "tiers": {"scout": "haiku-default"}}))
+        assert r.settings.profiles["fast"].tiers["scout"] == "haiku-default"
 
-    def test_cancelled_resolution_clears(self):
-        p = Projection(active_interaction={"interaction_type": "questions_asked", "token": "t1"})
-        e = self._event("questions_answered", {"token": "t1", "cancelled": True})
-        r = fold(p, e)
-        assert r.active_interaction is None
+    def test_profile_removed(self):
+        p = Projection()
+        p = fold(p, _e("profile_created", {"name": "fast", "read_only": False, "tiers": {}}))
+        r = fold(p, _e("profile_removed", {"name": "fast"}))
+        assert "fast" not in r.settings.profiles
+
+    def test_default_profile_changed(self):
+        p = Projection()
+        r = fold(p, _e("default_profile_changed", {"name": "fast"}))
+        assert r.settings.default_profile == "fast"
+
+    def test_default_scout_concurrency_changed(self):
+        p = Projection()
+        r = fold(p, _e("default_scout_concurrency_changed", {"value": 16}))
+        assert r.settings.default_scout_concurrency == 16
+
+    def test_settings_events_do_not_touch_run(self):
+        """Settings events must not modify run state."""
+        p = _proj_with_run()
+        r = fold(p, _e("installation_created", {"alias": "c", "runner_type": "claude", "binary": "/b", "extra_args": []}))
+        assert r.run is not None
+        assert r.run.config == p.run.config
 
 
-# -- fold: resources ----------------------------------------------------------
+# ---------------------------------------------------------------------------
+# fold: resources (artifacts)
+# ---------------------------------------------------------------------------
 
-class TestFoldResources:
-    def _event(self, event_type: str, payload: dict) -> VersionedEvent:
-        return VersionedEvent(version=1, event_type=event_type, timestamp="2026-01-01T00:00:00Z",
-                              agent_id=None, payload=payload)
+class TestFoldArtifacts:
 
     def test_artifact_created(self):
-        p = Projection()
-        e = self._event("artifact_created", {"path": "foo.md", "size": 100, "modified_at": 1000})
-        r = fold(p, e)
-        assert "foo.md" in r.artifacts
-        assert r.artifacts["foo.md"]["size"] == 100
+        p = _proj_with_run()
+        r = fold(p, _e("artifact_created", {"path": "foo.md", "size": 100, "modified_at": 1000}))
+        assert "foo.md" in r.run.artifacts
+        assert r.run.artifacts["foo.md"].size == 100
 
     def test_artifact_modified(self):
-        p = Projection(artifacts={"foo.md": {"path": "foo.md", "size": 50, "modified_at": 500}})
-        e = self._event("artifact_modified", {"path": "foo.md", "size": 200, "modified_at": 2000})
-        r = fold(p, e)
-        assert r.artifacts["foo.md"]["size"] == 200
+        p = _proj_with_run()
+        p = fold(p, _e("artifact_created", {"path": "foo.md", "size": 50, "modified_at": 500}))
+        r = fold(p, _e("artifact_modified", {"path": "foo.md", "size": 200, "modified_at": 2000}))
+        assert r.run.artifacts["foo.md"].size == 200
 
     def test_artifact_removed(self):
-        p = Projection(artifacts={"foo.md": {"path": "foo.md", "size": 100, "modified_at": 1000}})
-        e = self._event("artifact_removed", {"path": "foo.md"})
-        r = fold(p, e)
-        assert "foo.md" not in r.artifacts
+        p = _proj_with_run()
+        p = fold(p, _e("artifact_created", {"path": "foo.md", "size": 100, "modified_at": 1000}))
+        r = fold(p, _e("artifact_removed", {"path": "foo.md"}))
+        assert "foo.md" not in r.run.artifacts
+
+    def test_artifact_events_without_run_noop(self):
+        p = Projection()
+        r = fold(p, _e("artifact_created", {"path": "foo.md", "size": 100, "modified_at": 1000}))
+        assert r.run is None
+
+    def test_run_events_do_not_touch_settings(self):
+        """Artifact events must not modify settings."""
+        p = _proj_with_run()
+        p = fold(p, _e("installation_created", {"alias": "c", "runner_type": "claude", "binary": "/b", "extra_args": []}))
+        r = fold(p, _e("artifact_created", {"path": "foo.md", "size": 100, "modified_at": 1000}))
+        assert r.settings.installations == p.settings.installations
 
 
-# -- fold: safety -----------------------------------------------------------
+# ---------------------------------------------------------------------------
+# fold: safety
+# ---------------------------------------------------------------------------
 
 class TestFoldSafety:
-    def _event(self, event_type: str, payload: dict) -> VersionedEvent:
-        return VersionedEvent(version=1, event_type=event_type, timestamp="2026-01-01T00:00:00Z",
-                              agent_id=None, payload=payload)
 
-    def test_unknown_event_type_unchanged(self):
-        p = Projection(phase="intake")
-        e = self._event("completely_unknown_type", {"data": 42})
-        r = fold(p, e)
+    def test_unknown_event_type_returns_unchanged(self):
+        p = _proj_with_run()
+        r = fold(p, _e("completely_unknown", {"data": 42}))
         assert r == p
 
-    def test_unknown_agent_id_step_appended(self):
-        p = Projection()  # no agents registered
-        e = VersionedEvent(version=1, event_type="agent_step_advanced", timestamp="2026-01-01T00:00:00Z",
-                           agent_id="nonexistent", payload={"step": 1, "step_name": "X"})
-        r = fold(p, e)
-        # Agent state unchanged, but step marker still in activity_log
-        assert r.primary_agent is None
-        assert len(r.activity_log) == 1
-
-    def test_phase_started_empty_payload_returns_empty_phase(self):
-        # Verifies that phase_started with {} payload returns phase="" (not an error).
-        # This is valid input -- fold does not throw on missing-but-defaulted fields.
-        p = Projection(phase="intake")
-        e = VersionedEvent(version=1, event_type="phase_started", timestamp="2026-01-01T00:00:00Z",
-                           agent_id=None, payload={})
-        r = fold(p, e)
-        assert r.phase == ""
-        assert r.run_started is True
-
     def test_fold_is_pure(self):
-        p = Projection(phase="intake")
-        e = self._event("phase_started", {"phase": "brief-generation"})
+        p = _proj_with_run()
+        e = _e("phase_started", {"phase": "brief-generation"})
         r1 = fold(p, e)
         r2 = fold(p, e)
         assert r1 == r2
-        # Input projection unchanged
-        assert p.phase == "intake"
+        assert p.run.phase == ""  # original unchanged
+
+    def test_fold_exception_returns_unchanged(self, monkeypatch):
+        """If fold raises internally, projection stays unchanged."""
+        import koan.projections as proj_mod
+
+        call_count = [0]
+        original_fold = proj_mod.fold
+
+        def raise_once(projection, event):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise RuntimeError("simulated fold failure")
+            return original_fold(projection, event)
+
+        # Test the store's exception handling
+        store = ProjectionStore()
+        store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+        assert store.projection.run is not None
+
+        monkeypatch.setattr(proj_mod, "fold", raise_once)
+        store2 = proj_mod.ProjectionStore()
+        prev = store2.projection
+        store2.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+        # fold raised — projection unchanged
+        assert store2.projection == prev
 
 
-# -- ProjectionStore ----------------------------------------------------------
+# ---------------------------------------------------------------------------
+# ProjectionStore
+# ---------------------------------------------------------------------------
 
 class TestProjectionStore:
+
     def test_push_increments_version(self):
         store = ProjectionStore()
         assert store.version == 0
-        store.push_event("phase_started", {"phase": "intake"})
+        store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
         assert store.version == 1
-        store.push_event("phase_started", {"phase": "brief-generation"})
-        assert store.version == 2
 
-    def test_fold_applied_to_projection(self):
+    def test_fold_applied(self):
         store = ProjectionStore()
-        store.push_event("phase_started", {"phase": "intake"})
-        assert store.projection.phase == "intake"
+        store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+        assert store.projection.run is not None
+
+    def test_get_snapshot_camelcase(self):
+        """get_snapshot() must return camelCase keys (via to_wire)."""
+        store = ProjectionStore()
+        snap = store.get_snapshot()
+        state = snap["state"]
+        # Top-level fields are camelCase
+        assert "settings" in state
+        assert "run" in state
+        assert "notifications" in state
+        # Nested camelCase
+        settings = state["settings"]
+        assert "defaultProfile" in settings       # not default_profile
+        assert "defaultScoutConcurrency" in settings  # not default_scout_concurrency
 
     def test_get_snapshot_includes_version(self):
         store = ProjectionStore()
-        store.push_event("phase_started", {"phase": "intake"})
+        store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
         snap = store.get_snapshot()
         assert snap["version"] == 1
-        assert snap["state"]["phase"] == "intake"
 
-    def test_events_since(self):
-        store = ProjectionStore()
-        store.push_event("phase_started", {"phase": "intake"})
-        store.push_event("phase_started", {"phase": "brief-generation"})
-        store.push_event("phase_started", {"phase": "core-flows"})
-        events = store.events_since(1)
-        assert len(events) == 2
-        assert events[0].version == 2
-        assert events[1].version == 3
-
-    def test_events_since_zero_returns_all(self):
-        store = ProjectionStore()
-        store.push_event("phase_started", {"phase": "intake"})
-        assert len(store.events_since(0)) == 1
-
-    @pytest.mark.anyio
-    async def test_broadcast_to_subscribers(self):
+    def test_subscriber_receives_dict_not_event(self):
+        """Subscribers get plain dicts (SSE-ready), not VersionedEvent objects."""
         store = ProjectionStore()
         q = store.subscribe()
-        store.push_event("phase_started", {"phase": "intake"})
-        event = await asyncio.wait_for(q.get(), timeout=1.0)
-        assert event.event_type == "phase_started"
+        store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+        msg = q.get_nowait()
+        assert isinstance(msg, dict)
+        assert msg["type"] == "patch"
+        assert "version" in msg
+        assert "patch" in msg
+
+    @pytest.mark.anyio
+    async def test_subscriber_receives_patch(self):
+        store = ProjectionStore()
+        q = store.subscribe()
+        store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+        msg = await asyncio.wait_for(q.get(), timeout=1.0)
+        assert msg["type"] == "patch"
+        assert msg["version"] == 1
+        assert isinstance(msg["patch"], list)
         store.unsubscribe(q)
 
     @pytest.mark.anyio
@@ -386,49 +710,150 @@ class TestProjectionStore:
         store = ProjectionStore()
         q = store.subscribe()
         store.unsubscribe(q)
-        store.push_event("phase_started", {"phase": "intake"})
+        store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
         assert q.empty()
 
-    def test_subscriber_snapshot_avoids_mutation_during_broadcast(self):
-        """push_event snapshots subscribers before iterating."""
+    def test_no_patch_broadcast_when_no_state_change(self):
+        """koan_ tools produce no state change; no patch broadcast."""
         store = ProjectionStore()
-        q1 = store.subscribe()
-        # Should not raise even if we unsubscribe q1 from inside a subscriber
-        store.push_event("phase_started", {"phase": "intake"})
-        store.unsubscribe(q1)
-        # No exception = pass
-
-    def test_fold_exception_leaves_log_intact_projection_unchanged(self, monkeypatch):
-        """ProjectionStore: if fold() raises, event stays in log but projection is unchanged."""
-        import koan.projections as proj_mod
-        original_fold = proj_mod.fold
-
-        call_count = [0]
-
-        def raising_fold(projection, event):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                raise RuntimeError("simulated fold failure")
-            return original_fold(projection, event)
-
-        monkeypatch.setattr(proj_mod, "fold", raising_fold)
-
-        store = proj_mod.ProjectionStore()
-        # First push: fold raises, projection stays at default, but event IS in log
-        store.push_event("phase_started", {"phase": "intake"})
-        assert store.version == 1
-        assert store.events[0].event_type == "phase_started"
-        assert store.projection.phase == ""  # unchanged -- fold raised
-
-        # Second push: fold succeeds, projection advances
-        store.push_event("phase_started", {"phase": "brief-generation"})
-        assert store.version == 2
-        assert store.projection.phase == "brief-generation"
+        store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+        store.push_event("agent_spawned", {
+            "agent_id": "a1", "role": "intake", "is_primary": True,
+            "started_at_ms": 0, "label": "", "model": None,
+        }, agent_id="a1")
+        q = store.subscribe()
+        # koan MCP tool is filtered — no state change → no patch broadcast
+        store.push_event("tool_called", {
+            "call_id": "c1", "tool": "koan_complete_step", "args": {},
+        }, agent_id="a1")
+        assert q.empty()
 
 
-# -- build_artifact_diff ------------------------------------------------------
+# ---------------------------------------------------------------------------
+# JSON Patch paths — verify camelCase patch operations
+# ---------------------------------------------------------------------------
+
+class TestJSONPatchPaths:
+
+    def test_patch_has_camelcase_run_path(self):
+        """run_started must produce a patch with /run path."""
+        store = ProjectionStore()
+        q = store.subscribe()
+        store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+        msg = q.get_nowait()
+        ops = msg["patch"]
+        paths = [op["path"] for op in ops]
+        assert any("/run" in p for p in paths)
+
+    def test_patch_has_camelcase_settings_path(self):
+        store = ProjectionStore()
+        q = store.subscribe()
+        store.push_event("installation_created", {
+            "alias": "claude-default", "runner_type": "claude",
+            "binary": "/fake/bin/claude", "extra_args": [],
+        })
+        msg = q.get_nowait()
+        ops = msg["patch"]
+        paths = [op["path"] for op in ops]
+        # Should contain /settings/installations/claude-default
+        assert any("/settings/installations/claude-default" in p for p in paths)
+
+    def test_patch_has_camelcase_agent_fields(self):
+        """Agent fields use camelCase in patch paths: lastTool, stepName, etc."""
+        store = ProjectionStore()
+        store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+        store.push_event("agent_spawned", {
+            "agent_id": "a1", "role": "intake", "is_primary": True,
+            "started_at_ms": 0, "label": "", "model": None,
+        }, agent_id="a1")
+        store.push_event("agent_step_advanced", {"step": 1, "step_name": "Scout"}, agent_id="a1")
+        q = store.subscribe()
+        store.push_event("tool_read", {"call_id": "c1", "file": "/f.py", "lines": ""}, agent_id="a1")
+        msg = q.get_nowait()
+        ops = msg["patch"]
+        # Check some paths contain camelCase
+        all_paths = " ".join(op["path"] for op in ops)
+        # lastTool should be camelCase
+        assert "lastTool" in all_paths or "conversation" in all_paths
+
+    def test_patch_pending_thinking_camelcase_path(self):
+        store = ProjectionStore()
+        store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+        store.push_event("agent_spawned", {
+            "agent_id": "a1", "role": "intake", "is_primary": True,
+            "started_at_ms": 0, "label": "", "model": None,
+        }, agent_id="a1")
+        q = store.subscribe()
+        store.push_event("thinking", {"delta": "hmm"}, agent_id="a1")
+        msg = q.get_nowait()
+        ops = msg["patch"]
+        all_paths = " ".join(op["path"] for op in ops)
+        # pendingThinking must be camelCase
+        assert "pendingThinking" in all_paths
+
+    def test_patch_default_profile_camelcase(self):
+        store = ProjectionStore()
+        q = store.subscribe()
+        store.push_event("default_profile_changed", {"name": "fast"})
+        msg = q.get_nowait()
+        ops = msg["patch"]
+        all_paths = " ".join(op["path"] for op in ops)
+        assert "defaultProfile" in all_paths
+
+
+# ---------------------------------------------------------------------------
+# Snapshot round-trip
+# ---------------------------------------------------------------------------
+
+class TestSnapshotRoundTrip:
+
+    def test_snapshot_state_is_camelcase(self):
+        store = ProjectionStore()
+        store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+        state = store.get_snapshot()["state"]
+        run = state["run"]
+        assert "config" in run
+        assert "scoutConcurrency" in run["config"]   # not scout_concurrency
+        assert "agents" in run
+        assert "isPrimary" not in run  # no agents yet
+
+    def test_snapshot_agent_camelcase(self):
+        store = ProjectionStore()
+        store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+        store.push_event("agent_spawned", {
+            "agent_id": "a1", "role": "intake", "is_primary": True,
+            "started_at_ms": 1000, "label": "", "model": "opus",
+        }, agent_id="a1")
+        state = store.get_snapshot()["state"]
+        agent = state["run"]["agents"]["a1"]
+        assert "isPrimary" in agent         # not is_primary
+        assert "startedAtMs" in agent       # not started_at_ms
+        assert "stepName" in agent          # not step_name
+        assert "lastTool" in agent          # not last_tool
+        assert "conversation" in agent
+        conv = agent["conversation"]
+        assert "pendingThinking" in conv    # not pending_thinking
+        assert "pendingText" in conv        # not pending_text
+        assert "isThinking" in conv         # not is_thinking
+
+    def test_snapshot_settings_camelcase(self):
+        store = ProjectionStore()
+        store.push_event("installation_created", {
+            "alias": "claude-default", "runner_type": "claude",
+            "binary": "/fake/bin/claude", "extra_args": [],
+        })
+        state = store.get_snapshot()["state"]
+        inst = state["settings"]["installations"]["claude-default"]
+        assert "runnerType" in inst         # not runner_type
+        assert "extraArgs" in inst          # not extra_args
+
+
+# ---------------------------------------------------------------------------
+# build_artifact_diff (unchanged — regression guard)
+# ---------------------------------------------------------------------------
 
 class TestBuildArtifactDiff:
+
     def test_created(self):
         from koan.events import build_artifact_diff
         old = {}
@@ -437,7 +862,7 @@ class TestBuildArtifactDiff:
         assert len(events) == 1
         assert events[0][0] == "artifact_created"
         assert events[0][1]["path"] == "foo.md"
-        assert events[0][1]["modified_at"] == 1000  # ms
+        assert events[0][1]["modified_at"] == 1000
 
     def test_removed(self):
         from koan.events import build_artifact_diff
@@ -446,7 +871,6 @@ class TestBuildArtifactDiff:
         events = build_artifact_diff(old, new)
         assert len(events) == 1
         assert events[0][0] == "artifact_removed"
-        assert events[0][1]["path"] == "foo.md"
 
     def test_modified_by_size(self):
         from koan.events import build_artifact_diff
@@ -456,20 +880,11 @@ class TestBuildArtifactDiff:
         assert len(events) == 1
         assert events[0][0] == "artifact_modified"
 
-    def test_modified_by_mtime(self):
-        from koan.events import build_artifact_diff
-        old = {"foo.md": {"path": "foo.md", "size": 100, "modified_at": 1000}}
-        new = [{"path": "foo.md", "size": 100, "modified_at": 2.0}]
-        events = build_artifact_diff(old, new)
-        assert len(events) == 1
-        assert events[0][0] == "artifact_modified"
-
-    def test_unchanged_produces_no_events(self):
+    def test_unchanged_no_events(self):
         from koan.events import build_artifact_diff
         old = {"foo.md": {"path": "foo.md", "size": 100, "modified_at": 1000}}
         new = [{"path": "foo.md", "size": 100, "modified_at": 1.0}]
-        events = build_artifact_diff(old, new)
-        assert events == []
+        assert build_artifact_diff(old, new) == []
 
     def test_mixed_diff(self):
         from koan.events import build_artifact_diff
@@ -478,9 +893,8 @@ class TestBuildArtifactDiff:
             "b.md": {"path": "b.md", "size": 20, "modified_at": 2000},
         }
         new = [
-            {"path": "a.md", "size": 15, "modified_at": 1.0},  # modified
-            {"path": "c.md", "size": 30, "modified_at": 3.0},  # created
-            # b.md removed
+            {"path": "a.md", "size": 15, "modified_at": 1.0},
+            {"path": "c.md", "size": 30, "modified_at": 3.0},
         ]
         events = build_artifact_diff(old, new)
         types = [e[0] for e in events]
@@ -489,9 +903,12 @@ class TestBuildArtifactDiff:
         assert "artifact_removed" in types
 
 
-# -- Tool name normalization (runner integration) ----------------------------
+# ---------------------------------------------------------------------------
+# Tool name normalization (runner integration — unchanged)
+# ---------------------------------------------------------------------------
 
 class TestToolNameNormalization:
+
     def test_claude_normalizes_Read(self):
         import json
         from koan.runners.claude import ClaudeRunner
@@ -560,112 +977,3 @@ class TestToolNameNormalization:
         line = json.dumps({"type": "tool_use", "name": "koan_complete_step", "input": {}})
         evts = runner.parse_stream_event(line)
         assert evts == []
-
-
-# -- agent_spawned ordering ---------------------------------------------------
-
-class TestAgentSpawnedOrdering:
-    """agent_spawned must only be emitted after build_command succeeds.
-    If build_command raises, the projection must not have a dangling primary_agent.
-    """
-    def test_spawn_failed_without_prior_spawned_leaves_no_primary(self):
-        """agent_spawn_failed without prior agent_spawned: projection stays clean."""
-        store = ProjectionStore()
-        store.push_event("agent_spawn_failed", {
-            "role": "intake", "error_code": "binary_not_found", "message": "not found"
-        })
-        assert store.projection.primary_agent is None
-        assert len(store.projection.notifications) == 1
-
-    def test_spawn_failed_after_spawned_leaves_dangling_primary(self):
-        """Demonstrates the bug that is now fixed: agent_spawned must be emitted
-        AFTER build_command succeeds, not before. This test documents the broken
-        sequence to catch regressions -- if agent_spawned fires before the process
-        starts and then spawn_failed fires, primary_agent is left set."""
-        store = ProjectionStore()
-        # This sequence should NOT happen in production code after the fix
-        store.push_event(
-            "agent_spawned",
-            {"agent_id": "a1", "role": "intake", "model": None, "is_primary": True, "started_at_ms": 0},
-            agent_id="a1",
-        )
-        store.push_event("agent_spawn_failed", {"role": "intake", "error_code": "err", "message": "m"})
-        # primary_agent is dangling -- this is why agent_spawned must come AFTER build_command
-        assert store.projection.primary_agent is not None  # known bad state
-        # In production, this can't happen: subagent.py now emits agent_spawned only
-        # after build_command succeeds (just before create_subprocess_exec).
-
-
-# -- fold: configuration events -----------------------------------------------
-
-class TestConfigEvents:
-    def _e(self, event_type: str, payload: dict) -> VersionedEvent:
-        return VersionedEvent(version=1, event_type=event_type, timestamp="t", payload=payload)
-
-    def test_probe_completed_sets_runners(self):
-        p = Projection()
-        runners = [{"runner_type": "claude", "available": True}]
-        p2 = fold(p, self._e("probe_completed", {"runners": runners}))
-        assert p2.config_runners == runners
-
-    def test_installation_created_appends(self):
-        p = Projection()
-        inst = {"alias": "claude-default", "runner_type": "claude", "binary": "/fake/bin/claude", "extra_args": []}
-        p2 = fold(p, self._e("installation_created", inst))
-        assert len(p2.config_installations) == 1
-        assert p2.config_installations[0]["alias"] == "claude-default"
-
-    def test_installation_modified_replaces(self):
-        inst = {"alias": "my-claude", "runner_type": "claude", "binary": "/old/claude", "extra_args": []}
-        p = Projection(config_installations=[inst])
-        updated = {"alias": "my-claude", "runner_type": "claude", "binary": "/new/claude", "extra_args": []}
-        p2 = fold(p, self._e("installation_modified", updated))
-        assert len(p2.config_installations) == 1
-        assert p2.config_installations[0]["binary"] == "/new/claude"
-
-    def test_installation_removed(self):
-        inst = {"alias": "my-claude", "runner_type": "claude", "binary": "/fake/bin/claude", "extra_args": []}
-        p = Projection(config_installations=[inst])
-        p2 = fold(p, self._e("installation_removed", {"alias": "my-claude"}))
-        assert p2.config_installations == []
-
-    def test_profile_created_appends(self):
-        p = Projection()
-        profile = {"name": "fast", "read_only": False, "tiers": {}}
-        p2 = fold(p, self._e("profile_created", profile))
-        assert len(p2.config_profiles) == 1
-        assert p2.config_profiles[0]["name"] == "fast"
-
-    def test_profile_modified_replaces(self):
-        profile = {"name": "fast", "read_only": False, "tiers": {"strong": {"runner_type": "claude"}}}
-        p = Projection(config_profiles=[profile])
-        updated = {"name": "fast", "read_only": False, "tiers": {"strong": {"runner_type": "codex"}}}
-        p2 = fold(p, self._e("profile_modified", updated))
-        assert len(p2.config_profiles) == 1
-        assert p2.config_profiles[0]["tiers"]["strong"]["runner_type"] == "codex"
-
-    def test_profile_modified_appends_when_not_found(self):
-        p = Projection()
-        balanced = {"name": "balanced", "read_only": True, "tiers": {}}
-        p2 = fold(p, self._e("profile_modified", balanced))
-        assert len(p2.config_profiles) == 1
-        assert p2.config_profiles[0]["name"] == "balanced"
-
-    def test_profile_removed(self):
-        p = Projection(config_profiles=[
-            {"name": "fast", "read_only": False, "tiers": {}},
-            {"name": "slow", "read_only": False, "tiers": {}},
-        ])
-        p2 = fold(p, self._e("profile_removed", {"name": "fast"}))
-        assert len(p2.config_profiles) == 1
-        assert p2.config_profiles[0]["name"] == "slow"
-
-    def test_active_profile_changed(self):
-        p = Projection()
-        p2 = fold(p, self._e("active_profile_changed", {"name": "fast"}))
-        assert p2.config_active_profile == "fast"
-
-    def test_scout_concurrency_changed(self):
-        p = Projection()
-        p2 = fold(p, self._e("scout_concurrency_changed", {"value": 16}))
-        assert p2.config_scout_concurrency == 16

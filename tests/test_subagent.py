@@ -573,14 +573,12 @@ class TestDiagnosticFanout:
             await spawn_subagent(task, app_state, runner=FakeRunner())
 
         # Bootstrap failure is emitted as agent_exited with error="bootstrap_failure"
-        # and the fold populates projection.notifications.
+        # and the fold populates projection.notifications as Notification objects.
         notifs = app_state.projection_store.projection.notifications
-        boot_notifs = [n for n in notifs if n.get("error") == "bootstrap_failure"]
+        boot_notifs = [n for n in notifs if "bootstrap_failure" in n.message]
         assert len(boot_notifs) >= 1
         notif = boot_notifs[0]
-        assert notif["type"] == "agent_exited_error"
-        assert "agent_id" in notif
-        assert "exit_code" in notif
+        assert notif.level == "error"
 
     def test_fold_populates_diagnostic_field(self):
         """fold() sets diagnostic dict on runner_diagnostic events."""
@@ -647,11 +645,12 @@ class TestBinaryNotFoundSpawn:
 
         assert exit_code == 1
 
-        # Verify agent_spawn_failed event in projection notifications
+        # Verify agent_spawn_failed event in projection notifications (new model: Notification objects)
         notifs = app_state.projection_store.projection.notifications
-        spawn_fails = [n for n in notifs if n.get("type") == "agent_spawn_failed"]
+        spawn_fails = [n for n in notifs if n.level == "error"]
         assert len(spawn_fails) >= 1
-        assert spawn_fails[0]["error_code"] == "binary_not_found"
+        # Message should mention the binary_not_found error
+        assert any("not found" in n.message.lower() or "binary" in n.message.lower() for n in spawn_fails)
 
         # Verify events.jsonl contains a runner_diagnostic
         events_path = Path(subagent_dir) / "events.jsonl"

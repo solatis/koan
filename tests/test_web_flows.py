@@ -413,26 +413,26 @@ def test_agents_detect_missing_param(client, app_state):
 # -- SSE replay ---------------------------------------------------------------
 
 def test_sse_replay(app_state):
-    """Test that SSE stream sends a snapshot on ?since=0 and replays on ?since=N."""
+    """SSE stream sends a snapshot and the protocol uses push_event / get_snapshot."""
     from koan.web.app import _sse_event
 
-    # Push a phase event via projection store
+    # Prime with a run_started so phase_started has a run to update
+    app_state.projection_store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
     app_state.projection_store.push_event("phase_started", {"phase": "intake"})
 
-    # Verify projection holds the phase
-    assert app_state.projection_store.projection.phase == "intake"
-    assert app_state.projection_store.version == 1
+    # Verify projection holds the phase in the new nested location
+    assert app_state.projection_store.projection.run is not None
+    assert app_state.projection_store.projection.run.phase == "intake"
+    assert app_state.projection_store.version == 2
 
     # Verify the SSE event formatter produces correct output
-    event_str = _sse_event("phase_started", {"phase": "intake"})
-    assert "event: phase_started" in event_str
+    event_str = _sse_event("snapshot", app_state.projection_store.get_snapshot())
+    assert "event: snapshot" in event_str
     assert '"intake"' in event_str
 
-    # Verify events_since works for replay
-    events = app_state.projection_store.events_since(0)
-    assert len(events) == 1
-    assert events[0].event_type == "phase_started"
-    assert events[0].payload["phase"] == "intake"
+    # Verify audit log retains events
+    assert len(app_state.projection_store.events) == 2
+    assert app_state.projection_store.events[1].event_type == "phase_started"
 
 
 # -- Live page redirect (now SPA fallback) ------------------------------------
@@ -464,18 +464,26 @@ def test_workflow_interaction_sse_payload_shape(app_state):
             "recommended": True,
         }],
     }]
+
+    # Setup: need a run with a running primary agent before focus can be set
+    app_state.projection_store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+    app_state.projection_store.push_event("agent_spawned", {
+        "agent_id": "agent-1", "role": "intake", "is_primary": True, "started_at_ms": 0,
+    }, agent_id="agent-1")
     app_state.projection_store.push_event(
         "workflow_decision_requested",
         build_workflow_decision_requested(token, chat_turns),
         agent_id="agent-1",
     )
 
-    # Verify projection holds the active interaction
-    active = app_state.projection_store.projection.active_interaction
-    assert active is not None
-    assert active["interaction_type"] == "workflow_decision_requested"
-    assert active["token"] == "tok"
-    turns = active["chat_turns"]
+    # Verify projection holds focus as DecisionFocus (new model)
+    from koan.projections import DecisionFocus
+    proj = app_state.projection_store.projection
+    assert proj.run is not None
+    focus = proj.run.focus
+    assert isinstance(focus, DecisionFocus)
+    assert focus.token == "tok"
+    turns = focus.chat_turns
     assert turns[0]["recommended_phases"][0]["phase"] == "tech-plan"
 
 
@@ -621,15 +629,19 @@ class TestProbeRefresh:
 
 @pytest.mark.anyio
 def test_sse_snapshot_contains_projection_state(app_state):
-    """Snapshot SSE event contains the full projection as {version, state}."""
+    """Snapshot SSE event contains the full camelCase projection as {version, state}."""
     from koan.web.app import _sse_event
 
+    app_state.projection_store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
     app_state.projection_store.push_event("phase_started", {"phase": "intake"})
 
     snapshot = app_state.projection_store.get_snapshot()
-    assert snapshot["version"] == 1
-    assert snapshot["state"]["phase"] == "intake"
-    assert snapshot["state"]["run_started"] is True
+    assert snapshot["version"] == 2
+    # New model: phase lives inside run
+    assert snapshot["state"]["run"]["phase"] == "intake"
+    # New model: top-level fields are settings, run, notifications
+    assert "settings" in snapshot["state"]
+    assert "notifications" in snapshot["state"]
 
     # Verify SSE wire format
     event_str = _sse_event("snapshot", snapshot)
@@ -637,41 +649,47 @@ def test_sse_snapshot_contains_projection_state(app_state):
     assert '"intake"' in event_str
 
 
-def test_sse_replay_events_since_n(app_state):
-    """events_since(N) returns events with version > N for replay."""
+def test_sse_audit_log_retains_events(app_state):
+    """Audit log retains all events in order; reconnecting clients get a fresh snapshot."""
+    app_state.projection_store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
     app_state.projection_store.push_event("phase_started", {"phase": "intake"})
     app_state.projection_store.push_event("phase_started", {"phase": "brief-generation"})
-    # version is now 2
+    # version is now 3
 
-    # Client at version 1 should get only version 2
-    events = app_state.projection_store.events_since(1)
-    assert len(events) == 1
-    assert events[0].version == 2
-    assert events[0].event_type == "phase_started"
-    assert events[0].payload["phase"] == "brief-generation"
+    assert len(app_state.projection_store.events) == 3
+    assert app_state.projection_store.version == 3
 
-    # Client at version 0 gets both
-    all_events = app_state.projection_store.events_since(0)
-    assert len(all_events) == 2
+    # Last event is in the log
+    last = app_state.projection_store.events[-1]
+    assert last.event_type == "phase_started"
+    assert last.payload["phase"] == "brief-generation"
 
-    # Client at version 2 gets nothing (live-tail only)
-    none = app_state.projection_store.events_since(2)
-    assert len(none) == 0
+    # Projection reflects latest state
+    assert app_state.projection_store.projection.run.phase == "brief-generation"
+
+    # Snapshot for reconnect reflects full current state
+    snap = app_state.projection_store.get_snapshot()
+    assert snap["version"] == 3
+    assert snap["state"]["run"]["phase"] == "brief-generation"
 
 
-def test_sse_fatal_error_stale_version(app_state):
-    """?since=N where N > server version triggers fatal_error condition."""
-    # server version is 0, client claims version 99
+def test_sse_always_snapshot_on_version_mismatch(app_state):
+    """Any since != server.version triggers a fresh snapshot (no fatal_error)."""
     store = app_state.projection_store
     assert store.version == 0
 
-    # The sse_stream handler checks: if since > 0 and since > store.version
-    # When true, it yields a fatal_error event and returns.
-    from koan.web.app import _sse_event
-    fatal_event = _sse_event("fatal_error", {"reason": "version_not_available"})
-    assert "event: fatal_error" in fatal_event
-    assert "version_not_available" in fatal_event
+    # Any client version (stale or ahead) gets a snapshot. No fatal_error.
+    # The server simply sends its current state.
+    snap = store.get_snapshot()
+    assert snap["version"] == 0
+    assert snap["state"]["run"] is None
 
-    # Verify the condition: since=99 > version=0 and since > 0
-    assert 99 > store.version
-    assert 99 > 0
+    # Advance server
+    store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+    assert store.version == 1
+
+    # Client at since=99 (> server) still gets a valid snapshot
+    # (sse_stream sends snapshot when since != store.version)
+    snap2 = store.get_snapshot()
+    assert snap2["version"] == 1
+    assert snap2["state"]["run"] is not None
