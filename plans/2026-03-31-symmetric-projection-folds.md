@@ -55,9 +55,7 @@ Server restart:    GET /events?since=N+2
                    (client detects version < lastVersion, resets UI)
 ```
 
-**Catch-up always uses snapshots.** Storing patches for replay is expensive (200K–500K events over a full epic). On reconnect, the server sends a fresh snapshot at the current version. The `since` parameter is a version check: if it matches the server's version, skip the snapshot and go straight to live events. Otherwise, send a snapshot.
-
-This eliminates `events_since()` and the catch-up replay code path entirely. It also eliminates `fatal_error`: the current code sends `fatal_error` when `since > store.version` (after server restart), requiring manual reload. The new design always sends a snapshot — the client detects the version regression and resets automatically. One code path for all reconnects.
+**Catch-up always uses snapshots.** The `since` parameter is a version check: if it matches the server's current version, skip the snapshot and stream live events. Otherwise, send a fresh snapshot. This eliminates the `events_since()` replay path (500K events × variable patch sizes = unbounded memory) and the `fatal_error` case (server restart caused `since > store.version`, requiring manual reload). One code path handles all reconnects; the client detects version regression and resets automatically.
 
 ### What the server stores
 
@@ -75,18 +73,21 @@ No stored patches. No catch-up replay buffer.
 def push_event(self, event_type, payload, agent_id=None):
     self.version += 1
     event = VersionedEvent(version=self.version, ...)
-    self.events.append(event)                          # audit log
+    self.events.append(event)          # append-only audit log — never modified
 
-    old_state = self.prev_state
+    old_state = self.prev_state        # camelCase dict from previous to_wire()
     self.projection = fold(self.projection, event)
-    new_state = self.projection.to_wire()              # camelCase via alias_generator
+    new_state = self.projection.to_wire()   # camelCase — patch paths will be camelCase
     self.prev_state = new_state
 
     patch = jsonpatch.make_patch(old_state, new_state)
     if not patch:
-        return                                         # no-op (e.g. koan MCP tool filtered by fold)
+        return  # fold produced no state change (e.g. koan MCP tool filtered by fold)
+                # no message broadcast — subscribers stay at the same version
 
     msg = {"type": "patch", "version": self.version, "patch": patch.to_string()}
+    # Snapshot self.subscribers before iterating — a subscriber may be added
+    # or removed concurrently (asyncio, not threading, but still defensive)
     for q in list(self.subscribers):
         q.put_nowait(msg)
 ```
@@ -104,10 +105,23 @@ from pydantic import ConfigDict
 from pydantic.alias_generators import to_camel
 
 class KoanBaseModel(BaseModel):
-    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+    model_config = ConfigDict(
+        alias_generator=to_camel,   # snake_case → camelCase at serialization
+        populate_by_name=True,       # Python code still uses snake_case attributes;
+                                     # only the JSON output uses camelCase aliases
+    )
 
     def to_wire(self) -> dict:
-        """Serialize for snapshots and patch computation. Always camelCase."""
+        """Serialize for snapshots and JSON Patch computation.
+
+        Always produces camelCase keys via the alias_generator.
+        Call this at the two serialization boundaries:
+          - ProjectionStore.push_event(): to_wire() twice (before and after fold)
+            to compute the JSON Patch diff
+          - get_snapshot(): to_wire() once to build the snapshot payload
+        Never call model_dump() directly on projection objects — that produces
+        snake_case keys and breaks patch paths on the frontend.
+        """
         return self.model_dump(by_alias=True)
 ```
 
@@ -118,17 +132,22 @@ All projection models inherit from `KoanBaseModel`. Snapshot JSON and patch path
 ### Frontend — complete implementation
 
 ```typescript
+// Module-level projection dict. fast-json-patch operates on plain JS objects,
+// not on Zustand state. Patches mutate this, then we spread it into the store.
 let storeState: Record<string, unknown> = {}
 
 es.addEventListener('snapshot', (e) => {
   const { version, state } = JSON.parse(e.data)
-  storeState = state
-  set({ lastVersion: version, ...state })
+  storeState = state                         // replace wholesale on every snapshot
+  set({ lastVersion: version, ...state })    // spread all camelCase fields into store
 })
 
 es.addEventListener('patch', (e) => {
   const { version, patch } = JSON.parse(e.data)
-  storeState = applyPatch(storeState, patch).newDocument
+  // applyPatch with mutate:false returns { newDocument } — a new object
+  // rather than modifying storeState in-place. This matters because Zustand
+  // may still hold a reference to the previous storeState for the current render.
+  storeState = applyPatch(storeState, patch, /*validate*/false, /*mutate*/false).newDocument
   set({ lastVersion: version, ...storeState })
 })
 ```
@@ -247,7 +266,9 @@ The distinction between settings and run config:
 
 ### Agent
 
-All agents — primary, scouts, queued — live in one dict. The lifecycle is a state machine on `status`. No separate collections, no `QueuedScout` type.
+All agents — primary, scouts, queued — live in one dict keyed by `agent_id`. The lifecycle is a state machine on `status`. No separate collections, no `QueuedScout` type.
+
+**Why `dict[str, Agent]` not `list[Agent]`?** JSON Patch paths for list elements use positional indices (`/run/agents/2`). If an agent is removed or the list is reordered, subsequent indices shift and pending patches become invalid. Dict keys are stable: `/run/agents/abc123` refers to the same agent regardless of insertions or removals.
 
 ```python
 class Agent(KoanBaseModel):
@@ -295,6 +316,8 @@ class Conversation(KoanBaseModel):
     output_tokens: int = 0
 ```
 
+**Why `Conversation` is a sub-object, not fields directly on `Agent`?** `Agent` describes who the agent is and where it is in the workflow (identity + lifecycle + progress). `Conversation` describes what the agent has said and what it cost. These change at different rates and serve different UI concerns — `step`/`status` update for every agent in the monitor, while `entries`/`pending_thinking` update only for the visible conversation. Separating them also makes `agent.conversation` a natural unit to pass to `ActivityFeed` as a single prop.
+
 **Why `pending_thinking` / `pending_text`, not `thinkingBuffer` / `streamBuffer`?** "Buffer" describes the mechanism (accumulate, flush, reset). "Pending" describes the content: incomplete LLM output that will become a conversation entry on the next transition. The names should describe *what it is*, not *how it works*.
 
 **Why tokens are in Conversation, not Agent:** They're accumulated from conversation turns (each `agent_step_advanced` carries usage). They describe the cost of what the agent said, not the agent's identity or lifecycle.
@@ -316,7 +339,7 @@ class QuestionFocus(KoanBaseModel):
     type: Literal["question"] = "question"
     agent_id: str                          # who asked (conversation is backdrop)
     token: str                             # correlation ID for response
-    questions: list[AskQuestion]
+    questions: list[AskQuestion]           # existing koan type (koan/web/interactions.py)
 
 class ReviewFocus(KoanBaseModel):
     """Agent is blocked, artifact needs review."""
@@ -332,7 +355,7 @@ class DecisionFocus(KoanBaseModel):
     type: Literal["decision"] = "decision"
     agent_id: str
     token: str
-    chat_turns: list[ChatTurn]
+    chat_turns: list[ChatTurn]             # existing koan type
 
 Focus = Annotated[
     ConversationFocus | QuestionFocus | ReviewFocus | DecisionFocus,
@@ -340,7 +363,7 @@ Focus = Annotated[
 ]
 ```
 
-The fold manages transitions:
+The fold manages transitions. `run.focus` starts as `None` (no agents yet). The first `agent_spawned` event for the primary agent sets it to `ConversationFocus` — from that point, the main content area always has an explicit state.
 
 | Event | Focus transition |
 |-------|-----------------|
@@ -432,8 +455,8 @@ class Run(KoanBaseModel):
     phase: str = ""                        # current workflow phase
     agents: dict[str, Agent] = {}          # all agents by ID, all lifecycle states
     focus: Focus | None = None             # None before first agent spawns
-    artifacts: dict[str, ArtifactInfo] = {}
-    completion: CompletionInfo | None = None
+    artifacts: dict[str, ArtifactInfo] = {}  # existing type; keyed by path
+    completion: CompletionInfo | None = None  # existing type; set by workflow_completed event
 ```
 
 ### Complete Projection
@@ -482,19 +505,18 @@ Named entities (installations, profiles, agents, artifacts) are dicts for stable
 
 These rules apply to the agent identified by `event.agent_id`. Since every agent has its own conversation, there is no primary-agent filtering — the fold appends to the relevant agent's conversation unconditionally. The frontend chooses which conversation to render via `focus`.
 
+"Flush" means: if the pending field is non-empty, create a completed entry (ThinkingEntry or TextEntry) with its content, append to `entries`, reset the field to `""`.
+
 | Event | Action on agent's conversation |
 |-------|-------------------------------|
 | `thinking` | Flush `pending_text` → TextEntry. Append delta to `pending_thinking`. Set `is_thinking = True`. |
 | `stream_delta` | Flush `pending_thinking` → ThinkingEntry. Append delta to `pending_text`. Set `is_thinking = False`. |
-| typed tool (`tool_read`, `tool_write`, etc.) | Flush both pending fields. Append typed entry (`in_flight=True`). Set `is_thinking = False`. |
-| `tool_called` where tool starts with `koan_` | Skip — koan MCP tools are infrastructure noise. |
-| `tool_completed` | Set `in_flight=False` on matching `call_id`. |
-| `agent_step_advanced` | Flush both pending fields. Append StepEntry if `step >= 1`. Update `step`, `step_name`. Accumulate `input_tokens`, `output_tokens` from usage. Set `is_thinking = False`. |
+| typed tool (`tool_read`, `tool_write`, etc.) | Flush both pending fields. Append typed entry with `in_flight=True`. Set `is_thinking = False`. |
+| `tool_called` (non-koan, no typed variant) | Flush both pending fields. Append `ToolGenericEntry` with `in_flight=True`. Set `is_thinking = False`. |
+| `tool_called` where tool name starts with `koan_` | Skip — koan MCP tools are infrastructure. Effects already captured by `agent_step_advanced`, `questions_asked`, etc. |
+| `tool_completed` | Set `in_flight=False` on the entry whose `call_id` matches. |
+| `agent_step_advanced` | Flush both pending fields. Append StepEntry if `step >= 1`. Update `step`, `step_name` on Agent. Accumulate `input_tokens`, `output_tokens` into Conversation. Set `is_thinking = False`. |
 | `stream_cleared` | Flush both pending fields. Set `is_thinking = False`. |
-
-"Flush" means: if the pending field is non-empty, create a completed entry (ThinkingEntry or TextEntry) with its content, append to `entries`, reset the field to `""`.
-
-**Why koan MCP tools are filtered:** `koan_complete_step`, `koan_request_scouts`, etc. are infrastructure. Their effects are captured by `agent_step_advanced`, `questions_asked`, etc. Showing them as tool lines is noise.
 
 ### Agent lifecycle
 
