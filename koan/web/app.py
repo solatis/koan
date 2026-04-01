@@ -33,14 +33,15 @@ from ..events import (
     build_questions_answered,
     build_workflow_decided,
     build_probe_completed,
+    build_run_started,
     build_installation_created,
     build_installation_modified,
     build_installation_removed,
     build_profile_created,
     build_profile_modified,
     build_profile_removed,
-    build_active_profile_changed,
-    build_scout_concurrency_changed,
+    build_default_profile_changed,
+    build_default_scout_concurrency_changed,
 )
 
 if TYPE_CHECKING:
@@ -55,11 +56,6 @@ _STATIC_DIR = Path(__file__).parent / "static"
 # without a build step.
 FRONTEND_DIST = Path(__file__).parent / "static" / "app"
 
-ALL_PHASES = [
-    "intake", "brief-generation", "core-flows", "tech-plan",
-    "ticket-breakdown", "cross-artifact-validation",
-    "execution", "implementation-validation",
-]
 
 
 # -- Helpers ------------------------------------------------------------------
@@ -145,27 +141,18 @@ async def sse_stream(r: Request) -> Response:
         since = 0
 
     async def event_generator():
-        # Stale client: send fatal_error and close (not HTTP error -- EventSource
-        # cannot read non-200 bodies and would retry with same stale version).
-        if since > 0 and since > store.version:
-            yield _sse_event("fatal_error", {"reason": "version_not_available"})
-            return
-
-        # Subscribe before snapshot -- no await between subscribe and get_snapshot
-        # so no events can be missed between the two operations.
+        # Subscribe before snapshot so no events can slip between the two operations.
         queue = store.subscribe()
         try:
-            if since == 0:
+            # Version check: send snapshot unless client is exactly current.
+            # Handles first connect (since=0), reconnect (since<version), and
+            # server restart (since>version) uniformly — a fresh snapshot is always correct.
+            if since != store.version:
                 yield _sse_event("snapshot", store.get_snapshot())
-            else:
-                for event in store.events_since(since):
-                    data = {"version": event.version, "agent_id": event.agent_id, **event.payload}
-                    yield _sse_event(event.event_type, data)
 
             while True:
-                event = await queue.get()
-                data = {"version": event.version, "agent_id": event.agent_id, **event.payload}
-                yield _sse_event(event.event_type, data)
+                msg = await queue.get()          # plain dict from push_event
+                yield _sse_event(msg["type"], msg)
         except asyncio.CancelledError:
             pass
         finally:
@@ -258,7 +245,7 @@ async def api_start_run(r: Request) -> Response:
     if not any(pr.available for pr in st.probe_results):
         return JSONResponse(
             {"error": "no_runners",
-             "message": "No available runners. Install and authenticate at least one runner before starting a run."},
+             "message": "No available agent installations. Add and configure at least one in Settings."},
             status_code=422,
         )
 
@@ -310,14 +297,22 @@ async def api_start_run(r: Request) -> Response:
     st.config.active_profile = profile
     from ..config import save_koan_config
     await save_koan_config(st.config)
-    st.projection_store.push_event("active_profile_changed", build_active_profile_changed(profile))
+    st.projection_store.push_event("default_profile_changed", build_default_profile_changed(profile))
 
     # Apply optional overrides
     scout_concurrency = body.get("scout_concurrency")
     if isinstance(scout_concurrency, int) and scout_concurrency > 0:
         st.config.scout_concurrency = scout_concurrency
         await save_koan_config(st.config)
-        st.projection_store.push_event("scout_concurrency_changed", build_scout_concurrency_changed(scout_concurrency))
+        st.projection_store.push_event("default_scout_concurrency_changed", build_default_scout_concurrency_changed(scout_concurrency))
+
+    # Emit run_started to create the Run object in the projection
+    _installations_map = dict(st.run_installations)
+    _scout_concurrency = st.config.scout_concurrency
+    st.projection_store.push_event(
+        "run_started",
+        build_run_started(profile, _installations_map, _scout_concurrency),
+    )
 
     # Create epic directory
     epic_id = f"{int(time.time())}-{uuid.uuid4().hex[:8]}"
@@ -565,14 +560,8 @@ async def _refresh_probe_state(st: AppState, broadcast: bool = True) -> None:
         await save_koan_config(st.config)
 
     if broadcast:
-        runners = [_serialize_probe_result(pr) for pr in st.probe_results]
-        st.projection_store.push_event("probe_completed", build_probe_completed(runners))
-        if st.balanced_profile:
-            tiers = _serialize_profile(st.balanced_profile, True)["tiers"]
-            st.projection_store.push_event(
-                "profile_modified",
-                build_profile_modified("balanced", True, tiers),
-            )
+        # New installations must exist in the projection BEFORE probe_completed
+        # sets their `available` flag.
         for inst in new_insts:
             st.projection_store.push_event(
                 "installation_created",
@@ -582,6 +571,19 @@ async def _refresh_probe_state(st: AppState, broadcast: bool = True) -> None:
             st.projection_store.push_event(
                 "installation_modified",
                 build_installation_modified(inst.alias, inst.runner_type, inst.binary, inst.extra_args),
+            )
+        # Now set available on all installations (including the ones just created)
+        _probe_results_dict = {
+            inst.alias: any(pr.runner_type == inst.runner_type and pr.available
+                           for pr in st.probe_results)
+            for inst in st.config.agent_installations
+        }
+        st.projection_store.push_event("probe_completed", build_probe_completed(_probe_results_dict))
+        if st.balanced_profile:
+            tiers = _serialize_profile(st.balanced_profile, True)["tiers"]
+            st.projection_store.push_event(
+                "profile_modified",
+                build_profile_modified("balanced", True, tiers),
             )
 
 
@@ -593,9 +595,21 @@ def _push_initial_config_events(st: AppState) -> None:
     """
     store = st.projection_store
 
-    # Runners from probe
-    runners = [_serialize_probe_result(pr) for pr in st.probe_results]
-    store.push_event("probe_completed", build_probe_completed(runners))
+    # Installations FIRST — probe_completed needs them to exist so it can set
+    # the `available` flag on each one.
+    for inst in st.config.agent_installations:
+        store.push_event(
+            "installation_created",
+            build_installation_created(inst.alias, inst.runner_type, inst.binary, inst.extra_args),
+        )
+
+    # probe_completed: set available flag on each installation (now they exist)
+    _probe_avail = {
+        inst.alias: any(pr.runner_type == inst.runner_type and pr.available
+                       for pr in st.probe_results)
+        for inst in st.config.agent_installations
+    }
+    store.push_event("probe_completed", build_probe_completed(_probe_avail))
 
     # Profiles (balanced first, then user-defined)
     if st.balanced_profile:
@@ -605,18 +619,11 @@ def _push_initial_config_events(st: AppState) -> None:
         sp = _serialize_profile(p, False)
         store.push_event("profile_created", build_profile_created(p.name, False, sp["tiers"]))
 
-    # Installations
-    for inst in st.config.agent_installations:
-        store.push_event(
-            "installation_created",
-            build_installation_created(inst.alias, inst.runner_type, inst.binary, inst.extra_args),
-        )
-
     # Active profile
-    store.push_event("active_profile_changed", build_active_profile_changed(st.config.active_profile))
+    store.push_event("default_profile_changed", build_default_profile_changed(st.config.active_profile))
 
     # Scout concurrency
-    store.push_event("scout_concurrency_changed", build_scout_concurrency_changed(st.config.scout_concurrency))
+    store.push_event("default_scout_concurrency_changed", build_default_scout_concurrency_changed(st.config.scout_concurrency))
 
 
 async def api_probe(r: Request) -> Response:
@@ -759,7 +766,7 @@ async def api_profiles_delete(r: Request) -> Response:
     await save_koan_config(st.config)
     st.projection_store.push_event("profile_removed", build_profile_removed(name))
     if reset_active:
-        st.projection_store.push_event("active_profile_changed", build_active_profile_changed("balanced"))
+        st.projection_store.push_event("default_profile_changed", build_default_profile_changed("balanced"))
     return JSONResponse({"ok": True})
 
 
@@ -980,7 +987,7 @@ async def api_settings_scout_concurrency(r: Request) -> Response:
     st.config.scout_concurrency = value
     from ..config import save_koan_config
     await save_koan_config(st.config)
-    st.projection_store.push_event("scout_concurrency_changed", build_scout_concurrency_changed(value))
+    st.projection_store.push_event("default_scout_concurrency_changed", build_default_scout_concurrency_changed(value))
     return JSONResponse({"ok": True})
 
 
