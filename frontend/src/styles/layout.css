@@ -87,16 +87,21 @@
   -webkit-mask-image: linear-gradient(to bottom, transparent, black 8px, black);
 }
 
+/* The feed inner container IS the white surface. Text and tool lines
+ * sit directly on it. Thinking cards break out with their own inset
+ * background — they're the exception, not the rule. */
 .activity-feed-inner {
   display: flex;
   flex-direction: column;
   gap: 2px;
   max-width: 960px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-2) var(--space-4);
 }
 
-/* ---- Activity cards (thinking, future: tool results) ---- */
-
-/* ---- Thinking card -- muted inset, recedes behind LLM text ---- */
+/* ---- Thinking card -- muted inset that visually recedes ---- */
 .activity-card {
   background: var(--plum-bg);
   border-left: 3px solid var(--plum);
@@ -278,19 +283,16 @@
   text-transform: capitalize;
 }
 
-/* Stream output -- elevated white card for LLM text (primary content) */
+/* Stream output -- LLM text on the shared white surface */
 .stream-output {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
   font-family: var(--font-mono);
   font-size: var(--font-size-sm);
   color: var(--text);
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
-  padding: var(--space-4);
-  margin: var(--space-1) 0;
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--border);
 }
 
 /* Thinking indicator */
