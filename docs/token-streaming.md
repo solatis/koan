@@ -66,14 +66,15 @@ Token deltas flow through the projection system:
 CLI stdout -> line parser -> runner.parse_stream_event(line)
   -> StreamEvent with delta
   -> push_event("stream_delta", {"agent_id": ..., "delta": "..."})
-  -> ProjectionStore: append to log, fold projection.stream_buffer += delta
-  -> broadcast versioned event to SSE subscribers
-  -> browser receives: event: stream_delta / data: {"version": N, ...}
-  -> frontend fold: store.streamBuffer += event.delta
+  -> ProjectionStore: append to log, fold appends delta to agent.conversation.pending_text
+  -> compute JSON Patch: [{op: "replace", path: "/run/agents/{id}/conversation/pendingText", value: "..."}]
+  -> broadcast patch to SSE subscribers
+  -> browser receives: event: patch / data: {"version": N, "patch": [...]}
+  -> applyPatch(store, patch) — store.run.agents[id].conversation.pendingText updated
 ```
 
 `stream_delta` events go through `ProjectionStore` like all other events. The
-fold step is in-memory only (appending to `projection.stream_buffer`) — there
+fold step is in-memory only (updating `agent.conversation.pending_text`) — there
 is no disk I/O per delta. This is distinct from the audit pipeline, which
 writes to disk after each event.
 
@@ -83,60 +84,58 @@ When a subagent finishes streaming, the caller emits:
 push_event("stream_cleared", {"agent_id": ...})
 ```
 
-The fold sets `projection.stream_buffer = ""`. The frontend clears its
-`streamBuffer` slice accordingly.
+The fold flushes `pending_text` to a `TextEntry` in `conversation.entries` and
+resets `pending_text = ""`. The JSON Patch carries the resulting state change.
 
 ---
 
 ## Replay on Reconnect
 
-When a client connects or reconnects with `?since=0`, the server sends a
-`snapshot` event. The snapshot includes the current `stream_buffer` value —
-the full accumulated text from all `stream_delta` events since the buffer was
-last cleared.
+When a client connects or reconnects, the server sends a `snapshot` event. The
+snapshot includes the current state of each agent's conversation — including
+`pendingText` (accumulated stream output not yet committed to an entry) and
+`entries` (any `TextEntry` objects from completed text blocks).
 
 ```
 event: snapshot
-data: {"version": 142, "state": {"stream_buffer": "accumulated text...", ...}}
+data: {"version": 142, "state": {"run": {"agents": {"abc": {"conversation": {"pendingText": "accumulated text...", ...}}}}}}
 ```
 
-The reconnecting client receives the complete buffer in a single snapshot field.
-Individual `stream_delta` events are not replayed on reconnect — the snapshot
-`stream_buffer` represents their accumulated effect.
+The reconnecting client receives the complete accumulated state in a single
+snapshot. Individual `stream_delta` events are not replayed — the snapshot
+represents their accumulated effect.
 
-When reconnecting with `?since=N` (brief disconnect), the client replays only
-the `stream_delta` events it missed and folds them incrementally, same as any
-other event type.
+All reconnect scenarios send a snapshot: page reload, brief disconnect, and
+server restart are handled identically.
 
-See [projections.md -- Version-negotiated catch-up](./projections.md#sse-protocol)
+See [projections.md -- SSE Protocol](./projections.md#sse-protocol)
 for the full reconnect protocol.
 
 ---
 
 ## Frontend
 
-The frontend Zustand store has a `streamBuffer: string` slice. The `applyEvent`
-fold handler for `stream_delta` appends the delta:
+The frontend has no fold logic. The Zustand store is updated by applying JSON
+Patches received from the server:
 
 ```typescript
-case 'stream_delta':
-  return { streamBuffer: state.streamBuffer + event.delta }
-case 'stream_cleared':
-  return { streamBuffer: '' }
+// patch event for a stream_delta:
+// [{op: "replace", path: "/run/agents/abc/conversation/pendingText", value: "accumulated..."}]
+storeState = applyPatch(storeState, patch, false, false).newDocument
+set({ ...storeState })
 ```
 
-`applySnapshot` sets `streamBuffer` from the snapshot's `stream_buffer` field.
-
-The `ActivityFeed` component renders `streamBuffer` as the in-flight streaming
-text area. When `stream_cleared` fires, the buffer empties and the streaming
-display resets for the next agent.
+The `ActivityFeed` component reads `conversation.pendingText` from the focused
+agent and renders it as the in-flight streaming text. When `stream_cleared`
+causes the fold to flush `pendingText` into a `TextEntry`, the patch reflects
+that: `pendingText` becomes `""` and a new entry appears in `entries`.
 
 ---
 
 ## What Is Not Streamed
 
-| Signal                 | Why excluded from stream_buffer                               |
+| Signal                 | Why excluded from pendingText                                        |
 | ---------------------- | ------------------------------------------------------------- |
-| Thinking tokens        | Go through `thinking` events into `activity_log`, not `stream_buffer` |
+| Thinking tokens        | Go through `thinking` events into `conversation.pendingThinking`, not `pendingText` |
 | Tool execution updates | Handled via `tool_called`/`tool_completed` projection events  |
 | Scout output           | Scouts push their own audit events; no token streaming needed |

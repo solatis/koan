@@ -13,8 +13,8 @@ principles, and pitfalls that govern the codebase.
 - [Token Streaming](./token-streaming.md) -- runner stdout parsing, SSE delta path
 - [State & Driver](./state.md) -- the driver/LLM boundary, JSON vs markdown
   ownership, epic and story state, routing rules
-- [Projections](./projections.md) -- versioned event log, fold function,
-  projection shape, SSE protocol, version-negotiated catch-up
+- [Projections](./projections.md) -- versioned event log, pure fold, JSON Patch
+  protocol, projection model, camelCase wire format
 - [Intake Loop](./intake-loop.md) -- confidence-gated investigation loop,
   non-linear step progression, prompt engineering principles
 - [Epic Brief](./epic-brief.md) -- brief artifact, brief-writer subagent, downstream references
@@ -143,6 +143,26 @@ observation (audit).
 See [subagents.md -- Task Manifest](./subagents.md#task-manifest) for the
 `task.json` schema and spawn flow.
 
+### 7. Server-authoritative projection
+
+The fold runs only in Python. The frontend applies server-computed JSON Patches
+mechanically -- it has no fold logic, no event interpretation, and no business
+rules. When the frontend's view of state differs from the backend's, the bug is
+in the fold or the patch computation -- not in the frontend.
+
+```
+push_event() -> fold() -> to_wire() -> make_patch() -> broadcast to subscribers
+                                                         |
+                                              Browser receives patch,
+                                              applies applyPatch(store, patch)
+```
+
+**Why:** Maintaining two fold implementations (Python + TypeScript) requires
+disciplinary synchronization. Any divergence produces subtle display bugs that
+are hard to trace. JSON Patch makes correctness structural: one fold, one
+source of truth, mechanical application on the client.
+
+
 ---
 
 ## Atomic Writes
@@ -225,9 +245,9 @@ State flows from LLM tool calls to the browser through the projection system.
      |
 [push_event() called with workflow-level event]
      |
-[ProjectionStore: append to log, fold projection, broadcast to SSE subscribers]
+[ProjectionStore: fold projection, compute JSON Patch, broadcast to subscribers]
      |
-[Browser receives versioned SSE event, applies frontend fold]
+[Browser receives patch, applies applyPatch(store, patch) — no interpretation]
 ```
 
 ### Concrete example: `koan_complete_step`
@@ -239,30 +259,32 @@ LLM calls koan_complete_step({ thoughts: "..." }) via MCP
   -> audit fold: projection.step = 2, projection.step_name = "Decompose"
   -> write_state(audit projection) -> state.json
   -> push_event("agent_step_advanced", {step: 2, step_name: "Decompose"}, agent_id="abc")
-  -> ProjectionStore appends event v=47, folds projection, broadcasts to SSE subscribers
-  -> browser receives: event: agent_step_advanced / data: {"version": 47, "agent_id": "abc", ...}
-  -> frontend fold: primaryAgent.step = 2, primaryAgent.stepName = "Decompose"
+  -> ProjectionStore: append to log, fold projection, compute JSON Patch diff
+  -> patch: [{op: "replace", path: "/run/agents/abc/step", value: 2}, ...]
+  -> broadcast patch dict to all SSE subscribers
+  -> browser receives: event: patch / data: {"version": 47, "patch": [...]}
+  -> applyPatch(store, patch) — store.run.agents.abc.step is now 2
   -> returns step 2 instructions as MCP tool result
 ```
 
-### Version-negotiated catch-up
+### Snapshot on reconnect
 
-The `/events` endpoint accepts `?since=N`. On first connect (`since=0`), the
-server sends a `snapshot` SSE event containing the full materialized projection
-at the current version. On reconnect (`since=N`), the server replays events
-with version > N, then streams live events.
+The `/events` endpoint accepts `?since=N`. If `since` matches the server's
+current version, the client is up to date and only live patches are streamed.
+Otherwise — on first connect, page reload, connection drop, or server restart
+— a fresh snapshot is sent, then live patches follow.
 
 ```
 event: snapshot
-data: {"version": 42, "state": { ...full projection... }}
+data: {"version": 42, "state": { ...full projection in camelCase... }}
 
-event: agent_spawned
-data: {"version": 43, "agent_id": "...", "role": "intake", ...}
+event: patch
+data: {"type": "patch", "version": 43, "patch": [{...}, ...]}
 ```
 
-This ensures the browser always has complete state after a page reload or
-network drop, without requiring a full page reload or losing accumulated state
-(activity log, notifications, streaming buffer).
+All reconnect scenarios are handled identically. The client does not distinguish
+between a brief disconnect and a server restart — it receives a snapshot and
+renders from it.
 
 ---
 
@@ -408,7 +430,7 @@ append + fold + atomic-write cycles per second for data that has no persistence
 value. The runner stdout parsing path exists for exactly this case. See
 [token-streaming.md](./token-streaming.md).
 
-Note: `stream_delta` events (the projection system's name for token deltas) DO
-go through the projection fold, but the fold only appends to an in-memory
-string — no disk I/O. The distinction is between the audit pipeline (disk
-writes per event) and the projection fold (in-memory only).
+Note: `stream_delta` events (token deltas) DO go through the projection fold,
+but the fold only updates an in-memory string (`pending_text` on the agent's
+conversation) — no disk I/O. The distinction is between the audit pipeline
+(disk writes per event) and the projection fold (in-memory only).
