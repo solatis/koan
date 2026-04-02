@@ -202,13 +202,16 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
     # Emit agent_spawned only after build_command succeeds -- process is about to start
     store.push_event("agent_spawned", build_agent_spawned(agent), agent_id=agent_id)
 
-    # Spawn process
-    log.info("spawning %s (agent_id=%s): %s", role, agent_id, " ".join(cmd))
+    # Spawn process — cwd is the project directory so that tools like
+    # `find .`, `ls`, `grep -r` naturally scope to the user's codebase.
+    # Falls back to subagent_dir if project_dir is unavailable.
+    spawn_cwd = task.get("project_dir") or subagent_dir
+    log.info("spawning %s (agent_id=%s) cwd=%s: %s", role, agent_id, spawn_cwd, " ".join(cmd))
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        cwd=subagent_dir,
+        cwd=spawn_cwd,
     )
     app_state._active_processes[agent_id] = proc
 

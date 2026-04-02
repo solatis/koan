@@ -98,10 +98,14 @@ def main() -> None:
 
     port = args.port if args.port is not None else _find_free_port()
 
+    project_dir = Path.cwd()
+    if not project_dir.is_dir():
+        sys.exit(f"koan: project directory does not exist: {project_dir}")
+
     config = asyncio.run(load_koan_config())
     app_state = AppState(config=config, port=port, open_browser=not args.no_open,
                           initial_prompt=args.prompt, yolo=args.yolo, debug=args.debug,
-                          project_dir=str(Path.cwd()))
+                          project_dir=str(project_dir))
     app = create_app(app_state)
 
     host = "127.0.0.1"
