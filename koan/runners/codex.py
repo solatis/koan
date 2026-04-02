@@ -68,6 +68,7 @@ class CodexRunner:
         installation: AgentInstallation,
         model: str,
         thinking: ThinkingMode,
+        system_prompt: str = "",
     ) -> list[str]:
         if thinking != "disabled":
             raise RunnerError(RunnerDiagnostic(
@@ -77,10 +78,11 @@ class CodexRunner:
                 message=f"Thinking mode '{thinking}' is not supported by codex",
             ))
 
+        prompt = f"{system_prompt}\n\n{boot_prompt}" if system_prompt else boot_prompt
         cmd = [
             installation.binary, "exec", "--json",
             "-c", f"mcp_servers.koan.url={mcp_url}",
-            boot_prompt,
+            prompt,
         ]
         cmd.extend(["--model", model])
         cmd.extend(installation.extra_args)

@@ -71,6 +71,7 @@ class GeminiRunner:
         installation: AgentInstallation,
         model: str,
         thinking: ThinkingMode,
+        system_prompt: str = "",
     ) -> list[str]:
         if thinking not in self.supported_thinking_modes:
             raise RunnerError(RunnerDiagnostic(
@@ -87,7 +88,8 @@ class GeminiRunner:
         self._merge_mcp(existing, mcp_url, settings_path)
         self._write_settings(existing, settings_path, gemini_dir)
 
-        cmd = [installation.binary, "--output-format", "stream-json", "-p", boot_prompt]
+        prompt = f"{system_prompt}\n\n{boot_prompt}" if system_prompt else boot_prompt
+        cmd = [installation.binary, "--output-format", "stream-json", "-p", prompt]
         if thinking != "disabled":
             cmd.extend(["--thinking-mode", thinking])
         cmd.extend(["--model", model])

@@ -179,13 +179,16 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
 
     # Build command before emitting agent_spawned -- if build_command fails, no
     # agent_spawned event is emitted (per plan: "the agent was never launched").
+    system_prompt = getattr(phase_module, "SYSTEM_PROMPT", "") or ""
     try:
         if installation is not None and thinking_mode is not None:
             cmd = runner.build_command(
                 boot_prompt(role), mcp_url, installation, model, thinking_mode,
+                system_prompt=system_prompt,
             )
         else:
-            cmd = runner.build_command(boot_prompt(role), mcp_url, model)
+            cmd = runner.build_command(boot_prompt(role), mcp_url, model,
+                                       system_prompt=system_prompt)
     except RunnerError as e:
         await event_log.emit_runner_diagnostic(e.diagnostic)
         store.push_event(

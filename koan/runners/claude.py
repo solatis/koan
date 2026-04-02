@@ -102,6 +102,7 @@ class ClaudeRunner:
         installation: AgentInstallation,
         model: str,
         thinking: ThinkingMode,
+        system_prompt: str = "",
     ) -> list[str]:
         if thinking not in self.supported_thinking_modes:
             raise RunnerError(RunnerDiagnostic(
@@ -135,6 +136,8 @@ class ClaudeRunner:
             "--include-partial-messages",
             "--mcp-config", str(config_path),
         ]
+        if system_prompt:
+            cmd.extend(["--system-prompt", system_prompt])
         if thinking != "disabled":
             cmd.extend(["--effort", _EFFORT_MAP[thinking]])
         cmd.extend(["--model", model])
