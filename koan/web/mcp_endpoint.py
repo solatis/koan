@@ -257,6 +257,30 @@ async def koan_request_scouts(questions: list[dict] | None = None) -> str:
 
 @mcp.tool(name="koan_ask_question")
 async def koan_ask_question(questions: list[dict] | None = None) -> str:
+    """Ask the user one or more clarifying questions. The UI renders these as
+    interactive cards — one per question — with radio buttons or checkboxes.
+
+    Each dict in `questions` must have:
+      - question (str): The question text (rendered as markdown).
+      - options (list[dict]): Choices. Each option has:
+          - value (str): Machine key returned in the answer.
+          - label (str): Human-readable label shown in the UI.
+          - recommended (bool, optional): Pre-select this option.
+
+    Optional fields:
+      - context (str): Background/rationale shown above the question (markdown).
+      - multi (bool): Allow selecting multiple options (default false).
+
+    Format rules for options:
+      - Labels are plain descriptions. Do NOT prefix with letters, numbers,
+        or bullets — the UI adds its own selection controls.
+          WRONG:  "(a) Stateless wrapper"  /  "A: Stateless wrapper"
+          RIGHT:  "Stateless wrapper — compile per request, optimize later"
+      - Do NOT include an "Other" or "None of the above" option.
+        The UI always provides a free-text alternative automatically.
+      - Keep labels concise (one line). Put rationale in `context`, not
+        in the label.
+    """
     agent = _get_agent()
     _check_or_raise(agent, "koan_ask_question", {"questions": questions})
 
