@@ -216,6 +216,7 @@ async def koan_request_scouts(questions: list[dict] | None = None) -> str:
                 "label": scout_id,
                 "epic_dir": epic_dir,
                 "subagent_dir": subagent_dir,
+                "project_dir": _app_state.project_dir,
                 "question": q.get("prompt", ""),
                 "investigator_role": q.get("role", "investigator"),
             })

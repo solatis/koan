@@ -100,7 +100,8 @@ def main() -> None:
 
     config = asyncio.run(load_koan_config())
     app_state = AppState(config=config, port=port, open_browser=not args.no_open,
-                          initial_prompt=args.prompt, yolo=args.yolo, debug=args.debug)
+                          initial_prompt=args.prompt, yolo=args.yolo, debug=args.debug,
+                          project_dir=str(Path.cwd()))
     app = create_app(app_state)
 
     host = "127.0.0.1"

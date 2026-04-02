@@ -75,6 +75,7 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
     investigator_role = ctx.scout_investigator_role or ""
 
     if step == 1:
+        project_dir = ctx.project_dir or ""
         lines = [
             "Find and read the relevant code to answer the question.",
             "",
@@ -85,6 +86,17 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
             lines.append(f"**Question:** {question}")
         if investigator_role:
             lines.append(f"**Your investigator role:** {investigator_role}")
+        if project_dir:
+            lines.extend([
+                "",
+                "## Project Directory",
+                "",
+                f"The project root is: `{project_dir}`",
+                "",
+                "All investigation MUST be scoped to this directory.",
+                "Do NOT search outside this path -- no `find /`, no `find ~`, no `/tmp`.",
+                "Always `cd` into the project directory or use absolute paths within it.",
+            ])
         lines.extend([
             "",
             "## Actions",
