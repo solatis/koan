@@ -50,6 +50,7 @@ EventType = Literal[
     "thinking",
     "stream_delta",
     "stream_cleared",
+    "debug_step_guidance",
     # Focus (interactions)
     "questions_asked",
     "questions_answered",
@@ -166,10 +167,16 @@ class ToolGenericEntry(BaseToolEntry):
     tool_name: str                         # original tool name from the LLM
     summary: str = ""                      # human-readable one-liner from the runner parser
 
+class DebugStepGuidanceEntry(KoanBaseModel):
+    """Step guidance prompt shown in --debug mode."""
+    type: Literal["debug_step_guidance"] = "debug_step_guidance"
+    content: str                           # full formatted step guidance text
+
 ConversationEntry = Annotated[
     ThinkingEntry | TextEntry | StepEntry |
     ToolReadEntry | ToolWriteEntry | ToolEditEntry |
-    ToolBashEntry | ToolGrepEntry | ToolLsEntry | ToolGenericEntry,
+    ToolBashEntry | ToolGrepEntry | ToolLsEntry | ToolGenericEntry |
+    DebugStepGuidanceEntry,
     Field(discriminator="type"),
 ]
 
@@ -809,6 +816,20 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                     else:
                         new_entries.append(entry)
                 new_conv = agent.conversation.model_copy(update={"entries": new_entries})
+                return projection.model_copy(update={
+                    "run": _update_agent_conversation(projection.run, agent_id, new_conv),
+                })
+
+            case "debug_step_guidance":
+                if projection.run is None or not agent_id:
+                    return projection
+                agent = projection.run.agents.get(agent_id)
+                if agent is None:
+                    return projection
+                content = payload.get("content", "")
+                new_conv = agent.conversation.model_copy(update={
+                    "entries": [*agent.conversation.entries, DebugStepGuidanceEntry(content=content)],
+                })
                 return projection.model_copy(update={
                     "run": _update_agent_conversation(projection.run, agent_id, new_conv),
                 })

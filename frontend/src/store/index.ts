@@ -43,11 +43,13 @@ export interface ToolBashEntry    extends BaseToolEntry { type: 'tool_bash';    
 export interface ToolGrepEntry    extends BaseToolEntry { type: 'tool_grep';    pattern: string }
 export interface ToolLsEntry      extends BaseToolEntry { type: 'tool_ls';      path: string }
 export interface ToolGenericEntry extends BaseToolEntry { type: 'tool_generic'; toolName: string; summary: string }
+export interface DebugStepGuidanceEntry { type: 'debug_step_guidance'; content: string }
 
 export type ConversationEntry =
   | ThinkingEntry | TextEntry | StepEntry
   | ToolReadEntry | ToolWriteEntry | ToolEditEntry
   | ToolBashEntry | ToolGrepEntry | ToolLsEntry | ToolGenericEntry
+  | DebugStepGuidanceEntry
 
 export interface Conversation {
   entries: ConversationEntry[]

@@ -87,6 +87,8 @@ def main() -> None:
                         help="Pre-fill the task description")
     parser.add_argument("--yolo", action="store_true",
                         help="Skip all agent permission prompts (dangerous)")
+    parser.add_argument("--debug", action="store_true",
+                        help="Show step guidance prompts in the UI")
     args = parser.parse_args()
 
     setup_logging(args.log_level)
@@ -98,7 +100,7 @@ def main() -> None:
 
     config = asyncio.run(load_koan_config())
     app_state = AppState(config=config, port=port, open_browser=not args.no_open,
-                          initial_prompt=args.prompt, yolo=args.yolo)
+                          initial_prompt=args.prompt, yolo=args.yolo, debug=args.debug)
     app = create_app(app_state)
 
     host = "127.0.0.1"

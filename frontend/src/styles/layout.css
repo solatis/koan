@@ -130,6 +130,20 @@
   color: var(--plum);
 }
 
+.activity-card-debug {
+  background: var(--copper-bg);
+  border-left-color: var(--copper);
+}
+
+.activity-card-debug .activity-card-tool {
+  color: var(--copper);
+}
+
+.activity-card-toggle {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
 .activity-card-meta {
   color: var(--text-muted);
   font-size: var(--font-size-xs);

@@ -48,6 +48,26 @@ function TextBlock({ text }: { text: string }) {
   return <div className="stream-output"><Md>{text}</Md></div>
 }
 
+// -- Debug step guidance -------------------------------------------------------
+
+function DebugGuidanceCard({ content }: { content: string }) {
+  const [expanded, setExpanded] = useState(false)
+
+  return (
+    <div className="activity-card activity-card-debug">
+      <div className="activity-card-header" onClick={() => setExpanded(!expanded)} style={{ cursor: 'pointer' }}>
+        <span className="activity-card-tool">step guidance</span>
+        <span className="activity-card-toggle">{expanded ? '▾' : '▸'}</span>
+      </div>
+      {expanded && (
+        <div className="activity-card-body expanded">
+          <Md>{content}</Md>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // -- Tool lines ----------------------------------------------------------------
 
 function statusIcon(inFlight: boolean) { return inFlight ? '›' : '✓' }
@@ -103,6 +123,8 @@ function renderEntry(entry: ConversationEntry, i: number) {
       return <DetailLine key={i} tool="ls" detail={entry.path} inFlight={entry.inFlight} />
     case 'tool_generic':
       return <ToolLine key={i} tool={entry.toolName} summary={entry.summary} inFlight={entry.inFlight} />
+    case 'debug_step_guidance':
+      return <DebugGuidanceCard key={i} content={entry.content} />
     default:
       return null
   }

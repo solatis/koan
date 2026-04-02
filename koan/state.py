@@ -67,6 +67,7 @@ class AppState:
     open_browser: bool = True
     initial_prompt: str = ""
     yolo: bool = False
+    debug: bool = False
     config_write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # Installation selections for the current run: runner_type -> alias.
     # Set when a run starts; cleared when a new run begins.

@@ -171,6 +171,15 @@ async def koan_complete_step(thoughts: str = "") -> str:
 
         guidance = phase_module.step_guidance(next_step, ctx)
         result_str = format_step(guidance)
+
+        # In debug mode, surface the step guidance in the UI
+        if _app_state is not None and _app_state.debug:
+            _app_state.projection_store.push_event(
+                "debug_step_guidance",
+                {"content": result_str},
+                agent_id=agent.agent_id,
+            )
+
         return result_str
     finally:
         end_tool_call(agent, call_id, "koan_complete_step", result_str)
