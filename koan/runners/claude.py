@@ -196,6 +196,7 @@ class ClaudeRunner:
             return []
 
         events: list[StreamEvent] = []
+        text_parts: list[str] = []
         for block in blocks:
             if not isinstance(block, dict):
                 continue
@@ -217,14 +218,19 @@ class ClaudeRunner:
             # stream_event deltas (--include-partial-messages). Only
             # emit them from assistant messages as a fallback when no
             # stream_events were seen (e.g. partial-messages disabled).
-            elif block_type == "text" and not self._saw_stream_events:
-                events.append(StreamEvent(type="token_delta", content=block.get("text", "")))
+            elif block_type == "text":
+                text = block.get("text", "")
+                text_parts.append(text)
+                if not self._saw_stream_events:
+                    events.append(StreamEvent(type="token_delta", content=text))
             elif block_type == "thinking" and not self._saw_stream_events:
                 events.append(StreamEvent(
                     type="thinking",
                     is_thinking=True,
                     content=block.get("thinking") or block.get("text"),
                 ))
+        if text_parts:
+            events.append(StreamEvent(type="assistant_text", content="".join(text_parts)))
         return events
 
     def _parse_result(self, data: dict) -> StreamEvent | None:

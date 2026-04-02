@@ -11,7 +11,7 @@ from ..types import AgentInstallation, ModelInfo, ThinkingMode
 
 @dataclass(kw_only=True)
 class StreamEvent:
-    type: Literal["token_delta", "turn_complete", "tool_call", "thinking"]
+    type: Literal["token_delta", "turn_complete", "tool_call", "thinking", "assistant_text"]
     content: str | None = None
     is_thinking: bool = False
     tool_name: str | None = None

@@ -28,7 +28,7 @@ class TestClaudeRunnerParseStreamEvent:
     def test_text_delta(self):
         line = self._msg([{"type": "text", "text": "hello"}])
         evts = self.runner.parse_stream_event(line)
-        assert evts == [StreamEvent(type="token_delta", content="hello")]
+        assert evts == [StreamEvent(type="token_delta", content="hello"), StreamEvent(type="assistant_text", content="hello")]
 
     def test_tool_call(self):
         line = self._msg([{"type": "tool_use", "name": "bash", "input": {"cmd": "ls"}}])
@@ -81,9 +81,12 @@ class TestClaudeRunnerParseStreamEvent:
             {"type": "tool_use", "name": "bash", "input": {"cmd": "ls"}},
         ])
         evts = self.runner.parse_stream_event(msg_line)
-        # text is skipped (already streamed), tool_use preserved
-        assert len(evts) == 1
+        # text is skipped for streaming (already streamed), but assistant_text still emitted;
+        # tool_use is preserved
+        assert len(evts) == 2
         assert evts[0].type == "tool_call"
+        assert evts[1].type == "assistant_text"
+        assert evts[1].content == "hi"
 
     def test_result_success(self):
         line = json.dumps({"type": "result", "subtype": "success", "result": "done"})
@@ -103,9 +106,10 @@ class TestClaudeRunnerParseStreamEvent:
             {"type": "tool_use", "name": "read", "input": {"path": "/a"}},
         ])
         evts = self.runner.parse_stream_event(line)
-        assert len(evts) == 2
+        assert len(evts) == 3
         assert evts[0] == StreamEvent(type="token_delta", content="calling tool")
         assert evts[1] == StreamEvent(type="tool_call", tool_name="read", tool_args={"path": "/a"}, summary="")
+        assert evts[2] == StreamEvent(type="assistant_text", content="calling tool")
 
     def test_multi_block_thinking_and_text(self):
         line = self._msg([
@@ -113,9 +117,10 @@ class TestClaudeRunnerParseStreamEvent:
             {"type": "text", "text": "answer"},
         ])
         evts = self.runner.parse_stream_event(line)
-        assert len(evts) == 2
+        assert len(evts) == 3
         assert evts[0] == StreamEvent(type="thinking", is_thinking=True, content="reasoning")
         assert evts[1] == StreamEvent(type="token_delta", content="answer")
+        assert evts[2] == StreamEvent(type="assistant_text", content="answer")
 
     def test_multi_block_with_unknown_type_skipped(self):
         line = self._msg([
@@ -124,9 +129,10 @@ class TestClaudeRunnerParseStreamEvent:
             {"type": "tool_use", "name": "bash", "input": {}},
         ])
         evts = self.runner.parse_stream_event(line)
-        assert len(evts) == 2
+        assert len(evts) == 3
         assert evts[0].type == "token_delta"
         assert evts[1].type == "tool_call"
+        assert evts[2].type == "assistant_text"
 
     def test_multi_block_non_dict_block_skipped(self):
         line = self._msg([
@@ -134,7 +140,7 @@ class TestClaudeRunnerParseStreamEvent:
             {"type": "text", "text": "valid"},
         ])
         evts = self.runner.parse_stream_event(line)
-        assert evts == [StreamEvent(type="token_delta", content="valid")]
+        assert evts == [StreamEvent(type="token_delta", content="valid"), StreamEvent(type="assistant_text", content="valid")]
 
 
 # -- CodexRunner: parse_stream_event -------------------------------------------
