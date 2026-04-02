@@ -87,6 +87,7 @@ export interface AskQuestion {
   options: { value: string; label: string; recommended?: boolean }[]
   allow_other?: boolean   // snake_case: comes from LLM via backend list[dict]
   context?: string
+  free_text?: boolean     // when true (or when options is empty), render a textarea instead of options
 }
 
 export interface ChatTurn {

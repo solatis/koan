@@ -18,14 +18,28 @@ function normalizeOptions(
   })
 }
 
+/** True when the question should render as a free-form text input. */
+function isFreeText(q: AskQuestion): boolean {
+  return q.free_text === true || !q.options || q.options.length === 0
+}
+
 interface AnswerMap {
   [qIdx: number]: string | string[] | null
+}
+
+/** Map from question index to the "Other" free-text typed by the user. */
+interface OtherTextMap {
+  [qIdx: number]: string
 }
 
 function collectDefaults(questions: AskQuestion[]): AnswerMap {
   const defaults: AnswerMap = {}
   questions.forEach((q, i) => {
-    const recommended = q.options.filter(o => o.recommended).map(o => o.value)
+    if (isFreeText(q)) {
+      defaults[i] = null
+      return
+    }
+    const recommended = (q.options ?? []).filter(o => o.recommended).map(o => o.value)
     defaults[i] = q.multi ? recommended : (recommended[0] ?? null)
   })
   return defaults
@@ -35,14 +49,17 @@ function QuestionCard({
   question,
   qIdx,
   answer,
+  otherText,
   onAnswer,
+  onOtherText,
 }: {
   question: AskQuestion
   qIdx: number
   answer: string | string[] | null
+  otherText: string
   onAnswer: (qIdx: number, val: string | string[] | null) => void
+  onOtherText: (qIdx: number, text: string) => void
 }) {
-  const [otherText, setOtherText] = useState('')
   const selected = Array.isArray(answer) ? answer : answer ? [answer] : []
 
   const toggle = (value: string) => {
@@ -79,51 +96,90 @@ function QuestionCard({
         <div className="question-context"><Md>{question.context}</Md></div>
       )}
       <div className="question-text"><Md>{question.question}</Md></div>
-      {question.multi && (
-        <div className="question-multi-hint">Select all that apply</div>
+
+      {isFreeText(question) ? (
+        /* Free-form text input — no predefined options */
+        <div className="free-text-area">
+          <textarea
+            className="free-text-input"
+            rows={4}
+            placeholder="Type your answer..."
+            value={typeof answer === 'string' ? answer : ''}
+            onChange={e => onAnswer(qIdx, e.target.value || null)}
+          />
+        </div>
+      ) : (
+        /* Standard option selection */
+        <>
+          {question.multi && (
+            <div className="question-multi-hint">Select all that apply</div>
+          )}
+          <div className="options-list">
+            {opts.map(opt => (
+              <div
+                key={opt.value}
+                className={`option${selected.includes(opt.value) ? ' selected' : ''}${opt.recommended ? ' recommended' : ''}`}
+                onClick={() => toggle(opt.value)}
+              >
+                <span className={question.multi ? 'checkbox-dot' : 'radio-dot'} />
+                <span className="option-text">{opt.label}</span>
+                {opt.recommended && (
+                  <span className="recommended-badge">recommended</span>
+                )}
+              </div>
+            ))}
+            {question.allow_other && (
+              <div
+                className={`option option-other${selected.includes('__other__') ? ' selected' : ''}`}
+                onClick={() => toggle('__other__')}
+              >
+                <span className={question.multi ? 'checkbox-dot' : 'radio-dot'} />
+                <span className="option-text">Other (type your own)</span>
+                {selected.includes('__other__') && (
+                  <input
+                    type="text"
+                    className="other-input visible"
+                    placeholder="Type here..."
+                    value={otherText}
+                    onChange={e => onOtherText(qIdx, e.target.value)}
+                    onClick={e => e.stopPropagation()}
+                  />
+                )}
+              </div>
+            )}
+          </div>
+        </>
       )}
-      <div className="options-list">
-        {opts.map(opt => (
-          <div
-            key={opt.value}
-            className={`option${selected.includes(opt.value) ? ' selected' : ''}${opt.recommended ? ' recommended' : ''}`}
-            onClick={() => toggle(opt.value)}
-          >
-            <span className={question.multi ? 'checkbox-dot' : 'radio-dot'} />
-            <span className="option-text">{opt.label}</span>
-            {opt.recommended && (
-              <span className="recommended-badge">recommended</span>
-            )}
-          </div>
-        ))}
-        {question.allow_other && (
-          <div
-            className={`option option-other${selected.includes('__other__') ? ' selected' : ''}`}
-            onClick={() => toggle('__other__')}
-          >
-            <span className={question.multi ? 'checkbox-dot' : 'radio-dot'} />
-            <span className="option-text">Other (type your own)</span>
-            {selected.includes('__other__') && (
-              <input
-                type="text"
-                className="other-input visible"
-                placeholder="Type here..."
-                value={otherText}
-                onChange={e => setOtherText(e.target.value)}
-                onClick={e => e.stopPropagation()}
-              />
-            )}
-          </div>
-        )}
-      </div>
     </div>
   )
+}
+
+/**
+ * Resolve __other__ sentinels in the answer map with actual typed text.
+ * For single-select: "__other__" → the typed string.
+ * For multi-select: ["a", "__other__"] → ["a", "the typed string"].
+ */
+function resolveOtherText(
+  answers: AnswerMap,
+  otherTexts: OtherTextMap,
+  questions: AskQuestion[],
+): (string | string[] | null)[] {
+  return questions.map((_, i) => {
+    const raw = answers[i] ?? null
+    const typed = otherTexts[i] || ''
+    if (raw === '__other__') return typed || null
+    if (Array.isArray(raw)) {
+      return raw.map(v => (v === '__other__' ? typed : v))
+    }
+    return raw
+  })
 }
 
 export function AskWizard() {
   const focus = useStore(s => s.run?.focus)
   const [currentIdx, setCurrentIdx] = useState(0)
   const [answers, setAnswers] = useState<AnswerMap>({})
+  const [otherTexts, setOtherTexts] = useState<OtherTextMap>({})
   const [submitError, setSubmitError] = useState<string | null>(null)
 
   if (!focus || focus.type !== 'question') return null
@@ -135,6 +191,10 @@ export function AskWizard() {
     setAnswers(prev => ({ ...prev, [qIdx]: val }))
   }
 
+  const handleOtherText = (qIdx: number, text: string) => {
+    setOtherTexts(prev => ({ ...prev, [qIdx]: text }))
+  }
+
   const handleNext = () => {
     if (currentIdx < total - 1) setCurrentIdx(i => i + 1)
   }
@@ -144,7 +204,7 @@ export function AskWizard() {
   }
 
   const handleSubmit = async () => {
-    const finalAnswers = questions.map((_, i) => answers[i] ?? null)
+    const finalAnswers = resolveOtherText(answers, otherTexts, questions)
     const res = await api.submitAnswer(finalAnswers, token)
     if (!res.ok) {
       setSubmitError(res.message ?? 'Failed to submit answers')
@@ -172,7 +232,9 @@ export function AskWizard() {
           question={questions[currentIdx]}
           qIdx={currentIdx}
           answer={answers[currentIdx] ?? null}
+          otherText={otherTexts[currentIdx] ?? ''}
           onAnswer={handleAnswer}
+          onOtherText={handleOtherText}
         />
 
         {submitError && <div className="no-runners-msg">{submitError}</div>}

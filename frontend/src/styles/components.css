@@ -459,6 +459,35 @@
   animation: slide-open 150ms ease-out;
 }
 
+/* Free-form text input (questions with no predefined options) */
+.free-text-area {
+  margin-top: var(--space-3);
+}
+
+.free-text-input {
+  width: 100%;
+  min-height: 100px;
+  padding: var(--space-3);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-md);
+  line-height: 1.5;
+  resize: vertical;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.free-text-input::placeholder {
+  color: var(--text-muted);
+}
+
+.free-text-input:focus {
+  border-color: var(--copper);
+}
+
 /* ---- Config sections ---- */
 .model-config-section {
   margin-top: var(--space-6);
