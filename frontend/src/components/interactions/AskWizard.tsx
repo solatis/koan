@@ -84,8 +84,10 @@ function QuestionCard({
     }
   }
 
-  // Normalize options at render time to handle LLM output variability
+  // Normalize options at render time to handle LLM output variability.
+  // Filter out any LLM-provided "Other" option — we always render our own.
   const opts = normalizeOptions(question.options as (string | Record<string, unknown>)[])
+    .filter(o => !/^other$/i.test(o.value.trim()) && !/^other$/i.test(o.label.trim()))
 
   return (
     <div className="question-card">
@@ -109,7 +111,7 @@ function QuestionCard({
           />
         </div>
       ) : (
-        /* Standard option selection */
+        /* Standard option selection — always includes an "Other" text input */
         <>
           {question.multi && (
             <div className="question-multi-hint">Select all that apply</div>
@@ -128,24 +130,21 @@ function QuestionCard({
                 )}
               </div>
             ))}
-            {question.allow_other && (
-              <div
-                className={`option option-other${selected.includes('__other__') ? ' selected' : ''}`}
-                onClick={() => toggle('__other__')}
-              >
-                <span className={question.multi ? 'checkbox-dot' : 'radio-dot'} />
-                <span className="option-text">Other (type your own)</span>
-                {selected.includes('__other__') && (
-                  <input
-                    type="text"
-                    className="other-input visible"
-                    placeholder="Type here..."
-                    value={otherText}
-                    onChange={e => onOtherText(qIdx, e.target.value)}
-                    onClick={e => e.stopPropagation()}
-                  />
-                )}
-              </div>
+            <div
+              className={`option option-other${selected.includes('__other__') ? ' selected' : ''}`}
+              onClick={() => toggle('__other__')}
+            >
+              <span className={question.multi ? 'checkbox-dot' : 'radio-dot'} />
+              <span className="option-text">Other (type your own)</span>
+            </div>
+            {selected.includes('__other__') && (
+              <textarea
+                className="free-text-input"
+                rows={3}
+                placeholder="Type your answer..."
+                value={otherText}
+                onChange={e => onOtherText(qIdx, e.target.value)}
+              />
             )}
           </div>
         </>
