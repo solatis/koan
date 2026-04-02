@@ -32,7 +32,7 @@ Role-specific fields:
 | Role           | Additional fields                      |
 | -------------- | -------------------------------------- |
 | `intake`       | --                                     |
-| `scout`        | `output_file`, `investigator_role`     |
+| `scout`        | `question`, `investigator_role`        |
 | `decomposer`   | --                                     |
 | `orchestrator` | `step_sequence`, `story_id` (optional) |
 | `planner`      | `story_id`                             |
@@ -118,7 +118,7 @@ The MCP endpoint validates required `task.json` fields at agent registration:
 
 | Role     | Required fields | Failure if missing                                                      |
 | -------- | --------------- | ----------------------------------------------------------------------- |
-| scout    | `output_file`   | Step 1 guidance has no assignment -> LLM outputs confused text -> exits |
+| scout    | `question`      | Step 1 guidance has no assignment -> LLM outputs confused text -> exits |
 | planner  | `story_id`      | Malformed paths like `stories//plan/plan.md`                            |
 | executor | `story_id`      | Same path issue                                                         |
 
@@ -148,6 +148,8 @@ koan/phases/
   ticket_breakdown.py
   cross_artifact_validation.py
   workflow_orchestrator.py
+  format_step.py
+  review_protocol.py
 ```
 
 Each phase module exposes:
@@ -225,14 +227,18 @@ from write-bash is intractable at the permission layer.
 
 ### Role permission matrix
 
-| Role             | koan tools                                                                                                                   | write/edit             | notes                                                                                      |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------ |
-| **intake**       | `koan_complete_step`, `koan_ask_question`, `koan_request_scouts`, `koan_set_confidence`                                      | path-scoped to epicDir | `koan_set_confidence` blocked in step 1 (Extract)                                          |
-| **scout**        | `koan_complete_step`                                                                                                         | path-scoped to epicDir | No `koan_ask_question` (no user interaction). No `koan_request_scouts` (no nested scouts). |
-| **decomposer**   | `koan_complete_step`, `koan_ask_question`, `koan_request_scouts`                                                             | path-scoped to epicDir | --                                                                                         |
-| **orchestrator** | `koan_complete_step`, `koan_ask_question`, `koan_select_story`, `koan_complete_story`, `koan_retry_story`, `koan_skip_story` | path-scoped to epicDir | No `koan_request_scouts` -- orchestrator uses bash for verification                        |
-| **planner**      | `koan_complete_step`, `koan_ask_question`, `koan_request_scouts`                                                             | path-scoped to epicDir | --                                                                                         |
-| **executor**     | `koan_complete_step`, `koan_ask_question`                                                                                    | **unrestricted**       | Must modify the actual codebase                                                            |
+| Role                        | koan tools                                                                                                                             | write/edit             | notes                                                                                                          |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- | -------------------------------------------------------------------------------------------------------------- |
+| **intake**                  | `koan_complete_step`, `koan_ask_question`, `koan_request_scouts`, `koan_set_confidence`, `koan_review_artifact`                        | path-scoped to epicDir | `koan_request_scouts, koan_ask_question, write, edit` blocked in step 1 (Extract)                              |
+| **scout**                   | `koan_complete_step`                                                                                                                   | none                   | No `koan_ask_question` (no user interaction). No `koan_request_scouts` (no nested scouts). No file writing.    |
+| **brief-writer**            | `koan_complete_step`, `koan_review_artifact`, `edit`, `write`                                                                          | path-scoped to epicDir | `koan_request_scouts, koan_ask_question, write, edit` blocked in step 1 (Read)                                 |
+| **workflow-orchestrator**   | `koan_complete_step`, `koan_propose_workflow`, `koan_set_next_phase`                                                                   | --                     | No file writing capability                                                                                     |
+| **decomposer**              | `koan_complete_step`, `koan_ask_question`, `koan_request_scouts`                                                                       | path-scoped to epicDir | --                                                                                                             |
+| **orchestrator**            | `koan_complete_step`, `koan_ask_question`, `koan_select_story`, `koan_complete_story`, `koan_retry_story`, `koan_skip_story`           | path-scoped to epicDir | No `koan_request_scouts` -- orchestrator uses bash for verification                                            |
+| **planner**                 | `koan_complete_step`, `koan_ask_question`, `koan_request_scouts`                                                                       | path-scoped to epicDir | --                                                                                                             |
+| **ticket-breakdown**        | `koan_complete_step`, `koan_ask_question`, `koan_request_scouts`, `edit`, `write`                                                      | path-scoped to epicDir | --                                                                                                             |
+| **cross-artifact-validator**| `koan_complete_step`, `koan_ask_question`, `koan_request_scouts`, `edit`, `write`                                                      | path-scoped to epicDir | --                                                                                                             |
+| **executor**                | `koan_complete_step`, `koan_ask_question`                                                                                              | **unrestricted**       | Must modify the actual codebase                                                                                |
 
 ### Path scoping
 
@@ -255,28 +261,43 @@ Koan has 6+ roles, but they cluster into 3 capability bands:
 | **standard** | executor                                  | Code implementation: reliable tool use without deepest reasoning |
 | **cheap**    | scout                                     | Narrow codebase investigation: reading files, writing findings   |
 
-The mapping is defined in `koan/config.py`. Adding a new role requires
-updating that map.
+The role-to-tier mapping is defined in `koan/config.py`. Adding a new role
+requires updating that map.
 
 ### Configuration
 
-Model tiers are configured via the web UI at pipeline start. Config is
-persisted to `~/.koan/config.json`:
+Model tiers use a profile-based system. Each profile defines three tiers
+(`strong`, `standard`, `cheap`), and an active profile is selected at runtime.
+Agent installations declare available runners and binaries. Config is persisted
+to `~/.koan/config.json`:
 
 ```json
 {
-  "modelTiers": {
-    "strong": "claude-opus-4-5",
-    "standard": "claude-sonnet-4-5",
-    "cheap": "claude-haiku-4-5"
-  },
-  "scoutConcurrency": 4
+  "agentInstallations": [
+    { "alias": "claude-sonnet", "runnerType": "claude", "binary": "claude", "extraArgs": [] }
+  ],
+  "profiles": [
+    {
+      "name": "balanced",
+      "tiers": {
+        "strong":   { "runnerType": "claude", "model": "claude-sonnet-4-5", "thinking": "disabled" },
+        "standard": { "runnerType": "claude", "model": "claude-sonnet-4-5", "thinking": "disabled" },
+        "cheap":    { "runnerType": "claude", "model": "claude-haiku-4-5",  "thinking": "disabled" }
+      }
+    }
+  ],
+  "activeProfile": "balanced",
+  "scoutConcurrency": 8
 }
 ```
 
+Roles map to tiers (`strong`/`standard`/`cheap`), and tier-to-model bindings
+are configured per-profile. Switching profiles changes all model assignments at
+once without touching role definitions.
+
 ### Scout concurrency
 
-`scoutConcurrency` (default: 4) controls how many scout subagents run in
+`scoutConcurrency` (default: 8) controls how many scout subagents run in
 parallel. Increase for faster scouting on machines with ample resources;
 decrease to reduce peak memory pressure.
 
@@ -288,13 +309,14 @@ Scouts are deliberately constrained compared to other roles:
 
 - **No `koan_ask_question`** -- scouts do not ask questions
 - **No `koan_request_scouts`** -- scouts do not spawn nested scouts
+- **No file writing** -- scouts have no `write`/`edit` access
 - **Three steps** -- investigate -> verify -> report
 - **Cheap model** -- scouts use the cheapest available model
-- **Parallel execution** -- up to 4 scouts run concurrently
+- **Parallel execution** -- up to 8 scouts run concurrently
 - **Non-fatal failures** -- a failed scout does not abort the parent; its task
   ID is reported in the `failures` array
 
-Scout task parameters (`output_file`, `investigator_role`) live in the scout's
+Scout task parameters (`question`, `investigator_role`) live in the scout's
 `task.json`. The boot prompt stays minimal; step 1 guidance injects the
 parameters.
 
