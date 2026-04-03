@@ -10,7 +10,6 @@ import { ArtifactsSidebar } from './components/ArtifactsSidebar'
 import { Notification } from './components/Notification'
 import { SettingsOverlay } from './components/SettingsOverlay'
 import { Completion } from './components/Completion'
-import { ChatInput } from './components/ChatInput'
 import { AskWizard } from './components/interactions/AskWizard'
 import { ArtifactReview } from './components/interactions/ArtifactReview'
 
@@ -25,11 +24,8 @@ function InteractionView() {
 function WorkspaceMain() {
   const focus = useStore(s => s.run?.focus)
   const completion = useStore(s => s.run?.completion)
-  const run = useStore(s => s.run)
 
   const hasInteraction = focus && focus.type !== 'conversation'
-  // Hide chat input during structured interactions to prevent confusion
-  const showChatInput = run !== null && !hasInteraction
 
   return (
     <div className="workspace-main">
@@ -41,7 +37,6 @@ function WorkspaceMain() {
         <ActivityFeed />
       )}
       <AgentMonitor />
-      {showChatInput && <ChatInput />}
     </div>
   )
 }

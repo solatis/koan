@@ -323,6 +323,86 @@
   min-width: 0;
 }
 
+/* ---- Chat input (inside feed card) ---- */
+
+.chat-input-area {
+  margin-top: var(--space-4);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-4);
+}
+
+.chat-input-box {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  transition: border-color 200ms, box-shadow 200ms;
+}
+
+.chat-input-box:focus-within {
+  border-color: var(--copper);
+  box-shadow: 0 0 0 3px rgba(188, 108, 37, 0.08);
+}
+
+.chat-input-textarea {
+  width: 100%;
+  border: none;
+  background: transparent;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  color: var(--text);
+  padding: 10px 12px;
+  outline: none;
+  resize: none;
+  line-height: 1.5;
+  min-height: 24px;
+  max-height: 120px;
+  display: block;
+}
+
+.chat-input-textarea::placeholder {
+  color: var(--text-ghost);
+}
+
+.chat-input-textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.chat-input-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 12px 8px;
+}
+
+.chat-input-hint {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-ghost);
+}
+
+.chat-input-send {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--copper);
+  font-weight: 600;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: 4px;
+  transition: background 150ms;
+}
+
+.chat-input-send:hover:not(:disabled) {
+  background: var(--copper-bg);
+}
+
+.chat-input-send:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
 /* Monitor -- sticky bottom, sizes to content, centered like activity feed.
  * No border-top or mask fade -- it connects seamlessly with the sidebars. */
 .monitor {

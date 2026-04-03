@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { useStore, ConversationEntry } from '../store/index'
 import { useAutoScroll } from '../hooks/useAutoScroll'
 import { Md } from './Md'
+import { ChatInput } from './ChatInput'
 
 // -- Thinking ------------------------------------------------------------------
 
@@ -155,11 +156,15 @@ export function ActivityFeed() {
   const conversation = useStore(s =>
     focusAgentId ? s.run?.agents?.[focusAgentId]?.conversation : undefined
   )
+  const run = useStore(s => s.run)
+  const focus = useStore(s => s.run?.focus)
   const scrollRef = useRef<HTMLDivElement>(null)
   useAutoScroll(scrollRef)
 
   const hasEntries = conversation?.entries && conversation.entries.length > 0
   const isWaiting = !hasEntries && !conversation?.isThinking && !conversation?.pendingText
+  const hasInteraction = focus && focus.type !== 'conversation'
+  const showChatInput = run !== null && !hasInteraction
 
   return (
     <div className="activity-feed-scroll" ref={scrollRef}>
@@ -199,6 +204,9 @@ export function ActivityFeed() {
             <span className="streaming-cursor" />
           </div>
         )}
+
+        {/* Chat input — inside the feed card */}
+        {showChatInput && <ChatInput />}
       </div>
     </div>
   )
