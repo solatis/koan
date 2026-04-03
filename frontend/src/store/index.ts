@@ -120,6 +120,10 @@ export interface Notification {
 
 // -- Run ----------------------------------------------------------------------
 
+export interface SteeringMessage {
+  content: string
+}
+
 export interface Run {
   config: RunConfig
   phase: string
@@ -127,6 +131,7 @@ export interface Run {
   focus: Focus | null
   artifacts: Record<string, ArtifactInfo>
   completion: CompletionInfo | null
+  steering: SteeringMessage[]
 }
 
 // -- Store --------------------------------------------------------------------

@@ -4,6 +4,26 @@ import { useAutoScroll } from '../hooks/useAutoScroll'
 import { Md } from './Md'
 import { ChatInput } from './ChatInput'
 
+// -- Steering indicator --------------------------------------------------------
+
+function SteeringIndicator() {
+  const steering = useStore(s => s.run?.steering ?? [])
+  if (steering.length === 0) return null
+  return (
+    <div className="steering-indicator">
+      <div className="steering-header">steering</div>
+      <div className="steering-messages">
+        {steering.map((m, i) => (
+          <div key={i} className="steering-message">
+            <span className="steering-queued-badge">queued</span>
+            <Md>{m.content}</Md>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // -- Thinking ------------------------------------------------------------------
 
 function ThinkingCard({ content }: { content: string }) {
@@ -205,8 +225,13 @@ export function ActivityFeed() {
           </div>
         )}
 
-        {/* Chat input — inside the feed card */}
-        {showChatInput && <ChatInput />}
+        {/* Steering indicator + chat input — inside the feed card */}
+        {showChatInput && (
+          <>
+            <SteeringIndicator />
+            <ChatInput />
+          </>
+        )}
       </div>
     </div>
   )
