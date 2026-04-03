@@ -49,7 +49,7 @@ export function ChatInput() {
           value={text}
           onChange={e => setText(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={isDisabled ? 'No active run' : 'Message the orchestrator…'}
+          placeholder={isDisabled ? 'No active run' : 'Send feedback…'}
           disabled={isDisabled}
           rows={1}
         />
