@@ -140,8 +140,8 @@ export function LandingPage() {
           </div>
 
           {/* Workflow card */}
-          <div className="question-card">
-            <div className="question-header">Workflow</div>
+          <div className="card">
+            <div className="launch-section-label">Workflow</div>
             <div className="launch-workflow-grid">
               <button
                 className={`launch-workflow-card${workflow === 'plan' ? ' selected' : ''}`}
@@ -165,8 +165,8 @@ export function LandingPage() {
           </div>
 
           {/* Description card */}
-          <div className="question-card">
-            <div className="question-header">Description</div>
+          <div className="card">
+            <div className="launch-section-label">Description</div>
             <div className="launch-description-hint">What should this run accomplish?</div>
             <textarea
               id="task-input"
@@ -179,8 +179,8 @@ export function LandingPage() {
           </div>
 
           {/* Configuration card */}
-          <div className="question-card">
-            <div className="question-header">Configuration</div>
+          <div className="card">
+            <div className="launch-section-label">Configuration</div>
 
             {/* Profile */}
             <div className="launch-config-group">

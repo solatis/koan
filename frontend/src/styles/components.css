@@ -1375,6 +1375,16 @@
 
 /* ---- Launch page ---- */
 
+/* Section label for launch page cards */
+.launch-section-label {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: var(--space-2);
+}
+
 .launch-project-dir {
   display: flex;
   align-items: center;
