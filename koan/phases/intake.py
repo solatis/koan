@@ -244,68 +244,27 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
 
     if step == 3:
         lines = [
-            f"Write `{ctx.run_dir}/landscape.md`."
-            if ctx.run_dir
-            else "Write `landscape.md` to the run directory.",
-            "This file is the sole input for all downstream phases. Write it carefully.",
+            "Synthesize what you learned and present a summary to the user.",
             "",
-            "## Formatting rules (apply to all sections)",
+            "## What to summarize",
             "",
-            "- **File references**: Always use markdown link format: `[display name](relative/path)`.",
-            "  After each reference, briefly state what the file contains or why it matters.",
-            "  Example: `[base-phase.ts](src/planner/phases/base-phase.ts) -- abstract lifecycle for all phase subagents`.",
-            "  Never use bare paths.",
-            "- **Section headings**: Use exactly the heading names below. Downstream agents locate content by heading.",
-            "- **Content rule**: Describe what IS, not what SHOULD be done. No recommendations, no deliverables, no implementation suggestions.",
+            "Present a concise summary covering:",
             "",
-            "## Required sections",
+            "- **Task scope**: What is being built or changed, in the user's framing.",
+            "- **Key codebase findings**: The most important things you discovered about",
+            "  the relevant code — entry points, current behavior, integration points.",
+            "- **Decisions made**: Every question you asked and the user's answer.",
+            "- **Constraints**: Technical, timeline, or compatibility boundaries.",
+            "- **Open items**: Anything still unresolved (if any).",
             "",
-            "### Task Summary",
-            "What is being built or changed, in the user's own framing.",
-            "State the scope as the user described it -- what areas of the codebase are affected and why.",
-            "Do NOT decompose this into deliverables or work units. A downstream agent will do that.",
+            "Describe what IS, not what SHOULD be done. No recommendations, no",
+            "deliverables, no implementation suggestions.",
             "",
-            "### Prior Art",
-            "Previous attempts, referenced plans, related systems, or prior conversations mentioned.",
-            "If none: (none referenced)",
+            "## After summarizing",
             "",
-            "### Codebase Findings",
-            "Key findings from scouts, organized by area of the codebase (not by scout task).",
-            "",
-            "For each area, include:",
-            "- **Entry points**: files, functions, or modules that are the primary sites of interest.",
-            "- **Current behavior**: how the relevant code works today.",
-            "- **Patterns**: recurring patterns, conventions, or idioms observed in this area.",
-            "- **Integration points**: how this area connects to other parts of the system.",
-            "",
-            "If no scouts were needed: (no codebase exploration was needed)",
-            "",
-            "### Project Conventions",
-            "Where to find coding standards and patterns for this project -- pointers to sources,",
-            "not the conventions themselves.",
-            "",
-            "### Decisions",
-            "Every question asked and the user's answer.",
-            "Format: **Q:** [question] / **A:** [answer]",
-            "If no questions were needed: (no questions were needed -- context was sufficient)",
-            "",
-            "### Constraints",
-            "All constraints discovered: from task description, codebase, user answers.",
-            "If none: (none identified)",
-            "",
-            "### Open Items",
-            "Anything unresolved.",
-            "If none: (none)",
-            "",
-            "## Pre-write verification",
-            "",
-            "Before writing, verify landscape.md is complete -- a downstream agent must be able",
-            "to understand the full background from this file alone.",
-            "",
-            "## After writing",
-            "",
-            "landscape.md is now available in the artifacts panel for review.",
-            "Call `koan_complete_step` to signal phase completion.",
+            "Call `koan_complete_step`. The phase boundary will provide suggested",
+            "next phases and their descriptions. Present them to the user and ask",
+            "which direction they want to go.",
         ]
         return StepGuidance(title=STEP_NAMES[3], instructions=lines)
 
@@ -317,7 +276,7 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
 def get_next_step(step: int, ctx: PhaseContext) -> int | None:
     if step < 3:
         return step + 1
-    # Step 3 (Write): terminal — no review gate.
+    # Step 3 (Summarize): terminal — no review gate.
     return None
 
 
