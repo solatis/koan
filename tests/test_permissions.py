@@ -198,59 +198,59 @@ class TestExhaustiveRoleToolMatrix:
 
 class TestPathScoping:
     def setup_method(self):
-        self.epic = "/tmp/epic"
+        self.run_dir = "/tmp/run"
 
-    def test_write_inside_epic_allowed(self):
+    def test_write_inside_run_dir_allowed(self):
         r = check_permission(
             "intake", "write",
-            run_dir=self.epic,
-            tool_args={"path": "/tmp/epic/foo.md"},
+            run_dir=self.run_dir,
+            tool_args={"path": "/tmp/run/foo.md"},
             current_step=2,
         )
         assert r["allowed"]
 
-    def test_write_outside_epic_denied(self):
+    def test_write_outside_run_dir_denied(self):
         r = check_permission(
             "intake", "write",
-            run_dir=self.epic,
+            run_dir=self.run_dir,
             tool_args={"path": "/home/user/evil.sh"},
             current_step=2,
         )
         assert not r["allowed"]
         assert "outside run directory" in r["reason"]
 
-    def test_edit_outside_epic_denied(self):
+    def test_edit_outside_run_dir_denied(self):
         r = check_permission(
             "planner", "edit",
-            run_dir=self.epic,
+            run_dir=self.run_dir,
             tool_args={"path": "/etc/passwd"},
             current_step=2,
         )
         assert not r["allowed"]
 
-    def test_write_at_epic_root_allowed(self):
+    def test_write_at_run_dir_root_allowed(self):
         r = check_permission(
             "intake", "write",
-            run_dir=self.epic,
-            tool_args={"path": "/tmp/epic"},
+            run_dir=self.run_dir,
+            tool_args={"path": "/tmp/run"},
             current_step=2,
         )
         assert r["allowed"]
 
-    def test_orchestrator_write_inside_epic_allowed(self):
+    def test_orchestrator_write_inside_run_dir_allowed(self):
         r = check_permission(
             "orchestrator", "write",
-            run_dir=self.epic,
-            tool_args={"path": "/tmp/epic/brief.md"},
+            run_dir=self.run_dir,
+            tool_args={"path": "/tmp/run/brief.md"},
             current_phase="brief-generation",
             current_step=2,
         )
         assert r["allowed"]
 
-    def test_orchestrator_write_outside_epic_denied(self):
+    def test_orchestrator_write_outside_run_dir_denied(self):
         r = check_permission(
             "orchestrator", "write",
-            run_dir=self.epic,
+            run_dir=self.run_dir,
             tool_args={"path": "/home/user/evil.sh"},
             current_phase="intake",
             current_step=2,
@@ -262,10 +262,10 @@ class TestPathScoping:
 # -- Executor unrestricted write -----------------------------------------------
 
 class TestExecutorUnrestricted:
-    def test_write_outside_epic_allowed(self):
+    def test_write_outside_run_dir_allowed(self):
         r = check_permission(
             "executor", "write",
-            run_dir="/tmp/epic",
+            run_dir="/tmp/run",
             tool_args={"path": "/home/user/code.py"},
             current_step=2,
         )
@@ -282,7 +282,7 @@ class TestNoEpicDirNoPathArg:
     def test_no_path_arg_allows_write(self):
         r = check_permission(
             "intake", "write",
-            run_dir="/tmp/epic",
+            run_dir="/tmp/run",
             tool_args={"content": "hello"},
             current_step=2,
         )
@@ -291,7 +291,7 @@ class TestNoEpicDirNoPathArg:
     def test_no_tool_args_allows_write(self):
         r = check_permission(
             "intake", "write",
-            run_dir="/tmp/epic",
+            run_dir="/tmp/run",
             current_step=2,
         )
         assert r["allowed"]

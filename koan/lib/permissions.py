@@ -157,7 +157,7 @@ def _check_orchestrator_permission(
     if tool_name == "koan_request_executor":
         if phase in ("execution", "execute"):
             return {"allowed": True, "reason": None}
-        return {"allowed": False, "reason": f"koan_request_executor is only available during execution phases"}
+        return {"allowed": False, "reason": f"koan_request_executor is not available in phase '{phase}'"}
 
     # Story management tools — legacy execution phase only
     if tool_name in _ORCHESTRATOR_STORY_TOOLS:

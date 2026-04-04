@@ -322,7 +322,7 @@ async def api_start_run(r: Request) -> Response:
         st.phase_complete_future.set_result(False)
     st.phase_complete_future = None
 
-    # Create epic directory
+    # Create run directory
     run_id = f"{int(time.time())}-{uuid.uuid4().hex[:8]}"
     run_dir = Path.home() / ".koan" / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)

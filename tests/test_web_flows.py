@@ -215,9 +215,9 @@ def test_start_run_rejects_unknown_installation_alias(client, app_state):
 
 def test_artifact_listing(client, app_state):
     with tempfile.TemporaryDirectory() as tmp:
-        epic = Path(tmp)
-        (epic / "landscape.md").write_text("# Landscape\n", "utf-8")
-        app_state.run_dir = str(epic)
+        run_dir = Path(tmp)
+        (run_dir / "landscape.md").write_text("# Landscape\n", "utf-8")
+        app_state.run_dir = str(run_dir)
         app_state.start_event.set()
 
         resp = client.get("/api/artifacts")
@@ -229,9 +229,9 @@ def test_artifact_listing(client, app_state):
 
 def test_artifact_content(client, app_state):
     with tempfile.TemporaryDirectory() as tmp:
-        epic = Path(tmp)
-        (epic / "landscape.md").write_text("# Hello\n", "utf-8")
-        app_state.run_dir = str(epic)
+        run_dir = Path(tmp)
+        (run_dir / "landscape.md").write_text("# Hello\n", "utf-8")
+        app_state.run_dir = str(run_dir)
         app_state.start_event.set()
 
         resp = client.get("/api/artifacts/landscape.md")
@@ -243,9 +243,9 @@ def test_artifact_content(client, app_state):
 
 def test_path_traversal_blocked(client, app_state):
     with tempfile.TemporaryDirectory() as tmp:
-        epic = Path(tmp)
-        epic.mkdir(exist_ok=True)
-        app_state.run_dir = str(epic)
+        run_dir = Path(tmp)
+        run_dir.mkdir(exist_ok=True)
+        app_state.run_dir = str(run_dir)
         app_state.start_event.set()
 
         # URL-normalized traversal (../) is resolved before routing and hits the SPA fallback.
@@ -441,7 +441,7 @@ def test_live_page_when_running(client, app_state):
     # After SPA migration, GET / always returns the SPA entry point.
     # The React app reads store state client-side to render the live view.
     app_state.start_event.set()
-    app_state.run_dir = "/tmp/fake-epic"
+    app_state.run_dir = "/tmp/fake-run"
     app_state.phase = "intake"
 
     resp = client.get("/")

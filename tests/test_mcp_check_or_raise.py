@@ -30,15 +30,15 @@ def _make_agent(
 
 class TestPhaseCtxRunDir:
     def test_phase_ctx_run_dir_enforced(self):
-        ctx = PhaseContext(run_dir="/tmp/epic", subagent_dir="/tmp/sub")
+        ctx = PhaseContext(run_dir="/tmp/run", subagent_dir="/tmp/sub")
         agent = _make_agent(phase_ctx=ctx)
         with pytest.raises(ToolError, match="permission_denied"):
             _check_or_raise(agent, "write", {"path": "/home/evil.sh"})
 
     def test_phase_ctx_run_dir_allows_inside(self):
-        ctx = PhaseContext(run_dir="/tmp/epic", subagent_dir="/tmp/sub")
+        ctx = PhaseContext(run_dir="/tmp/run", subagent_dir="/tmp/sub")
         agent = _make_agent(phase_ctx=ctx)
-        _check_or_raise(agent, "write", {"path": "/tmp/epic/foo.md"})
+        _check_or_raise(agent, "write", {"path": "/tmp/run/foo.md"})
 
 
 # -- No phase_ctx -------------------------------------------------------------
@@ -49,7 +49,7 @@ class TestNoPhaseCtx:
         _check_or_raise(agent, "write")
 
     def test_agent_run_dir_fallback(self):
-        agent = _make_agent(run_dir="/tmp/epic")
+        agent = _make_agent(run_dir="/tmp/run")
         with pytest.raises(ToolError, match="permission_denied"):
             _check_or_raise(agent, "write", {"path": "/home/evil.sh"})
 
