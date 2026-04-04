@@ -1,6 +1,6 @@
 # Plan-review phase -- 2-step workflow.
 #
-#   Step 1 (Read)      -- read landscape.md and plan.md; no writes
+#   Step 1 (Read)      -- review intake context and plan.md; no writes
 #   Step 2 (Evaluate)  -- evaluate the plan and report findings via chat
 #
 # Advisory only: findings are reported in chat, not written to a file.
@@ -34,7 +34,7 @@ SYSTEM_PROMPT = (
     "\n"
     "## Evaluation dimensions\n"
     "\n"
-    "- **Completeness**: Does the plan cover every requirement from landscape.md?\n"
+    "- **Completeness**: Does the plan cover every requirement from the intake findings?\n"
     "- **Correctness**: Are the file paths, function names, and interfaces accurate?\n"
     "  Verify against the actual codebase.\n"
     "- **Feasibility**: Are the implementation steps actionable as described? Would\n"
@@ -44,7 +44,7 @@ SYSTEM_PROMPT = (
     "\n"
     "## Strict rules\n"
     "\n"
-    "- MUST read landscape.md and plan.md before evaluating.\n"
+    "- MUST read plan.md before evaluating.\n"
     "- MUST read the codebase files the plan references. Verify claims.\n"
     "- MUST NOT modify plan.md.\n"
     "- MUST NOT flag issues the executor can trivially resolve.\n"
@@ -60,7 +60,8 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
             "",
             "## What to read",
             "",
-            f"1. Read `{ctx.run_dir}/landscape.md` -- understand requirements and constraints.",
+            "1. Review the intake findings in your context \u2014 requirements, constraints,",
+            "   codebase structure, and user decisions.",
             f"2. Read `{ctx.run_dir}/plan.md` -- read every section from start to finish.",
             "3. Read the codebase files the plan references. For each claim the plan makes",
             "   (file path, function name, interface, type), verify it against the actual source.",
@@ -70,7 +71,7 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
             "After reading, you should be able to answer:",
             "- What does the plan claim to change, and in which files?",
             "- Are those files and functions real and accurately described?",
-            "- Does the plan cover all requirements from landscape.md?",
+            "- Does the plan cover all requirements from the intake findings?",
             "- Are the implementation steps in the right order?",
             "",
             "Do NOT write an evaluation yet. Comprehend first.",
@@ -87,7 +88,7 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "",
                 "## What to evaluate",
                 "",
-                "**Completeness**: Does the plan cover every requirement from landscape.md?",
+                "**Completeness**: Does the plan cover every requirement from the intake findings?",
                 "List any requirements not addressed.",
                 "",
                 "**Correctness**: Are file paths, function names, and interfaces accurate?",
