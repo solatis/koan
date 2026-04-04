@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { useStore, ConversationEntry, PhaseBoundaryEntry } from '../store/index'
+import { useStore, ConversationEntry } from '../store/index'
 import { useAutoScroll } from '../hooks/useAutoScroll'
 import { Md } from './Md'
 import { ChatInput } from './ChatInput'
