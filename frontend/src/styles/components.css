@@ -233,25 +233,39 @@
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  padding: var(--space-6);
+  overflow: hidden;
   margin-bottom: var(--space-4);
 }
 
-.question-header {
+/* Split layout: context panel left, decision panel right */
+.question-card--split {
+  display: flex;
+}
+
+/* -- Context panel (left) -- */
+.question-context-panel {
+  width: 44%;
+  flex-shrink: 0;
+  padding: var(--space-6);
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+}
+
+.question-context-label {
   font-family: var(--font-mono);
   font-size: var(--font-size-xs);
-  color: var(--text-muted);
+  color: var(--text-ghost);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  margin-bottom: var(--space-2);
+  letter-spacing: 0.1em;
+  margin-bottom: var(--space-4);
 }
 
 .question-context {
   font-family: var(--font-sans);
-  font-size: var(--font-size-md);
-  color: var(--text-muted);
-  line-height: 1.6;
-  margin-bottom: var(--space-4);
+  font-size: var(--font-size-sm);
+  color: var(--text);
+  line-height: 1.7;
 }
 
 .question-context p {
@@ -265,12 +279,12 @@
 .question-context code,
 .question-text code,
 .option-text code {
-  background: var(--bg);
+  background: var(--bg-inset);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 1px 5px;
   font-family: var(--font-mono);
-  font-size: 0.9em;
+  font-size: 0.85em;
 }
 
 .question-context strong,
@@ -297,13 +311,33 @@
   margin: 2px 0;
 }
 
+/* -- Decision panel (right, or full-width when no context) -- */
+.question-decision-panel {
+  flex: 1;
+  padding: var(--space-6);
+  min-width: 0;
+}
+
+.question-decision-panel--full {
+  /* Full-width single-column when no context */
+}
+
+.question-decision-label {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--copper);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: var(--space-4);
+}
+
 .question-text {
   font-family: var(--font-sans);
   font-size: 18px;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--text-strong);
   margin-bottom: var(--space-4);
-  line-height: 1.6;
+  line-height: 1.5;
 }
 
 .question-multi-hint {
@@ -311,6 +345,16 @@
   font-size: var(--font-size-xs);
   color: var(--copper);
   margin-bottom: var(--space-2);
+}
+
+/* Actions inside the decision panel */
+.question-actions {
+  display: flex;
+  gap: var(--space-4);
+  margin-top: var(--space-6);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border);
+  align-items: center;
 }
 
 /* ---- Option list ---- */

@@ -52,6 +52,7 @@ function QuestionCard({
   otherText,
   onAnswer,
   onOtherText,
+  children,
 }: {
   question: AskQuestion
   qIdx: number
@@ -59,6 +60,7 @@ function QuestionCard({
   otherText: string
   onAnswer: (qIdx: number, val: string | string[] | null) => void
   onOtherText: (qIdx: number, text: string) => void
+  children?: React.ReactNode
 }) {
   const selected = Array.isArray(answer) ? answer : answer ? [answer] : []
 
@@ -88,18 +90,12 @@ function QuestionCard({
   // code never parses or rewrites LLM text.
   const opts = normalizeOptions(question.options as (string | Record<string, unknown>)[])
 
-  return (
-    <div className="question-card">
-      <div className="question-header">
-        Question {qIdx + 1}
-      </div>
-      {question.context && (
-        <div className="question-context"><Md>{question.context}</Md></div>
-      )}
+  const decisionContent = (
+    <>
+      <div className="question-decision-label">Decision</div>
       <div className="question-text"><Md>{question.question}</Md></div>
 
       {isFreeText(question) ? (
-        /* Free-form text input — no predefined options */
         <div className="free-text-area">
           <textarea
             className="free-text-input"
@@ -110,7 +106,6 @@ function QuestionCard({
           />
         </div>
       ) : (
-        /* Standard option selection — always includes an "Other" text input */
         <>
           {question.multi && (
             <div className="question-multi-hint">Select all that apply</div>
@@ -147,6 +142,30 @@ function QuestionCard({
             )}
           </div>
         </>
+      )}
+    </>
+  )
+
+  const hasContext = !!question.context
+
+  return (
+    <div className={`question-card${hasContext ? ' question-card--split' : ''}`}>
+      {hasContext ? (
+        <>
+          <div className="question-context-panel">
+            <div className="question-context-label">Context</div>
+            <div className="question-context"><Md>{question.context!}</Md></div>
+          </div>
+          <div className="question-decision-panel">
+            {decisionContent}
+            {children}
+          </div>
+        </>
+      ) : (
+        <div className="question-decision-panel question-decision-panel--full">
+          {decisionContent}
+          {children}
+        </div>
       )}
     </div>
   )
@@ -233,34 +252,34 @@ export function AskWizard() {
           otherText={otherTexts[currentIdx] ?? ''}
           onAnswer={handleAnswer}
           onOtherText={handleOtherText}
-        />
+        >
+          {submitError && <div className="no-runners-msg">{submitError}</div>}
 
-        {submitError && <div className="no-runners-msg">{submitError}</div>}
-
-        <div className="form-actions">
-          {currentIdx > 0 && (
-            <button className="btn btn-secondary" onClick={handleBack}>
-              Back
+          <div className="question-actions">
+            {currentIdx > 0 && (
+              <button className="btn btn-secondary" onClick={handleBack}>
+                Back
+              </button>
+            )}
+            <button className="btn btn-secondary" onClick={handleUseDefaults}>
+              Use Defaults
             </button>
-          )}
-          <button className="btn btn-secondary" onClick={handleUseDefaults}>
-            Use Defaults
-          </button>
-          {currentIdx < total - 1 && (
-            <button className="btn btn-primary" onClick={handleNext}>
-              Next
-            </button>
-          )}
-          {currentIdx === total - 1 && (
-            <button
-              id="btn-submit-answers"
-              className="btn btn-primary"
-              onClick={handleSubmit}
-            >
-              Submit
-            </button>
-          )}
-        </div>
+            {currentIdx < total - 1 && (
+              <button className="btn btn-primary" onClick={handleNext}>
+                Next
+              </button>
+            )}
+            {currentIdx === total - 1 && (
+              <button
+                id="btn-submit-answers"
+                className="btn btn-primary"
+                onClick={handleSubmit}
+              >
+                Submit
+              </button>
+            )}
+          </div>
+        </QuestionCard>
       </div>
     </div>
   )
