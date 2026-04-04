@@ -247,9 +247,14 @@
   width: 44%;
   flex-shrink: 0;
   padding: var(--space-6);
-  background: var(--bg-surface);
+  background: var(--bg-elevated);
   border-right: 1px solid var(--border);
   overflow-y: auto;
+}
+
+.question-context-rule {
+  border-left: 3px solid var(--copper);
+  padding-left: var(--space-4);
 }
 
 .question-context-label {
@@ -264,7 +269,7 @@
 .question-context {
   font-family: var(--font-sans);
   font-size: var(--font-size-md);
-  color: var(--text);
+  color: var(--text-muted);
   line-height: 1.6;
 }
 
@@ -279,18 +284,19 @@
 .question-context code,
 .question-text code,
 .option-text code {
-  background: var(--bg-elevated);
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 1px 5px;
   font-family: var(--font-mono);
   font-size: 0.85em;
+  color: var(--text);
 }
 
 .question-context strong,
 .question-text strong,
 .option-text strong {
-  color: var(--text-strong);
+  color: var(--text);
   font-weight: 600;
 }
 

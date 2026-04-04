@@ -153,8 +153,10 @@ function QuestionCard({
       {hasContext ? (
         <>
           <div className="question-context-panel">
-            <div className="question-context-label">Context</div>
-            <div className="question-context"><Md>{question.context!}</Md></div>
+            <div className="question-context-rule">
+              <div className="question-context-label">Context</div>
+              <div className="question-context"><Md>{question.context!}</Md></div>
+            </div>
           </div>
           <div className="question-decision-panel">
             {decisionContent}
