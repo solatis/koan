@@ -546,18 +546,31 @@ async def koan_request_scouts(questions: list[dict] | None = None) -> str:
 
 @mcp.tool(name="koan_ask_question")
 async def koan_ask_question(questions: list[dict] | None = None) -> str:
-    """Ask the user one or more clarifying questions. The UI renders these as
-    interactive cards — one per question — with radio buttons or checkboxes.
+    """Ask the user one or more clarifying questions.
+
+    The UI renders a split-panel card for each question:
+      - LEFT PANEL ("Context"): reference material the user reads while
+        deciding. Write markdown here — code snippets, bullet lists, bold
+        terms, file references. This is your chance to show the user what
+        you found and why the question matters. Think of it as an
+        illustration panel, not a preamble.
+      - RIGHT PANEL ("Decision"): the question text and selectable options.
+        This is the action side — keep the question crisp.
+
+    When context is omitted, the card renders as a single column with
+    just the question and options.
 
     Each dict in `questions` must have:
-      - question (str): The question text (rendered as markdown).
+      - question (str): The decision question (rendered as markdown).
       - options (list[dict]): Choices. Each option has:
           - value (str): Machine key returned in the answer.
           - label (str): Human-readable label shown in the UI.
           - recommended (bool, optional): Pre-select this option.
 
     Optional fields:
-      - context (str): Background/rationale shown above the question (markdown).
+      - context (str): Background shown in the left reference panel
+        (markdown). Include codebase findings, tradeoff summaries,
+        or relevant code snippets that inform the decision.
       - multi (bool): Allow selecting multiple options (default false).
 
     Format rules for options:
