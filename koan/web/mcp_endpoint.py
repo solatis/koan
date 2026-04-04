@@ -617,7 +617,7 @@ async def koan_request_executor(
     Args:
         artifacts: File paths relative to run directory that the
                    executor must read before coding.
-                   Example: ["plan.md", "landscape.md"]
+                   Example: ["plan.md"]
         instructions: Free-form context for the executor — key
                       decisions, constraints, or user direction
                       not captured in the artifact files.
