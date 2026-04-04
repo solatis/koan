@@ -512,13 +512,13 @@
 
 /* Free-form text input (questions with no predefined options) */
 .free-text-area {
-  margin-top: var(--space-3);
+  margin-top: var(--space-4);
 }
 
 .free-text-input {
   width: 100%;
   min-height: 100px;
-  padding: var(--space-3);
+  padding: var(--space-4);
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -1606,7 +1606,7 @@
   font-size: var(--font-size-sm);
   border: 1px dashed var(--border);
   border-radius: var(--radius-md);
-  margin: var(--space-3) 0;
+  margin: var(--space-4) 0;
   background: var(--bg-elevated);
 }
 
