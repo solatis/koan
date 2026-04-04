@@ -1,6 +1,6 @@
 # Ticket-breakdown phase -- 2-step workflow.
 #
-#   Step 1 (Analysis)   -- read epic artifacts; understand scope and dependencies
+#   Step 1 (Analysis)   -- read run artifacts; understand scope and dependencies
 #   Step 2 (Breakdown)  -- generate story-sized implementation tickets
 #
 # New phase with dedicated "ticket-breakdown" role.
@@ -46,7 +46,7 @@ SYSTEM_PROMPT = (
     "\n"
     "## Output files\n"
     "\n"
-    "You write the following files, all inside the epic directory:\n"
+    "You write the following files, all inside the run directory:\n"
     "\n"
     "1. **epic.md** -- overview of the full scope and the story list with sequencing rationale.\n"
     "2. **stories/{story-id}/story.md** -- one file per story with title, goal, scope, and dependencies.\n"
@@ -64,7 +64,7 @@ SYSTEM_PROMPT = (
     "\n"
     "- All read tools (read, bash, grep, glob, find, ls) -- for reading upstream artifacts.\n"
     "- `koan_request_scouts` -- to request additional codebase exploration if needed.\n"
-    "- `write` / `edit` -- for writing output files inside the epic directory.\n"
+    "- `write` / `edit` -- for writing output files inside the run directory.\n"
     "- `koan_complete_step` -- to signal step completion."
 )
 

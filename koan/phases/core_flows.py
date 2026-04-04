@@ -31,7 +31,7 @@ SYSTEM_PROMPT = (
     "\n"
     "## Output\n"
     "\n"
-    "One file: **core-flows.md** in the epic directory.\n"
+    "One file: **core-flows.md** in the run directory.\n"
     "\n"
     "## Structure\n"
     "\n"
@@ -55,7 +55,7 @@ SYSTEM_PROMPT = (
     "\n"
     "- All read tools (read, bash, grep, glob, find, ls) -- for reading intake output and codebase.\n"
     "- `koan_request_scouts` -- to request additional codebase exploration if needed.\n"
-    "- `write` / `edit` -- for writing output files inside the epic directory.\n"
+    "- `write` / `edit` -- for writing output files inside the run directory.\n"
     "- `koan_complete_step` -- to signal step completion."
 )
 

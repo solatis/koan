@@ -1,7 +1,7 @@
 # Orchestrator phase -- dynamic step count.
 #
 # Pre-execution (2 steps):
-#   Step 1 (Dependency Analysis) -- read epic artifacts, build dependency model
+#   Step 1 (Dependency Analysis) -- read run artifacts, build dependency model
 #   Step 2 (Story Selection)     -- select the first story for execution
 #
 # Post-execution (4 steps):
@@ -61,14 +61,14 @@ SYSTEM_PROMPT = (
     "\n"
     "## Tools available\n"
     "\n"
-    "- All read tools (read, bash, grep, glob, find, ls) -- for reading epic artifacts and running verification checks.\n"
+    "- All read tools (read, bash, grep, glob, find, ls) -- for reading run artifacts and running verification checks.\n"
     "- `koan_select_story` -- to declare which story should execute next.\n"
     "- `koan_complete_story` -- to mark a story as successfully verified and completed.\n"
     "- `koan_retry_story` -- to send a story back to the executor with a detailed failure summary.\n"
     "- `koan_skip_story` -- to skip a story that is superseded or no longer needed.\n"
     "- `koan_ask_question` -- to ask the human a targeted question when judgment is genuinely ambiguous.\n"
     "- `koan_complete_step` -- to signal step completion with your findings.\n"
-    "- `write` / `edit` -- for updating artifact files inside the epic directory only.\n"
+    "- `write` / `edit` -- for updating artifact files inside the run directory only.\n"
     "- `bash` -- for running verification commands.\n"
     "\n"
     "## The [autonomous] marker\n"
@@ -120,9 +120,9 @@ def _pre_step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
         return StepGuidance(
             title=PRE_STEP_NAMES[1],
             instructions=[
-                "You are beginning an epic run. Analyze story dependencies and select the first story for execution.",
+                "You are beginning an execution run. Analyze story dependencies and select the first story for execution.",
                 "",
-                "Read the epic artifacts to understand the full scope of work and story dependencies.",
+                "Read the run artifacts to understand the full scope of work and story dependencies.",
                 "",
                 "## What to read",
                 "",
