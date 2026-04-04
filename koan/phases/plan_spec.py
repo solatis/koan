@@ -1,6 +1,6 @@
 # Plan-spec phase -- 2-step workflow.
 #
-#   Step 1 (Analyze)  -- read landscape.md and codebase; no writes
+#   Step 1 (Analyze)  -- review intake context and codebase; no writes
 #   Step 2 (Write)    -- write plan.md to the run directory
 #
 # Scope: "plan" -- specific to the plan workflow.
@@ -47,7 +47,6 @@ SYSTEM_PROMPT = (
     "\n"
     "## Strict rules\n"
     "\n"
-    "- MUST read landscape.md before writing the plan.\n"
     "- MUST read the codebase files the plan references. Verify paths, signatures,\n"
     "  and types before including them in the plan.\n"
     "- MUST NOT write code -- write instructions for an executor that will write code.\n"
@@ -64,11 +63,11 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
             "",
             "## What to read",
             "",
-            f"1. Read `{ctx.run_dir}/landscape.md` -- understand the task, codebase"
-            " context, decisions, and constraints.",
+            "1. Review what you learned during intake \u2014 the task scope, codebase",
+            "   findings, decisions, and constraints are in your context.",
             "2. Read every file the plan will reference. Open the actual source files",
             "   to verify function signatures, type names, and integration points.",
-            "   Do not rely on landscape.md's descriptions alone.",
+            "   Do not rely on intake memory alone \u2014 verify against the actual code.",
             "",
             "## What to analyze",
             "",
@@ -113,7 +112,7 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "Order steps so that each step's dependencies are satisfied by prior steps.",
                 "",
                 "### Constraints",
-                "Hard boundaries the executor must respect (from landscape.md Constraints section).",
+                "Hard boundaries the executor must respect (from intake findings).",
                 "",
                 "### Verification",
                 "How to verify the implementation is correct (tests to run, behaviors to check).",
