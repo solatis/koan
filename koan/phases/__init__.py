@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 
 @dataclass
@@ -40,6 +40,7 @@ class PhaseContext:
 @runtime_checkable
 class PhaseModule(Protocol):
     ROLE: str
+    SCOPE: str
     TOTAL_STEPS: int
     SYSTEM_PROMPT: str
 
@@ -96,8 +97,6 @@ from . import (
     plan_review,
     plan_spec,
 )
-from typing import Any
-
 PHASE_MODULE_MAP: dict[str, Any] = {
     "intake": intake,
     "scout": scout,
@@ -111,8 +110,13 @@ PHASE_MODULE_MAP: dict[str, Any] = {
 # Used by koan_set_phase to load the module for the new phase.
 
 PHASE_GUIDANCE_MAP: dict[str, Any] = {
-    # Legacy workflow phases (dead code — no active workflow uses these)
-    "intake":                    intake,
+    # General-purpose phases (reusable by any workflow)
+    "intake":   intake,
+    "execute":  execute_phase,
+    # Plan workflow phases (SCOPE="plan")
+    "plan-spec":   plan_spec,
+    "plan-review": plan_review,
+    # Legacy phases (SCOPE="legacy" — dead code, available for future workflows)
     "brief-generation":          brief_writer,
     "core-flows":                core_flows,
     "tech-plan":                 planner,
@@ -120,8 +124,4 @@ PHASE_GUIDANCE_MAP: dict[str, Any] = {
     "cross-artifact-validation": cross_artifact_validation,
     "execution":                 executor,
     "implementation-validation": cross_artifact_validation,
-    # Plan workflow phases
-    "plan-spec":    plan_spec,
-    "plan-review":  plan_review,
-    "execute":      execute_phase,
 }
