@@ -1,661 +1,260 @@
 # Koan Design System
 
-The definitive reference for Koan's visual language. Every UI decision — from
-token values to component construction to layout patterns — is derived from
-this document. When implementing or reviewing UI code, verify against these
-specifications.
+## Overview
+
+This document defines the complete visual language for koan's web UI. Every component must reference these tokens — nothing hardcodes values. The aesthetic is mid-century modern geometric: confident, warm, professional with controlled playfulness. Inspired by Lobotain's navy/orange/teal palette, Kolur's complementary duotones, and Japanese-influenced earthy pastels.
+
+## Color Palette
+
+### Core colors
+
+These are the three identity colors. They appear in the header, accents, status indicators, and interactive elements.
+
+| Token | Hex | Usage |
+|---|---|---|
+| `--color-navy` | `#2e3a5e` | Header bar, scout bar frame, primary text, artifact icons (dark), logo text |
+| `--color-orange` | `#d4775a` | Primary accent, active states, running indicators, progress bars, primary buttons, decision borders, numbered list markers |
+| `--color-teal` | `#5a9a8a` | Secondary accent, success/completion states, checkmarks in tool calls, completed progress segments, orchestrator dot, "recommended" badges |
+
+### Background surfaces
+
+These define the layering system. The hierarchy from back to front is: base → surface → card. Each layer must be visually distinguishable from its neighbors.
+
+| Token | Hex | Usage |
+|---|---|---|
+| `--bg-base` | `#f8f6f2` | Main content area background. Warm-tinted near-white — warm enough to avoid clinical, light enough to avoid brown. |
+| `--bg-surface` | `#f3efe8` | Artifacts sidebar background. Slightly warmer and darker than base to create panel distinction. |
+| `--bg-card` | `#ffffff` | Prose output cards, form sections, scout table interior, artifact cards, input fields. True white provides the strongest contrast against base. |
+| `--bg-tool-row` | `#f0ede6` | Tool call rows (bash, read, edit). Sits between base and surface in warmth. |
+| `--bg-thinking` | `#eae5f2` | Thinking/reasoning blocks. Lavender — in the cool family with navy but lighter, creating warm/cool interplay. |
+| `--bg-step-guidance` | `#efece6` | Step guidance pill, model badges in scout table, "coming soon" badges. Neutral warm. |
+| `--bg-completion` | `#e8f5ee` | Completion/success banners. Teal-family light green. |
+| `--bg-selected` | `#fdf8f5` | Selected card state (e.g., selected workflow option). Very faint orange tint. |
+
+### Text colors
+
+| Token | Hex | Usage |
+|---|---|---|
+| `--text-primary` | `#2e3a5e` | Headings, prose body text, scout names, form labels. Same as navy — this is intentional, it ties text to the brand. |
+| `--text-body` | `#4a4a5a` | Secondary body text within prose cards, list items, codebase findings. |
+| `--text-muted` | `#9a8e7e` | Tool call type labels ("bash", "read"), metadata, timestamps, placeholder labels, column headers. |
+| `--text-subtle` | `#7a6e60` | Step guidance text, form descriptions, secondary labels. |
+| `--text-placeholder` | `#b0a498` | Input placeholder text ("Send feedback..."). |
+| `--text-hint` | `#c8baa8` | Hint text below inputs ("Enter to send · Shift+Enter for newline"). |
+| `--text-thinking` | `#3a3460` | Text inside thinking blocks. Dark purple for contrast against lavender. |
+| `--text-thinking-label` | `#5a5080` | "THINKING" label text. Medium purple. |
+| `--text-completion` | `#2a6a4a` | Completion banner text. Dark teal-green. |
+| `--text-artifact-time` | `#a89888` | Artifact "modified X ago" timestamps. |
+
+### Text on dark backgrounds (navy header, scout bar frame)
+
+| Token | Hex | Usage |
+|---|---|---|
+| `--text-on-dark` | `#f0e8d8` | Primary text on navy. Warm off-white, not pure white. |
+| `--text-on-dark-muted` | `rgba(240,232,216,0.55)` | Breadcrumb inactive segments, secondary labels on navy. |
+| `--text-on-dark-subtle` | `rgba(240,232,216,0.4)` | Timestamps, tertiary info on navy. |
+| `--text-on-dark-faint` | `rgba(255,255,255,0.15)` | Dividers, inactive progress segments, icon button borders on navy. |
+| `--text-on-dark-scouts-muted` | `rgba(240,232,216,0.45)` | Scout summary labels ("running", "done") on navy. |
+
+### Border colors
+
+| Token | Hex | Usage |
+|---|---|---|
+| `--border-card` | `#eae6e0` | Card borders (prose cards, artifact cards). Faint warm line. |
+| `--border-input` | `#c8c0b4` | Input field borders, text area borders. Distinctly visible against white and base backgrounds. |
+| `--border-radio` | `#e0d8cc` | Radio option card borders, form element borders. Between card and input in weight. |
+| `--border-divider` | `#e8e2d8` | Artifact sidebar dividers, table row separators, panel borders. |
+| `--border-divider-light` | `#f0ebe4` | Scout table internal row separators. Very faint. |
+
+### Semantic status colors
+
+These are used exclusively for scout status indicators and similar operational state.
+
+| Token | Hex | Usage |
+|---|---|---|
+| `--status-running` | `#d4775a` | Running scout dots, active step labels. Same as orange accent. |
+| `--status-done` | `#5a9a8a` | Completed scout dots. Same as teal accent. |
+| `--status-queued` | `#b8aca0` | Queued count text. Desaturated warm. |
+| `--status-failed` | `#c44` | Failed count text. Standard red — used sparingly. |
+
+## Typography
+
+### Font families
+
+| Token | Value | Usage |
+|---|---|---|
+| `--font-display` | System serif stack (Georgia, "Times New Roman", serif) | Logo "koan" wordmark only. |
+| `--font-body` | System sans-serif stack (-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif) | All UI text, headings, labels, prose, form elements. |
+| `--font-mono` | Monospace stack ("SF Mono", "Fira Code", "Cascadia Code", monospace) | File paths, tool call commands, scout names, code inline, timestamps, model names, artifact filenames. |
 
----
+### Type scale
 
-## 1. Design Principles
+All weights are 400 (regular) or 500 (medium). Never use 600 or 700.
 
-Six principles, ordered by priority. When principles conflict, higher wins.
+| Token | Size | Weight | Usage |
+|---|---|---|---|
+| `--type-page-title` | 26px | 500 | "New Run" page title. Letter-spacing: -0.5px. |
+| `--type-logo` | 17px | 500 | "koan" wordmark in header. Uses `--font-display`. Letter-spacing: -0.3px. |
+| `--type-section-title` | 17px | 500 | "Gather Summary" and similar section headings within prose cards. |
+| `--type-step-header` | 16px | 500 | Step name next to step indicator ("Gather", "Summarize"). |
+| `--type-prose` | 15px | 400 | Agent prose output, decision question text, form field values. Line-height: 1.7. |
+| `--type-body` | 14px | 400 | Body text within cards (findings, decisions list items, context descriptions). Line-height: 1.65. |
+| `--type-step-indicator` | 14px | 500 | "step 1/3", "step 3/3" colored labels. |
+| `--type-breadcrumb` | 13px | 400/500 | Header breadcrumb segments (400 for inactive, 500 for active). |
+| `--type-tool-type` | 12px | 400 | Tool call type label ("bash", "read", "edit"). Uses `--text-muted`. |
+| `--type-tool-path` | 12px | 400 | Tool call file paths. Uses `--font-mono`. |
+| `--type-label` | 11px | 500 | Section labels ("ARTIFACTS", "CONTEXT", "DECISION", "SCOUTS", "THINKING"). Uppercase, letter-spacing: 1px. |
+| `--type-badge` | 10px | 500 | "coming soon", "recommended", model badges, scout column headers. |
+| `--type-timestamp` | 10px | 400 | "modified 2m ago" artifact timestamps. |
 
-### 1.1 Warm Workshop
+### Inline code
 
-Koan feels like a well-made craft tool — wood, leather, paper. Earth tones,
-natural textures, nothing clinical or cold. If a design choice feels
-"tech-startup" or "developer-dark-mode," it's wrong.
+Code tokens within prose use: `background: #f0ede6; padding: 1px 5px; border-radius: 3px; font-size: one step below surrounding text; color: #2e3a5e; font-family: var(--font-mono)`.
 
-### 1.2 Breathing Space
+## Spacing
 
-Generous whitespace. Things float, they don't crowd. Accept showing less at
-once in exchange for calm clarity. Padding is never too much; cramming is
-always wrong.
+### Page-level spacing
 
-### 1.3 Paper on Paper
+| Token | Value | Usage |
+|---|---|---|
+| `--page-padding` | 28px 32px | Main content area padding. |
+| `--sidebar-padding` | 20px 16px | Artifacts sidebar padding. |
+| `--header-height` | 50px | Header bar fixed height. |
+| `--form-max-width` | 640px | Max width for standalone form pages ("New Run"). Centered. |
+| `--form-page-padding` | 40px 24px | Padding around centered form content. |
 
-Flat design. No drop shadows, no gradients, no glassmorphism. Containment
-comes from thin warm borders — like sheets of paper laid on a wooden desk.
-Depth is implied by background color tiers, not by visual effects.
+### Component gaps
 
-### 1.4 Color is Earned
+| Token | Value | Usage |
+|---|---|---|
+| `--gap-content` | 20px | Between major content blocks in the stream (thinking → prose → tools → thinking). |
+| `--gap-tool-rows` | 3px | Between individual tool call rows within a group. |
+| `--gap-artifact-cards` | 10px | Between artifact cards in the sidebar. |
+| `--gap-form-sections` | 28px | Between form card sections on the "New Run" page. |
+| `--gap-radio-options` | 10px | Between radio option cards in elicitation. |
+| `--gap-scout-summary` | 16px | Between scout summary count groups. |
+| `--gap-progress-segments` | 3px | Between progress bar segments in header. |
 
-Most of the interface is neutral (cream, white, warm browns). Saturated color
-appears only where it carries meaning: status indicators, active states,
-errors. If everything is colorful, nothing is.
+### Component internal padding
 
-### 1.5 Weight, Not Decoration
+| Token | Value | Usage |
+|---|---|---|
+| `--padding-card` | 14px 20px | Prose output cards. |
+| `--padding-card-form` | 20px 24px | Form section cards, context/decision panels. |
+| `--padding-tool-row` | 7px 14px | Individual tool call rows. |
+| `--padding-step-guidance` | 8px 16px | Step guidance pill. |
+| `--padding-artifact` | 10px 12px | Artifact cards in sidebar. |
+| `--padding-scout-bar` | 14px 24px | Scout bar outer padding. |
+| `--padding-scout-row` | 8px 14px | Scout table rows. |
+| `--padding-input` | 14px 18px | Feedback input area. |
+| `--padding-radio` | 12px 14px | Radio option cards. |
 
-Typography hierarchy comes from font weight and size, never from underlines,
-all-caps body text, or decorative flourishes. The type system is a single
-sans-serif family differentiated by weight. Mono is reserved strictly for
-data, paths, and code.
+## Border Radius
 
-### 1.6 Gentle Motion
+| Token | Value | Usage |
+|---|---|---|
+| `--radius-sm` | 3px | Inline code tags, model badges. |
+| `--radius-md` | 6px | Tool call rows, progress bar segments, small buttons. |
+| `--radius-lg` | 8px | Artifact cards, scout table, step guidance pill, input fields, form dropdowns. |
+| `--radius-xl` | 10px | Prose cards, thinking blocks, feedback input, completion banner, radio options. |
+| `--radius-2xl` | 12px | Form section cards, context/decision panels, page-level container. |
+| `--radius-pill` | 20px | Pill-shaped badges ("coming soon", "recommended"). |
+| `--radius-circle` | 50% | Status dots, radio buttons, logo circles, orchestrator dot. |
 
-Animation is subtle and purposeful. Fade-ins for appearing content, smooth
-transitions for state changes, a quiet pulse for "thinking." No bouncing,
-no sliding panels, no attention-grabbing motion. The UI should feel still.
+## Component Specifications
 
----
+### Header bar
 
-## 2. Design Tokens
+The header is a fixed 50px bar with `--color-navy` background. It contains the logo, breadcrumb navigation, progress segments, orchestrator info, elapsed time, and settings button. It spans the full width of the viewport.
 
-All visual values. CSS custom properties live in `variables.css`. Every
-component references tokens — never raw color codes or pixel values.
+The logo is the "koan" wordmark in `--font-display` at 17px/500, colored `--text-on-dark`. To the left of the wordmark are two overlapping circles: a 16px circle in `--color-orange` (top-left) and a 10px circle in `--color-teal` (bottom-right). This geometric motif is the brand mark.
 
-### 2.1 Color Palette
+A 1px vertical divider at `rgba(255,255,255,0.15)` separates the logo from the breadcrumb. The breadcrumb shows phase and step as `Phase > Step` with a small chevron. The inactive segment uses `--text-on-dark-muted`, the active segment uses `--text-on-dark` at weight 500.
 
-#### Backgrounds
+Progress segments are 24px wide, 4px tall, with `--radius-md`. Completed segments use `--color-teal`, the active segment uses `--color-orange`, and future segments use `--text-on-dark-faint`. Gap between segments: 3px.
 
-| Token           | Value     | Usage                              |
-| --------------- | --------- | ---------------------------------- |
-| `--bg`          | `#FEFAE0` | Cornsilk base — the "desk"         |
-| `--bg-surface`  | `#E0D8C8` | Stone — sidebars, panels, monitor  |
-| `--bg-elevated` | `#FFFFFF` | Cards, overlays — "paper on paper" |
-| `--bg-inset`    | `#D4CCB8` | Pressed/inset areas                |
+The settings button is a 30px square with `--radius-lg`, 1px border in `--text-on-dark-faint`, containing a 14px gear SVG icon stroked at `rgba(240,232,216,0.6)`.
 
-#### Text
+### Prose output card
 
-| Token           | Value     | Name         | Usage                                |
-| --------------- | --------- | ------------ | ------------------------------------ |
-| `--text`        | `#4A4428` | Olive-brown  | Default body text                    |
-| `--text-strong` | `#283618` | Black Forest | Headings, names, emphasis            |
-| `--text-muted`  | `#7A7450` | Dried sage   | Metadata, timestamps, secondary info |
-| `--text-ghost`  | `#A09A6E` | Faded straw  | Placeholders, disabled states        |
+White card (`--bg-card`) with `--radius-xl`, `0.5px solid --border-card` on all sides, plus a 3px `--color-orange` left border. Padding: `--padding-card`. Text is `--type-prose` in `--text-primary`. These cards contain the agent's spoken output — everything the agent says directly to the user (as opposed to thinking or tool calls).
 
-#### Borders
+### Thinking block
 
-| Token             | Value     | Usage                      |
-| ----------------- | --------- | -------------------------- |
-| `--border`        | `#C8C0A8` | Default card/panel borders |
-| `--border-strong` | `#B8B098` | Dividers, emphasis borders |
+Lavender block (`--bg-thinking`) with `--radius-xl`. Padding: 16px 20px. Contains a label row with a small 14px navy circle (with a 6px `#b8b0d0` inner circle) followed by "THINKING" in `--type-label` at `--text-thinking-label`. Body text is `--type-body` in `--text-thinking`.
 
-#### Status — The Pigment Palette
+### Tool call row
 
-Based on the Olive Garden Feast palette. Use sparingly.
-
-| Token              | Value     | Name    | Meaning                         |
-| ------------------ | --------- | ------- | ------------------------------- |
-| `--green`          | `#606C38` | Olive   | Done, success, complete         |
-| `--green-bg`       | `#EEF2E4` | —       | Success background tint         |
-| `--green-border`   | `#606C38` | —       | Success border accent           |
-| `--copper`         | `#BC6C25` | Copper  | Active, running, primary action |
-| `--copper-bg`      | `#FDF3E4` | —       | Active background tint          |
-| `--copper-border`  | `#BC6C25` | —       | Active border accent            |
-| `--caramel`        | `#DDA15E` | Caramel | Pulsing dots, secondary accent  |
-| `--caramel-bg`     | `#FEF7E8` | —       | Caramel background tint         |
-| `--caramel-border` | `#DDA15E` | —       | Caramel border accent           |
-| `--red`            | `#9A3412` | Ember   | Error, failed, destructive      |
-| `--red-bg`         | `#FEF0E8` | —       | Error background tint           |
-| `--red-border`     | `#9A3412` | —       | Error border accent             |
-| `--ochre`          | `#92810A` | Ochre   | Warning, caution                |
-| `--ochre-bg`       | `#FEFCE8` | —       | Warning background tint         |
-| `--ochre-border`   | `#92810A` | —       | Warning border accent           |
-| `--plum`           | `#606C38` | Olive   | Thinking, AI-internal states    |
-| `--plum-bg`        | `#EEF2E4` | —       | Thinking background tint        |
-
-#### Status Color Usage Rules
-
-- **Backgrounds:** Status tints (`*-bg`) are used on cards/badges to signal
-  state. They are very low saturation — barely tinted cream.
-- **Text:** Status colors are used directly as text color on their tinted
-  backgrounds. Never use status colors on the base `--bg` background for text
-  — contrast is insufficient.
-- **Borders:** `border-left: 3px solid` accent borders on cards to signal
-  state. Only left borders get colored — top/right/bottom remain `--border`.
-- **No other hues exist.** If you need a new semantic color, it must fit the
-  earth-pigment family. No blues, no cyans, no neon greens.
-
-### 2.2 Typography
-
-#### Font Stacks
-
-| Token         | Value                                                                  | Usage                          |
-| ------------- | ---------------------------------------------------------------------- | ------------------------------ |
-| `--font-sans` | `-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`            | All UI text                    |
-| `--font-mono` | `'SF Mono', 'JetBrains Mono', 'Cascadia Code', 'Fira Code', monospace` | Data, paths, code, model names |
-
-#### Type Scale
-
-| Token                 | Value  | Usage                         |
-| --------------------- | ------ | ----------------------------- |
-| `--font-size-xs`      | `11px` | Micro labels, ghost text      |
-| `--font-size-sm`      | `13px` | Metadata, captions, secondary |
-| `--font-size-md`      | `15px` | Body text (default)           |
-| `--font-size-lg`      | `17px` | Section headings, card titles |
-| `--font-size-xl`      | `22px` | Phase headings, page titles   |
-| `--font-size-display` | `28px` | Logo, hero text               |
-
-#### Weight Rules
-
-| Weight | Token                   | Usage                                |
-| ------ | ----------------------- | ------------------------------------ |
-| `400`  | —                       | Body text, descriptions              |
-| `500`  | —                       | Sidebar values, emphasis within body |
-| `600`  | `--font-weight-heading` | Section headings, card titles        |
-| `700`  | `--font-weight-strong`  | Page headings, agent names, logo     |
-| `800`  | `--font-weight-display` | Display/hero text only               |
-
-#### Typography Decision Tree
-
-- **Is it a heading?** → `--font-sans`, `--text-strong`, weight 600-800
-- **Is it body text?** → `--font-sans`, `--text`, weight 400
-- **Is it metadata (time, count, model)?** → `--font-mono`, `--text-muted`, weight 400
-- **Is it an agent/file name?** → `--font-mono`, `--text` or status color, weight 600
-- **Is it a label (uppercase)?** → `--font-sans`, `--text-muted`, weight 700, `letter-spacing: .1em`, `text-transform: uppercase`, `--font-size-xs`
-
-### 2.3 Spacing
-
-Base unit: `4px`. Scale follows: 4, 8, 16, 24, 32, 48, 64.
-
-| Token        | Value  | Usage                                        |
-| ------------ | ------ | -------------------------------------------- |
-| `--space-1`  | `4px`  | Tight gaps (between badge and text)          |
-| `--space-2`  | `8px`  | Small gaps (between related items)           |
-| `--space-4`  | `16px` | Default gap (between sections within a card) |
-| `--space-6`  | `24px` | Card padding, section spacing                |
-| `--space-8`  | `32px` | Between cards, panel padding                 |
-| `--space-12` | `48px` | Major section breaks                         |
-| `--space-16` | `64px` | Page-level padding, hero spacing             |
-
-#### Spacing Decision Tree
-
-- **Inside a card:** `--space-6` padding. `--space-4` between internal sections.
-- **Between cards:** `--space-8` gap.
-- **Between a label and its content:** `--space-2`.
-- **Between inline items (badges, buttons):** `--space-2` to `--space-4`.
-- **Page margins:** `--space-8` to `--space-12`.
-
-### 2.4 Shape
-
-| Token         | Value  | Usage                                    |
-| ------------- | ------ | ---------------------------------------- |
-| `--radius-sm` | `6px`  | Buttons, inputs, badges, inline controls |
-| `--radius-md` | `10px` | Badges, pills, tags                      |
-| `--radius-lg` | `14px` | Cards, panels, overlays                  |
-
-#### Shape Rules
+Background `--bg-tool-row`, `--radius-md`, padding `--padding-tool-row`. Contains a 13px teal checkmark SVG, a tool type label ("bash", "read", "edit") in `--type-tool-type` and `--text-muted` with min-width 36px, and the command/path in `--type-tool-path` and `--font-mono` colored `#4a4a5a`. Rows within a group are spaced `--gap-tool-rows` apart.
 
-- **Cards, panels, overlays:** `--radius-lg` (14px) — soft, cushioned.
-- **Buttons, inputs, selects:** `--radius-sm` (6px) — crisp, interactive.
-- **Badges, pills:** `--radius-md` (10px) — rounded but not pill-shaped.
-- **Status accent borders:** `border-left: 3px solid` with `border-radius: 0` on left, `--radius-lg` on right.
-- **Never use `border-radius: 50%`** except for avatar circles (if added later).
-- **Never use `border-radius: 9999px`** (full pill). Nothing is fully rounded.
+### Step guidance pill
 
-### 2.5 Motion
+Inline-flex element with `--bg-step-guidance`, `--radius-lg`, padding `--padding-step-guidance`. Contains an 8px circle in `--color-orange` (or `--color-teal` when step is complete), label text in `--text-subtle` at 13px/500, and a 10px chevron-down SVG. Aligns to `flex-start` (left-aligned, not full-width).
 
-| Token               | Value      | Usage                        |
-| ------------------- | ---------- | ---------------------------- |
-| `--duration-fast`   | `150ms`    | Hover states, button presses |
-| `--duration-normal` | `250ms`    | Content fade-in, transitions |
-| `--duration-slow`   | `400ms`    | Notification fade-out        |
-| `--ease-default`    | `ease-out` | All transitions              |
+### Artifact card
 
-#### Allowed Animations
+Background `--bg-card` (specifically `#faf8f4` — slightly warmer than pure white to distinguish from prose cards), `--radius-lg`, `0.5px solid --border-divider`, padding `--padding-artifact`. Contains a 28px square icon with `--radius-lg`: navy background with a lavender file SVG for recently modified artifacts, or teal background with a light-teal file SVG for older/stable artifacts. Next to the icon: filename in `--font-mono` at 12px/500 in `--text-primary`, and timestamp in `--type-timestamp` at `--text-artifact-time`.
 
-| Name             | Properties                      | Usage                            |
-| ---------------- | ------------------------------- | -------------------------------- |
-| `fade-in`        | opacity 0→1                     | Content appearing                |
-| `fade-out`       | opacity 1→0 + translateY(0→8px) | Notifications dismissing         |
-| `thinking-pulse` | opacity 0.3→1→0.3               | Pulsing dot for "thinking" state |
-| `cursor-blink`   | opacity 1→0→1, step-end         | Streaming text cursor            |
+### Scout bar
 
-#### Forbidden Motion
+Navy frame (`--color-navy`) with padding `--padding-scout-bar`. The summary line sits directly on navy: an 8px orange dot, "SCOUTS" label in `--text-on-dark-muted` at `--type-label`, then count groups (e.g., "3 running") where the number uses the appropriate status color and the label uses `--text-on-dark-scouts-muted`.
 
-- No `transform: scale()` — nothing grows/shrinks.
-- No `translateX/Y` for layout shifts — things don't slide in.
-- No `bounce` or spring easings.
-- No `animation-iteration-count: infinite` except `thinking-pulse` and `cursor-blink`.
+Below the summary, a white table card (`--bg-card` with `#faf8f4`) with `--radius-lg` and no outer border. The table has a header row with column labels in `--type-badge` / `--text-muted`, uppercase, with a `0.5px solid --border-divider` bottom border. Data rows use `--padding-scout-row` with `0.5px solid --border-divider-light` separators (no border on the last row).
 
----
+Table columns: status dot (20px col, 6px dot in status color), name (flex, `--font-mono` 12px/500 in `--text-primary`), model (60px, `--text-muted` 11px), tools (60px, `--text-muted`), elapsed (70px, `--text-muted`), status (flex, `--color-orange` for active steps).
 
-## 3. Primitives
+### Feedback input
 
-Base-level elements. Every component is built from these.
+White card (`--bg-card`), `--radius-xl`, `1.5px solid --border-input` (this is intentionally darker than card borders for definition). Padding `--padding-input`. Placeholder text in `--text-placeholder`. Below: hint text in `--text-hint` at 11px left-aligned, and a "Send" button right-aligned with `--color-orange` background, white text, `--radius-md`, padding 5px 16px, 13px/500.
 
-### 3.1 Text Styles
+### Completion banner
 
-```
-.text-display    → --font-size-display, --font-weight-display, --text-strong, letter-spacing: -.03em
-.text-heading    → --font-size-xl, --font-weight-strong, --text-strong, letter-spacing: -.02em
-.text-title      → --font-size-lg, --font-weight-heading, --text-strong
-.text-body       → --font-size-md, 400, --text, line-height: 1.6
-.text-caption    → --font-size-sm, 400, --text-muted
-.text-micro      → --font-size-xs, 400, --text-ghost
-.text-label      → --font-size-xs, 700, --text-muted, uppercase, letter-spacing: .1em
-.text-mono       → --font-mono, --font-size-sm, 400, --text
-```
+Background `--bg-completion`, `--radius-xl`, padding 14px, text centered in `--text-completion` at 14px.
 
-### 3.2 Buttons
+### Form cards (New Run page)
 
-Three variants. All use `--radius-sm` (6px), `--font-sans`.
+White card (`--bg-card`), `--radius-2xl`, `0.5px solid --border-card`, padding `--padding-card-form`. Section label in `--type-label` / `--text-muted` at the top. Form inputs use `background: --bg-base`, `1.5px solid --border-input`, `--radius-lg`, padding 10px 14px.
 
-| Variant     | Background    | Text     | Border                      | When to use                                          |
-| ----------- | ------------- | -------- | --------------------------- | ---------------------------------------------------- |
-| **Primary** | `--green`     | `#fff`   | none                        | Single main action per view (Begin Planning, Submit) |
-| **Accent**  | `--copper`    | `#fff`   | none                        | Secondary prominent action (Submit Review)           |
-| **Ghost**   | `transparent` | `--text` | `1px solid --border-strong` | Cancel, Back, non-committal actions                  |
+### Workflow selection cards (New Run page)
 
-Sizing: `padding: 12px 24px`, `font-size: --font-size-md`, `font-weight: 600`.
+Two cards side by side in a 2-column grid with 12px gap. The selected card has `2px solid --color-orange` border, `--bg-selected` background, and a filled radio circle (16px outer circle with 2px orange border, 8px filled orange inner). The unselected/disabled card has `1.5px solid --border-radio` border, opacity 0.6 for disabled state.
 
-States:
+### Elicitation panels (Deepen view)
 
-- **Hover:** `opacity: 0.85` (primary/accent), `border-color: --text-muted` (ghost)
-- **Disabled:** `opacity: 0.4`, `cursor: not-allowed`
-- **No focus ring color** — use browser default outline.
+Two-panel 1fr/1fr grid with 20px gap. Each panel is a white card (`--bg-card`) with `--radius-2xl` and `0.5px solid --border-card`. The Context panel has a 3px `--color-teal` top border. The Decision panel has a 3px `--color-orange` top border. Panel labels use the respective accent color for text.
 
-### 3.3 Inputs
+### Radio option cards (Deepen view)
 
-All inputs: `--radius-sm`, `padding: 12px 16px`, `border: 1px solid --border`,
-`background: --bg-elevated`, `font-size: --font-size-md`, `color: --text-strong`.
+Each option is a label element with `--radius-lg`, `1.5px solid --border-radio`, padding `--padding-radio`. Contains an 18px circle with `2px solid --border-input` (unfilled state) or `2px solid --color-orange` with 8px filled inner (selected state). The "recommended" badge uses `background: --bg-completion; color: --text-completion` (teal-green family), `--radius-pill`, `--type-badge`.
 
-- **Focus:** `border-color: --copper`
-- **Placeholder:** `color: --text-ghost`, `font-style: italic`
-- **Textarea:** Same as input. `min-height: 80px`, `resize: vertical`.
-- **Select:** Same as input. Custom chevron via background SVG in `--text-muted`.
+When `isCustom` is true and selected, a text input appears below the label (8px top margin, full-width, transparent background, bottom-border-only: --border-card default, --border-input on focus, placeholder "Type your response..." in --text-placeholder). Hidden when not selected.
 
-### 3.4 Badges
+### Buttons
 
-Inline status indicators. `--radius-md` (10px), `padding: 5px 14px`,
-`font-size: --font-size-sm`, `font-weight: 600`.
+Primary: `--color-orange` background, white text, `--radius-lg` (8px for larger buttons, 6px for small), 13-15px/500. Used for "Start Run", "Next", "Send".
 
-| State   | Background    | Text           |
-| ------- | ------------- | -------------- |
-| Done    | `--green-bg`  | `--green`      |
-| Active  | `--copper-bg` | `--copper`     |
-| Failed  | `--red-bg`    | `--red`        |
-| Warning | `--ochre-bg`  | `--ochre`      |
-| Neutral | `--bg-inset`  | `--text-muted` |
+Secondary/outline: `1.5px solid --border-input`, `--text-subtle`, `--radius-lg`. Used for "Use Defaults".
 
-### 3.5 Labels
+## Layout
 
-Uppercase section markers. See `.text-label` style.
+### Three-column workflow view
 
-`font-size: --font-size-xs`, `font-weight: 700`, `color: --text-muted`,
-`text-transform: uppercase`, `letter-spacing: .1em`.
+Used during active workflow phases (Gather, Deepen, Summarize). Grid: `minmax(0, 1fr) 240px`. The main content column scrolls vertically. The artifacts sidebar is fixed-width at 240px with `--bg-surface` background and a 1px `--border-divider` left border.
 
-Always followed by `--space-2` gap before content.
+### Centered form view
 
----
+Used for the "New Run" page. Single centered column with `--form-max-width` (640px), no sidebar, no scout bar. Content sections are stacked with `--gap-form-sections`.
 
-## 4. Components
+### Scout bar (conditional)
 
-Composed from primitives. Each component has a clear purpose and defined
-states.
+Appears at the bottom of the viewport only during phases where scouts are active. Full-width, `--color-navy` background. Contains the summary line and white table card. Not present on the New Run page or completion views where scouts aren't running.
 
-### 4.1 Card
+## Logo
 
-The primary container. Paper on the desk.
+The koan logo consists of two elements: a geometric mark and a wordmark.
 
-```
-background: --bg-elevated
-border: 1px solid --border
-border-radius: --radius-lg (14px)
-padding: --space-6 (24px)
-```
+The geometric mark is two overlapping circles. The larger circle (16px diameter) is `--color-orange`, positioned top-left. The smaller circle (10px diameter) is `--color-teal`, positioned bottom-right, partially overlapping the orange circle. Total mark footprint: approximately 20x20px.
 
-**Status variants** — left accent border, tinted background:
+The wordmark "koan" is set in `--font-display` (serif) at 17px/500, colored `--text-on-dark` when on navy, or `--text-primary` when on light backgrounds. Letter-spacing: -0.3px.
 
-| State   | Background      | Left border          |
-| ------- | --------------- | -------------------- |
-| Default | `--bg-elevated` | none                 |
-| Running | `--copper-bg`   | `3px solid --copper` |
-| Done    | `--green-bg`    | `3px solid --green`  |
-| Failed  | `--red-bg`      | `3px solid --red`    |
-
-When a card has a status border, use `border-radius: 0 --radius-lg --radius-lg 0`
-so the left edge is straight.
-
-**Card anatomy:**
-
-```
-┌──────────────────────────────────┐
-│ [label]          [badge]         │  ← card header (flex, space-between)
-│                                  │
-│ Title Text                       │  ← .text-title
-│ Body description text that       │  ← .text-body
-│ wraps to multiple lines.         │
-│                                  │
-│ [metadata]        [action btn]   │  ← card footer (flex, space-between)
-└──────────────────────────────────┘
-```
-
-### 4.2 Pill Strip
-
-Phase navigation. A row of connected segments showing workflow progress.
-
-```
-display: flex
-border-radius: --radius-md (10px)
-overflow: hidden
-border: 1px solid --border
-background: --bg
-```
-
-Individual pills: `padding: 6px 16px`, `font-size: --font-size-sm`, `font-weight: 600`.
-
-| State    | Background | Text           | Prefix |
-| -------- | ---------- | -------------- | ------ |
-| Inactive | `--bg`     | `--text-ghost` | none   |
-| Active   | `--copper` | `#fff`         | `● `   |
-| Done     | `--green`  | `#fff`         | `✓ `   |
-
-Pills are separated by `border-right: 1px solid --border`. Last pill has no
-right border.
-
-### 4.3 Agent Table
-
-Data table for subagent monitoring. Mono typography throughout.
-
-```
-Header row:  .text-label style (uppercase, xs, muted)
-Data cells:  --font-mono, --font-size-sm
-             padding: 8px on each cell
-             border-bottom: 1px solid --border
-```
-
-Agent name is `--font-weight-heading` (600) and colored by status:
-
-- Running: `--copper`
-- Done: `--green`
-- Failed: `--red`
-- Queued: `--text-ghost`
-
-Token counts and model names are always `--text-muted`.
-
-### 4.4 Activity Card
-
-Collapsible card in the activity feed showing a thinking block, tool call,
-or scout dispatch.
-
-```
-background: --bg-surface
-border: 1px solid --border
-border-radius: --radius-lg
-```
-
-**Header:** flex row — tool name (left, `--text-muted` or status color) and
-metadata (right, `--text-muted`, `--font-size-xs`).
-
-**Body:** `--font-mono`, `--font-size-sm`, `--text-muted`, `white-space: pre-wrap`.
-Clamped to 3 lines with "show more ▸" link in `--copper`.
-
-**Active variant:** `border-color: --copper-border`.
-
-**Thinking variant:** tool name in `--plum`.
-
-### 4.5 Question Card
-
-User-facing form for answering questions during intake.
-
-```
-background: --bg-elevated
-border: 1px solid --border
-border-radius: --radius-lg
-padding: --space-6
-```
-
-**Structure:**
-
-1. Header label (`.text-label`)
-2. Context paragraphs (`.text-body`, `--text-muted`)
-3. Question text (`--font-size-lg + 1px = 18px`, weight 500, `--text-strong`)
-4. Options list (vertical stack, `--space-1` gap)
-
-**Option items:** `padding: --space-2 --space-4`, `border: 1px solid --border`,
-`border-radius: --radius-sm`, `cursor: pointer`.
-
-- Hover: `border-color: --text-muted`
-- Selected: `border-color: --copper-border`, `background: --copper-bg`
-
-Radio dots: `14px` circle, `border: 2px solid --text-ghost`.
-Selected: `border-color: --copper`, `background: --copper`.
-
-### 4.6 Notification Toast
-
-Transient feedback. Appears bottom-right, fades out.
-
-```
-padding: --space-2 --space-6
-border-radius: --radius-md
-color: #fff
-animation: fade-in --duration-fast, then fade-out --duration-slow after 3s
-```
-
-| Type    | Background |
-| ------- | ---------- |
-| Info    | `--copper` |
-| Warning | `--ochre`  |
-| Error   | `--red`    |
-
-### 4.7 Overlay / Modal
-
-For artifact review, settings, etc.
-
-```
-Backdrop: rgba(42, 31, 20, 0.5)   ← warm dark, not cold black
-Panel:    --bg-elevated
-          border: 1px solid --border
-          border-radius: --radius-lg
-          max-width: 860px
-          max-height: 88vh
-```
-
-Header: `padding: 16px 24px`, `border-bottom: 1px solid --border`.
-Body: `padding: 24px 28px`, scrollable.
-
----
-
-## 5. Layout Patterns
-
-### 5.1 App Shell
-
-```
-┌──────────────────────────────────────────────┐
-│  HEADER (logo + pill strip + settings)       │  ← 56px height, border-bottom
-├──────────────────────────────────────────────┤
-│                                              │
-│                 MAIN AREA                    │  ← flex: 1, scrollable
-│                                              │
-├──────────────────────────────────────────────┤
-│  MONITOR (agent table)                       │  ← flex: 0 auto, border-top
-└──────────────────────────────────────────────┘
-```
-
-- Max-width: `1300px`, centered.
-- Background: `--bg` everywhere except monitor (`--bg-surface`).
-- Header background: `--bg`.
-
-### 5.2 Three-Column Workspace
-
-Used during execution phase:
-
-```
-┌────────┬─────────────────────┬────────┐
-│ STATUS │    ACTIVITY FEED    │ ARTI-  │
-│ SIDE-  │                     │ FACTS  │
-│ BAR    │                     │ SIDE-  │
-│        │                     │ BAR    │
-│ 240-   │     flex: 1         │ 240-   │
-│ 300px  │                     │ 300px  │
-└────────┴─────────────────────┴────────┘
-```
-
-- Sidebars: `background: --bg-surface`, `border-right/left: 1px solid --border`.
-- Activity feed: `background: --bg`, centered content with `max-width: 960px`.
-
-### 5.3 Centered Content
-
-For intake, brief, planning phases — single centered column:
-
-```
-max-width: 960px
-margin: 0 auto
-padding: --space-8 --space-6
-```
-
----
-
-## 6. Decision Trees
-
-Use these when deciding how to implement a new UI element.
-
-### 6.1 "What container should I use?"
-
-```
-Is it a distinct content block with its own identity?
-  → Card (--bg-elevated, border, --radius-lg)
-
-Is it a list of status items (agents, scouts)?
-  → Agent Table or scout-entry list (no outer card — direct on --bg-surface)
-
-Is it a user-interactive form section?
-  → Question Card
-
-Is it above the page (blocking interaction)?
-  → Overlay/Modal
-
-Is it transient feedback?
-  → Notification Toast
-```
-
-### 6.2 "What color should this text be?"
-
-```
-Is it a heading or name?           → --text-strong
-Is it body copy?                   → --text
-Is it a timestamp, count, model?   → --text-muted
-Is it a placeholder or disabled?   → --text-ghost
-Is it a status indicator?          → Use the status color (--green, --copper, --red, --ochre)
-Is it an interactive link/action?  → --copper
-```
-
-### 6.3 "Should I use mono or sans?"
-
-```
-Is it a file path, command, or code?     → mono
-Is it an agent/model name?               → mono
-Is it a token count or numeric stat?     → mono
-Is it a timestamp or duration?           → mono
-Everything else                          → sans
-```
-
-### 6.4 "How should I signal state?"
-
-```
-Idle/default   → no color, --border, --bg-elevated
-Running/active → left accent border (--copper), tinted bg (--copper-bg)
-Complete/done  → left accent border (--green), tinted bg (--green-bg)
-Error/failed   → left accent border (--red), tinted bg (--red-bg)
-Warning        → left accent border (--ochre), tinted bg (--ochre-bg)
-Thinking       → text color --plum, pulsing dot animation
-Queued         → --text-ghost, no accent
-```
-
-### 6.5 "What spacing should I use?"
-
-```
-Between a label and its content     → --space-2 (8px)
-Between items in a list             → --space-2 (8px)
-Inside a card                       → --space-6 (24px) padding
-Between cards                       → --space-8 (32px) gap
-Between major sections              → --space-12 (48px)
-Page edge padding                   → --space-8 (32px)
-```
-
----
-
-## 7. Anti-Patterns
-
-Things that violate the design system. If you see these in code or are
-tempted to add them, stop.
-
-| ❌ Don't                                      | ✅ Do instead                                  |
-| --------------------------------------------- | ---------------------------------------------- |
-| Use `box-shadow` for elevation                | Use `border: 1px solid --border`               |
-| Use blue (`#58a6ff`) for anything             | Use `--copper` for active/accent               |
-| Use raw hex colors in components              | Reference `var(--token)`                       |
-| Make text uppercase in body copy              | Uppercase only in `.text-label` elements       |
-| Add `transform: scale()` animations           | Use `opacity` transitions only                 |
-| Use `border-radius: 50%` on cards             | Cards always use `--radius-lg`                 |
-| Put saturated color on `--bg` base            | Status color only on status-tinted backgrounds |
-| Use `--font-mono` for descriptions            | Mono is for data/code/paths only               |
-| Add padding less than `--space-2`             | Minimum meaningful spacing is 8px              |
-| Use more than 2 font weights in one component | Pick from the weight scale                     |
-
----
-
-## 8. Implementation Notes
-
-### File Organization
-
-```
-koan/web/static/css/
-  variables.css    <- all tokens defined here
-  layout.css       <- app shell, grid, sidebar layouts
-  components.css   <- card, badge, pill, table, form components
-  animations.css   <- keyframes and motion utilities
-```
-
-### Token Naming Convention
-
-- Background tokens: `--bg-*`
-- Text tokens: `--text-*`
-- Border tokens: `--border-*`
-- Status colors: `--{color-name}`, `--{color-name}-bg`, `--{color-name}-border`
-- Spacing: `--space-{multiplier}` (multiplier × 4px)
-- Radii: `--radius-{sm|md|lg}`
-- Motion: `--duration-{speed}`, `--ease-*`
-
-### Scrollbar Styling
-
-Scrollbars must blend into the warm palette. Never use browser defaults.
-
-```css
-scrollbar-width: thin;
-scrollbar-color: var(--border-strong) transparent;
-```
-
-Webkit:
-
-- Track: `transparent`
-- Thumb: `var(--border-strong)` (`#B8B098`) — warm tan, not gray or black
-- Thumb hover: `var(--text-muted)` (`#7A7450`) — slightly darker on interaction
-- Width: `7px`
-- Border-radius: `4px`
-
-**Never use dark/black scrollbar thumbs.** They break the warm paper aesthetic.
-
-### Global Reset
-
-```css
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
-}
-html,
-body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-md);
-  line-height: 1.6;
-}
-```
-
-Note: `line-height` is `1.6` (not `1.5`) for the breathing layout.
+The mark and wordmark are separated by 8px. On the header bar, a 1px vertical divider at `--text-on-dark-faint` separates the logo group from the navigation breadcrumb with 16px gap on each side.
