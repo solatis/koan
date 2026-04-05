@@ -1,0 +1,16 @@
+.atom-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--type-badge);
+  font-weight: 500;
+  border-radius: var(--radius-pill);
+  padding: 2px 8px;
+  white-space: nowrap;
+  line-height: 1.4;
+}
+
+/* Variants */
+.atom-badge--neutral { background: var(--bg-step-guidance); color: var(--text-muted); }
+.atom-badge--success { background: var(--bg-completion);    color: var(--text-completion); }
+.atom-badge--accent  { background: var(--bg-selected);      color: var(--color-orange); }
+.atom-badge--model   { background: var(--bg-step-guidance); color: var(--text-muted); }

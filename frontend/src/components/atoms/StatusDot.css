@@ -1,0 +1,15 @@
+.status-dot {
+  display: inline-block;
+  border-radius: var(--radius-circle);
+  flex-shrink: 0;
+}
+
+/* Sizes */
+.status-dot--sm { width: 6px; height: 6px; }
+.status-dot--md { width: 8px; height: 8px; }
+
+/* Status colors */
+.status-dot--running { background: var(--status-running); }
+.status-dot--done    { background: var(--status-done); }
+.status-dot--queued  { background: var(--status-queued); }
+.status-dot--failed  { background: var(--status-failed); }

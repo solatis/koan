@@ -1,0 +1,12 @@
+.section-label {
+  font-size: var(--type-label);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  line-height: 1;
+}
+
+/* Color variants */
+.section-label--default { color: var(--text-muted); }
+.section-label--teal    { color: var(--color-teal); }
+.section-label--orange  { color: var(--color-orange); }
