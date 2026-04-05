@@ -30,7 +30,7 @@ export function Completion() {
           </>
         ) : (
           <>
-            <h2 className="phase-heading" style={{ color: 'var(--red)' }}>
+            <h2 className="phase-heading" style={{ color: 'var(--status-failed)' }}>
               Run Failed
             </h2>
             <p className="phase-status">{completion.error || 'An error occurred.'}</p>
