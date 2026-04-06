@@ -248,9 +248,19 @@ Secondary/outline: `1.5px solid --border-input`, `--text-subtle`, `--radius-lg`.
 
 ## Layout
 
-### Three-column workflow view
+### Page frame
 
-Used during active workflow phases (Gather, Deepen, Summarize). Grid: `minmax(0, 1fr) 240px`. The main content column scrolls vertically. The artifacts sidebar is fixed-width at 240px with `--bg-surface` background and a 1px `--border-divider` left border.
+The page is a flex column filling `100vh`. Three direct children:
+
+1. **HeaderBar** — `flex-shrink: 0`, full viewport width, `--color-navy` background.
+2. **Centered container** — `flex: 1`, `min-height: 0`, `max-width: 1400px`, `margin: 0 auto`, `width: 100%`. Contains the content+sidebar grid.
+3. **ScoutBar** (conditional) — `flex-shrink: 0`, full viewport width, `--color-navy` background. Omitted when no scouts are active.
+
+The HeaderBar and ScoutBar span the full viewport width. The centered container constrains the content grid to 1400px. On wide screens, the space beyond the container edges is `--bg-base` background. No pseudo-elements. No `overflow-x: hidden`.
+
+### Two-column workflow view
+
+Used during active workflow phases (Gather, Deepen, Summarize). The centered container is a CSS grid with `grid-template-columns: minmax(0, 1fr) 260px`, filling the height between header and scout bar. The content column (left) scrolls vertically (`overflow-y: auto`, `padding: 28px 32px`) and is at most ~1140px wide — a comfortable reading width without needing further constraint. The artifacts sidebar (right) is 260px with `--bg-surface` background and a 1px `--border-divider` left border. Both columns stretch to fill the full grid height. The sidebar does not touch the right viewport edge on wide screens — this is intentional.
 
 ### Centered form view
 
@@ -258,7 +268,7 @@ Used for the "New Run" page. Single centered column with `--form-max-width` (640
 
 ### Scout bar (conditional)
 
-Appears at the bottom of the viewport only during phases where scouts are active. Full-width, `--color-navy` background. Contains the summary line and white table card. Not present on the New Run page or completion views where scouts aren't running.
+Appears at the bottom of the viewport only during phases where scouts are active. Full-viewport-width frame element at the same level as the HeaderBar. Contains the summary line and white table card. Not present on the New Run page or completion views where scouts aren't running.
 
 ## Logo
 
