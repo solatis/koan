@@ -4,10 +4,16 @@
  * Sits at the bottom of the content stream. Enter sends, Shift+Enter
  * inserts a newline. Uses the Button atom for the send action.
  *
- * Used in: activity feed footer, phase-boundary prompts.
+ * Watches the chatDraft store field: when a YieldCard pill is clicked,
+ * it sets chatDraft to the suggestion command, which FeedbackInput picks
+ * up via useEffect, populates the textarea, and focuses it. The user
+ * reviews and presses Send — no auto-submit.
+ *
+ * Used in: content stream footer.
  */
 
-import { useState, useRef, type KeyboardEvent } from 'react'
+import { useState, useRef, useEffect, type KeyboardEvent } from 'react'
+import { useStore } from '../../store/index'
 import { Button } from '../atoms/Button'
 import './FeedbackInput.css'
 
@@ -24,6 +30,18 @@ export function FeedbackInput({
 }: FeedbackInputProps) {
   const [text, setText] = useState('')
   const ref = useRef<HTMLTextAreaElement>(null)
+
+  const chatDraft = useStore(s => s.chatDraft)
+  const setChatDraft = useStore(s => s.setChatDraft)
+
+  // Pick up draft set by YieldCard pill clicks
+  useEffect(() => {
+    if (chatDraft) {
+      setText(chatDraft)
+      setChatDraft('')  // consume the draft immediately
+      ref.current?.focus()
+    }
+  }, [chatDraft, setChatDraft])
 
   const send = () => {
     const trimmed = text.trim()

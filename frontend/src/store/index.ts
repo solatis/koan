@@ -47,11 +47,15 @@ export interface ToolGenericEntry extends BaseToolEntry { type: 'tool_generic'; 
 export interface DebugStepGuidanceEntry { type: 'debug_step_guidance'; content: string }
 export interface PhaseBoundaryEntry { type: 'phase_boundary'; phase: string; message: string }
 
+export interface Suggestion { id: string; label: string; command: string }
+export interface YieldEntry { type: 'yield'; suggestions: Suggestion[] }
+export interface ActiveYield { suggestions: Suggestion[] }
+
 export type ConversationEntry =
   | ThinkingEntry | TextEntry | StepEntry | UserMessageEntry
   | ToolReadEntry | ToolWriteEntry | ToolEditEntry
   | ToolBashEntry | ToolGrepEntry | ToolLsEntry | ToolGenericEntry
-  | DebugStepGuidanceEntry | PhaseBoundaryEntry
+  | DebugStepGuidanceEntry | PhaseBoundaryEntry | YieldEntry
 
 export interface Conversation {
   entries: ConversationEntry[]
@@ -133,6 +137,7 @@ export interface Run {
   artifacts: Record<string, ArtifactInfo>
   completion: CompletionInfo | null
   steering: SteeringMessage[]
+  activeYield: ActiveYield | null
 }
 
 // -- Store --------------------------------------------------------------------
@@ -150,9 +155,13 @@ interface KoanState {
   // Local UI state (not from server)
   settingsOpen: boolean
 
+  // Local draft for chat input — set by YieldCard pill clicks
+  chatDraft: string
+
   // Actions
   setConnected: (v: boolean) => void
   setSettingsOpen: (v: boolean) => void
+  setChatDraft: (text: string) => void
 }
 
 export const useStore = create<KoanState>((set) => ({
@@ -169,9 +178,11 @@ export const useStore = create<KoanState>((set) => ({
   notifications: [],
 
   settingsOpen: false,
+  chatDraft: '',
 
   setConnected: (v) => set({ connected: v }),
   setSettingsOpen: (v) => set({ settingsOpen: v }),
+  setChatDraft: (text) => set({ chatDraft: text }),
 }))
 
 export type KoanStore = typeof useStore

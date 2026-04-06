@@ -10,6 +10,7 @@
  * debug_step_guidance  → StepGuidancePill + Md
  * user_message         → UserBubble + Md
  * phase_boundary       → PhaseBoundary
+ * yield                → YieldCard
  * pendingThinking      → ThinkingBlock (always expanded)
  * pendingText          → ProseCard + Md + streaming cursor
  */
@@ -35,6 +36,7 @@ import { StepGuidancePill } from './components/molecules/StepGuidancePill'
 import { FeedbackInput } from './components/molecules/FeedbackInput'
 import { UserBubble } from './components/molecules/UserBubble'
 import { PhaseBoundary } from './components/molecules/PhaseBoundary'
+import { YieldCard } from './components/molecules/YieldCard'
 import { StepHeader } from './components/molecules/StepHeader'
 import { CompletionBanner } from './components/molecules/CompletionBanner'
 import { SteeringBar } from './components/molecules/SteeringBar'
@@ -147,6 +149,8 @@ function renderEntry(entry: ConversationEntry, i: number) {
     }
     case 'phase_boundary':
       return <PhaseBoundary key={i} label={entry.message} />
+    case 'yield':
+      return <YieldCard key={i} suggestions={entry.suggestions} />
     default:
       return null
   }
@@ -155,6 +159,12 @@ function renderEntry(entry: ConversationEntry, i: number) {
 function ConnectedSteeringBar() {
   const steering = useStore(s => s.run?.steering ?? [])
   return <SteeringBar messages={steering.map(m => m.content)} />
+}
+
+function ActiveYieldPills() {
+  const activeYield = useStore(s => s.run?.activeYield)
+  if (!activeYield?.suggestions?.length) return null
+  return <YieldCard suggestions={activeYield.suggestions} />
 }
 
 function ContentStream() {
@@ -193,6 +203,7 @@ function ContentStream() {
         {showFeedback && (
           <>
             <ConnectedSteeringBar />
+            <ActiveYieldPills />
             <FeedbackInput onSend={msg => api.sendChatMessage(msg)} disabled={!!run?.completion} />
           </>
         )}

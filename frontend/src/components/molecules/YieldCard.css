@@ -1,0 +1,36 @@
+/* YieldCard — suggestion pills at a koan_yield point. */
+
+.yc {
+  padding: 12px 0 4px;
+}
+
+.yc-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.yc-pill {
+  font-family: var(--font-body);
+  font-size: var(--type-breadcrumb);
+  font-weight: 500;
+  color: var(--color-teal);
+  background: transparent;
+  border: 1.5px solid var(--color-teal);
+  border-radius: var(--radius-xl);
+  padding: 5px 14px;
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) var(--ease-default),
+    color var(--duration-fast) var(--ease-default);
+  white-space: nowrap;
+}
+
+.yc-pill:hover {
+  background: var(--color-teal);
+  color: var(--text-on-dark);
+}
+
+.yc-pill:active {
+  opacity: 0.8;
+}
