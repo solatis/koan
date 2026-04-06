@@ -90,3 +90,49 @@
   gap: 12px;
   margin-top: 24px;
 }
+
+/* Full-width when no context panel */
+.ep-grid--full {
+  grid-template-columns: 1fr;
+}
+
+/* Multi-select hint */
+.ep-multi-hint {
+  font-family: var(--font-mono);
+  font-size: var(--type-label);
+  color: var(--color-orange);
+  margin-bottom: 8px;
+}
+
+/* Free-text textarea */
+.ep-free-text {
+  display: block;
+  width: 100%;
+  min-height: 100px;
+  padding: 12px 14px;
+  background: var(--bg-base);
+  border: 1.5px solid var(--border-input);
+  border-radius: var(--radius-lg);
+  font-family: var(--font-body);
+  font-size: var(--type-body);
+  color: var(--text-primary);
+  line-height: 1.5;
+  resize: vertical;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.ep-free-text:focus {
+  border-color: var(--color-orange);
+}
+
+.ep-free-text::placeholder {
+  color: var(--text-placeholder);
+}
+
+/* Error message */
+.ep-error {
+  font-size: var(--type-breadcrumb);
+  color: var(--status-failed);
+  margin-top: 12px;
+}

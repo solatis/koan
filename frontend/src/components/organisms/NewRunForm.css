@@ -7,6 +7,11 @@
   gap: var(--gap-form-sections);
 }
 
+/* Button should not stretch to full width in a flex column */
+.nrf > .atom-btn {
+  align-self: flex-start;
+}
+
 /* ---- Header ---- */
 .nrf-header {
   display: flex;
@@ -173,6 +178,13 @@
 }
 
 /* Agent row */
+.nrf-agent-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 6px;
+}
+
 .nrf-agent-row {
   display: flex;
   align-items: center;
@@ -183,18 +195,17 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 12px;
-  background: var(--bg-base);
-  border: 1.5px solid var(--border-input);
-  border-radius: var(--radius-lg);
+  padding: 6px 12px;
+  background: var(--bg-thinking); /* lavender — agents are "thinking entities" */
+  border-radius: var(--radius-md);
   flex-shrink: 0;
 }
 
 .nrf-agent-name {
   font-family: var(--font-mono);
-  font-size: var(--type-body);
+  font-size: 13px;
   font-weight: 500;
-  color: var(--text-primary);
+  color: var(--text-thinking); /* dark purple — ties to thinking/agent palette */
 }
 
 /* Scout concurrency */
@@ -225,4 +236,55 @@
 .nrf-concurrency-hint {
   font-size: 13px;
   color: var(--text-muted);
+}
+
+/* ---- Real select dropdown (replaces static display div) ---- */
+.nrf-real-select {
+  display: block;
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--bg-base);
+  border: 1.5px solid var(--border-input);
+  border-radius: var(--radius-lg);
+  font-family: var(--font-mono);
+  font-size: var(--type-body);
+  color: var(--text-primary);
+  outline: none;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%239a8e7e' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  padding-right: 36px;
+}
+
+.nrf-real-select:focus {
+  border-color: var(--color-orange);
+}
+
+.nrf-real-select--flex {
+  flex: 1;
+}
+
+.nrf-real-select--sm {
+  font-size: 13px;
+}
+
+.nrf-real-select option {
+  background: var(--bg-surface);
+  color: var(--text-body);
+}
+
+/* ---- Error message ---- */
+.nrf-error {
+  font-size: var(--type-breadcrumb);
+  color: var(--status-failed);
+}
+
+/* ---- Missing agent warning ---- */
+.nrf-missing {
+  font-family: var(--font-mono);
+  font-size: var(--type-label);
+  color: var(--status-failed);
 }
