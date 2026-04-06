@@ -105,7 +105,9 @@ function ConnectedScoutBar() {
       elapsed: a.completedAtMs
         ? formatElapsed(a.completedAtMs - (a.startedAtMs || 0))
         : formatElapsed(a.startedAtMs ? now - a.startedAtMs : 0),
-      currentStep: a.stepName || (a.step > 0 ? `step ${a.step}` : 'step 0'),
+      currentStep: a.status === 'done' ? 'Done'
+        : a.status === 'failed' ? (a.error || 'failed')
+        : a.lastTool || a.stepName || (a.step > 0 ? `step ${a.step}` : 'step 0'),
     }))
   }, [agents])
   return <ScoutBar scouts={scouts} />

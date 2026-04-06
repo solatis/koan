@@ -28,7 +28,7 @@ export function ScoutRow({ name, model, status, tools, elapsed, currentStep }: S
       <span className="sr-dot"><StatusDot status={status} size="sm" /></span>
       <span className="sr-name">{name}</span>
       <span className="sr-model"><Badge variant="model">{model}</Badge></span>
-      <span className="sr-tools">{tools} tools</span>
+      <span className="sr-tools">{tools}</span>
       <span className="sr-elapsed">{elapsed}</span>
       <span className={`sr-step${stepColor ? ' sr-step--active' : ''}`}>{currentStep}</span>
     </div>
