@@ -61,7 +61,7 @@ function useHeaderData() {
   }, [primary])
   const elapsed = useElapsed(primary?.startedAtMs ?? Date.now())
   return {
-    phase: run ? run.phase.split('-').map(w => w[0].toUpperCase() + w.slice(1)).join(' ') : '',
+    phase: run?.phase ? run.phase.split('-').map(w => w[0].toUpperCase() + w.slice(1)).join(' ') : '',
     step: lastStep?.stepName ?? primary?.stepName ?? '',
     totalSteps: lastStep?.totalSteps ?? 0,
     currentStep: lastStep?.step ?? 0,
