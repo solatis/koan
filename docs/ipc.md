@@ -21,11 +21,11 @@ registry and handles the call directly.
 Three interactions involve blocking -- the HTTP request is held open while the
 driver awaits an external response:
 
-| Mechanism               | What blocks                  | Who responds                   |
-| ----------------------- | ---------------------------- | ------------------------------ |
-| `koan_ask_question`     | User input needed            | User via web UI                |
-| `koan_request_scouts`   | Scout subagents running      | Driver (after scouts complete) |
-| Phase-boundary blocking | Phase complete, next unknown | User via `POST /api/chat`      |
+| Mechanism               | What blocks                        | Who responds                   |
+| ----------------------- | ---------------------------------- | ------------------------------ |
+| `koan_ask_question`     | User input needed                  | User via web UI                |
+| `koan_request_scouts`   | Scout subagents running            | Driver (after scouts complete) |
+| `koan_yield`            | Phase complete, awaiting direction | User via `POST /api/chat`      |
 
 User-facing tool calls (`koan_ask_question`) go through the `PendingInteraction`
 queue on `AppState`. The MCP handler creates an `asyncio.Future`, stores it in
@@ -40,8 +40,8 @@ HTTP connection is held open only by the `await asyncio.gather(...)` call.
 `koan_request_executor` spawns a single executor subagent and blocks until it
 exits. Like scouts, it is handled inline with no `PendingInteraction`.
 
-Phase-boundary blocking uses `AppState.phase_complete_future` directly (not
-`PendingInteraction`). See [Phase-Boundary Blocking](#phase-boundary-blocking).
+`koan_yield` uses `AppState.yield_future` directly (not `PendingInteraction`).
+See [koan_yield Blocking](#koan_yield-blocking).
 
 There is no polling and no intermediate files for any of these flows.
 
@@ -207,82 +207,115 @@ orchestrator calls koan_request_executor({ artifacts: [...], instructions: "..."
 ```
 
 The orchestrator reports the result to the user in chat and then calls
-`koan_complete_step` to trigger the execute phase boundary.
+`koan_yield` to present follow-up options.
 
 ---
 
-## Phase-Boundary Blocking
+## koan_yield Blocking
 
-When the orchestrator finishes a phase (`get_next_step` returns `None`),
-`koan_complete_step` blocks for user input before returning the phase-boundary
-response. This uses `AppState.phase_complete_future` directly, not the
-`PendingInteraction` queue.
+`koan_yield` is the generic conversation primitive — the orchestrator calls it
+whenever it needs to yield control to the user for open-ended chat. It uses
+`AppState.yield_future` directly, not the `PendingInteraction` queue.
 
 ```
-orchestrator calls koan_complete_step (last step of a phase)
-  -> get_next_step() returns None
+orchestrator calls koan_yield({ suggestions: [...] })
+  -> push_event("yield_started", {suggestions: [...]})
+     -> fold: appends YieldEntry to conversation, sets run.active_yield
+     -> browser renders suggestion pills
   -> drain_user_messages(app_state)
   -> if buffer empty:
        future = asyncio.get_running_loop().create_future()
-       app_state.phase_complete_future = future
+       app_state.yield_future = future
        await future              # HTTP connection held open
-     app_state.phase_complete_future = None
+     app_state.yield_future = None
   -> messages = drain_user_messages(app_state)
-  -> suggested = get_suggested_phases(workflow, app_state.phase)
-  -> descs = workflow.phase_descriptions
-  -> returns format_phase_boundary(phase, messages, suggested, descs)
+  -> returns format_user_messages(messages)
 ```
 
 The Future is resolved when the user sends a message via `POST /api/chat`.
 
-`format_phase_boundary` renders the suggested phases (from
-`workflow.suggested_transitions[current_phase]`) with descriptions and
-instructs the orchestrator to present them to the user. The user can also
-request any other phase in the workflow's `available_phases`. If the
-workflow has no suggested transitions for the current phase (milestones stub),
-`format_phase_boundary` renders a "workflow not yet fully implemented" message.
+**Multi-turn conversation:** The orchestrator calls `koan_yield` repeatedly
+for as long as the user wants to chat. Each call blocks, waits for one message,
+returns it. No new `yield_started` event is emitted on subsequent calls unless
+the orchestrator provides updated suggestions; the `active_yield` pills remain
+visible.
 
-**Key asyncio invariant:** `api_chat` and `koan_complete_step` run in the same
-asyncio event loop. `api_chat` appends to `user_message_buffer` before calling
-`set_result()`. When `koan_complete_step` resumes, `drain_user_messages()` finds
-the message in the buffer. No threads or locks are needed.
+**If messages are already buffered** (user sent a message before the tool was
+called): `koan_yield` drains them and returns immediately — no Future is
+created.
 
-**If messages are already buffered:** `koan_complete_step` drains them and
-returns immediately — no Future is created.
+**Key asyncio invariant:** `api_chat` and `koan_yield` run in the same asyncio
+event loop. `api_chat` appends to `user_message_buffer` before calling
+`set_result()`. When `koan_yield` resumes, `drain_user_messages()` finds the
+message in the buffer. No threads or locks are needed.
 
-After receiving the phase-boundary response, the orchestrator converses with the
-user and calls `koan_set_phase` to commit the transition.
+**`yield_future` vs `PendingInteraction`:** `koan_yield` bypasses the
+interaction queue because it is not a structured question with a UI form — it
+is free-form chat. The PendingInteraction mechanism renders a specific UI widget
+(`koan_ask_question`); `koan_yield` renders suggestion pills via the projection
+(`yield_started` event). Both resolve via `asyncio.Future` but through
+independent code paths.
 
 ---
 
 ## Chat Message Delivery
 
-User messages are buffered in `AppState.user_message_buffer` and delivered
-to the orchestrator at `koan_complete_step` call boundaries.
+User messages are routed based on whether the orchestrator is waiting for them.
 
 ```
 user types in chat input
   -> POST /api/chat { message: "..." }
-  -> ChatMessage appended to app_state.user_message_buffer
-  -> user_message projection event pushed (appears in activity feed)
-  -> if app_state.phase_complete_future is set: future.set_result(True)
+  -> ChatMessage created with content + timestamp_ms
+  -> push_event("user_message", ...) — appears in activity feed
+  -> if app_state.yield_future is set and not done:
+       user_message_buffer.append(msg)
+       yield_future.set_result(True)   -- unblocks koan_yield
+  -> else:
+       steering_queue.append(msg)
+       push_event("steering_queued", ...) -- shown in SteeringBar above input
   -> returns { ok: true }
-
-orchestrator calls koan_complete_step (any step)
-  -> step guidance computed
-  -> messages = drain_user_messages(app_state)
-  -> if messages: appended to tool result as formatted block
-  -> returns combined guidance + user messages
 ```
 
-Messages sent while the orchestrator is mid-step accumulate in the buffer and
-are delivered at the next `koan_complete_step` call. Messages sent during
-`koan_ask_question` also buffer and deliver after the structured interaction
-resolves.
+**Phase-boundary messages** (sent while `koan_yield` is blocking): routed to
+`user_message_buffer`, delivered as the koan_yield return value.
+
+**Steering messages** (sent while the orchestrator is mid-step): routed to
+`steering_queue`, appended to the next tool response via
+`_drain_and_append_steering()`. The LLM integrates them without abandoning
+the current step.
+
+The two queues are drained independently to prevent double-delivery:
+`drain_user_messages()` and `drain_steering_messages()` each clear their own
+list atomically.
 
 ---
 
 ## Sequence Diagrams
+
+### koan_yield flow (phase boundary)
+
+```
+Orchestrator                  Driver                    Web UI
+  |                              |                        |
+  |--koan_yield(suggestions)--->|                        |
+  |                              |  push yield_started   |
+  |                              |--SSE patch----------->|
+  |                              |  (pills render)       |
+  |                              |  create yield_future  |
+  |                              |  await yield_future   |
+  |                              |                        | user clicks pill
+  |                              |                        | setChatDraft(cmd)
+  |                              |                        | user presses Enter
+  |                              |<-POST /api/chat--------|
+  |                              |  buffer + set_result   |
+  |<-tool result (msg text)------|                        |
+  |  (converses with user)       |                        |
+  |--koan_set_phase("plan-spec")->|                       |
+  |                              |  push yield_cleared   |
+  |                              |  push phase_started   |
+  |                              |--SSE patches--------->|
+  |<-"Phase set to plan-spec."---|                        |
+```
 
 ### Scout flow (inline blocking, no PendingInteraction)
 

@@ -2,10 +2,29 @@
 
 Full architecture documentation: **[docs/architecture.md](docs/architecture.md)**
 
+## Frontend Design System (read before any frontend work)
+
+The frontend uses a strict token-driven component system. Visual identity
+is user-controlled — agents implement it but do not change it without
+approval. Violations compound: a misplaced color becomes a wrong token
+becomes an inconsistent component becomes a broken design language.
+
+**When touching any file under `frontend/`**, read
+**[frontend/AGENTS.md](frontend/AGENTS.md)** first. It defines protected
+files, the component hierarchy (atoms → molecules → organisms), and CSS
+conventions.
+
+**When building or modifying a UI component**, also read
+**[frontend/src/components/AGENTS.md](frontend/src/components/AGENTS.md)**.
+It contains the development rules, the tier decision tree, and the
+verification checklist.
+
+---
+
 Spoke documents:
 
 - [docs/subagents.md](docs/subagents.md) -- spawn lifecycle, task manifest, step-first workflow, permissions
-- [docs/ipc.md](docs/ipc.md) -- HTTP MCP tool calls, blocking interactions, scout spawning, phase-boundary blocking
+- [docs/ipc.md](docs/ipc.md) -- HTTP MCP tool calls, blocking interactions, scout spawning, koan_yield blocking
 - [docs/state.md](docs/state.md) -- driver/LLM boundary, run state, orchestrator state
 - [docs/intake-loop.md](docs/intake-loop.md) -- three-step intake design, prompt engineering
 - [docs/projections.md](docs/projections.md) -- versioned event log, fold function, projection shape, SSE protocol, version-negotiated catch-up
@@ -44,12 +63,15 @@ Tool returns:  Step 1 instructions (phase role context + task details)
 Tool returns:  Step 2 instructions (or phase-boundary response)
 ```
 
-When a phase ends, `koan_complete_step` blocks for a user message and returns
-the transition context (user message + suggested next phases). The orchestrator
-converses, then calls `koan_set_phase` to commit the transition. The step
-counter resets to 0 on each `koan_set_phase` call, then advances to 1 on the
-next `koan_complete_step`. Phase-specific role context (`SYSTEM_PROMPT`) is
-injected into that step-1 response.
+When a phase ends, `koan_complete_step` returns a **non-blocking** response
+telling the orchestrator to summarize and call `koan_yield`. `koan_yield` is
+the generic conversation primitive — it blocks until the user sends a message,
+then returns that message as the tool result. The orchestrator calls `koan_yield`
+repeatedly for multi-turn conversation, then calls `koan_set_phase` to commit
+the transition. Passing `koan_set_phase("done")` ends the workflow (tombstone).
+The step counter resets to 0 on each `koan_set_phase` call, then advances to 1
+on the next `koan_complete_step`. Phase-specific role context (`SYSTEM_PROMPT`)
+is injected into that step-1 response.
 
 Step progression is normally linear within a phase, but phase modules may
 override `get_next_step()` to implement non-linear flows. See
@@ -94,7 +116,8 @@ during brief-generation step 1 (the read step).
 | Tool | Available phases |
 |------|-----------------|
 | `koan_complete_step` | All phases |
-| `koan_set_phase` | All phases (blocked mid-story during execution) |
+| `koan_set_phase` | All phases (blocked mid-story during execution); accepts `"done"` as tombstone |
+| `koan_yield` | All phases |
 | `koan_ask_question` | All phases |
 | `koan_request_scouts` | `intake`, `core-flows`, `tech-plan`, `ticket-breakdown`, `cross-artifact-validation`, `plan-spec`, `plan-review` |
 | `koan_request_executor` | `execution`, `execute` |

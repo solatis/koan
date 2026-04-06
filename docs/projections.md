@@ -48,9 +48,9 @@ held in memory for the duration of a workflow run.
 
 ---
 
-## Event Types (36 total)
+## Event Types (38 total)
 
-### Lifecycle (8)
+### Lifecycle (10)
 
 | Event | Payload | `agent_id` |
 |-------|---------|-----------|
@@ -63,6 +63,15 @@ held in memory for the duration of a workflow run.
 | `agent_exited` | `{exit_code, error?, usage?}` | set |
 | `workflow_completed` | `{success, summary?, error?}` | `None` |
 | `scout_queued` | `{scout_id, label, model?}` | `None` |
+| `yield_started` | `{suggestions: [{id, label, command}, ...]}` | set (primary) |
+| `yield_cleared` | `{}` | `None` |
+
+`yield_started` is emitted by `koan_yield` when the orchestrator yields to the
+user for conversation. The fold appends a `YieldEntry` to the agent's
+conversation and sets `run.active_yield`. `yield_cleared` removes
+`run.active_yield`; it is emitted by `koan_set_phase` (any transition,
+including `"done"`) and implicitly by `phase_started` and
+`workflow_completed`.
 
 `run_started` is emitted by `api_start_run` before the driver begins. It
 creates the `Run` object in the projection with the frozen `RunConfig`.
@@ -206,7 +215,7 @@ Projection
 │   ├── phase: str
 │   ├── agents: dict[str, Agent]                 # agent_id → Agent (all statuses)
 │   │   └── conversation: Conversation
-│   │       ├── entries: list[ConversationEntry] # discriminated union of 10 types
+│   │       ├── entries: list[ConversationEntry] # discriminated union of 11 types
 │   │       ├── pending_thinking: str
 │   │       ├── pending_text: str
 │   │       ├── is_thinking: bool
@@ -214,7 +223,9 @@ Projection
 │   │       └── output_tokens: int
 │   ├── focus: Focus | None                      # discriminated union of 2 variants
 │   ├── artifacts: dict[str, ArtifactInfo]       # path → ArtifactInfo
-│   └── completion: CompletionInfo | None
+│   ├── completion: CompletionInfo | None
+│   ├── steering: list[SteeringMessage]          # pending user feedback shown above chat
+│   └── active_yield: ActiveYield | None         # non-None while koan_yield is blocking
 └── notifications: list[Notification]
 ```
 
@@ -371,13 +382,23 @@ class UserMessageEntry(KoanBaseModel):
     timestamp_ms: int
 
 
+class YieldEntry(KoanBaseModel):
+    type: Literal["yield"] = "yield"
+    suggestions: list[Suggestion] = []   # structured options presented at this yield point
+
+
 ConversationEntry = Annotated[
     ThinkingEntry | TextEntry | StepEntry | UserMessageEntry |
     ToolReadEntry | ToolWriteEntry | ToolEditEntry |
-    ToolBashEntry | ToolGrepEntry | ToolLsEntry | ToolGenericEntry,
+    ToolBashEntry | ToolGrepEntry | ToolLsEntry | ToolGenericEntry |
+    YieldEntry,
     Field(discriminator="type"),
 ]
 ```
+
+`YieldEntry` is appended to the conversation when the orchestrator calls
+`koan_yield`. It records the suggestions the orchestrator offered at that
+yield point, providing a historical record of what options were presented.
 
 ### Focus — discriminated union
 
@@ -408,6 +429,19 @@ explicit.
 ### Supporting types
 
 ```python
+class Suggestion(KoanBaseModel):
+    id: str         # machine key — phase name (e.g. "plan-spec") or "done"
+    label: str      # display text shown in UI pill (e.g. "Write implementation plan")
+    command: str = ""   # pre-filled into chat input when pill is clicked
+
+class ActiveYield(KoanBaseModel):
+    # Live view of the last yield point — non-None while koan_yield is blocking.
+    # Cleared by yield_cleared, phase_started, and workflow_completed.
+    suggestions: list[Suggestion] = []
+
+class SteeringMessage(KoanBaseModel):
+    content: str    # user feedback message queued during active agent work
+
 class ArtifactInfo(KoanBaseModel):
     path: str           # relative to run directory
     size: int           # bytes
@@ -462,6 +496,8 @@ Conversation: /run/agents/abc123/conversation/pendingThinking
 
 Focus:        /run/focus
 Artifacts:    /run/artifacts/docs~1architecture.md/size
+Yield:        /run/activeYield
+              /run/activeYield/suggestions
 ```
 
 Named entities (installations, profiles, agents, artifacts) are dicts for
@@ -521,8 +557,10 @@ completed agents.
 |-------|--------|
 | `run_started` | `projection.run = Run(config=RunConfig(...))` |
 | `workflow_selected` | `run.workflow = payload["workflow"]` |
-| `phase_started` | `run.phase = phase` |
-| `workflow_completed` | `run.completion = CompletionInfo(...)` |
+| `phase_started` | `run.phase = phase`. Clear `run.active_yield = None`. |
+| `workflow_completed` | `run.completion = CompletionInfo(...)`. Clear `run.active_yield = None`. |
+| `yield_started` | Parse `suggestions` from payload → `Suggestion` list. Append `YieldEntry(suggestions=...)` to primary agent's conversation (flushing pending fields first). Set `run.active_yield = ActiveYield(suggestions=...)`. |
+| `yield_cleared` | Set `run.active_yield = None`. |
 
 ### Settings
 

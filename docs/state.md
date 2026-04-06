@@ -206,8 +206,9 @@ Orchestrator state tracked in `AppState` (in-memory, not persisted):
 | Field | Type | Purpose |
 |-------|------|---------|
 | `workflow` | `Workflow \| None` | Active workflow; set at run start, drives transition validation and phase guidance |
-| `user_message_buffer` | `list[ChatMessage]` | Buffered user chat messages, drained at each `koan_complete_step` |
-| `phase_complete_future` | `asyncio.Future \| None` | Non-None while `koan_complete_step` is blocking at a phase boundary |
+| `user_message_buffer` | `list[ChatMessage]` | Buffered user chat messages, drained when `koan_yield` unblocks |
+| `yield_future` | `asyncio.Future \| None` | Non-None while `koan_yield` is blocking, waiting for a user message |
+| `workflow_done` | `bool` | Set to `True` by `koan_set_phase("done")`; causes `koan_complete_step` to return exit signal |
 
 `ChatMessage` carries `content: str` and `timestamp_ms: int`. Messages are
 appended by `POST /api/chat` and removed atomically by `drain_user_messages()`.

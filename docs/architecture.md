@@ -9,7 +9,7 @@ principles, and pitfalls that govern the codebase.
 - [Subagents](./subagents.md) -- spawn lifecycle, boot protocol, step-first
   workflow, phase dispatch, permissions, model tiers
 - [IPC](./ipc.md) -- HTTP MCP inter-process communication, blocking tool calls,
-  scout spawning, phase-boundary blocking, chat message delivery
+  scout spawning, koan_yield blocking, chat message delivery
 - [Token Streaming](./token-streaming.md) -- runner stdout parsing, SSE delta path
 - [State & Driver](./state.md) -- the driver/LLM boundary, JSON vs markdown
   ownership, run state, orchestrator state
@@ -62,7 +62,7 @@ Boot prompt:  "You are a koan {role} agent. Call koan_complete_step to receive y
 Tool returns:  Step 1 instructions (rich context, task details, guidance)
      | LLM does work...
      | LLM calls koan_complete_step
-Tool returns:  Step 2 instructions (or "Phase complete.")
+Tool returns:  Step 2 instructions (or "Phase complete. Call koan_yield.")
 ```
 
 Three reinforcement mechanisms make this robust across model capability levels:
@@ -72,6 +72,54 @@ Three reinforcement mechanisms make this robust across model capability levels:
 | **Primacy**       | Boot prompt is the LLM's very first message                          | First action = tool call, at the top of conversation history |
 | **Recency**       | `format_step()` appends "WHEN DONE: Call koan_complete_step..." last | LLMs weight end-of-context instructions heavily              |
 | **Muscle memory** | By step 2+ the LLM has called the tool N times                       | Pattern is locked in through repetition                      |
+
+#### Phase boundaries and koan_yield
+
+When a phase's final step completes, `koan_complete_step` returns a **non-blocking**
+response (`format_phase_complete`) that tells the orchestrator to summarize its
+work and call `koan_yield`. The orchestrator then generates a summary and calls
+`koan_yield` with structured suggestions.
+
+`koan_yield` is the **generic conversation primitive** — it blocks the
+orchestrator process until the user sends a message, then returns that message
+as the tool result. The orchestrator can call `koan_yield` repeatedly for
+multi-turn conversation before committing a phase transition.
+
+```
+koan_complete_step (last step)
+  -> returns: "Phase complete. Summarize and call koan_yield."
+     | LLM writes summary, constructs suggestions
+     | LLM calls koan_yield(suggestions=[{id, label, command}, ...])
+Tool blocks until user sends message
+     | user types in chat or clicks a suggestion pill
+Tool returns:  user message text
+     | LLM responds conversationally
+     | LLM calls koan_yield again (or calls koan_set_phase if direction confirmed)
+...
+     | LLM calls koan_set_phase("plan-spec")   -- or "done" to end the workflow
+```
+
+`koan_yield` is phase-agnostic — it knows nothing about workflow structure.
+Suggestions are constructed by the orchestrator at each yield point; the UI
+renders them as clickable pills that pre-fill the chat input.
+
+#### Ending the workflow
+
+Passing `"done"` to `koan_set_phase` acts as a tombstone:
+
+```
+koan_set_phase("done")
+  -> emits workflow_completed
+  -> sets AppState.workflow_done = True
+  -> returns "Workflow complete. Call koan_complete_step to finish."
+     | LLM calls koan_complete_step
+Tool returns:  "All phases complete. You may now exit."
+     | LLM exits (no more tool calls)
+```
+
+`"done"` is detected before the normal `is_valid_transition()` check and is
+not a member of any workflow's `available_phases`. The driver treats the
+orchestrator's process exit as the actual workflow end signal.
 
 ### 3. Driver determinism (partially relaxed)
 
@@ -85,10 +133,10 @@ through typed tool parameters.
 
 `is_valid_transition(workflow, from_phase, to_phase)` validates that `to_phase`
 is a member of the active workflow's `available_phases` and is not equal to
-`from_phase`. Any phase in the workflow is reachable from any other — suggested
-transitions guide the orchestrator's default recommendations at phase boundaries,
-but the user can request any available phase. Invalid phase strings raise
-`ToolError`.
+`from_phase`. The special value `"done"` bypasses this check entirely. Any
+real phase in the workflow is reachable from any other — suggested transitions
+guide the orchestrator's default recommendations at phase boundaries, but the
+user can request any available phase. Invalid phase strings raise `ToolError`.
 
 ### 4. Default-deny permissions
 
@@ -194,13 +242,13 @@ and suggested transitions between phases. Two workflows are defined in
 
 | Phase | Role | Steps | Artifact |
 |-------|------|-------|---------|
-| `intake` | Requirement gathering | 3 (Gather → Deepen → Write) | `landscape.md` |
+| `intake` | Requirement gathering | 3 (Gather → Deepen → Summarize) | Chat summary only |
 | `plan-spec` | Technical planning | 2 (Analyze → Write) | `plan.md` |
 | `plan-review` | Quality review | 2 (Read → Evaluate) | Chat report only |
 | `execute` | Implementation handoff | 2 (Compose → Request) | Code changes via executor |
 
-**milestones** — stub workflow; runs intake only, then reports the workflow is
-not yet fully implemented.
+**milestones** — stub workflow; runs intake only, then yields with a single
+"done" suggestion.
 
 ### Workflow selection
 
@@ -220,9 +268,11 @@ def is_valid_transition(workflow: Workflow, from_phase: str, to_phase: str) -> b
     )
 ```
 
-At phase boundaries, `format_phase_boundary` renders the suggested next phases
-from `workflow.suggested_transitions[current_phase]`. These are recommendations,
-not constraints — the user can request any phase in `workflow.available_phases`.
+The special value `"done"` bypasses this function — it is handled before the
+validation call in `koan_set_phase`. For real phases, suggested transitions
+from `workflow.suggested_transitions[current_phase]` guide the orchestrator's
+default `koan_yield` suggestions. These are recommendations, not constraints —
+the user can request any phase in `workflow.available_phases`.
 
 ---
 
@@ -311,21 +361,30 @@ State flows from LLM tool calls to the browser through the projection system.
 [Browser receives patch, applies applyPatch(store, patch) — no interpretation]
 ```
 
-### Concrete example: `koan_complete_step`
+### Concrete example: `koan_yield`
 
 ```
-LLM calls koan_complete_step({ thoughts: "..." }) via MCP
+LLM calls koan_yield({ suggestions: [{id:"plan-spec", label:"Write plan", command:"..."}] })
   -> MCP endpoint checks permissions
-  -> emits step_advance audit event (audit fold)
-  -> audit fold: projection.step = 2, projection.step_name = "Decompose"
-  -> write_state(audit projection) -> state.json
-  -> push_event("agent_step_advanced", {step: 2, step_name: "Decompose"}, agent_id="abc")
-  -> ProjectionStore: append to log, fold projection, compute JSON Patch diff
-  -> patch: [{op: "replace", path: "/run/agents/abc/step", value: 2}, ...]
-  -> broadcast patch dict to all SSE subscribers
-  -> browser receives: event: patch / data: {"version": 47, "patch": [...]}
-  -> applyPatch(store, patch) — store.run.agents.abc.step is now 2
-  -> returns step 2 instructions as MCP tool result
+  -> push_event("yield_started", {suggestions: [...]}, agent_id="abc")
+  -> fold: appends YieldEntry to agent conversation, sets run.active_yield
+  -> patch: [{op:"add", path:"/run/agents/abc/conversation/entries/-", value:{type:"yield",...}},
+             {op:"replace", path:"/run/activeYield", value:{suggestions:[...]}}]
+  -> broadcast patch to SSE subscribers
+  -> browser renders suggestion pills in activity feed and above chat input
+  -> tool handler creates asyncio.Future, stores in app_state.yield_future, awaits it
+  -> (HTTP connection held open)
+
+user clicks suggestion pill "Write plan" in the browser
+  -> YieldCard.onClick -> setChatDraft("write dashboard redesign implementation plan")
+  -> FeedbackInput useEffect fires -> textarea pre-filled
+  -> user reviews, presses Enter
+  -> POST /api/chat { message: "write dashboard redesign implementation plan" }
+  -> api_chat: yield_future is set -> append to user_message_buffer -> set_result(True)
+  -> yield_future resolves
+  -> drain_user_messages -> "write dashboard redesign implementation plan"
+  -> returns message text as MCP tool result
+LLM receives user's message, responds, calls koan_set_phase("plan-spec")
 ```
 
 ### Snapshot on reconnect

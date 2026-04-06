@@ -171,8 +171,7 @@ koan_complete_step arrives via MCP:
   step == 0       -> step=1, prepend SYSTEM_PROMPT, return format_step(step_guidance(1))  [boot/phase transition]
   otherwise       -> validate_step_completion(step)                       [pre-condition check]
                   -> next_step = get_next_step(step)                      [pure: decides where to go]
-  next_step is None -> block for user message (asyncio.Future), then
-                       return format_phase_boundary(phase, messages, suggested, descriptions)  [phase boundary]
+  next_step is None -> return format_phase_complete(phase, suggested, descriptions) [non-blocking; orchestrator then calls koan_yield]
   next_step < prev  -> on_loop_back(prev, next_step)                     [side effects of loop]
   next_step != None -> step=next_step, return format_step(step_guidance(next_step)) + any buffered user messages  [advance]
 ```
