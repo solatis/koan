@@ -10,7 +10,8 @@ files — no Node.js in production.
 ## Directory Layout
 
 ```
-frontend/                   # source tree (alongside koan/ Python package)
+frontend/
+├── AGENTS.md               # frontend-specific agent rules (read first)
 ├── package.json
 ├── tsconfig.json
 ├── vite.config.ts          # proxies /api/*, /events, /mcp/* to Python in dev
@@ -18,6 +19,7 @@ frontend/                   # source tree (alongside koan/ Python package)
 ├── src/
 │   ├── main.tsx            # mounts <App /> into #root; imports global CSS
 │   ├── App.tsx             # top-level layout; owns SSE connection lifecycle
+│   ├── utils.ts            # formatTokens, formatSize, normalizeOptions
 │   ├── store/
 │   │   ├── index.ts        # single Zustand store (the app-db equivalent)
 │   │   └── selectors.ts    # derived state computed from store slices
@@ -25,14 +27,23 @@ frontend/                   # source tree (alongside koan/ Python package)
 │   │   └── connect.ts      # EventSource wrapper: always-snapshot catch-up + JSON Patch
 │   ├── api/
 │   │   └── client.ts       # typed fetch wrappers for POST/PUT endpoints
-│   ├── components/         # one file per UI component (see Component Mapping)
+│   ├── components/
+│   │   ├── AGENTS.md       # component development rules (read when building components)
+│   │   ├── atoms/          # StatusDot, Badge, Button, SectionLabel, LogoMark, ProgressSegment
+│   │   ├── molecules/      # ProseCard, ThinkingBlock, ToolCallRow, FeedbackInput, etc.
+│   │   ├── organisms/      # HeaderBar, ScoutBar, ArtifactsSidebar, ElicitationPanel, NewRunForm
+│   │   ├── Md.tsx          # shared markdown renderer (ReactMarkdown + remark-gfm)
+│   │   ├── Notification.tsx # toast notification system
+│   │   └── SettingsOverlay.tsx # settings modal (not yet redesigned)
 │   ├── hooks/
 │   │   ├── useElapsed.ts   # elapsed time hook for agent start times
-│   │   └── useAutoScroll.ts
+│   │   └── useAutoScroll.ts # sticky-scroll for content stream
 │   └── styles/
-│       ├── variables.css   # CSS custom properties
-│       ├── layout.css
-│       └── components.css  # components.css + animations.css merged
+│       ├── variables.css   # design tokens (PROTECTED — see frontend/AGENTS.md)
+│       ├── app-shell.css   # page frame layout (.app-root, .workflow-grid)
+│       ├── markdown.css    # rendered markdown content styling
+│       ├── layout.css      # legacy — SettingsOverlay only
+│       └── components.css  # legacy — SettingsOverlay only
 └── dist/                   # Vite build output (gitignored)
 
 koan/web/static/app/        # Vite build target (committed build artifacts)
@@ -181,24 +192,30 @@ form state and cascade dropdown logic.
 
 ---
 
-## Component Mapping
+## Component Architecture
 
-| React component | Primary store subscription |
-|---|---|
-| `App.tsx` | `run` |
-| `LandingPage.tsx` | `run` (negated) |
-| `StatusSidebar.tsx` | `run.agents`, `run.phase` |
-| `AgentMonitor.tsx` | `run.agents` |
-| `ArtifactsSidebar.tsx` | `run.artifacts` |
-| `AskWizard.tsx` | `run.focus` |
-| `WorkflowDecision.tsx` | `run.focus` |
-| `ArtifactReview.tsx` | `run.focus` |
-| `Completion.tsx` | `run.completion` |
-| `SettingsOverlay.tsx` | `settingsOpen` + local state |
-| `Notification.tsx` | `notifications` |
+Components follow an atom → molecule → organism hierarchy. See
+[frontend/src/components/AGENTS.md](../frontend/src/components/AGENTS.md)
+for development rules.
 
-Scouts are agents where `isPrimary === false`. `AgentMonitor` filters
-`run.agents` by this flag — there is no separate `scouts` slice.
+**Organisms and their store subscriptions:**
+
+| Organism | Store subscription | Wiring |
+|---|---|---|
+| `HeaderBar` | `run.phase`, `run.agents` (primary) | `useHeaderData()` hook in App.tsx |
+| `NewRunForm` | `settings.profiles`, `settings.installations` | Reads store directly |
+| `ElicitationPanel` | `run.focus` (questions) | `ElicitationView` in App.tsx |
+| `ArtifactsSidebar` | `run.artifacts` | `ConnectedSidebar` in App.tsx |
+| `ScoutBar` | `run.agents` (non-primary) | `ConnectedScoutBar` in App.tsx |
+| `SettingsOverlay` | `settingsOpen` + local state | Direct store access |
+
+**Content stream rendering** maps each conversation event type to a molecule.
+The full mapping is documented in
+[docs/design-system.md](./design-system.md#content-stream-rendering) and in
+[frontend/src/components/AGENTS.md](../frontend/src/components/AGENTS.md).
+
+Scouts are agents where `isPrimary === false`. App.tsx filters `run.agents`
+by this flag — there is no separate `scouts` slice.
 
 ---
 
