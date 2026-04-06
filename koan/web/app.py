@@ -318,9 +318,10 @@ async def api_start_run(r: Request) -> Response:
     # Reset run-scoped state
     st.user_message_buffer.clear()
     st.steering_queue.clear()
-    if st.phase_complete_future is not None and not st.phase_complete_future.done():
-        st.phase_complete_future.set_result(False)
-    st.phase_complete_future = None
+    if st.yield_future is not None and not st.yield_future.done():
+        st.yield_future.set_result(False)
+    st.yield_future = None
+    st.workflow_done = False
 
     # Create run directory
     run_id = f"{int(time.time())}-{uuid.uuid4().hex[:8]}"
@@ -352,7 +353,7 @@ async def api_start_run(r: Request) -> Response:
 
 
 async def api_chat(r: Request) -> Response:
-    """Accept a user chat message, buffer it, and unblock any waiting phase boundary."""
+    """Accept a user chat message, buffer it, and unblock any waiting koan_yield."""
     body = await r.json()
     message = body.get("message", "")
     if not isinstance(message, str) or not message.strip():
@@ -370,7 +371,7 @@ async def api_chat(r: Request) -> Response:
     run = st.projection_store.projection.run
     primary_id = _primary_agent_id(run) if run else None
 
-    if st.phase_complete_future is not None and not st.phase_complete_future.done():
+    if st.yield_future is not None and not st.yield_future.done():
         st.user_message_buffer.append(msg)
         # Show inline in the activity feed — this is a direct conversation message
         st.projection_store.push_event(
@@ -378,7 +379,7 @@ async def api_chat(r: Request) -> Response:
             {"content": msg.content, "timestamp_ms": msg.timestamp_ms},
             agent_id=primary_id,
         )
-        st.phase_complete_future.set_result(True)
+        st.yield_future.set_result(True)
     else:
         st.steering_queue.append(msg)
         # Show in the steering indicator above chat — not inline

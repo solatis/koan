@@ -375,7 +375,7 @@ def _cancel_pending_interactions(agent_id: str, app_state: AppState) -> None:
     The active interaction (if it belongs to this agent) emits a typed
     cancellation resolution event.
 
-    Also clears phase_complete_future if the agent was blocked at a phase boundary.
+    Also clears yield_future if the agent was blocked at a phase boundary.
     """
     from .web.interactions import activate_next_interaction
 
@@ -410,7 +410,7 @@ def _cancel_pending_interactions(agent_id: str, app_state: AppState) -> None:
             active.future.set_result(error_result)
         activate_next_interaction(app_state)
 
-    # Clear phase_complete_future if it was set (orchestrator crashed at phase boundary)
-    if app_state.phase_complete_future is not None and not app_state.phase_complete_future.done():
-        app_state.phase_complete_future.set_result(False)
-    app_state.phase_complete_future = None
+    # Clear yield_future if it was set (orchestrator crashed at phase boundary)
+    if app_state.yield_future is not None and not app_state.yield_future.done():
+        app_state.yield_future.set_result(False)
+    app_state.yield_future = None

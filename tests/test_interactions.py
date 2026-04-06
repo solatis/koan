@@ -32,7 +32,7 @@ class FakeAppState:
     interaction_queue_max: int = 8
     run_dir: str | None = None
     projection_store: object = field(default_factory=lambda: __import__('koan.projections', fromlist=['ProjectionStore']).ProjectionStore())
-    phase_complete_future: asyncio.Future | None = None
+    yield_future: asyncio.Future | None = None
     steering_queue: list = field(default_factory=list)
     phase: str = "intake"
 
@@ -229,16 +229,16 @@ class TestCancellationOnExit:
         assert app_state.active_interaction is queued_b
 
     @pytest.mark.anyio
-    async def test_phase_complete_future_cleared_on_exit(self):
-        """_cancel_pending_interactions clears phase_complete_future."""
+    async def test_yield_future_cleared_on_exit(self):
+        """_cancel_pending_interactions clears yield_future."""
         from koan.subagent import _cancel_pending_interactions
 
         app_state = FakeAppState()
         loop = asyncio.get_running_loop()
         future = loop.create_future()
-        app_state.phase_complete_future = future
+        app_state.yield_future = future
 
         _cancel_pending_interactions("agent-1", app_state)
 
         assert future.done()
-        assert app_state.phase_complete_future is None
+        assert app_state.yield_future is None

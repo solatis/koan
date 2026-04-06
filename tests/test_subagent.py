@@ -38,7 +38,7 @@ class FakeAppState:
     projection_store: object = field(default_factory=lambda: __import__('koan.projections', fromlist=['ProjectionStore']).ProjectionStore())
     run_installations: dict = field(default_factory=dict)
     _active_processes: dict = field(default_factory=dict)
-    phase_complete_future: Any = None
+    yield_future: Any = None
     steering_queue: list = field(default_factory=list)
     phase: str = "intake"
     project_dir: str = ""

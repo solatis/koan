@@ -84,12 +84,14 @@ class AppState:
     _active_processes: dict[str, asyncio.subprocess.Process] = field(
         default_factory=dict, repr=False,
     )
-    # Buffered user chat messages — drained at each koan_complete_step call.
+    # Buffered user chat messages — drained when koan_yield unblocks.
     user_message_buffer: list[ChatMessage] = field(default_factory=list)
-    # Non-None while koan_complete_step is blocking at a phase boundary.
-    phase_complete_future: asyncio.Future | None = None
+    # Non-None while koan_yield is blocking, waiting for a user message.
+    yield_future: asyncio.Future | None = None
+    # True after koan_set_phase("done") — signals the orchestrator to exit.
+    workflow_done: bool = False
     # Steering queue — user messages delivered on the next koan_* tool response.
-    # Separate from user_message_buffer so phase-boundary blocking and steering
+    # Separate from user_message_buffer so yield blocking and steering
     # can be drained independently without double-delivery.
     steering_queue: list[ChatMessage] = field(default_factory=list)
 
