@@ -1,6 +1,6 @@
 .sr {
   display: grid;
-  grid-template-columns: 20px minmax(0, 1.5fr) 60px 60px 70px minmax(0, 1fr);
+  grid-template-columns: 20px 1fr 60px 50px 70px 1fr;
   align-items: center;
   padding: var(--padding-scout-row);
   font-size: 12px;

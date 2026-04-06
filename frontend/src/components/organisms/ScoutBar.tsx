@@ -42,13 +42,11 @@ export function ScoutBar({ scouts }: ScoutBarProps) {
       <div className="sb-inner">
       {/* Summary line */}
       <div className="sb-summary">
-        <div className="sb-summary-left">
-          <StatusDot status="running" />
-          <span className="sb-label">Scouts</span>
-        </div>
+        <StatusDot status="running" />
+        <span className="sb-label">Scouts</span>
         <div className="sb-counts">
           {STATUS_ORDER.map(key => (
-            <span key={key} className="sb-count-group">
+            <span key={key} className={`sb-count-group${counts[key] > 0 ? ' sb-count-group--active' : ''}`}>
               <span className={`sb-count-num${counts[key] > 0 ? ` sb-count--${key}` : ''}`}>
                 {counts[key]}
               </span>

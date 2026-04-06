@@ -7,21 +7,15 @@
   max-width: 1400px;
   margin: 0 auto;
   width: 100%;
-  padding: var(--padding-scout-bar);
+  padding: 14px 24px; /* horizontal matches header bar's .hb-inner for left/right edge alignment */
 }
 
 /* ---- Summary line ---- */
 .sb-summary {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 10px;
-}
-
-.sb-summary-left {
-  display: flex;
   align-items: center;
   gap: 8px;
+  margin-bottom: 10px;
 }
 
 .sb-label {
@@ -30,6 +24,7 @@
   color: var(--text-on-dark-muted);
   text-transform: uppercase;
   letter-spacing: 1px;
+  margin-right: 8px; /* extra space before counts */
 }
 
 .sb-counts {
@@ -45,20 +40,25 @@
   gap: 4px;
 }
 
+/* Zero-value: both number and label use muted text */
 .sb-count-num {
-  color: var(--text-on-dark-scouts-muted);
+  color: var(--text-on-dark-muted);
   font-weight: 500;
 }
 
-/* Non-zero counts use their status color */
+.sb-count-word {
+  color: var(--text-on-dark-muted);
+}
+
+/* Non-zero: number gets full status color, label gets warm white */
+.sb-count-group--active .sb-count-word {
+  color: var(--text-on-dark);
+}
+
 .sb-count--running { color: var(--status-running); }
 .sb-count--queued  { color: var(--status-queued); }
 .sb-count--done    { color: var(--status-done); }
 .sb-count--failed  { color: var(--status-failed); }
-
-.sb-count-word {
-  color: var(--text-on-dark-scouts-muted);
-}
 
 /* ---- Table card ---- */
 .sb-table {
@@ -69,7 +69,7 @@
 
 .sb-table-header {
   display: grid;
-  grid-template-columns: 20px minmax(0, 1.5fr) 60px 60px 70px minmax(0, 1fr);
+  grid-template-columns: 20px 1fr 60px 50px 70px 1fr;
   align-items: center;
   padding: 6px 14px;
   border-bottom: 0.5px solid var(--border-divider);
