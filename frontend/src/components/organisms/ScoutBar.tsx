@@ -34,6 +34,9 @@ export function ScoutBar({ scouts }: ScoutBarProps) {
   const counts: Record<StatusKey, number> = { running: 0, queued: 0, done: 0, failed: 0 }
   for (const s of scouts) counts[s.status]++
 
+  // Hide when all scouts have finished (no running or queued)
+  if (counts.running === 0 && counts.queued === 0) return null
+
   return (
     <div className="sb">
       <div className="sb-inner">
