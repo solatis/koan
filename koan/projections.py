@@ -55,6 +55,9 @@ EventType = Literal[
     # User chat
     "user_message",
     "phase_boundary_reached",
+    # Yield — orchestrator hands control back to the user
+    "yield_started",
+    "yield_cleared",
     # Steering
     "steering_queued",
     "steering_delivered",
@@ -185,11 +188,30 @@ class PhaseBoundaryEntry(KoanBaseModel):
     phase: str
     message: str
 
+class Suggestion(KoanBaseModel):
+    """A structured option presented to the user at a yield point."""
+    id: str                                # machine key (e.g. "plan-spec", "done")
+    label: str                             # display text (e.g. "Write implementation plan")
+    command: str = ""                      # pre-fills the chat input when the pill is clicked
+
+class YieldEntry(KoanBaseModel):
+    """Conversation entry emitted when the orchestrator yields to the user."""
+    type: Literal["yield"] = "yield"
+    suggestions: list[Suggestion] = []     # clickable options shown in the UI
+
+class ActiveYield(KoanBaseModel):
+    """Run-level state tracking the current yield's suggestions.
+
+    Non-None while the orchestrator is blocked in koan_yield. Cleared when
+    a phase starts, the workflow completes, or a new yield supersedes it.
+    """
+    suggestions: list[Suggestion] = []
+
 ConversationEntry = Annotated[
     ThinkingEntry | TextEntry | StepEntry | UserMessageEntry |
     ToolReadEntry | ToolWriteEntry | ToolEditEntry |
     ToolBashEntry | ToolGrepEntry | ToolLsEntry | ToolGenericEntry |
-    DebugStepGuidanceEntry | PhaseBoundaryEntry,
+    DebugStepGuidanceEntry | PhaseBoundaryEntry | YieldEntry,
     Field(discriminator="type"),
 ]
 
@@ -323,6 +345,7 @@ class Run(KoanBaseModel):
     artifacts: dict[str, ArtifactInfo] = {}
     completion: CompletionInfo | None = None
     steering: list[SteeringMessage] = []   # pending steering messages shown above chat
+    active_yield: ActiveYield | None = None  # non-None while orchestrator is in koan_yield
 
 class Projection(KoanBaseModel):
     settings: Settings = Field(default_factory=Settings)
@@ -451,7 +474,10 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 if projection.run is None:
                     log.warning("fold phase_started: run is None, skipping")
                     return projection
-                new_run = projection.run.model_copy(update={"phase": payload.get("phase", "")})
+                new_run = projection.run.model_copy(update={
+                    "phase": payload.get("phase", ""),
+                    "active_yield": None,  # clear yield when a new phase starts
+                })
                 return projection.model_copy(update={"run": new_run})
 
             case "workflow_completed":
@@ -463,7 +489,10 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                     summary=payload.get("summary", ""),
                     error=payload.get("error"),
                 )
-                new_run = projection.run.model_copy(update={"completion": completion})
+                new_run = projection.run.model_copy(update={
+                    "completion": completion,
+                    "active_yield": None,  # clear yield on completion
+                })
                 return projection.model_copy(update={"run": new_run})
 
             # ── Agent lifecycle ────────────────────────────────────────────
@@ -1114,6 +1143,39 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                     "default_scout_concurrency": payload.get("value", 8),
                 })
                 return projection.model_copy(update={"settings": new_settings})
+
+            case "yield_started":
+                if projection.run is None or not agent_id:
+                    return projection
+                agent = projection.run.agents.get(agent_id)
+                if agent is None:
+                    return projection
+                raw_suggestions = payload.get("suggestions", [])
+                suggestions = [
+                    Suggestion(
+                        id=s.get("id", ""),
+                        label=s.get("label", ""),
+                        command=s.get("command", ""),
+                    )
+                    for s in raw_suggestions
+                ]
+                # Append YieldEntry to the agent's conversation stream
+                new_conv = _flush_conversation(agent.conversation)
+                new_conv = new_conv.model_copy(update={
+                    "entries": [*new_conv.entries, YieldEntry(suggestions=suggestions)],
+                })
+                # Set run-level active_yield so the UI can pin pills above the input
+                new_run = _update_agent_conversation(projection.run, agent_id, new_conv)
+                new_run = new_run.model_copy(update={
+                    "active_yield": ActiveYield(suggestions=suggestions),
+                })
+                return projection.model_copy(update={"run": new_run})
+
+            case "yield_cleared":
+                if projection.run is None:
+                    return projection
+                new_run = projection.run.model_copy(update={"active_yield": None})
+                return projection.model_copy(update={"run": new_run})
 
             case _:
                 log.warning("fold: unknown event_type=%r", event_type)

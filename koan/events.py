@@ -188,6 +188,16 @@ def build_questions_answered(
     return result
 
 
+def build_yield_started(suggestions: list[dict]) -> dict:
+    """Build yield_started event payload.
+
+    Args:
+        suggestions: List of {id, label, command} dicts — the structured
+                     options the orchestrator presents at a yield point.
+    """
+    return {"suggestions": suggestions}
+
+
 # -- Configuration event builders ---------------------------------------------
 
 def build_probe_completed(results: dict[str, bool]) -> dict:

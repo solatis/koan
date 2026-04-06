@@ -45,6 +45,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
         # Base set; actual permissions are phase-aware — see _check_orchestrator_permission
         "koan_complete_step",
         "koan_set_phase",
+        "koan_yield",
         "koan_ask_question",
         "koan_request_scouts",
         "koan_request_executor",
@@ -132,7 +133,7 @@ def _check_orchestrator_permission(
         return {"allowed": False, "reason": f"bash is not available in phase '{phase}'"}
 
     # Always allowed base koan tools
-    if tool_name in ("koan_complete_step", "koan_set_phase"):
+    if tool_name in ("koan_complete_step", "koan_set_phase", "koan_yield"):
         return {"allowed": True, "reason": None}
 
     # koan_ask_question — always allowed except brief-generation step 1
