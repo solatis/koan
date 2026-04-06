@@ -21,3 +21,17 @@ export function tierSummary(tiers: Record<string, string>): string {
   }
   return parts.slice(0, 3).join(' | ') || '--'
 }
+
+// Normalize raw question options from LLM output. Options may arrive as
+// strings or dicts with varying key names.
+export function normalizeOptions(
+  rawOpts: (string | Record<string, unknown>)[] | undefined,
+): { value: string; label: string; recommended?: boolean }[] {
+  if (!rawOpts) return []
+  return rawOpts.map(o => {
+    if (typeof o === 'string') return { value: o, label: o }
+    const label = String(o['label'] ?? o['text'] ?? o['value'] ?? o['option'] ?? '')
+    const value = String(o['value'] ?? o['label'] ?? o['text'] ?? label)
+    return { value, label, recommended: (o['recommended'] as boolean) ?? false }
+  })
+}
