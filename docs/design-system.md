@@ -30,6 +30,7 @@ These define the layering system. The hierarchy from back to front is: base → 
 | `--bg-step-guidance` | `#efece6` | Step guidance pill, model badges in scout table, "coming soon" badges. Neutral warm. |
 | `--bg-completion` | `#e8f5ee` | Completion/success banners. Teal-family light green. |
 | `--bg-selected` | `#fdf8f5` | Selected card state (e.g., selected workflow option). Very faint orange tint. |
+| `--bg-card-warm` | `#faf8f4` | Slightly warmer white for artifact cards, scout table interior, and secondary card surfaces distinguishable from prose cards. |
 
 ### Text colors
 
@@ -77,6 +78,16 @@ These are used exclusively for scout status indicators and similar operational s
 | `--status-queued` | `#b8aca0` | Queued count text. Desaturated warm. |
 | `--status-failed` | `#c44` | Failed count text. Standard red — used sparingly. |
 
+### Derived colors
+
+These are derived from core tokens for specific UI effects. Not part of the primary palette.
+
+| Token | Value | Usage |
+|---|---|---|
+| `--overlay-backdrop` | `rgba(46, 58, 94, 0.45)` | Navy-tinted translucent backdrop for modals and overlays. |
+| `--focus-ring` | `rgba(212, 119, 90, 0.12)` | Orange-derived focus ring glow for input fields. |
+| `--flash-teal` | `rgba(90, 154, 138, 0.12)` | Teal-derived background flash for result animations. |
+
 ## Typography
 
 ### Font families
@@ -109,7 +120,7 @@ All weights are 400 (regular) or 500 (medium). Never use 600 or 700.
 
 ### Inline code
 
-Code tokens within prose use: `background: #f0ede6; padding: 1px 5px; border-radius: 3px; font-size: one step below surrounding text; color: #2e3a5e; font-family: var(--font-mono)`.
+Code tokens within prose use: `background: var(--bg-tool-row); padding: 1px 5px; border-radius: 3px; font-size: one step below surrounding text; color: var(--text-primary); font-family: var(--font-mono)`.
 
 ## Spacing
 
@@ -185,7 +196,7 @@ Lavender block (`--bg-thinking`) with `--radius-xl`. Padding: 16px 20px. Contain
 
 ### Tool call row
 
-Background `--bg-tool-row`, `--radius-md`, padding `--padding-tool-row`. Contains a 13px teal checkmark SVG, a tool type label ("bash", "read", "edit") in `--type-tool-type` and `--text-muted` with min-width 36px, and the command/path in `--type-tool-path` and `--font-mono` colored `#4a4a5a`. Rows within a group are spaced `--gap-tool-rows` apart.
+Background `--bg-tool-row`, `--radius-md`, padding `--padding-tool-row`. Contains a 13px teal checkmark SVG, a tool type label ("bash", "read", "edit") in `--type-tool-type` and `--text-muted` with min-width 36px, and the command/path in `--type-tool-path` and `--font-mono` colored `var(--text-body)`. Rows within a group are spaced `--gap-tool-rows` apart.
 
 ### Step guidance pill
 
@@ -193,13 +204,13 @@ Inline-flex element with `--bg-step-guidance`, `--radius-lg`, padding `--padding
 
 ### Artifact card
 
-Background `--bg-card` (specifically `#faf8f4` — slightly warmer than pure white to distinguish from prose cards), `--radius-lg`, `0.5px solid --border-divider`, padding `--padding-artifact`. Contains a 28px square icon with `--radius-lg`: navy background with a lavender file SVG for recently modified artifacts, or teal background with a light-teal file SVG for older/stable artifacts. Next to the icon: filename in `--font-mono` at 12px/500 in `--text-primary`, and timestamp in `--type-timestamp` at `--text-artifact-time`.
+Background `--bg-card-warm` (`#faf8f4` — slightly warmer than pure white to distinguish from prose cards), `--radius-lg`, `0.5px solid --border-divider`, padding `--padding-artifact`. Contains a 28px square icon with `--radius-lg`: navy background with a lavender file SVG for recently modified artifacts, or teal background with a light-teal file SVG for older/stable artifacts. Next to the icon: filename in `--font-mono` at 12px/500 in `--text-primary`, and timestamp in `--type-timestamp` at `--text-artifact-time`.
 
 ### Scout bar
 
 Navy frame (`--color-navy`) with padding `--padding-scout-bar`. The summary line sits directly on navy: an 8px orange dot, "SCOUTS" label in `--text-on-dark-muted` at `--type-label`, then count groups (e.g., "3 running") where the number uses the appropriate status color and the label uses `--text-on-dark-scouts-muted`.
 
-Below the summary, a white table card (`--bg-card` with `#faf8f4`) with `--radius-lg` and no outer border. The table has a header row with column labels in `--type-badge` / `--text-muted`, uppercase, with a `0.5px solid --border-divider` bottom border. Data rows use `--padding-scout-row` with `0.5px solid --border-divider-light` separators (no border on the last row).
+Below the summary, a white table card (`--bg-card-warm`) with `--radius-lg` and no outer border. The table has a header row with column labels in `--type-badge` / `--text-muted`, uppercase, with a `0.5px solid --border-divider` bottom border. Data rows use `--padding-scout-row` with `0.5px solid --border-divider-light` separators (no border on the last row).
 
 Table columns: status dot (20px col, 6px dot in status color), name (flex, `--font-mono` 12px/500 in `--text-primary`), model (60px, `--text-muted` 11px), tools (60px, `--text-muted`), elapsed (70px, `--text-muted`), status (flex, `--color-orange` for active steps).
 
