@@ -1,0 +1,13 @@
+.inline-form {
+  border: 1.5px solid var(--color-orange);
+  border-radius: var(--radius-xl);
+  padding: var(--padding-inline-form);
+  background: var(--bg-card);
+}
+
+.inline-form-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 20px;
+  padding-left: 82px; /* aligns with FormRow controls left edge (82px label width) */
+}

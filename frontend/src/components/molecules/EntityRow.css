@@ -1,0 +1,37 @@
+.entity-row {
+  padding: var(--padding-entity-row);
+  border-radius: var(--radius-lg);
+  border: 0.5px solid var(--border-card);
+  margin-bottom: var(--gap-entity-rows);
+}
+
+.entity-row--active {
+  border: 1.5px solid var(--color-orange);
+}
+
+.entity-row-top {
+  display: flex;
+  align-items: center;
+  gap: 8px; /* inline gap between name, badges, and action buttons — no token */
+}
+
+.entity-row-name {
+  font-size: 14px; /* entity name body size — no token */
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.entity-row--mono .entity-row-name {
+  font-size: 13px; /* technical identifier size — no token */
+  font-family: var(--font-mono);
+}
+
+.entity-row-meta {
+  font-size: 12px; /* subtitle/meta size — no token */
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  margin-top: 5px; /* spacing between top line and meta — no token */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

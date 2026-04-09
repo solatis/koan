@@ -1,0 +1,26 @@
+.nav-item {
+  display: block;
+  width: 100%;
+  padding: 8px 16px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--type-body);
+  font-weight: 400;
+  color: var(--text-muted);
+  text-align: left;
+  background: none;
+  border: none;
+  border-left: 2px solid transparent;
+  user-select: none;
+  transition: color var(--duration-fast) var(--ease-default);
+}
+
+.nav-item:hover:not(.nav-item--active) {
+  color: var(--text-primary);
+}
+
+.nav-item--active {
+  font-weight: 500;
+  color: var(--text-primary);
+  border-left-color: var(--color-orange);
+}

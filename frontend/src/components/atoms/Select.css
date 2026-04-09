@@ -1,0 +1,38 @@
+.atom-select {
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--bg-base);
+  border: 1.5px solid var(--border-input);
+  border-radius: var(--radius-lg);
+  padding: 8px 28px 8px 12px;
+  outline: none;
+  width: 100%;
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease-default);
+  -webkit-appearance: none;
+  appearance: none;
+  /* chevron SVG — text-muted color (#9a8e7e) encoded */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%239a8e7e' stroke-width='1.3' fill='none'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+
+.atom-select:focus {
+  border-color: var(--color-orange);
+}
+
+.atom-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Placeholder state — value is empty */
+.atom-select--placeholder {
+  color: var(--text-placeholder);
+}
+
+/* Mono modifier — for technical identifiers */
+.atom-select--mono {
+  font-family: var(--font-mono);
+}

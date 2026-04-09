@@ -1,14 +1,15 @@
 /**
  * Badge — pill-shaped inline label for metadata and status.
  *
- * Used for: "coming soon", "recommended", "haiku" model labels,
- * and other small inline indicators throughout the UI.
+ * Used for: "coming soon", "recommended" (neutral/success), model labels
+ * (model), "default" installation labels (default), "unavailable" (error),
+ * and other small inline indicators.
  */
 
 import './Badge.css'
 import type { ReactNode } from 'react'
 
-type Variant = 'neutral' | 'success' | 'accent' | 'model'
+type Variant = 'neutral' | 'success' | 'accent' | 'model' | 'default' | 'error'
 
 interface BadgeProps {
   variant: Variant

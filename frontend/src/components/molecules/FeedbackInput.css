@@ -1,8 +1,14 @@
 .fi {
+  position: relative;
   background: var(--bg-card);
   border: 1.5px solid var(--border-input);
   border-radius: var(--radius-xl);
   padding: var(--padding-input);
+}
+
+.fi--focused {
+  border-color: var(--color-orange);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .fi--disabled {

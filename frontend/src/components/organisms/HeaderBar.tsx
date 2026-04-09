@@ -1,9 +1,11 @@
 /**
  * HeaderBar — the fixed navy bar at the top of every view.
  *
- * Contains the logo mark + wordmark, a vertical divider, breadcrumb
- * navigation with progress segments, orchestrator status, elapsed
- * time, and a settings button.
+ * Two modes:
+ * - workflow: breadcrumb nav with phase/step/progress, orchestrator
+ *   status, elapsed time, settings gear button.
+ * - navigation: top-level page navigation links (New run, Sessions,
+ *   Settings). No workflow-specific controls.
  *
  * Used in: app shell, rendered above all content views.
  */
@@ -14,6 +16,7 @@ import { BreadcrumbNav } from '../molecules/BreadcrumbNav'
 import './HeaderBar.css'
 
 interface HeaderBarProps {
+  // Workflow mode props
   phase: string
   step: string
   totalSteps: number
@@ -21,6 +24,12 @@ interface HeaderBarProps {
   orchestratorModel?: string
   elapsed?: string
   onSettingsClick?: () => void
+
+  // Mode switching
+  mode?: 'workflow' | 'navigation'
+  navItems?: { label: string; key: string }[]
+  activeNav?: string
+  onNavChange?: (key: string) => void
 }
 
 const GearIcon = () => (
@@ -40,38 +49,60 @@ export function HeaderBar({
   orchestratorModel = 'opus',
   elapsed,
   onSettingsClick,
+  mode = 'workflow',
+  navItems,
+  activeNav,
+  onNavChange,
 }: HeaderBarProps) {
   return (
     <header className="hb">
       <div className="hb-inner">
-      <div className="hb-left">
-        <div className="hb-logo">
-          <LogoMark />
-          <span className="hb-wordmark">koan</span>
-        </div>
-        <span className="hb-divider" />
-        <BreadcrumbNav
-          phase={phase}
-          step={step}
-          totalSteps={totalSteps}
-          currentStep={currentStep}
-        />
-      </div>
+        <div className="hb-left">
+          <div className="hb-logo">
+            <LogoMark />
+            <span className="hb-wordmark">koan</span>
+          </div>
+          <span className="hb-divider" />
 
-      <div className="hb-right">
-        <div className="hb-orchestrator">
-          <StatusDot status="done" size="sm" />
-          <span className="hb-model">{orchestratorModel}</span>
+          {mode === 'workflow' ? (
+            <BreadcrumbNav
+              phase={phase}
+              step={step}
+              totalSteps={totalSteps}
+              currentStep={currentStep}
+            />
+          ) : (
+            <div className="hb-nav">
+              {navItems?.map(item => (
+                <button
+                  key={item.key}
+                  type="button"
+                  className={`hb-nav-link${item.key === activeNav ? ' hb-nav-link--active' : ''}`}
+                  onClick={() => onNavChange?.(item.key)}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
-        {elapsed && <span className="hb-elapsed">{elapsed}</span>}
-        <button
-          className="hb-settings"
-          onClick={onSettingsClick}
-          aria-label="Settings"
-        >
-          <GearIcon />
-        </button>
-      </div>
+
+        {mode === 'workflow' && (
+          <div className="hb-right">
+            <div className="hb-orchestrator">
+              <StatusDot status="done" size="sm" />
+              <span className="hb-model">{orchestratorModel}</span>
+            </div>
+            {elapsed && <span className="hb-elapsed">{elapsed}</span>}
+            <button
+              className="hb-settings"
+              onClick={onSettingsClick}
+              aria-label="Settings"
+            >
+              <GearIcon />
+            </button>
+          </div>
+        )}
       </div>
     </header>
   )

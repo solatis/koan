@@ -14,3 +14,11 @@
 .atom-badge--success { background: var(--bg-completion);    color: var(--text-completion); }
 .atom-badge--accent  { background: var(--bg-selected);      color: var(--color-orange); }
 .atom-badge--model   { background: var(--bg-step-guidance); color: var(--text-muted); }
+.atom-badge--default {
+  background: #fdf2ee; /* orange-tinted badge bg — no token, settings-specific */
+  color: #c06030;      /* darkened orange badge text — no token, settings-specific */
+}
+.atom-badge--error {
+  background: var(--bg-danger);
+  color: var(--status-failed);
+}

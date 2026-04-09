@@ -78,3 +78,31 @@
   justify-content: center;
   cursor: pointer;
 }
+
+/* ---- Navigation mode ---- */
+.hb-nav {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+
+.hb-nav-link {
+  font-family: inherit;
+  font-size: var(--type-breadcrumb);
+  font-weight: 400;
+  color: var(--text-on-dark-muted);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-default);
+}
+
+.hb-nav-link:hover:not(.hb-nav-link--active) {
+  color: var(--text-on-dark);
+}
+
+.hb-nav-link--active {
+  font-weight: 500;
+  color: var(--text-on-dark);
+}

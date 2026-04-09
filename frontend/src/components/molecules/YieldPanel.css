@@ -1,0 +1,82 @@
+/* YieldPanel -- command panel at koan_yield points. */
+
+.yp {
+  background: var(--bg-card);
+  border: 0.5px solid var(--border-card);
+  border-radius: var(--radius-2xl);
+  overflow: hidden;
+}
+
+/* ---- Header ---- */
+.yp-header {
+  padding: var(--padding-card);
+  border-bottom: 1px solid var(--border-divider-light);
+  font-family: var(--font-body);
+  font-size: var(--type-body);
+  font-weight: 500;
+  color: var(--text-primary);
+  line-height: 1.4;
+}
+
+/* ---- Body ---- */
+.yp-body {
+  padding: 2px 0;
+}
+
+/* ---- Command row ---- */
+.yp-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 11px 20px;
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-default);
+}
+
+.yp-row:hover {
+  background: var(--bg-card-warm);
+}
+
+.yp-row + .yp-row {
+  border-top: 0.5px solid var(--border-divider-light);
+}
+
+/* ---- Recommended row ---- */
+.yp-row--recommended {
+  border-left: 3px solid var(--color-orange);
+  padding-left: 17px; /* 20px default minus 3px border */
+  background: var(--bg-selected);
+}
+
+.yp-row--recommended:hover {
+  background: var(--bg-selected);
+}
+
+/* ---- Command name column ---- */
+.yp-command {
+  font-family: var(--font-mono);
+  font-size: var(--type-breadcrumb);
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  flex-shrink: 0;
+  min-width: 100px;
+}
+
+.yp-command--recommended {
+  color: var(--color-orange);
+}
+
+.yp-slash {
+  color: var(--color-orange);
+}
+
+/* ---- Description column ---- */
+.yp-desc {
+  font-family: var(--font-body);
+  font-size: var(--type-breadcrumb);
+  color: var(--text-muted);
+  line-height: 1.4;
+  flex: 1;
+  min-width: 0;
+}

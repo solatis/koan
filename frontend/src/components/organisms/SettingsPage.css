@@ -1,0 +1,40 @@
+.settings-page {
+  flex: 1;
+  overflow-y: auto;
+  background: var(--bg-base);
+}
+
+.settings-content {
+  max-width: var(--settings-max-width);
+  margin: 0 auto;
+  padding: var(--form-page-padding);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-form-sections);
+}
+
+.settings-title {
+  font-size: var(--type-page-title);
+  font-weight: 500;
+  color: var(--text-primary);
+  letter-spacing: -0.5px;
+  margin: 0;
+}
+
+.settings-card {
+  background: var(--bg-card);
+  border-radius: var(--radius-2xl);
+  border: 0.5px solid var(--border-card);
+  padding: var(--padding-card-settings);
+}
+
+.settings-card-title {
+  font-size: 17px; /* --type-section-title */
+  font-weight: 500;
+  color: var(--text-primary);
+  margin-bottom: 20px;
+}
+
+.settings-add-trigger {
+  margin-top: 16px;
+}

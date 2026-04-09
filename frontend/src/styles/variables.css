@@ -124,6 +124,8 @@
   --bg-step-guidance:          #efece6;
   --bg-completion:             #e8f5ee;
   --bg-selected:               #fdf8f5;
+  --bg-danger:                 #fce8e8;
+  --bg-toggle-off:             #d3d1c7;
 
 
   /* ===== Text Colors (light backgrounds) ===== */
@@ -137,6 +139,8 @@
   --text-thinking-label:       #5a5080;
   --text-completion:           #2a6a4a;
   --text-artifact-time:        #a89888;
+  --text-danger:               #791f1f;
+  --text-danger-body:          #a03030;
 
 
   /* ===== Text Colors (dark backgrounds — header, scout bar) ===== */
@@ -153,6 +157,8 @@
   --border-radio:              #e0d8cc;
   --border-divider:            #e8e2d8;
   --border-divider-light:      #f0ebe4;
+  --border-danger:             #e8c8c8;
+  --border-teal:               #b8d8cc;
 
 
   /* ===== Semantic Status Colors ===== */
@@ -190,6 +196,8 @@
   --header-height:             50px;
   --form-max-width:            640px;
   --form-page-padding:         40px 24px;
+  --settings-nav-width:        152px;
+  --settings-max-width:        960px;
 
 
   /* ===== Spacing — Component Gaps ===== */
@@ -200,6 +208,9 @@
   --gap-radio-options:         10px;
   --gap-scout-summary:         16px;
   --gap-progress-segments:     3px;
+  --gap-entity-rows:           8px;
+  --gap-form-rows:             12px;
+  --gap-form-controls:         8px;
 
 
   /* ===== Spacing — Component Internal Padding ===== */
@@ -212,6 +223,9 @@
   --padding-scout-row:         8px 14px;
   --padding-input:             14px 18px;
   --padding-radio:             12px 14px;
+  --padding-card-settings:     22px 26px;
+  --padding-entity-row:        12px 16px;
+  --padding-inline-form:       22px 26px;
 
 
   /* ===== Border Radius ===== */

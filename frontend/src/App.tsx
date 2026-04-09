@@ -5,18 +5,20 @@
  * text                 → ProseCard + Md
  * tool_read/write/edit → ToolCallRow
  * tool_bash/grep/ls    → ToolCallRow
- * tool_generic         → ToolCallRow
+ * tool_generic         → ToolCallRow (koan_* orchestration tools suppressed)
  * step                 → StepHeader
  * debug_step_guidance  → StepGuidancePill + Md
  * user_message         → UserBubble + Md
- * phase_boundary       → PhaseBoundary
- * yield                → YieldCard
+ * phase_boundary       → PhaseMarker
+ * yield                → YieldPanel
  * pendingThinking      → ThinkingBlock (always expanded)
  * pendingText          → ProseCard + Md + streaming cursor
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useStore, ConversationEntry, AskQuestion } from './store/index'
+// DEBUG: expose store to window for browser-agent introspection
+;(window as unknown as { __store: typeof useStore }).__store = useStore
 import { connectSSE } from './sse/connect'
 import { useElapsed, formatElapsed } from './hooks/useElapsed'
 import { useAutoScroll } from './hooks/useAutoScroll'
@@ -35,15 +37,17 @@ import { ToolCallRow } from './components/molecules/ToolCallRow'
 import { StepGuidancePill } from './components/molecules/StepGuidancePill'
 import { FeedbackInput } from './components/molecules/FeedbackInput'
 import { UserBubble } from './components/molecules/UserBubble'
-import { PhaseBoundary } from './components/molecules/PhaseBoundary'
-import { YieldCard } from './components/molecules/YieldCard'
+import { PhaseMarker } from './components/molecules/PhaseMarker'
+import { YieldPanel } from './components/molecules/YieldPanel'
 import { StepHeader } from './components/molecules/StepHeader'
 import { CompletionBanner } from './components/molecules/CompletionBanner'
 import { SteeringBar } from './components/molecules/SteeringBar'
 
 import { Md } from './components/Md'
 import { Notification } from './components/Notification'
-import { SettingsOverlay } from './components/SettingsOverlay'
+// SettingsOverlay is no longer rendered — replaced by SettingsPage organism
+// import { SettingsOverlay } from './components/SettingsOverlay'
+import { SettingsPage, type Profile as SPProfile, type Installation as SPInstallation } from './components/organisms/SettingsPage'
 
 // ---------------------------------------------------------------------------
 // Header data
@@ -119,6 +123,10 @@ function ConnectedScoutBar() {
 // Content stream
 // ---------------------------------------------------------------------------
 
+// Orchestration tools whose effects are visible through other molecules
+// (YieldPanel, StepHeader, PhaseMarker). They should not render as rows.
+const SUPPRESSED_TOOLS = new Set(['koan_yield', 'koan_complete_step', 'koan_set_phase'])
+
 function renderEntry(entry: ConversationEntry, i: number) {
   switch (entry.type) {
     case 'thinking':
@@ -138,6 +146,7 @@ function renderEntry(entry: ConversationEntry, i: number) {
     case 'tool_ls':
       return <ToolCallRow key={i} tool="ls" command={entry.path} status={entry.inFlight ? 'running' : 'done'} />
     case 'tool_generic':
+      if (SUPPRESSED_TOOLS.has(entry.toolName)) return null
       return <ToolCallRow key={i} tool={entry.toolName} command={entry.summary} status={entry.inFlight ? 'running' : 'done'} />
     case 'step':
       return <StepHeader key={i} stepNumber={entry.step} totalSteps={entry.totalSteps ?? 0} stepName={entry.stepName} />
@@ -148,9 +157,18 @@ function renderEntry(entry: ConversationEntry, i: number) {
       return <UserBubble key={i} timestamp={ts}><Md>{entry.content}</Md></UserBubble>
     }
     case 'phase_boundary':
-      return <PhaseBoundary key={i} label={entry.message} />
-    case 'yield':
-      return <YieldCard key={i} suggestions={entry.suggestions} />
+      return <PhaseMarker key={i} name={entry.phase} description={entry.description || entry.message} />
+    case 'yield': {
+      const setChatDraft = useStore.getState().setChatDraft
+      return (
+        <YieldPanel
+          key={i}
+          prompt={entry.prompt || 'What would you like to do next?'}
+          suggestions={entry.suggestions}
+          onSelect={s => setChatDraft(`/${s.id} `)}
+        />
+      )
+    }
     default:
       return null
   }
@@ -161,18 +179,13 @@ function ConnectedSteeringBar() {
   return <SteeringBar messages={steering.map(m => m.content)} />
 }
 
-function ActiveYieldPills() {
-  const activeYield = useStore(s => s.run?.activeYield)
-  if (!activeYield?.suggestions?.length) return null
-  return <YieldCard suggestions={activeYield.suggestions} />
-}
-
 function ContentStream() {
   const focusAgentId = useStore(s => s.run?.focus?.agentId)
   const conversation = useStore(s => focusAgentId ? s.run?.agents?.[focusAgentId]?.conversation : undefined)
   const run = useStore(s => s.run)
   const focus = useStore(s => s.run?.focus)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const [paletteOpen, setPaletteOpen] = useState(false)
   useAutoScroll(scrollRef)
   const hasEntries = !!(conversation?.entries?.length)
   const isWaiting = !hasEntries && !conversation?.isThinking && !conversation?.pendingText
@@ -180,7 +193,7 @@ function ContentStream() {
   const showFeedback = run !== null && !hasInteraction
   return (
     <div className="content-column" ref={scrollRef}>
-      <div className="content-stream">
+      <div className={`content-stream${paletteOpen ? ' content-stream--faded' : ''}`}>
         {isWaiting && (
           <div className="waiting-indicator">
             <span className="pulse-dot">●</span>
@@ -203,8 +216,12 @@ function ContentStream() {
         {showFeedback && (
           <>
             <ConnectedSteeringBar />
-            <ActiveYieldPills />
-            <FeedbackInput onSend={msg => api.sendChatMessage(msg)} disabled={!!run?.completion} />
+            <FeedbackInput
+              onSend={msg => api.sendChatMessage(msg)}
+              disabled={!!run?.completion}
+              availableCommands={run?.isYielded ? run.availablePhases : undefined}
+              onPaletteToggle={setPaletteOpen}
+            />
           </>
         )}
       </div>
@@ -366,11 +383,160 @@ function CompletionView() {
 // App
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Navigation items
+// ---------------------------------------------------------------------------
+
+const NAV_ITEMS = [
+  { label: 'New run', key: 'new-run' },
+  { label: 'Sessions', key: 'sessions' },
+  { label: 'Settings', key: 'settings' },
+]
+
+// ---------------------------------------------------------------------------
+// Settings page wiring
+// ---------------------------------------------------------------------------
+
+function ConnectedSettingsPage() {
+  const profilesDict = useStore(s => s.settings.profiles)
+  const installationsDict = useStore(s => s.settings.installations)
+  const scoutConcurrency = useStore(s => s.settings.defaultScoutConcurrency)
+  const [probeData, setProbeData] = useState<api.RunnerInfo[]>([])
+
+  useEffect(() => {
+    api.getProbeInfo()
+      .then(data => setProbeData(data.runners))
+      .catch(() => {}) /* probe failure is non-fatal — dropdowns stay empty */
+  }, [])
+
+  const profiles: SPProfile[] = useMemo(() =>
+    Object.values(profilesDict).map(p => ({
+      id: p.name,
+      name: p.name,
+      locked: p.readOnly,
+      tiers: {
+        /* TODO: model and thinking are not in the store wire format —
+           the backend profile tiers map role → installation alias.
+           We resolve the runner from the installation but model/thinking
+           are managed backend-side and not exposed in SSE state yet. */
+        strong: { runner: installationsDict[p.tiers['strong']]?.runnerType || p.tiers['strong'] || '', model: '', thinking: '' },
+        standard: { runner: installationsDict[p.tiers['standard']]?.runnerType || p.tiers['standard'] || '', model: '', thinking: '' },
+        cheap: { runner: installationsDict[p.tiers['cheap']]?.runnerType || p.tiers['cheap'] || '', model: '', thinking: '' },
+      },
+    })),
+    [profilesDict, installationsDict],
+  )
+
+  const installations: SPInstallation[] = useMemo(() =>
+    Object.values(installationsDict).map(i => ({
+      id: i.alias,
+      alias: i.alias,
+      runner: i.runnerType,
+      binary: i.binary,
+      extraArgs: i.extraArgs.join(' '),
+      isDefault: i.alias.endsWith('-default'),
+      available: i.available,
+    })),
+    [installationsDict],
+  )
+
+  const runnerTypes = useMemo(() => {
+    // Prefer probe data (includes runners without installations); fall back to installed
+    if (probeData.length > 0) return probeData.map(r => r.runner_type).sort()
+    const types = new Set(Object.values(installationsDict).map(i => i.runnerType))
+    return [...types].sort()
+  }, [probeData, installationsDict])
+
+  const runnerOptions = useMemo(() =>
+    runnerTypes.map(r => ({ value: r, label: r })),
+    [runnerTypes],
+  )
+
+  const modelOptionsForRunner = useMemo(() =>
+    (runner: string) => {
+      const info = probeData.find(r => r.runner_type === runner)
+      return info?.models.map(m => ({ value: m.alias, label: m.display_name })) ?? []
+    },
+    [probeData],
+  )
+
+  const thinkingOptionsForModel = useMemo(() =>
+    (runner: string, model: string) => {
+      const info = probeData.find(r => r.runner_type === runner)
+      const modelInfo = info?.models.find(m => m.alias === model)
+      if (modelInfo && modelInfo.thinking_modes.length > 0) {
+        return modelInfo.thinking_modes.map(t => ({ value: t, label: t }))
+      }
+      // Fallback when no model selected or probe data unavailable
+      return [{ value: 'budget', label: 'budget' }, { value: 'medium', label: 'medium' }, { value: 'high', label: 'high' }]
+    },
+    [probeData],
+  )
+
+  return (
+    <SettingsPage
+      profiles={profiles}
+      onCreateProfile={async p => {
+        const tiers: Record<string, { runner_type: string; model: string; thinking: string }> = {}
+        for (const [k, v] of Object.entries(p.tiers)) {
+          tiers[k] = { runner_type: v.runner, model: v.model, thinking: v.thinking }
+        }
+        const res = await api.createProfile(p.name, tiers)
+        if (!res.ok) throw new Error(res.message || 'Failed to create profile')
+      }}
+      onUpdateProfile={async (id, p) => {
+        if (p.tiers) {
+          const tiers: Record<string, { runner_type: string; model: string; thinking: string }> = {}
+          for (const [k, v] of Object.entries(p.tiers)) {
+            tiers[k] = { runner_type: v.runner, model: v.model, thinking: v.thinking }
+          }
+          const res = await api.updateProfile(id, tiers)
+          if (!res.ok) throw new Error(res.message || 'Failed to update profile')
+        }
+      }}
+      onDeleteProfile={id => api.deleteProfile(id)}
+      installations={installations}
+      runnerTypes={runnerTypes}
+      onCreateInstallation={async inst => {
+        const res = await api.createAgent({
+          alias: inst.alias,
+          runner_type: inst.runner,
+          binary: inst.binary,
+          extra_args: inst.extraArgs ? inst.extraArgs.split(' ').filter(Boolean) : [],
+        })
+        if (!res.ok) throw new Error(res.message || 'Failed to create installation')
+      }}
+      onUpdateInstallation={async (id, inst) => {
+        const res = await api.updateAgent(id, {
+          ...(inst.runner && { runner_type: inst.runner }),
+          ...(inst.binary && { binary: inst.binary }),
+          ...(inst.extraArgs !== undefined && { extra_args: inst.extraArgs.split(' ').filter(Boolean) }),
+        })
+        if (!res.ok) throw new Error(res.message || 'Failed to update installation')
+      }}
+      onDeleteInstallation={id => api.deleteAgent(id)}
+      onDetectBinary={async runner => {
+        const res = await api.detectAgent(runner)
+        return res.path
+      }}
+      scoutConcurrency={scoutConcurrency}
+      onScoutConcurrencyChange={n => api.saveScoutConcurrency(n)}
+      runnerOptions={runnerOptions}
+      modelOptionsForRunner={modelOptionsForRunner}
+      thinkingOptionsForModel={thinkingOptionsForModel}
+    />
+  )
+}
+
+// ---------------------------------------------------------------------------
+// App
+// ---------------------------------------------------------------------------
+
 export default function App() {
   const run = useStore(s => s.run)
   const connected = useStore(s => s.connected)
-  const settingsOpen = useStore(s => s.settingsOpen)
   const header = useHeaderData()
+  const [page, setPage] = useState<'new-run' | 'sessions' | 'settings'>('new-run')
 
   useEffect(() => {
     let es: EventSource | null = null
@@ -389,39 +555,54 @@ export default function App() {
     return () => { es?.close() }
   }, [])
 
-  const openSettings = () => useStore.getState().setSettingsOpen(true)
+  const goToSettings = () => setPage('settings')
   const focus = run?.focus
   const hasInteraction = focus && focus.type !== 'conversation'
   const completion = run?.completion
 
+  // --- Loading ---
   if (!connected) {
     return (
       <div className="app-root">
-        <HeaderBar phase="" step="" totalSteps={0} currentStep={0} onSettingsClick={openSettings} />
+        <HeaderBar phase="" step="" totalSteps={0} currentStep={0} />
         <div className="single-column"><div className="loading-center">connecting…</div></div>
       </div>
     )
   }
 
+  // --- No active run: page navigation ---
   if (!run) {
     return (
       <div className="app-root">
-        <HeaderBar phase="" step="" totalSteps={0} currentStep={0} onSettingsClick={openSettings} />
-        <div className="single-column"><NewRunForm /></div>
-        <Notification />{settingsOpen && <SettingsOverlay />}
+        <HeaderBar
+          phase="" step="" totalSteps={0} currentStep={0}
+          mode="navigation"
+          navItems={NAV_ITEMS}
+          activeNav={page}
+          onNavChange={k => setPage(k as typeof page)}
+        />
+        {page === 'new-run' && <div className="single-column"><NewRunForm /></div>}
+        {page === 'sessions' && (
+          <div className="single-column">
+            <div className="loading-center">Sessions — coming soon</div>
+          </div>
+        )}
+        {page === 'settings' && <ConnectedSettingsPage />}
+        <Notification />
       </div>
     )
   }
 
+  // --- Active run: workflow views ---
   if (hasInteraction) {
     return (
       <div className="app-root">
-        <HeaderBar {...header} onSettingsClick={openSettings} />
+        <HeaderBar {...header} onSettingsClick={goToSettings} />
         <div className="workflow-grid">
           <div className="content-column"><ElicitationView /></div>
           <ConnectedSidebar />
         </div>
-        <Notification />{settingsOpen && <SettingsOverlay />}
+        <Notification />
       </div>
     )
   }
@@ -429,19 +610,19 @@ export default function App() {
   if (completion) {
     return (
       <div className="app-root">
-        <HeaderBar {...header} onSettingsClick={openSettings} />
+        <HeaderBar {...header} onSettingsClick={goToSettings} />
         <div className="workflow-grid"><CompletionView /><ConnectedSidebar /></div>
-        <Notification />{settingsOpen && <SettingsOverlay />}
+        <Notification />
       </div>
     )
   }
 
   return (
     <div className="app-root">
-      <HeaderBar {...header} onSettingsClick={openSettings} />
+      <HeaderBar {...header} onSettingsClick={goToSettings} />
       <div className="workflow-grid"><ContentStream /><ConnectedSidebar /></div>
       <ConnectedScoutBar />
-      <Notification />{settingsOpen && <SettingsOverlay />}
+      <Notification />
     </div>
   )
 }

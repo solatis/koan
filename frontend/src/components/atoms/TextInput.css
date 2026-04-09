@@ -1,0 +1,65 @@
+.atom-text-input {
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--text-primary);
+  outline: none;
+  width: 100%;
+  transition: border-color var(--duration-fast) var(--ease-default);
+}
+
+.atom-text-input::placeholder {
+  color: var(--text-placeholder);
+}
+
+.atom-text-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Field variant (default) */
+.atom-text-input--field {
+  background: var(--bg-base);
+  border: 1.5px solid var(--border-input);
+  border-radius: var(--radius-lg);
+  padding: 8px 12px;
+}
+
+.atom-text-input--field:focus {
+  border-color: var(--color-orange);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+/* Inline variant (bottom-border only) */
+.atom-text-input--inline {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border-card);
+  border-radius: 0;
+  padding: 8px 0;
+}
+
+.atom-text-input--inline:focus {
+  border-bottom-color: var(--border-input);
+}
+
+/* Mono modifier */
+.atom-text-input--mono {
+  font-family: var(--font-mono);
+}
+
+/* Error modifier (field variant only) */
+.atom-text-input--error {
+  border-color: var(--status-failed);
+}
+
+.atom-text-input--error:focus {
+  border-color: var(--status-failed);
+  box-shadow: none;
+}
+
+/* Textarea mode */
+textarea.atom-text-input {
+  min-height: 80px;
+  resize: vertical;
+  line-height: 1.5;
+}

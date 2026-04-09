@@ -94,7 +94,8 @@ class renderings for event types.
 | `step` | StepHeader |
 | `debug_step_guidance` | StepGuidancePill + Md |
 | `user_message` | UserBubble + Md |
-| `phase_boundary` | PhaseBoundary |
+| `phase_boundary` | PhaseMarker |
+| `yield` | YieldPanel |
 | pending thinking | ThinkingBlock (always expanded) |
 | pending text | ProseCard + Md + streaming cursor |
 | steering messages | SteeringBar |

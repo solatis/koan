@@ -45,11 +45,10 @@ export interface ToolGrepEntry    extends BaseToolEntry { type: 'tool_grep';    
 export interface ToolLsEntry      extends BaseToolEntry { type: 'tool_ls';      path: string }
 export interface ToolGenericEntry extends BaseToolEntry { type: 'tool_generic'; toolName: string; summary: string }
 export interface DebugStepGuidanceEntry { type: 'debug_step_guidance'; content: string }
-export interface PhaseBoundaryEntry { type: 'phase_boundary'; phase: string; message: string }
+export interface PhaseBoundaryEntry { type: 'phase_boundary'; phase: string; message: string; description: string }
 
-export interface Suggestion { id: string; label: string; command: string }
-export interface YieldEntry { type: 'yield'; suggestions: Suggestion[] }
-export interface ActiveYield { suggestions: Suggestion[] }
+export interface Suggestion { id: string; label: string; command: string; recommended?: boolean }
+export interface YieldEntry { type: 'yield'; prompt: string; suggestions: Suggestion[] }
 
 export type ConversationEntry =
   | ThinkingEntry | TextEntry | StepEntry | UserMessageEntry
@@ -137,7 +136,8 @@ export interface Run {
   artifacts: Record<string, ArtifactInfo>
   completion: CompletionInfo | null
   steering: SteeringMessage[]
-  activeYield: ActiveYield | null
+  isYielded: boolean
+  availablePhases: { id: string; description: string }[]
 }
 
 // -- Store --------------------------------------------------------------------
@@ -155,7 +155,7 @@ interface KoanState {
   // Local UI state (not from server)
   settingsOpen: boolean
 
-  // Local draft for chat input — set by YieldCard pill clicks
+  // Local draft for chat input — set by YieldPanel row selections
   chatDraft: string
 
   // Actions

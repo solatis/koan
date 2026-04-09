@@ -1,0 +1,46 @@
+.atom-toggle {
+  display: inline-flex;
+  align-items: center;
+  width: 36px;
+  height: 20px;
+  border-radius: var(--radius-pill);
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  position: relative;
+  transition: background var(--duration-fast) var(--ease-default);
+  outline: none;
+  flex-shrink: 0;
+}
+
+.atom-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.atom-toggle--off {
+  background: var(--bg-toggle-off);
+}
+
+.atom-toggle--on {
+  background: var(--color-teal);
+}
+
+.atom-toggle__thumb {
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-circle);
+  background: var(--bg-card);
+  position: absolute;
+  top: 2px;
+  transition: left var(--duration-fast) var(--ease-default);
+}
+
+.atom-toggle--off .atom-toggle__thumb {
+  left: 2px;
+}
+
+.atom-toggle--on .atom-toggle__thumb {
+  left: 18px;
+}

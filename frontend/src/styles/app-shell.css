@@ -33,6 +33,13 @@
   gap: var(--gap-content);
 }
 
+/* When the command palette is open, fade all stream entries except the
+   last child (FeedbackInput) so focus goes to the input + palette. */
+.content-stream--faded > *:not(:last-child) {
+  opacity: 0.35;
+  transition: opacity var(--duration-fast) var(--ease-default);
+}
+
 /* Group consecutive tool call rows with tight spacing */
 .tool-group {
   display: flex;

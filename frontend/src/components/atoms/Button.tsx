@@ -1,15 +1,16 @@
 /**
- * Button — primary and secondary action triggers.
+ * Button — action triggers in primary, secondary, danger, teal, and text variants.
  *
- * Used for: "Start Run", "Next", "Send", "Use Defaults",
- * and other interactive actions throughout the UI.
+ * Used for: "Start Run", "Next", "Send" (primary), "Cancel", "Use Defaults"
+ * (secondary), "Delete" (danger), "Detect", "Explore" (teal),
+ * "+ New profile", "+ Add installation" (text).
  */
 
 import './Button.css'
 import type { ReactNode, ButtonHTMLAttributes } from 'react'
 
-type Variant = 'primary' | 'secondary'
-type Size = 'sm' | 'md'
+type Variant = 'primary' | 'secondary' | 'danger' | 'teal' | 'text'
+type Size = 'xs' | 'sm' | 'md'
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant: Variant
