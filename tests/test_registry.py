@@ -65,7 +65,7 @@ class TestComputeBalancedProfile:
         p = compute_balanced_profile(probes)
         assert p.name == "balanced"
         assert p.tiers["strong"].runner_type == "claude"
-        assert p.tiers["strong"].model == "opus"
+        assert p.tiers["strong"].model == "sonnet"
         assert p.tiers["strong"].thinking == "high"
         assert p.tiers["standard"].runner_type == "claude"
         assert p.tiers["standard"].model == "sonnet"
@@ -93,7 +93,7 @@ class TestComputeBalancedProfile:
         ]
         p = compute_balanced_profile(probes)
         assert p.tiers["strong"].runner_type == "claude"
-        assert p.tiers["strong"].model == "opus"
+        assert p.tiers["strong"].model == "sonnet"
         assert p.tiers["strong"].thinking == "high"  # claude/opus supports high
         assert p.tiers["standard"].runner_type == "claude"
         assert p.tiers["standard"].model == "sonnet"
@@ -127,7 +127,7 @@ class TestComputeBalancedProfile:
         ]
         p = compute_balanced_profile(probes)
         assert p.tiers["strong"].runner_type == "claude"
-        assert p.tiers["strong"].model == "opus"
+        assert p.tiers["strong"].model == "sonnet"
 
     def test_claude_preferred_for_standard(self):
         probes = [

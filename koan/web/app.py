@@ -172,9 +172,10 @@ def _sse_event(event_type: str, payload: Any) -> str:
 
 
 def _resolve_profile(st: AppState, name: str) -> Profile | None:
-    """Look up a profile by name, including the computed balanced profile."""
-    if name == "balanced":
-        return st.balanced_profile
+    """Look up a profile by name, including built-in profiles."""
+    builtin = st.builtin_profiles.get(name)
+    if builtin is not None:
+        return builtin
     for p in st.config.profiles:
         if p.name == name:
             return p
@@ -498,10 +499,10 @@ def _serialize_profile(p: Profile, read_only: bool) -> dict:
 
 async def _refresh_probe_state(st: AppState, broadcast: bool = True) -> None:
     from ..probe import probe_all_runners
-    from ..runners.registry import compute_balanced_profile
+    from ..runners.registry import compute_builtin_profiles
 
     st.probe_results = await probe_all_runners()
-    st.balanced_profile = compute_balanced_profile(st.probe_results)
+    st.builtin_profiles = compute_builtin_profiles(st.probe_results)
 
     # --yolo: per-runner permission-skipping flags for default installations
     _YOLO_ARGS: dict[str, list[str]] = {
@@ -567,11 +568,11 @@ async def _refresh_probe_state(st: AppState, broadcast: bool = True) -> None:
             for inst in st.config.agent_installations
         }
         st.projection_store.push_event("probe_completed", build_probe_completed(_probe_results_dict))
-        if st.balanced_profile:
-            tiers = _serialize_profile(st.balanced_profile, True)["tiers"]
+        for bp in st.builtin_profiles.values():
+            tiers = _serialize_profile(bp, True)["tiers"]
             st.projection_store.push_event(
                 "profile_modified",
-                build_profile_modified("balanced", True, tiers),
+                build_profile_modified(bp.name, True, tiers),
             )
 
 
@@ -599,10 +600,10 @@ def _push_initial_config_events(st: AppState) -> None:
     }
     store.push_event("probe_completed", build_probe_completed(_probe_avail))
 
-    # Profiles (balanced first, then user-defined)
-    if st.balanced_profile:
-        tiers = _serialize_profile(st.balanced_profile, True)["tiers"]
-        store.push_event("profile_created", build_profile_created("balanced", True, tiers))
+    # Profiles (built-in first, then user-defined)
+    for bp in st.builtin_profiles.values():
+        tiers = _serialize_profile(bp, True)["tiers"]
+        store.push_event("profile_created", build_profile_created(bp.name, True, tiers))
     for p in st.config.profiles:
         sp = _serialize_profile(p, False)
         store.push_event("profile_created", build_profile_created(p.name, False, sp["tiers"]))
@@ -619,15 +620,14 @@ async def api_probe(r: Request) -> Response:
     if r.query_params.get("refresh", "") in ("1", "true"):
         await _refresh_probe_state(st)
     runners = [_serialize_probe_result(pr) for pr in st.probe_results]
-    balanced = _serialize_profile(st.balanced_profile, True) if st.balanced_profile else None
-    return JSONResponse({"runners": runners, "balanced_profile": balanced})
+    balanced = st.builtin_profiles.get("balanced")
+    balanced_json = _serialize_profile(balanced, True) if balanced else None
+    return JSONResponse({"runners": runners, "balanced_profile": balanced_json})
 
 
 async def api_profiles_list(r: Request) -> Response:
     st = _app_state(r)
-    profiles = []
-    if st.balanced_profile:
-        profiles.append(_serialize_profile(st.balanced_profile, True))
+    profiles = [_serialize_profile(bp, True) for bp in st.builtin_profiles.values()]
     for p in st.config.profiles:
         profiles.append(_serialize_profile(p, False))
     return JSONResponse({"profiles": profiles})
@@ -643,9 +643,9 @@ async def api_profiles_create(r: Request) -> Response:
             {"error": "validation_error", "message": "name is required"},
             status_code=422,
         )
-    if name == "balanced":
+    if name in _app_state(r).builtin_profiles:
         return JSONResponse(
-            {"error": "validation_error", "message": "cannot use reserved name 'balanced'"},
+            {"error": "validation_error", "message": f"cannot use reserved name '{name}'"},
             status_code=422,
         )
     if any(p.name == name for p in _app_state(r).config.profiles):
@@ -686,9 +686,9 @@ async def api_profiles_create(r: Request) -> Response:
 
 async def api_profiles_update(r: Request) -> Response:
     name = r.path_params["name"]
-    if name == "balanced":
+    if name in _app_state(r).builtin_profiles:
         return JSONResponse(
-            {"error": "read_only", "message": "balanced profile cannot be edited"},
+            {"error": "read_only", "message": f"built-in profile '{name}' cannot be edited"},
             status_code=422,
         )
 
@@ -730,9 +730,9 @@ async def api_profiles_update(r: Request) -> Response:
 
 async def api_profiles_delete(r: Request) -> Response:
     name = r.path_params["name"]
-    if name == "balanced":
+    if name in _app_state(r).builtin_profiles:
         return JSONResponse(
-            {"error": "read_only", "message": "balanced profile cannot be deleted"},
+            {"error": "read_only", "message": f"built-in profile '{name}' cannot be deleted"},
             status_code=400,
         )
 
@@ -885,9 +885,7 @@ async def api_agents_detect(r: Request) -> Response:
 async def api_settings_body(r: Request) -> Response:
     st = _app_state(r)
 
-    profiles = []
-    if st.balanced_profile:
-        profiles.append(_serialize_profile(st.balanced_profile, True))
+    profiles = [_serialize_profile(bp, True) for bp in st.builtin_profiles.values()]
     for p in st.config.profiles:
         profiles.append(_serialize_profile(p, False))
 

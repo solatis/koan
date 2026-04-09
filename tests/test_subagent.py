@@ -29,7 +29,7 @@ class FakeConfig:
 class FakeAppState:
     agents: dict = field(default_factory=dict)
     config: FakeConfig = field(default_factory=FakeConfig)
-    balanced_profile: Any = None
+    builtin_profiles: dict = field(default_factory=dict)
     port: int = 9999
     active_interaction: Any = None
     interaction_queue: Any = field(default_factory=lambda: __import__("collections").deque())

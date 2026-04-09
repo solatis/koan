@@ -112,7 +112,7 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
             registry = RunnerRegistry()
             installation, model_alias, thinking_mode = registry.resolve_agent_config(
                 role, config,
-                balanced_profile=app_state.balanced_profile,
+                builtin_profiles=app_state.builtin_profiles,
                 run_installations=app_state.run_installations,
             )
 

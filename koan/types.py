@@ -70,6 +70,9 @@ class Profile:
     tiers: dict[ModelTier, ProfileTier] = field(default_factory=dict)
 
 
+BUILTIN_PROFILE_NAMES: frozenset[str] = frozenset({"balanced", "frontier"})
+
+
 @dataclass
 class AgentInstallation:
     alias: str

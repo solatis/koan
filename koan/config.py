@@ -9,7 +9,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .types import AgentInstallation, Profile, ProfileTier
+from .types import BUILTIN_PROFILE_NAMES, AgentInstallation, Profile, ProfileTier
 
 log = logging.getLogger("koan.config")
 
@@ -131,8 +131,8 @@ async def load_koan_config() -> KoanConfig:
     if not isinstance(active_profile, str) or not active_profile:
         active_profile = "balanced"
 
-    # Exclude "balanced" from persisted profiles -- it is recomputed at startup
-    profiles = [p for p in _parse_profiles(parsed.get("profiles", [])) if p.name != "balanced"]
+    # Exclude built-in profiles from persisted profiles -- they are recomputed at startup
+    profiles = [p for p in _parse_profiles(parsed.get("profiles", [])) if p.name not in BUILTIN_PROFILE_NAMES]
 
     return KoanConfig(
         agent_installations=_parse_agent_installations(parsed.get("agentInstallations", [])),
@@ -174,7 +174,7 @@ async def save_koan_config(config: KoanConfig) -> None:
         else:
             existing.pop("activeProfile", None)
 
-        # Serialize profiles (user-defined only; balanced never persisted)
+        # Serialize profiles (user-defined only; built-in profiles never persisted)
         existing["profiles"] = [
             {
                 "name": p.name,
@@ -188,7 +188,7 @@ async def save_koan_config(config: KoanConfig) -> None:
                 },
             }
             for p in config.profiles
-            if p.name != "balanced"
+            if p.name not in BUILTIN_PROFILE_NAMES
         ]
 
         existing["scoutConcurrency"] = config.scout_concurrency

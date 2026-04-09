@@ -69,7 +69,7 @@ class AppState:
     interaction_queue: deque[PendingInteraction] = field(default_factory=deque)
     interaction_queue_max: int = 8
     config: KoanConfig = field(default_factory=KoanConfig)
-    balanced_profile: Profile | None = None
+    builtin_profiles: dict[str, Profile] = field(default_factory=dict)
     probe_results: list[ProbeResult] = field(default_factory=list)
     port: int = 8000
     open_browser: bool = True

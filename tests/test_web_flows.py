@@ -128,9 +128,9 @@ def test_start_run_persists_profile(client, app_state):
 # -- Start-run preflight -------------------------------------------------------
 
 def test_preflight_returns_required_types(client, app_state):
-    from koan.runners.registry import compute_balanced_profile
+    from koan.runners.registry import compute_builtin_profiles
     app_state.probe_results = _make_probe_results()
-    app_state.balanced_profile = compute_balanced_profile(app_state.probe_results)
+    app_state.builtin_profiles = compute_builtin_profiles(app_state.probe_results)
     resp = client.get("/api/start-run/preflight?profile=balanced")
     assert resp.status_code == 200
     data = resp.json()
@@ -139,9 +139,9 @@ def test_preflight_returns_required_types(client, app_state):
 
 
 def test_preflight_shows_binary_validity(client, app_state, tmp_path):
-    from koan.runners.registry import compute_balanced_profile
+    from koan.runners.registry import compute_builtin_profiles
     app_state.probe_results = _make_probe_results()
-    app_state.balanced_profile = compute_balanced_profile(app_state.probe_results)
+    app_state.builtin_profiles = compute_builtin_profiles(app_state.probe_results)
     real_binary = tmp_path / "claude"
     real_binary.touch()
     app_state.config.agent_installations = [
@@ -165,9 +165,9 @@ def test_preflight_missing_profile(client, app_state):
 # -- Start-run installation validation -----------------------------------------
 
 def test_start_run_accepts_installation_selection(client, app_state, tmp_path):
-    from koan.runners.registry import compute_balanced_profile
+    from koan.runners.registry import compute_builtin_profiles
     app_state.probe_results = _make_probe_results()
-    app_state.balanced_profile = compute_balanced_profile(app_state.probe_results)
+    app_state.builtin_profiles = compute_builtin_profiles(app_state.probe_results)
     binary = tmp_path / "claude"
     binary.touch()
     app_state.config.agent_installations = [
@@ -183,9 +183,9 @@ def test_start_run_accepts_installation_selection(client, app_state, tmp_path):
 
 
 def test_start_run_rejects_missing_binary(client, app_state):
-    from koan.runners.registry import compute_balanced_profile
+    from koan.runners.registry import compute_builtin_profiles
     app_state.probe_results = _make_probe_results()
-    app_state.balanced_profile = compute_balanced_profile(app_state.probe_results)
+    app_state.builtin_profiles = compute_builtin_profiles(app_state.probe_results)
     app_state.config.agent_installations = [
         AgentInstallation(alias="broken", runner_type="claude", binary="/nonexistent/claude"),
     ]
@@ -258,9 +258,9 @@ def test_path_traversal_blocked(client, app_state):
 
 def test_probe_endpoint(client, app_state):
     app_state.probe_results = _make_probe_results()
-    app_state.balanced_profile = Profile(name="balanced", tiers={
+    app_state.builtin_profiles = {"balanced": Profile(name="balanced", tiers={
         "strong": ProfileTier(runner_type="claude", model="opus", thinking="high"),
-    })
+    })}
 
     resp = client.get("/api/probe")
     assert resp.status_code == 200
@@ -275,9 +275,9 @@ def test_probe_endpoint(client, app_state):
 # -- Profile endpoints --------------------------------------------------------
 
 def test_profiles_list_includes_balanced(client, app_state):
-    app_state.balanced_profile = Profile(name="balanced", tiers={
+    app_state.builtin_profiles = {"balanced": Profile(name="balanced", tiers={
         "strong": ProfileTier(runner_type="claude", model="opus", thinking="high"),
-    })
+    })}
 
     resp = client.get("/api/profiles")
     assert resp.status_code == 200
@@ -470,9 +470,9 @@ def test_landing_includes_profile_selector(client, app_state):
     # After SPA migration, GET / serves the React SPA, not server-rendered HTML.
     # Profile selector is rendered client-side by React.
     app_state.probe_results = _make_probe_results()
-    app_state.balanced_profile = Profile(name="balanced", tiers={
+    app_state.builtin_profiles = {"balanced": Profile(name="balanced", tiers={
         "strong": ProfileTier(runner_type="claude", model="opus", thinking="high"),
-    })
+    })}
     resp = client.get("/")
     assert resp.status_code == 200
 
@@ -490,7 +490,7 @@ def test_landing_start_run_disabled_no_runners(client, app_state):
 def test_landing_start_run_enabled_with_runners(client, app_state):
     # After SPA migration, GET / serves the SPA regardless of runner state.
     app_state.probe_results = _make_probe_results()
-    app_state.balanced_profile = Profile(name="balanced", tiers={})
+    app_state.builtin_profiles = {"balanced": Profile(name="balanced", tiers={})}
     resp = client.get("/")
     assert resp.status_code == 200
 
@@ -558,25 +558,27 @@ class TestProbeRefresh:
             "strong": ProfileTier(runner_type="claude", model="opus", thinking="high"),
         })
 
+        fresh_builtins = {"balanced": fresh_profile}
+
         # Pre-populate with stale data
         app_state.probe_results = _make_probe_results()
-        app_state.balanced_profile = None
+        app_state.builtin_profiles = {}
 
         with patch("koan.probe.probe_all_runners", new_callable=AsyncMock, return_value=fresh_probes) as mock_probe, \
-             patch("koan.runners.registry.compute_balanced_profile", return_value=fresh_profile) as mock_balanced:
+             patch("koan.runners.registry.compute_builtin_profiles", return_value=fresh_builtins) as mock_builtins:
             resp = client.get("/api/probe?refresh=1")
 
         assert resp.status_code == 200
         mock_probe.assert_called_once()
-        mock_balanced.assert_called_once_with(fresh_probes)
+        mock_builtins.assert_called_once_with(fresh_probes)
         assert app_state.probe_results is fresh_probes
-        assert app_state.balanced_profile is fresh_profile
+        assert app_state.builtin_profiles is fresh_builtins
         data = resp.json()
         assert len(data["runners"]) == 2
 
     def test_probe_no_refresh_skips_restate(self, client, app_state):
         app_state.probe_results = _make_probe_results()
-        app_state.balanced_profile = Profile(name="balanced", tiers={})
+        app_state.builtin_profiles = {"balanced": Profile(name="balanced", tiers={})}
 
         with patch("koan.probe.probe_all_runners", new_callable=AsyncMock) as mock_probe:
             resp = client.get("/api/probe")

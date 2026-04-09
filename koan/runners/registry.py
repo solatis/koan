@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from ..probe import ProbeResult
 from ..types import (
+    BUILTIN_PROFILE_NAMES,
     ROLE_MODEL_TIER,
     AgentInstallation,
     ModelInfo,
@@ -38,12 +39,22 @@ _RUNNER_FACTORIES: dict[str, type] = {
 _NEEDS_SUBAGENT_DIR = frozenset({"claude", "gemini"})
 
 
-# -- Balanced profile priority table -------------------------------------------
+# -- Built-in profile definitions ----------------------------------------------
 
+# Balanced: auto-fallback across available runners
 _TIER_PRIORITY: dict[ModelTier, list[tuple[str, str]]] = {
-    "strong": [("claude", "opus"), ("codex", "gpt-5"), ("gemini", "gemini-pro")],
+    "strong": [("claude", "sonnet"), ("codex", "gpt-5"), ("gemini", "gemini-pro")],
     "standard": [("claude", "sonnet"), ("codex", "gpt-5"), ("gemini", "gemini-pro")],
     "cheap": [("claude", "haiku"), ("codex", "gpt-5-mini"), ("gemini", "gemini-flash")],
+}
+
+# Fixed built-in profiles: (runner_type, model) per tier, no fallback logic
+_FIXED_PROFILE_SPECS: dict[str, dict[ModelTier, tuple[str, str]]] = {
+    "frontier": {
+        "strong": ("claude", "opus"),
+        "standard": ("claude", "sonnet"),
+        "cheap": ("claude", "haiku"),
+    },
 }
 
 _TIER_DEFAULT_THINKING: dict[ModelTier, ThinkingMode] = {
@@ -144,10 +155,16 @@ class RunnerRegistry:
         self,
         role: SubagentRole,
         config: KoanConfig,
-        balanced_profile: Profile | None = None,
+        builtin_profiles: dict[str, Profile] | None = None,
         run_installations: dict[str, str] | None = None,
+        # DEPRECATED parameter -- ignored if builtin_profiles is provided
+        balanced_profile: Profile | None = None,
     ) -> tuple[AgentInstallation, str, ThinkingMode]:
         tier = ROLE_MODEL_TIER.get(role, "standard")
+
+        # Back-compat: wrap legacy balanced_profile into builtin_profiles dict
+        if builtin_profiles is None and balanced_profile is not None:
+            builtin_profiles = {"balanced": balanced_profile}
 
         # Resolve active profile
         profile: Profile | None = None
@@ -156,8 +173,8 @@ class RunnerRegistry:
                 profile = p
                 break
 
-        if profile is None and config.active_profile == "balanced":
-            profile = balanced_profile
+        if profile is None and builtin_profiles:
+            profile = builtin_profiles.get(config.active_profile)
 
         if profile is None:
             raise RunnerError(RunnerDiagnostic(
@@ -182,55 +199,80 @@ class RunnerRegistry:
         return installation, profile_tier.model, profile_tier.thinking
 
 
-# -- Balanced profile computation ----------------------------------------------
+# -- Built-in profile computation ----------------------------------------------
 
-def compute_balanced_profile(probe_results: list[ProbeResult]) -> Profile:
-    available_runners = {pr.runner_type for pr in probe_results if pr.available}
+def _resolve_thinking(
+    model_lookup: dict[tuple[str, str], ModelInfo],
+    runner_type: str,
+    model: str,
+    tier_name: ModelTier,
+) -> ThinkingMode:
+    default_thinking = _TIER_DEFAULT_THINKING[tier_name]
+    info = model_lookup.get((runner_type, model))
+    if info is not None and default_thinking not in info.thinking_modes:
+        return _best_supported_thinking(info.thinking_modes, default_thinking)
+    return default_thinking
 
-    # Build model lookup: (runner_type, alias) -> ModelInfo
-    model_lookup: dict[tuple[str, str], ModelInfo] = {}
-    for pr in probe_results:
-        if pr.available:
-            for m in pr.models:
-                model_lookup[(pr.runner_type, m.alias)] = m
 
+def _compute_balanced(
+    available_runners: set[str],
+    model_lookup: dict[tuple[str, str], ModelInfo],
+) -> Profile:
     tiers: dict[str, ProfileTier] = {}
     for tier_name in ("strong", "standard", "cheap"):
         priority = _TIER_PRIORITY[tier_name]
-        default_thinking = _TIER_DEFAULT_THINKING[tier_name]
         picked = False
         for runner_type, model in priority:
             if runner_type in available_runners:
-                # Resolve thinking: clamp to model capabilities when known
-                thinking = default_thinking
-                model_info = model_lookup.get((runner_type, model))
-                if model_info is not None and thinking not in model_info.thinking_modes:
-                    thinking = _best_supported_thinking(
-                        model_info.thinking_modes, thinking,
-                    )
+                thinking = _resolve_thinking(model_lookup, runner_type, model, tier_name)
                 tiers[tier_name] = ProfileTier(
-                    runner_type=runner_type,
-                    model=model,
-                    thinking=thinking,
+                    runner_type=runner_type, model=model, thinking=thinking,
                 )
                 picked = True
                 break
         if not picked and available_runners:
-            # Safe fallback: first available runner with its first priority-table model
             fallback_rt = next(iter(available_runners))
             fallback_model = fallback_rt
             for rt, m in priority:
                 if rt == fallback_rt:
                     fallback_model = m
                     break
-            thinking = default_thinking
-            fb_info = model_lookup.get((fallback_rt, fallback_model))
-            if fb_info is not None and thinking not in fb_info.thinking_modes:
-                thinking = _best_supported_thinking(fb_info.thinking_modes, thinking)
+            thinking = _resolve_thinking(model_lookup, fallback_rt, fallback_model, tier_name)
             tiers[tier_name] = ProfileTier(
-                runner_type=fallback_rt,
-                model=fallback_model,
-                thinking=thinking,
+                runner_type=fallback_rt, model=fallback_model, thinking=thinking,
             )
-
     return Profile(name="balanced", tiers=tiers)
+
+
+def _compute_fixed(
+    name: str,
+    spec: dict[ModelTier, tuple[str, str]],
+    model_lookup: dict[tuple[str, str], ModelInfo],
+) -> Profile:
+    tiers: dict[str, ProfileTier] = {}
+    for tier_name, (runner_type, model) in spec.items():
+        thinking = _resolve_thinking(model_lookup, runner_type, model, tier_name)
+        tiers[tier_name] = ProfileTier(
+            runner_type=runner_type, model=model, thinking=thinking,
+        )
+    return Profile(name=name, tiers=tiers)
+
+
+def compute_builtin_profiles(probe_results: list[ProbeResult]) -> dict[str, Profile]:
+    available_runners = {pr.runner_type for pr in probe_results if pr.available}
+    model_lookup: dict[tuple[str, str], ModelInfo] = {}
+    for pr in probe_results:
+        if pr.available:
+            for m in pr.models:
+                model_lookup[(pr.runner_type, m.alias)] = m
+
+    profiles: dict[str, Profile] = {}
+    profiles["balanced"] = _compute_balanced(available_runners, model_lookup)
+    for name, spec in _FIXED_PROFILE_SPECS.items():
+        profiles[name] = _compute_fixed(name, spec, model_lookup)
+    return profiles
+
+
+def compute_balanced_profile(probe_results: list[ProbeResult]) -> Profile:
+    """DEPRECATED: use compute_builtin_profiles instead."""
+    return compute_builtin_profiles(probe_results)["balanced"]
