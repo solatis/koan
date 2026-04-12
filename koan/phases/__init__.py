@@ -120,7 +120,7 @@ PHASE_GUIDANCE_MAP: dict[str, Any] = {
     # Plan workflow phases (SCOPE="plan")
     "plan-spec":   plan_spec,
     "plan-review": plan_review,
-    # Legacy phases (SCOPE="legacy" — dead code, available for future workflows)
+    # Legacy phases (SCOPE="legacy" --dead code, available for future workflows)
     "brief-generation":          brief_writer,
     "core-flows":                core_flows,
     "tech-plan":                 planner,

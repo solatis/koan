@@ -80,7 +80,7 @@ def format_phase_complete(
     """Non-blocking response when a phase completes.
 
     Tells the orchestrator to summarize its work and call koan_yield with
-    structured suggestions. Does not block — koan_yield handles blocking.
+    structured suggestions. Does not block --koan_yield handles blocking.
 
     Args:
         phase: The phase that just completed (e.g. "intake").
@@ -102,7 +102,7 @@ def format_phase_complete(
         for p in suggested_phases:
             desc = descs.get(p, "")
             if desc:
-                lines.append(f"- **{p}** — {desc}")
+                lines.append(f"- **{p}** --{desc}")
             else:
                 lines.append(f"- **{p}**")
         lines.append("")
@@ -121,6 +121,6 @@ def format_phase_complete(
 
     lines.append("")
     lines.append("WHEN DONE: Call koan_yield with your suggestions.")
-    lines.append("Do NOT call koan_set_phase yet — wait for the user's response.")
+    lines.append("Do NOT call koan_set_phase yet --wait for the user's response.")
 
     return "\n".join(lines)
