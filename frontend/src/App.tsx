@@ -48,6 +48,7 @@ import { Notification } from './components/Notification'
 // SettingsOverlay is no longer rendered — replaced by SettingsPage organism
 // import { SettingsOverlay } from './components/SettingsOverlay'
 import { SettingsPage, type Profile as SPProfile, type Installation as SPInstallation } from './components/organisms/SettingsPage'
+import { ReviewPanel, type ReviewSubmitPayload } from './components/organisms/ReviewPanel'
 
 // ---------------------------------------------------------------------------
 // Header data
@@ -535,14 +536,128 @@ function ConnectedSettingsPage() {
 }
 
 // ---------------------------------------------------------------------------
+// Review view — renders ReviewPanel for the currently open artifact
+// ---------------------------------------------------------------------------
+
+// DESIGN NOTE: the opener below deliberately does NOT ask the LLM to verify
+// its own revision before re-yielding. Intrinsic self-correction is a
+// documented anti-pattern -- the user's next review pass is the verifier,
+// not the model. Do not add "double-check your edits", "validate each
+// change", or any similar self-verification language.
+//
+// The opener also pairs with the REVIEW FEEDBACK LOOP contract documented
+// in the koan_yield tool docstring (koan/web/mcp_endpoint.py). Both sides
+// must stay in sync: the "I've reviewed `<path>`" sentinel is how the LLM
+// recognizes the payload as a review response.
+function formatReviewMessage(path: string, payload: ReviewSubmitPayload): string {
+  const out: string[] = []
+  out.push(
+    `I've reviewed \`${path}\`. For each inline comment below, edit the cited section of the file to address it. Preserve everything not called out. When all comments are addressed, call \`koan_yield\` again so I can confirm or give another pass.`,
+  )
+
+  // Group comments by blockIndex in document order.
+  const groups = new Map<number, { preview: string; comments: string[] }>()
+  for (const c of payload.comments) {
+    const g = groups.get(c.blockIndex)
+    if (g) g.comments.push(c.text)
+    else groups.set(c.blockIndex, { preview: c.blockPreview, comments: [c.text] })
+  }
+  const sorted = [...groups.entries()].sort(([a], [b]) => a - b)
+
+  for (const [, g] of sorted) {
+    out.push('')
+    out.push('On the section:')
+    for (const line of g.preview.split('\n')) out.push(`> ${line}`)
+    out.push('')
+    for (const text of g.comments) {
+      const parts = text.split('\n')
+      out.push(`- ${parts[0]}`)
+      for (let i = 1; i < parts.length; i++) out.push(`  ${parts[i]}`)
+    }
+  }
+
+  const summary = payload.summary.trim()
+  if (summary) {
+    out.push('')
+    out.push(`**Summary:** ${summary}`)
+  }
+
+  return out.join('\n')
+}
+
+function ReviewView() {
+  const path = useStore(s => s.reviewingArtifact)
+  const setReviewing = useStore(s => s.setReviewingArtifact)
+  const [content, setContent] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!path) return
+    setContent(null)
+    setError(null)
+    let cancelled = false
+    api.getArtifactContent(path)
+      .then(res => { if (!cancelled) setContent(res.content) })
+      .catch(e => { if (!cancelled) setError(String(e)) })
+    return () => { cancelled = true }
+  }, [path])
+
+  if (!path) return null
+
+  const handleSubmit = (payload: ReviewSubmitPayload) => {
+    const message = formatReviewMessage(path, payload)
+    console.log('[review] submitting:\n' + message)
+    api.sendChatMessage(message)
+    setReviewing(null)
+  }
+
+  return (
+    <div className="content-column" style={{ padding: '28px 32px 40px 32px' }}>
+      {content === null && !error && <div className="loading-center">loading…</div>}
+      {error && <div className="loading-center">Error: {error}</div>}
+      {content !== null && (
+        <ReviewPanel
+          path={path}
+          content={content}
+          onSubmit={handleSubmit}
+          onClose={() => setReviewing(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // App
 // ---------------------------------------------------------------------------
 
 export default function App() {
   const run = useStore(s => s.run)
   const connected = useStore(s => s.connected)
+  const reviewingArtifact = useStore(s => s.reviewingArtifact)
+  const activeYield = useStore(s => s.run?.activeYield ?? null)
+  const artifactsDict = useStore(s => s.run?.artifacts)
   const header = useHeaderData()
   const [page, setPage] = useState<'new-run' | 'sessions' | 'settings'>('new-run')
+
+  // Review auto-open: yield-triggered, not write-triggered. Fires when the
+  // orchestrator parks in koan_yield -- the synchronous checkpoint where a
+  // review is expected. Picks the newest .md artifact modified since the
+  // previous yield (or since app mount for the first yield). If no .md was
+  // modified in that window, no auto-open (the yield is not about an artifact).
+  // TODO: gate behind settings toggle "Auto-open new or changed artifacts".
+  const lastYieldAtRef = useRef<number>(Date.now())
+  useEffect(() => {
+    if (activeYield === null) return
+    const cutoff = lastYieldAtRef.current
+    lastYieldAtRef.current = Date.now()
+    const candidates = Object.values(artifactsDict ?? {})
+      .filter(a => a.path.endsWith('.md') && a.modifiedAt > cutoff)
+    if (candidates.length === 0) return
+    const newest = candidates.reduce((a, b) => (a.modifiedAt >= b.modifiedAt ? a : b))
+    useStore.getState().setReviewingArtifact(newest.path)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeYield])
 
   useEffect(() => {
     let es: EventSource | null = null
@@ -618,6 +733,17 @@ export default function App() {
       <div className="app-root">
         <HeaderBar {...header} onSettingsClick={goToSettings} />
         <div className="workflow-grid"><CompletionView /><ConnectedSidebar /></div>
+        <Notification />
+      </div>
+    )
+  }
+
+  if (reviewingArtifact) {
+    return (
+      <div className="app-root">
+        <HeaderBar {...header} onSettingsClick={goToSettings} />
+        <div className="workflow-grid"><ReviewView /><ConnectedSidebar /></div>
+        <ConnectedScoutBar />
         <Notification />
       </div>
     )

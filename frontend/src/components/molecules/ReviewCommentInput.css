@@ -1,0 +1,38 @@
+/* ReviewCommentInput -- inline comment form with orange border + focus ring. */
+
+.rci {
+  background: var(--bg-card);
+  border: 1.5px solid var(--color-orange);
+  border-radius: var(--radius-lg);
+  padding: 10px 12px;
+  margin: 6px 0 12px 0;
+}
+
+.rci:focus-within {
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.rci-textarea {
+  width: 100%;
+  border: none;
+  outline: none;
+  resize: vertical;
+  font-family: var(--font-body);
+  font-size: var(--type-breadcrumb);
+  line-height: 1.5;
+  background: transparent;
+  color: var(--text-body);
+  min-height: 44px;
+  padding: 0;
+}
+
+.rci-textarea::placeholder {
+  color: var(--text-placeholder);
+}
+
+.rci-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
