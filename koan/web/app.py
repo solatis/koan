@@ -57,6 +57,7 @@ _STATIC_DIR = Path(__file__).parent / "static"
 # without a build step.
 FRONTEND_DIST = Path(__file__).parent / "static" / "app"
 
+RUNS_DIR = Path.home() / ".koan" / "runs"
 
 
 # -- Helpers ------------------------------------------------------------------
@@ -341,7 +342,12 @@ async def api_start_run(r: Request) -> Response:
 
     await atomic_write_json(
         run_dir / "task.json",
-        {"task": task, "workflow": workflow_name, "created_at": time.time()},
+        {
+            "task": task,
+            "workflow": workflow_name,
+            "created_at": time.time(),
+            "project_dir": st.project_dir,
+        },
     )
 
     st.task_description = task
@@ -984,6 +990,53 @@ async def api_initial_prompt(r: Request) -> Response:
     return JSONResponse({"prompt": st.initial_prompt, "project_dir": st.project_dir})
 
 
+# -- Sessions endpoints -------------------------------------------------------
+
+async def api_sessions_list(r: Request) -> Response:
+    sessions = []
+    if RUNS_DIR.is_dir():
+        entries = sorted(RUNS_DIR.iterdir(), reverse=True)
+        for run_path in entries:
+            if not run_path.is_dir():
+                continue
+            task_file = run_path / "task.json"
+            try:
+                data = json.loads(task_file.read_text())
+            except (FileNotFoundError, json.JSONDecodeError):
+                continue
+            sessions.append({
+                "run_id": run_path.name,
+                "task": data.get("task", ""),
+                "workflow": data.get("workflow", ""),
+                "created_at": data.get("created_at", 0),
+                "project_dir": data.get("project_dir", ""),
+            })
+    return JSONResponse({"sessions": sessions})
+
+
+async def api_sessions_delete(r: Request) -> Response:
+    run_id = r.path_params["run_id"]
+    if not run_id or "/" in run_id or "\\" in run_id or ".." in run_id:
+        return JSONResponse(
+            {"error": "invalid", "message": "invalid run_id"},
+            status_code=400,
+        )
+    run_path = RUNS_DIR / run_id
+    if not run_path.is_dir():
+        return JSONResponse(
+            {"error": "not_found", "message": f"session '{run_id}' not found"},
+            status_code=404,
+        )
+    st = _app_state(r)
+    if st.run_dir and Path(st.run_dir).resolve() == run_path.resolve():
+        return JSONResponse(
+            {"error": "active_run", "message": "cannot delete the currently active run"},
+            status_code=409,
+        )
+    shutil.rmtree(run_path)
+    return JSONResponse({"ok": True})
+
+
 # -- App factory --------------------------------------------------------------
 
 def _build_mcp(app_state: AppState):
@@ -1070,6 +1123,8 @@ def create_app(app_state: AppState) -> Starlette:
         Route("/api/settings/profile-form", api_settings_profile_form, methods=["GET"]),
         Route("/api/settings/installation-form", api_settings_installation_form, methods=["GET"]),
         Route("/api/initial-prompt", api_initial_prompt, methods=["GET"]),
+        Route("/api/sessions", api_sessions_list, methods=["GET"]),
+        Route("/api/sessions/{run_id}", api_sessions_delete, methods=["DELETE"]),
         Route("/events", sse_stream),
     ]
 
