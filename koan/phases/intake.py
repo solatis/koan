@@ -1,10 +1,8 @@
-# Intake phase -- 3-step workflow.
+# Intake phase -- 2-step workflow.
 #
-#   Step 1 (Gather)    -- read task description, explore obvious files, dispatch scouts
-#   Step 2 (Deepen)    -- process scout results, verify, deepen through dialogue
-#   Step 3 (Summarize) -- synthesize findings, present summary, transition
+#   Step 1 (Gather)  -- read task description, explore obvious files, dispatch scouts
+#   Step 2 (Deepen)  -- process scout results, deepen through dialogue, summarize
 #
-# Step 3 completes unconditionally -- no review gate.
 # Workflow scope framing (phase_instructions) appears at the top of step 1 guidance.
 
 from __future__ import annotations
@@ -13,12 +11,11 @@ from . import PhaseContext, StepGuidance
 
 ROLE = "intake"
 SCOPE = "general"        # reusable by any workflow
-TOTAL_STEPS = 3
+TOTAL_STEPS = 2
 
 STEP_NAMES: dict[int, str] = {
     1: "Gather",
     2: "Deepen",
-    3: "Summarize",
 }
 
 SYSTEM_PROMPT = (
@@ -246,34 +243,23 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "  plan without hedging.",
                 "- No answer you received left you with a 'I think I know what they mean'",
                 "  feeling -- you either confirmed it or asked.",
+                "",
+                "## 4. Summarize and transition",
+                "",
+                "When deepening is complete, synthesize a concise summary covering:",
+                "",
+                "- **Task scope**: What is being built or changed, in the user's framing.",
+                "- **Key codebase findings**: Entry points, current behavior, integration points.",
+                "- **Decisions made**: Every question you asked and the user's answer.",
+                "- **Constraints**: Technical, timeline, or compatibility boundaries.",
+                "- **Open items**: Anything still unresolved (if any).",
+                "",
+                "Describe what IS, not what SHOULD be done. No recommendations, no",
+                "deliverables, no implementation suggestions.",
+                "",
+                "Call `koan_complete_step` to finish intake.",
             ],
         )
-
-    if step == 3:
-        lines = [
-            "Synthesize what you learned and present a summary to the user.",
-            "",
-            "## What to summarize",
-            "",
-            "Present a concise summary covering:",
-            "",
-            "- **Task scope**: What is being built or changed, in the user's framing.",
-            "- **Key codebase findings**: The most important things you discovered about",
-            "  the relevant code — entry points, current behavior, integration points.",
-            "- **Decisions made**: Every question you asked and the user's answer.",
-            "- **Constraints**: Technical, timeline, or compatibility boundaries.",
-            "- **Open items**: Anything still unresolved (if any).",
-            "",
-            "Describe what IS, not what SHOULD be done. No recommendations, no",
-            "deliverables, no implementation suggestions.",
-            "",
-            "## After summarizing",
-            "",
-            "Call `koan_complete_step`. The phase boundary will provide suggested",
-            "next phases and their descriptions. Present them to the user and ask",
-            "which direction they want to go.",
-        ]
-        return StepGuidance(title=STEP_NAMES[3], instructions=lines)
 
     return StepGuidance(title=f"Step {step}", instructions=[f"Execute step {step}."])
 
@@ -281,9 +267,8 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
 # -- Lifecycle -----------------------------------------------------------------
 
 def get_next_step(step: int, ctx: PhaseContext) -> int | None:
-    if step < 3:
+    if step < TOTAL_STEPS:
         return step + 1
-    # Step 3 (Summarize): terminal — no review gate.
     return None
 
 

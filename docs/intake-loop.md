@@ -1,6 +1,6 @@
 # Intake Phase Design
 
-How the intake phase gathers context in three steps, and the prompt
+How the intake phase gathers context in two steps, and the prompt
 engineering principles that govern it.
 
 > Parent doc: [architecture.md](./architecture.md)
@@ -10,27 +10,26 @@ engineering principles that govern it.
 
 ## Overview
 
-The intake phase is the most consequential subagent in the pipeline. Its
-single output -- `landscape.md` -- is the sole input for all downstream phases.
-Every story boundary, every implementation plan, and every line of code
-produced downstream depends on the completeness and accuracy of that file.
-Gaps in `landscape.md` compound: a missed decision becomes a wrong story
-boundary becomes a wrong plan becomes wrong code.
+The intake phase is the most consequential phase in the pipeline. Its
+output -- verified understanding of the task and codebase -- is the foundation
+for all downstream phases. Every implementation plan and every line of code
+produced downstream depends on the completeness and accuracy of what intake
+discovers. Gaps compound: a missed decision becomes a wrong plan becomes
+wrong code.
 
-The intake phase runs a focused **three-step workflow**: gather context
-(conversation + codebase orientation + scouts), evaluate findings and ask the
-user questions, then write `landscape.md`.
+The intake phase runs a focused **two-step workflow**: gather context
+(conversation + codebase orientation + scouts), then deepen understanding
+through dialogue and summarize findings.
 
 ### Step structure
 
-| Step | Name     | Runs | Purpose                                                                           |
-| ---- | -------- | ---- | --------------------------------------------------------------------------------- |
-| 1    | Gather   | 1x   | Read conversation, open obvious files (≤5), dispatch 3-5 scouts.                  |
-| 2    | Deepen   | 1x   | Process scout results, verify by reading files, deepen understanding through iterative dialogue. |
-| 3    | Write    | 1x   | Write `landscape.md`. The artifact is available in the artifacts panel.              |
+| Step | Name   | Runs | Purpose                                                                                            |
+| ---- | ------ | ---- | -------------------------------------------------------------------------------------------------- |
+| 1    | Gather | 1x   | Read conversation, open obvious files (<=5), dispatch scouts.                                      |
+| 2    | Deepen | 1x   | Process scout results, verify by reading files, deepen through iterative dialogue, then summarize. |
 
-All steps advance linearly. The phase boundary after step 3 gives the user a
-natural point to review `landscape.md` and discuss next steps.
+All steps advance linearly. The phase boundary after step 2 gives the user a
+natural point to review the summary and discuss next steps.
 
 ---
 
@@ -59,6 +58,7 @@ directly, identifies gaps, and asks the user targeted questions -- then deepens
 further as each answer reveals new dimensions.
 
 Key properties:
+
 - **Scout verification**: Scouts are good at exploration but their output should
   be confirmed. The Deepen step reads actual files to verify key scout findings
   that affect scope or story boundaries.
@@ -71,24 +71,23 @@ Key properties:
 - **Default-ask framing**: Question-asking is the default; skipping requires
   triple justification. This inverts the typical LLM bias toward advancing.
 
-### Step 3: Write
-
-The Write step produces `landscape.md` with required sections (Task Summary,
-Prior Art, Codebase Findings, Project Conventions, Decisions, Constraints,
-Open Items). After writing, the phase completes and the orchestrator presents
-suggested next phases at the boundary.
+The Deepen step concludes by synthesizing a concise summary covering: task
+scope, key codebase findings, decisions made, constraints, and open items.
+This summary lives in the LLM's context -- downstream phases (plan-spec,
+plan-review) trust it as their starting point. See
+[phase-trust.md](./phase-trust.md) for the trust model.
 
 ---
 
 ## Phase Boundary
 
-After step 3 completes, `get_next_step()` returns `None`, which triggers the
-phase boundary. The orchestrator summarizes what was accomplished, presents
-suggested next phases with descriptions, and asks the user what to do next.
+After step 2 completes, `get_next_step()` returns `None`, which triggers the
+phase boundary. The orchestrator presents suggested next phases with
+descriptions, and asks the user what to do next.
 
 ```python
 def get_next_step(step, ctx):
-    if step < 3:
+    if step < TOTAL_STEPS:
         return step + 1
     return None  # phase complete
 ```
@@ -103,10 +102,12 @@ mechanisms that address specific failure modes.
 
 ### MARP (Maximizing Operations per Step)
 
-The three-step structure applies the MARP principle: maximize operations
+The two-step structure applies the MARP principle: maximize operations
 per `koan_complete_step` call while minimizing planning or meta-reasoning
 steps. Each step does real work across multiple activities rather than
-artificially separating them into sequential tool calls.
+artificially separating them into sequential tool calls. The summary
+(previously a separate step) is folded into the Deepen step's conclusion
+because a strong model can handle both activities in a single pass.
 
 ### Iterative deepening through dialogue
 
