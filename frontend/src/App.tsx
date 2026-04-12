@@ -550,35 +550,59 @@ function ConnectedSettingsPage() {
 // in the koan_yield tool docstring (koan/web/mcp_endpoint.py). Both sides
 // must stay in sync: the "I've reviewed `<path>`" sentinel is how the LLM
 // recognizes the payload as a review response.
+//
+// Three response types:
+//   1. Approval  -- no comments, no summary -> "approve it as-is"
+//   2. Structured -- inline comments (+ optional summary)
+//   3. Free-form  -- summary only, no inline comments
 function formatReviewMessage(path: string, payload: ReviewSubmitPayload): string {
-  const out: string[] = []
-  out.push(
-    `I've reviewed \`${path}\`. For each inline comment below, edit the cited section of the file to address it. Preserve everything not called out. When all comments are addressed, call \`koan_yield\` again so I can confirm or give another pass.`,
-  )
+  const summary = payload.summary.trim()
+  const hasComments = payload.comments.length > 0
+  const hasSummary = summary.length > 0
 
-  // Group comments by blockIndex in document order.
-  const groups = new Map<number, { preview: string; comments: string[] }>()
-  for (const c of payload.comments) {
-    const g = groups.get(c.blockIndex)
-    if (g) g.comments.push(c.text)
-    else groups.set(c.blockIndex, { preview: c.blockPreview, comments: [c.text] })
+  // Approval -- no comments and no summary means the artifact is accepted.
+  if (!hasComments && !hasSummary) {
+    return `I've reviewed \`${path}\` and approve it as-is. No changes requested.`
   }
-  const sorted = [...groups.entries()].sort(([a], [b]) => a - b)
 
-  for (const [, g] of sorted) {
-    out.push('')
-    out.push('On the section:')
-    for (const line of g.preview.split('\n')) out.push(`> ${line}`)
-    out.push('')
-    for (const text of g.comments) {
-      const parts = text.split('\n')
-      out.push(`- ${parts[0]}`)
-      for (let i = 1; i < parts.length; i++) out.push(`  ${parts[i]}`)
+  const out: string[] = []
+
+  // Structured feedback -- inline comments (with optional summary).
+  if (hasComments) {
+    out.push(
+      `I've reviewed \`${path}\`. For each inline comment below, edit the cited section of the file to address it. Preserve everything not called out. When all comments are addressed, call \`koan_yield\` again so I can confirm or give another pass.`,
+    )
+
+    // Group comments by blockIndex in document order.
+    const groups = new Map<number, { preview: string; comments: string[] }>()
+    for (const c of payload.comments) {
+      const g = groups.get(c.blockIndex)
+      if (g) g.comments.push(c.text)
+      else groups.set(c.blockIndex, { preview: c.blockPreview, comments: [c.text] })
+    }
+    const sorted = [...groups.entries()].sort(([a], [b]) => a - b)
+
+    for (const [, g] of sorted) {
+      out.push('')
+      out.push('On the section:')
+      for (const line of g.preview.split('\n')) out.push(`> ${line}`)
+      out.push('')
+      for (const text of g.comments) {
+        const parts = text.split('\n')
+        out.push(`- ${parts[0]}`)
+        for (let i = 1; i < parts.length; i++) out.push(`  ${parts[i]}`)
+      }
     }
   }
 
-  const summary = payload.summary.trim()
-  if (summary) {
+  // Free-form feedback -- summary only, no inline comments.
+  if (!hasComments && hasSummary) {
+    out.push(
+      `I've reviewed \`${path}\`. Apply the feedback below, then call \`koan_yield\` again so I can confirm or give another pass.`,
+    )
+  }
+
+  if (hasSummary) {
     out.push('')
     out.push(`**Summary:** ${summary}`)
   }

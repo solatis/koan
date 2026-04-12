@@ -367,12 +367,27 @@ async def koan_yield(
     multi-turn conversation.
 
     REVIEW FEEDBACK LOOP: if the returned message begins with
-    "I've reviewed `<path>`", treat it as a structured review response.
-    The user has inspected the artifact you just produced. Revise the file
-    to address every inline comment and the summary (if present), then call
-    `koan_yield` again to await confirmation or further feedback. Do NOT
-    call `koan_complete_step` between review rounds; stay in the yield loop
-    until the user selects a "done"/"proceed" suggestion or steers elsewhere.
+    "I've reviewed `<path>`", the user has inspected the artifact you just
+    produced. There are three response types:
+
+    1. APPROVAL -- message says "approve it as-is". The artifact is accepted.
+       Proceed normally (call koan_complete_step or continue the workflow).
+    2. STRUCTURED FEEDBACK -- message contains inline comments citing specific
+       sections. Revise each cited section to address its comments. Preserve
+       everything not called out. Then call koan_yield again.
+    3. FREE-FORM FEEDBACK -- message contains a summary without inline
+       comments. Understand the requested changes, apply them to the artifact,
+       then call koan_yield again.
+
+    For types 2 and 3: do NOT call koan_complete_step between review rounds.
+    Stay in the yield loop until the user approves or steers elsewhere.
+
+    TEMPORAL CONTAMINATION RULE: when revising an artifact after feedback,
+    rewrite it as though it was correct from the start. Never reference the
+    previous version, the feedback, or the fact that a revision occurred.
+    The artifact must read as a clean first draft that incorporates the
+    requested changes. Do not add labels like "(revised)", "(updated)",
+    or "(deduplicated)" -- these leak prior state into the output.
 
     Suggestions (optional) render as clickable pills that pre-fill the chat.
     Each dict: id (phase name or "done"), label (short display), command
