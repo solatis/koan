@@ -8,6 +8,7 @@ dependencies = [
     "fastmcp",
     "aiofiles",
     "jsonpatch",
+    "pyyaml",
 ]
 
 [project.scripts]
