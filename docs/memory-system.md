@@ -1,4 +1,4 @@
-# Koan Memory System — Specification v3
+# Koan Memory System — Specification v4
 
 ## Overview
 
@@ -19,85 +19,93 @@ carrying structured metadata and a prose body written in event-style.
 This design makes each entry independently retrievable, independently
 reviewable, and independently trackable via version control.
 
+### What this is not
+
+This is not conversational memory. Systems like Mem0, SimpleMem,
+Hindsight, and A-Mem extract and consolidate facts from dialogue
+streams. Their benchmarks (LoCoMo, LongMemEval) test recall of
+conversational facts across sessions.
+
+Koan's memory is fundamentally different:
+
+- **Deliberate, not extracted.** Entries are proposed by the
+  orchestrator agent and approved by the human user during a
+  curation workflow. Every entry is human-reviewed before it enters
+  memory.
+
+- **Structured, not atomic.** Each entry is 100–500 tokens of
+  self-contained prose — an architectural decision with rationale
+  and alternatives, not an atomic fact like "user prefers coffee."
+  The grain size is justified by EMem's neo-Davidsonian argument:
+  relational knowledge must stay bundled (Zhou et al., 2025).
+
+- **The producer and consumer are LLMs.** The primary reader of
+  memory entries is the intake agent at the start of the next
+  workflow. The human oversees (reviews proposals, approves entries)
+  but does not browse or query memory directly. Design decisions
+  optimize for LLM consumption, not human browsability.
+
+- **Write-infrequent, read-frequent.** Memory is written during
+  curation (end of workflow or on-demand review). It is read at
+  the start of every workflow. The read path matters more than
+  the write path.
+
 ---
 
 ## Entry format
 
-Each memory entry is a standalone markdown file consisting of three
-parts: YAML frontmatter, a contextual introduction, and a prose body.
+Each memory entry is a standalone markdown file consisting of two
+parts: YAML frontmatter and a prose body.
 
 ### YAML frontmatter
 
-Structured metadata that enables programmatic operations — staleness
-detection, status filtering, cross-referencing, and retrieval
-filtering.
+Structured metadata that enables filtering and freshness tracking.
 
 ```yaml
 ---
 title: PostgreSQL for Auth Service
 type: decision
-date: 2026-04-10
-source: user-stated
-status: active
-tags: [auth, postgresql, data-storage]
-supersedes: null
-related: [context/0002-infrastructure.md]
+created: 2026-04-10T14:23:00Z
+modified: 2026-04-10T14:23:00Z
+related: [0002-infrastructure.md]
 ---
 ```
 
 Required fields:
 
-- **title**: Short descriptive name, used in listings and summaries
-- **type**: One of `decision`, `context`, `lesson`, `procedure`,
-  `milestone`
-- **date**: The date the fact became true or was observed (ISO 8601)
-- **source**: How the memory was captured — `user-stated`,
-  `llm-inferred`, or `post-mortem`
-- **status**: `active`, `review-needed`, `deprecated`, or `archived`
+- **title**: Short descriptive name, used in listings and the project
+  summary
+- **type**: One of `decision`, `context`, `lesson`, `procedure`
+- **created**: ISO 8601 timestamp, set automatically when the entry
+  is first written. Never modified after creation.
+- **modified**: ISO 8601 timestamp, updated automatically on every
+  write. Enables freshness tracking and staleness detection.
 
 Optional fields:
 
-- **tags**: Free-form labels for retrieval filtering
-- **supersedes**: Path to the entry this one replaces (if any)
-- **related**: Paths to related entries
+- **related**: Filenames of related entries (e.g.,
+  `0002-infrastructure.md`). Explicit structural connections — a
+  lesson linking to its derived procedure, a decision linking to the
+  context that motivated it. These serve as signals for curation
+  health checks.
 
-### Contextual introduction
-
-A 1–3 sentence paragraph immediately following the frontmatter that
-situates the entry within the project. This introduction is written
-at capture time and becomes a permanent part of the file. It is not
-generated at retrieval or embedding time.
-
-This follows Anthropic's contextual retrieval technique, which
-demonstrated a 35% reduction in retrieval failures when contextual
-information is prepended to chunks before embedding. The critical
-design choice: the contextual introduction is written once and stored
-in the file, rather than generated dynamically at embedding time.
-
-Rationale for baking it into the file:
-
-1. **Consistency.** The embedding and the file content are always in
-   sync. There is no discrepancy between what the retrieval layer
-   indexed and what the file contains.
-
-2. **Determinism.** It is possible to check whether an embedding has
-   already been computed for a file by comparing content hashes.
-   Dynamic contextual generation would produce slightly different
-   wordings each time, making hash-based change detection unreliable.
-
-3. **Transparency.** A human reading the file sees exactly what the
-   retrieval system sees. Nothing is hidden in an intermediate layer.
-
-The tradeoff is denormalization. If the project is renamed or a
-major structural fact changes, all contextual introductions that
-reference it become stale and must be updated. This is acceptable —
-such changes are rare, and the memory review workflow can surface
-and batch-update affected entries.
+A file's presence is its status. If a file exists in `.koan/memory/`,
+it is active knowledge. The `koan_forget` tool deletes the file.
+Git preserves the history of anything removed.
 
 ### Prose body
 
-The main content, written in event-style following the writing
-discipline described below.
+Everything after the frontmatter is the prose body, written in
+event-style following the writing discipline described below.
+
+**The first 1–3 sentences must situate the entry in the project.**
+This follows Anthropic's contextual retrieval technique, which
+demonstrated a 35% reduction in retrieval failures when contextual
+information is prepended to chunks before embedding. Because the
+entire file is embedded as a single chunk for retrieval, these
+opening sentences become part of the embedding and improve search
+matching. They are not a separate field — they are the natural
+opening of the prose, written as part of the body.
 
 ### Complete example
 
@@ -105,17 +113,13 @@ discipline described below.
 ---
 title: PostgreSQL for Auth Service
 type: decision
-date: 2026-04-10
-source: user-stated
-status: active
-tags: [auth, postgresql, data-storage]
-supersedes: null
-related: [context/0002-infrastructure.md]
+created: 2026-04-10T14:23:00Z
+modified: 2026-04-10T14:23:00Z
+related: [0002-infrastructure.md]
 ---
 
-This entry is a decision record from the TrapperKeeper project,
-a distributed data firewall. It documents the choice of primary
-data store for the authentication service.
+This entry documents the choice of primary data store for the
+authentication service in TrapperKeeper, a distributed data firewall.
 
 On 2026-04-10, user decided to migrate the auth service from SQLite
 to PostgreSQL 16.2. Rationale: SQLite could not handle concurrent
@@ -141,10 +145,13 @@ arguments outperforms decomposing them into relation triples.
 ### Rules
 
 1. **Every statement includes a date.** The date the fact became true
-   or was observed. If unknown, use the recording date.
+   or was observed. Temporal grounding makes every entry a historical
+   fact that remains true regardless of when it is read.
 
 2. **Attribute claims to their source.** "User stated...", "LLM
-   inferred...", "Post-mortem identified...".
+   inferred...", "Post-mortem identified...". Source attribution lives
+   in the prose, not in metadata fields. User-stated facts carry
+   higher trust than LLM-inferred facts.
 
 3. **No forward-looking language.** Not "we will" but "On [date], user
    stated the plan was to...".
@@ -154,10 +161,6 @@ arguments outperforms decomposing them into relation triples.
 
 5. **Each entry must stand alone.** Interpretable without any other
    file, true regardless of when it is read.
-
-Source attribution embedded in the prose serves as the primary trust
-signal. User-stated facts carry higher trust than LLM-inferred facts.
-No external metadata database is needed for trust assessment.
 
 ### Examples
 
@@ -174,9 +177,9 @@ Good — temporally grounded, always true as a historical fact:
 
 ## Memory types
 
-Koan organizes memories into five document types, each corresponding
-to a distinct retrieval intent — a kind of question an agent needs
-answered.
+Koan classifies memories into four types. The type field is metadata
+for filtering and curation heuristics — it does not determine where
+the file is stored. All entries live in a single flat directory.
 
 ### Decisions — *Why is the project the way it is?*
 
@@ -190,8 +193,8 @@ considered and rejected, and how the decision surfaced (intake,
 mid-workflow correction, post-mortem).
 
 Decisions include both explicit choices (user-stated) and implicit
-choices (LLM-inferred from user behavior). Implicit decisions are
-marked as such via the `source` field.
+choices (LLM-inferred from user behavior). Implicit decisions
+should be clearly attributed as inferred in the prose body.
 
 ### Context — *What do I need to know that isn't in the code?*
 
@@ -199,11 +202,6 @@ Objective facts about the project, team, domain, and infrastructure
 that are not derivable from the codebase and are expected to remain
 stable across sessions. Team size, deployment setup, external
 dependencies, business constraints.
-
-Context entries are split into project-scoped (in `.koan/memory/
-context/`) and user-scoped (in `.koan/user/context/`). User context
-includes background, experience level, coding preferences, and style.
-It applies across all projects.
 
 ### Lessons — *What went wrong before?*
 
@@ -229,29 +227,6 @@ Procedures emerge from three sources: lessons that generalize into
 prevention rules, positive patterns observed after successful
 workflows, and the memory review workflow surfacing recurring themes.
 
-### Milestones — *What work has been done?*
-
-A running record of completed workflows. Milestones capture *that*
-something was done, not the full detail of how. Their primary purpose
-is enabling project summary generation and providing future intake
-phases a quick history.
-
-### Project summary (derived)
-
-A synthesized overview regenerated after each workflow completes.
-Unlike memory entries, the summary is produced by reading the other
-memory files and synthesizing them into a concise briefing. It lives
-at `.koan/memory/summary.md` and does not have the standard entry
-format (no sequential number, no contextual introduction).
-
-The summary is the first thing an LLM reads when starting any
-workflow. It is loaded in full at intake (not retrieved via search)
-as long as it fits within a budget of ~2000 tokens. This follows the
-coarsening–traversal (C–T) coupling principle from "Toward a Theory
-of Hierarchical Memory for Language Agents" (ICLR 2026):
-self-sufficient representatives can be loaded in full (collapsed
-search), but only while they fit the token budget.
-
 ---
 
 ## File organization
@@ -259,119 +234,71 @@ search), but only while they fit the token budget.
 ```
 .koan/
   memory/
-    summary.md                          # tier 1: root summary (whole project)
-    decisions/
-      _index.md                         # tier 2: condensed summary of all decisions
-      0001-postgresql-for-auth.md       # tier 3: individual entries
-      0002-no-unit-tests.md
-      0003-redis-session-management.md
-    context/
-      _index.md
-      0001-team-structure.md
-      0002-infrastructure.md
-      0003-auth0-integration.md
-    lessons/
-      _index.md
-      0001-unit-test-generation.md
-    procedures/
-      _index.md
-      0001-testing-policy-check.md
-      0002-database-migration-steps.md
-    milestones/
-      _index.md
-      0042-user-authentication.md
-      0048-background-jobs.md
-
-  user/                                 # user-global (shared across projects)
-    context/
-      _index.md
-      0001-background.md
-      0002-coding-preferences.md
-    lessons/
-      _index.md
-      0001-credential-hardcoding.md
-    procedures/
-      _index.md
-      0001-migration-decomposition.md
+    summary.md                          # project orientation briefing
+    0001-postgresql-for-auth.md         # individual entries
+    0002-infrastructure.md
+    0003-no-unit-tests.md
+    0004-redis-session-management.md
+    0005-unit-test-generation-lesson.md
+    0006-testing-policy-check.md
+    0007-database-migration-steps.md
+    0008-team-structure.md
+    0009-auth0-integration.md
 ```
 
-### Three-tier summary hierarchy
+All entries live in a single flat directory. The type of each entry
+is recorded in its YAML frontmatter, not in the directory structure.
+This keeps topically related entries together on disk — the decision
+about PostgreSQL, the infrastructure context it relates to, and the
+lesson about PostgreSQL migrations are all neighbors in the directory,
+not scattered across subdirectories.
 
-The memory system maintains summaries at three levels, following the
-RAPTOR recursive abstractive retrieval pattern (Sarthi et al., ICLR
-2024). Each level provides a self-sufficient representation that can
-answer queries at its resolution without drilling deeper.
+Every hierarchical memory system in the literature groups entries by
+**semantic/topical similarity**, not by cognitive type (Talebirad et
+al., ICLR 2026; Hu et al., 2026; Sun & Zeng, 2025). Type-based
+partitioning separates related knowledge that agents need together.
+Koan follows this principle: the flat store is the topic-neutral
+starting point, and if the knowledge base grows to the point where
+flat retrieval degrades, the scaling path is topic-based clustering
+(not type-based subdirectories).
 
-**Tier 1: Root summary** (`summary.md`). A project-wide overview
-covering architecture, policies, recent work, and known pitfalls.
-Always loaded in full at intake. Budget: ~2000 tokens.
+### Project summary
 
-**Tier 2: Type-level indexes** (`decisions/_index.md`, etc.). Each
-type folder contains an `_index.md` that condenses all active entries
-in that folder into a single prose summary. An agent needing a broad
-view of "all decisions" or "all procedures" can load the relevant
-`_index.md` without retrieving individual entries. Budget: ~500
-tokens each.
+`summary.md` is a synthesized project orientation briefing,
+regenerated after each workflow completes. Unlike memory entries, it
+is a derived artifact — produced by reading all entries and
+synthesizing them into a concise overview. It does not have the
+standard entry format (no sequential number, no frontmatter).
 
-**Tier 3: Individual entries** (`0001-postgresql-for-auth.md`). The
-full knowledge entries, retrieved via hybrid search when the agent
-needs specific detail that the summaries don't provide.
+The summary is the first thing an LLM reads when starting any
+workflow. It is loaded in full at intake (not retrieved via search)
+and should stay within ~2000 tokens.
 
-The root `summary.md` is regenerated from the type-level `_index.md`
-files rather than reading every individual entry directly. This is
-RAPTOR's recursive summarization: summarize the leaves, then
-summarize the summaries.
-
-Type-level `_index.md` files are generated artifacts, like
-`summary.md`. They carry a simple frontmatter block:
-
-```yaml
----
-type: index
-covers: [0001, 0002, 0003]
-token_count: 420
-last_generated: 2026-04-15
----
-```
-
-Example `decisions/_index.md`:
-
-```markdown
----
-type: index
-covers: [0001, 0002, 0003]
-token_count: 380
-last_generated: 2026-04-15
----
-
-TrapperKeeper's active architectural decisions cover three areas.
-Data storage uses PostgreSQL 16.2 for the auth service, chosen over
-SQLite (concurrency limits) and CockroachDB (operational complexity)
-as of 2026-04-10. Testing policy prohibits unit tests in favor of
-integration tests only, established 2026-04-08. Session management
-uses Redis 7.x with stateful sessions for compliance requirements,
-decided 2026-04-12.
-```
+The summary is regenerated by reading all entries directly. At the
+current scale (tens to low hundreds of entries), this fits within a
+single LLM call. When the knowledge base grows to the point where
+all entries no longer fit in a cheap model's context window, that
+threshold is the signal to introduce topic-based clustering —
+grouping entries by semantic similarity and generating per-topic
+summaries. Until then, the flat structure with a single summary is
+the simpler and sufficient design.
 
 ### Naming convention
 
 Files are named `NNNN-short-description.md` where `NNNN` is a
-zero-padded sequential number within the type folder. The number
-provides stable ordering and prevents filename collisions. The
-description is a human-readable slug derived from the title.
+zero-padded sequential number. The number provides stable ordering
+and prevents filename collisions. The description is a human-readable
+slug derived from the title.
 
-New entries are assigned the next available number in their type
-folder. Numbers are never reused — if entry `0005` is deleted, the
-next entry is still `0006`.
+New entries are assigned the next available number. Numbers are never
+reused — if entry `0005` is deleted, the next entry is still the
+next number after the current highest.
 
 ### Version control
 
 The `.koan/memory/` directory is checked into version control
-alongside the project's source code. This means memory changes
-appear in diffs, can be reviewed in pull requests, and have full
-git history. The `.koan/user/` directory is stored outside the
-project repository (e.g., in `~/.koan/user/`) since it applies
-across all projects.
+alongside the project's source code. Memory changes appear in diffs,
+can be reviewed in pull requests, and have full git history.
 
 ---
 
@@ -384,85 +311,114 @@ user review.
 
 ### The curation workflow
 
-Curation is a unified workflow that reads source material, reflects
-on it in the context of existing memory, proposes changes, and
-presents them to the user for review. It follows the same pattern
-regardless of what triggered it:
+Curation is an iterative workflow that processes source material
+in batches, classifying each candidate against existing memory
+before proposing changes. This write-time classification follows
+the pattern established by Mem0's memory management algorithm:
+every candidate knowledge item is classified (ADD, UPDATE, NOOP,
+DEPRECATE) before being committed, preventing duplicate and
+redundant entries.
 
-1. **Read source material.** The source varies by invocation: a
-   workflow transcript, the existing memory corpus, codebase files,
-   user-provided documents, or a combination.
+The curation workflow has three steps:
 
-2. **Read existing memory.** Load all `_index.md` files for
-   orientation, plus individual entries relevant to the source
-   material (via retrieval or full scan).
+**Step 1: Orient.** Quick orientation in existing memory and source
+material. Read the project summary to understand what's already
+captured. Survey the scope of the source material based on the
+directive. Do not produce proposals yet.
 
-3. **Reflect.** The curation agent evaluates the source against
-   existing memory. Depending on the directive, it may:
-   - Identify new knowledge to capture
-   - Find existing entries that need updating
-   - Detect stale, contradictory, or duplicate entries
-   - Surface gaps in coverage
-   - Evaluate lessons for procedure generation
-   - Assess whether the type-level organization still fits
+**Step 2: Curate.** The main iterative loop. Process knowledge in
+batches of 3–5 candidates. For each batch:
 
-4. **Conduct Q&A with the user** (when the directive calls for it).
-   Ask clarifying questions to fill gaps, verify assumptions, or
-   resolve ambiguities.
+1. Identify 3–5 candidate knowledge items from the source
+2. Classify each candidate against existing memory:
+   - **ADD**: No existing entry covers this → draft a new entry
+   - **UPDATE**: An existing entry covers this but needs revision
+     → draft an update to the existing entry
+   - **NOOP**: An existing entry already captures this → skip
+   - **DEPRECATE**: This knowledge makes an existing entry obsolete
+     → propose deprecation
+3. Draft complete entry proposals for ADD and UPDATE candidates
+4. Present the batch to the user for review
+5. Apply approved changes (via `koan_memorize` and `koan_forget`)
+6. Reassess: is there more to extract? After the obvious, look for
+   implications, connections, conventions, edge cases. Continue
+   the loop with a new batch if so.
 
-5. **Propose changes.** Each proposed change is a complete entry
-   (for creates) or a diff (for updates), organized by operation:
-   - **Create**: New entry with full frontmatter, contextual
-     introduction, and prose body
-   - **Update**: Modified content for an existing entry
-   - **Merge**: Two or more entries combined into one
-   - **Deprecate**: Status change to `deprecated`
-   - **Promote / demote**: Move between project-local and user-global
-   - **Archive**: Remove from active retrieval
+The loop converges when successive batches produce mostly NOOPs,
+the source material is exhausted, or the user says to stop.
 
-6. **User reviews each proposed change.** The user approves, edits,
-   or rejects each change individually. The agent does not modify
-   memory without explicit user approval.
+**Step 3: Finalize.** Report what was done. Summary regeneration
+happens automatically — the next call to `koan_memory_status` will
+detect a stale summary and regenerate it just-in-time.
 
-7. **Write approved changes to disk.** New entries get the next
-   available sequence number in their type folder.
+### Duplicate detection during curation
 
-8. **Regenerate summaries.** Type-level `_index.md` files are
-   regenerated for each type folder that had changes. The root
-   `summary.md` is regenerated from the updated `_index.md` files.
+During the curate step, the orchestrator must check whether a
+candidate duplicates or overlaps with an existing entry. Without a
+retrieval index available during early milestones, the orchestrator
+relies on two mechanisms:
 
-9. **Re-index.** The sync layer detects changed files and updates
-   the retrieval index.
+1. **Summary orientation.** The project summary provides a compressed
+   view of all captured knowledge. If a candidate covers something
+   already mentioned in the summary, the orchestrator can classify
+   it as NOOP or UPDATE rather than ADD.
+
+2. **Direct file reading.** The orchestrator has native filesystem
+   access and can read any entry in `.koan/memory/`. When a
+   candidate is close to an existing topic, the orchestrator reads
+   the potentially overlapping entries and compares before
+   classifying.
+
+Once the retrieval index is available (Milestone 3+), the curation
+step can use `koan_search` to find related entries before
+classifying, making duplicate detection more reliable.
+
+### MCP tools for memory operations
+
+The orchestrator interacts with memory through three MCP tools.
+Individual entry reading uses the orchestrator's native filesystem
+access (the entries are plain markdown).
+
+**`koan_memorize`** — Write a memory entry. When called without an
+entry identifier, creates a new entry with automatic sequence
+numbering, filename slug generation, and timestamps. When called
+with an entry identifier, updates the existing entry in-place. The
+`created` timestamp is set once on creation; `modified` is updated
+on every write. Returns the file path and operation performed.
+
+**`koan_forget`** — Remove an entry from active memory. Deletes the
+file from disk. Git preserves the history of removed entries. The
+entry disappears from the summary and retrieval immediately.
+
+**`koan_memory_status`** — Orientation tool. Returns the project
+summary and a listing of all entries (title, sequence number, type,
+created/modified dates). Before returning, checks whether the
+summary is stale (by comparing the summary's generation timestamp
+against the most recent entry modification) and regenerates it
+just-in-time using a cheap-tier model.
 
 ### Curation directives
 
 The same workflow serves all memory operations through different
 directives:
 
-**Post-mortem curation** runs at the end of every koan workflow.
-Source: the workflow transcript (user messages, agent outputs,
-interventions, escalations). Directive: reflect on what went well,
-what went wrong, what decisions were made (explicitly or implicitly),
-what patterns emerged. Capture decisions, lessons, procedures,
-context facts, and a milestone record.
+**Post-mortem** runs at the end of every koan workflow. Source: the
+workflow transcript already in the orchestrator's context window.
+Focus: decisions made, lessons learned, procedures established,
+context surfaced. No scouts — everything is already known.
 
-**Review curation** is triggered on-demand, on a schedule, or at
-project initialization. Source: the existing memory corpus (and
-optionally the codebase). Directive: assess memory health — identify
-stale entries, contradictions, gaps, entries that should be merged,
-lessons lacking procedures, deprecated entries to archive. Conduct
-Q&A with the user to fill gaps and verify facts.
+**Review** is triggered on-demand. Source: the existing memory
+corpus. Focus: assess health — staleness, contradictions, gaps,
+entries that should be merged, lessons lacking procedures. May
+dispatch scouts to verify decisions against the current codebase.
+If memory is empty, pivots to bootstrap (explore codebase,
+interview user). If the user's task description references source
+material, pivots to document ingestion.
 
-**Bootstrap curation** runs when koan is first set up for a project.
-Source: the codebase, any existing documentation, and user interview.
-Directive: capture baseline project context, team structure,
-conventions, constraints, and architectural decisions already in
-effect.
-
-**Document curation** ingests specific source material the user
-provides. Source: architecture docs, specs, design documents, or
-any other material. Directive: extract relevant knowledge and
-organize it into memory entries.
+**Document** ingests specific source material the user provides.
+Source: architecture docs, specs, codebase files. May dispatch
+scouts for large sources. Bootstrap is document curation at broad
+scope — there is no separate bootstrap directive.
 
 ### Triggering curation
 
@@ -470,41 +426,32 @@ Curation is triggered:
 
 - **Automatically** at the end of every koan workflow (post-mortem
   directive).
-- **On explicit user request** (review, bootstrap, or document
-  directive).
+- **On explicit user request** (review or document directive).
 - **On suggestion** after N completed workflows, koan suggests a
   review curation. Configurable, e.g. every 5 workflows.
-- **At project initialization** (bootstrap directive).
 
 ### Model tier assignments
 
-Curation uses **strong-tier models** for reflection and proposal
-generation. This is where judgment matters — what to capture, how
-to phrase it, whether existing entries need updating.
+Curation runs within the **orchestrator's context** (strong-tier
+model). The orchestrator handles all judgment — what to capture,
+how to phrase it, whether existing entries need updating. No
+separate curation subagent is spawned.
 
-Mechanical retrieval at intake uses **no LLM** for the search
-itself. Hybrid vector + BM25 search, cross-encoder reranking, and
-metadata filtering are all mechanical operations.
+Summary regeneration (inside `koan_memory_status`) uses a
+**cheap-tier model**. This is a mechanical operation — condensing
+existing entries into a prose overview.
 
 The `koan_reflect` tool uses a **cheap-tier model** for query
-generation (decomposing a broad question into multiple search
-angles) and synthesis (combining retrieved entries into a coherent
-briefing). This does not require the strong model — it is
-summarizing existing knowledge, not making new decisions.
-
-Query rewriting for low-confidence retrievals can also use a
-**cheap-tier model** to reformulate queries before retrying.
+generation and synthesis.
 
 ### Direct human editing
 
 Because memory files are plain markdown in version control, humans
 can edit them directly at any time — in their editor, via a pull
 request, or through any other workflow. The sync layer detects
-changes and re-indexes modified files.
-
-When humans edit files directly, they should maintain the entry
-format (frontmatter + contextual introduction + prose body) and
-update the `date` field if the content changes substantively.
+changes and re-indexes modified files. The `modified` timestamp
+in frontmatter should be updated when humans edit entries; the
+next `koan_memory_status` call will detect the stale summary.
 
 ---
 
@@ -562,55 +509,105 @@ unit." For koan's content type, that is 100–500 tokens per entry.
 
 ### Indexing
 
-The sync layer watches `.koan/memory/` and indexes each file as a
-single chunk. Because entries are written to be self-contained and
-are typically 100–500 tokens, most entries can be embedded whole
-without further chunking.
+The sync layer watches `.koan/memory/` and indexes each individual
+entry file as a single chunk. Because entries are written to be
+self-contained and are typically 100–500 tokens, most entries can
+be embedded whole without further chunking.
 
 For each entry, the sync layer:
 
-1. Reads the file content (frontmatter + contextual introduction +
-   prose body)
+1. Reads the file content (frontmatter + prose body)
 2. Parses the YAML frontmatter into structured metadata
 3. Computes a content hash for change detection
-4. Generates a dense embedding of the full text (including the
-   contextual introduction)
+4. Generates a dense embedding of the full text
 5. Indexes the text for BM25 keyword search
 6. Stores the embedding, BM25 index entry, and metadata
 
-The `_index.md` summary files and `summary.md` are also indexed
-alongside individual entries. Because these summaries are
-self-sufficient (following the RAPTOR/C–T coupling principle), they
-participate in collapsed search — a broad query may match a
-type-level summary directly, while a specific query matches an
-individual entry.
+`summary.md` is NOT indexed. It is loaded mechanically at intake
+and accessed directly by tools — it does not need search to find.
 
-Re-indexing is triggered when a file's content hash changes. Because
-the contextual introduction is baked into the file, the hash
-reliably indicates whether re-embedding is needed.
+Re-indexing is triggered when a file's content hash changes.
 
-### Two retrieval paths
+### Two retrieval mechanisms
 
-Koan provides two distinct retrieval mechanisms: **mechanical context
-injection** (automatic, at the start of every intake) and
-**agent-invoked tools** (on-demand, during reasoning).
+Koan provides two retrieval mechanisms that solve fundamentally
+different problems: **mechanical context injection** (automatic,
+at phase boundaries) and **agent-invoked tools** (on-demand,
+during reasoning). The distinction is not about pipeline
+mechanics — both use the same hybrid search infrastructure. The
+distinction is about what each mechanism can catch.
+
+The "Memory in the Age of AI Agents" survey (2026) identifies
+the core risk of relying on agent-initiated retrieval: "When an
+agent overestimates its internal knowledge and fails to initiate
+retrieval when needed, the system can fall into a silent failure
+mode in which knowledge gaps may lead to hallucinated outputs."
+This failure mode defines the boundary between the two mechanisms.
+
+**Agent-invoked tools handle known unknowns.** The agent is
+reasoning, recognizes a gap in its knowledge, and formulates a
+targeted query. "What's the session management architecture?"
+or "What constraints apply to database migrations?" The agent
+is aware of its own gap and goes looking. This works when the
+agent has enough context to know *what* it doesn't know.
+
+**Mechanical injection handles unknown unknowns.** The agent
+doesn't know that a testing policy exists. It doesn't know that
+a previous executor hardcoded credentials and a lesson was
+captured about it. It cannot search for something it doesn't
+know to search for. Mechanical injection is the system's
+guarantee that relevant knowledge surfaces regardless of
+whether the agent thinks to look. It operates without the
+agent's involvement, driven by the workflow structure rather
+than by agent reasoning.
 
 #### Mechanical context injection
 
-At the start of every intake phase, before the agent begins
-reasoning, koan automatically loads baseline context. The pipeline
-has six steps:
+Mechanical injection runs at phase boundaries — points in the
+workflow where the problem domain shifts and different knowledge
+becomes relevant. Each workflow phase may optionally request
+memory injection by providing a **retrieval directive**: a static,
+human-authored sentence describing what kind of knowledge is
+most likely to matter for the phase.
+
+The injection pipeline has five steps:
 
 **Step 1: Load project summary.** `summary.md` is loaded in full.
 Always present, not retrieved via search. Budget: ~2000 tokens.
+This step runs only at intake (the first phase); subsequent
+phases inherit the summary from the orchestrator's context.
 
-**Step 2: Generate search queries.** From the current task
-description, generate 1–3 search queries that cover different
-angles of the task. Example: task "implement OAuth2 authentication
-via Auth0" produces queries like "authentication architecture
-decisions," "Auth0 integration context," "auth service procedures."
-These can be generated mechanically (extract key entities, expand
-with type-relevant terms) or by a cheap-tier model.
+**Step 2: Generate search queries.** A cheap-tier model receives
+two inputs and produces 1–3 search queries:
+
+The first input is the **retrieval directive** from the phase
+definition. This is a static sentence written by the workflow
+designer that describes the retrieval intent for the phase —
+what kind of knowledge typically matters. For example, an
+execution phase might carry the directive "procedures,
+conventions, and past lessons related to the subsystem being
+modified." A verification phase might carry "quality policies,
+testing conventions, and known pitfalls." The directive
+provides the *what to look for* dimension.
+
+The second input is **recent artifacts and context** that provide
+the *where to look* dimension — the topical anchor. The preferred
+source is the artifacts produced by the preceding phase (the
+milestone spec, the technical plan, the decomposition output),
+because artifacts are well-structured prose with controlled
+format and high information density. When no artifact is
+available, the last N messages from the orchestrator's event log
+serve the same purpose, though with more noise. The cheap model
+combines topic (from the artifacts/context) with intent (from
+the directive) to produce well-formed queries.
+
+Example: the execution phase has directive "procedures,
+conventions, and past lessons related to the subsystem being
+modified." The preceding planning phase produced a milestone
+spec about "token refresh handler for the Auth0 integration."
+The cheap model generates queries like "authentication token
+refresh procedures," "Auth0 integration lessons," "credential
+handling conventions."
 
 **Step 3: Per-query hybrid retrieval.** For each query, two
 parallel searches run against the index:
@@ -619,46 +616,57 @@ parallel searches run against the index:
 N = 20 per retriever per query (tunable; 20 is sufficient for
 knowledge bases of hundreds to low thousands of entries).
 
-**Step 4: Per-query fusion.** For each query, merge the two result
-lists using Reciprocal Rank Fusion: `score = Σ 1/(60 + rank)`
-across retrievers. Output: one ranked list per query.
-
-**Step 5: Cross-query merge and reranking.** Combine the fused
+**Step 4: Per-query fusion and cross-query merge.** For each query,
+merge the two result lists using Reciprocal Rank Fusion:
+`score = Σ 1/(60 + rank)` across retrievers. Combine the fused
 lists from all queries, deduplicate entries. Pass the candidate
 pool (typically 30–50 unique entries after dedup) through a
 cross-encoder reranker, which scores each (query, entry) pair
 with full attention over both texts.
 
-**Step 6: Take top 3–5 entries.** The highest-scoring entries
-after reranking are injected into the agent's context alongside
-the summary, with their metadata (type, date, source, status).
+**Step 5: Take top 3–5 entries.** The highest-scoring entries
+after reranking are injected into the agent's context before
+the phase begins, with their metadata (type, created/modified
+dates).
 
-Total mechanical context: summary (~2000 tokens) + 3–5 entries
-(~500–2500 tokens) = ~2500–4500 tokens of memory context. The
-3–5 budget follows SimpleMem's saturation finding: near-optimal
-retrieval performance at k=3, diminishing returns beyond k=5.
+Total mechanical context per injection: 3–5 entries (~500–2500
+tokens). The 3–5 budget follows SimpleMem's saturation finding:
+near-optimal retrieval performance at k=3, diminishing returns
+beyond k=5. At intake, the summary adds ~2000 tokens for a
+total of ~2500–4500 tokens.
 
-Note: the `_index.md` summary files participate in retrieval
-alongside individual entries (collapsed search). A broad query
-may match a type-level summary directly; a specific query matches
-an individual entry. The reranker decides which level is most
-relevant for each query.
+Not every phase needs injection. The workflow definition
+controls this: a phase either declares a retrieval directive
+(and gets injection) or omits it (and relies on inherited
+context plus agent-invoked tools). In practice, most phases
+that spawn new agents or shift to a different problem domain
+should declare a directive.
 
 #### Agent-invoked tools
 
-During reasoning, the intake agent has access to two memory tools.
+During reasoning, the orchestrator has access to two memory tools.
+These complement mechanical injection by handling the agent's
+*recognized* information needs — questions that arise during
+reasoning that the agent is aware it cannot answer from its
+current context.
 
 **`koan_search(query, filters?)`** is a targeted lookup. The agent
 formulates a specific query and gets back raw entries ranked by
 relevance. Runs the same hybrid search + reranking pipeline as
-mechanical retrieval (steps 3–6 above) but for a single
+mechanical retrieval (steps 3–5 above) but for a single
 agent-provided query. Returns the top 3–5 entries as raw markdown
 content with metadata. The agent can invoke this as many times as
-needed during its reasoning.
+needed during its reasoning. The optional `filters` parameter
+supports metadata filtering, e.g. `type=procedure` to narrow
+results to a specific memory type.
 
-Use case: "what is the testing policy?" → returns the relevant
-procedure entry directly. No LLM involved in the retrieval
-pipeline.
+Use case: the agent is midway through planning and realizes it
+needs to know how the existing secret management works. It calls
+`koan_search("secret management pattern .env files")` and gets
+the relevant context entry. The mechanical injection surfaced
+the lesson about hardcoded credentials (unknown unknown); the
+agent tool retrieves the specific implementation pattern it now
+knows it needs (known unknown).
 
 **`koan_reflect(question, context?)`** is a synthesized briefing.
 The agent poses a broad question and gets back a coherent answer
@@ -668,9 +676,9 @@ by Hindsight's CARA reflect architecture.
 
 The reflect tool runs the following agentic loop:
 
-**Step 1: Orient.** The reflect agent loads the project summary
-and relevant `_index.md` files to understand what knowledge areas
-exist. This is a direct file read, not a search.
+**Step 1: Orient.** The reflect agent loads the project summary to
+understand what knowledge areas exist. This is a direct file read,
+not a search.
 
 **Step 2: Plan queries.** Based on the question and the
 orientation context, the agent generates 3–5 search queries from
@@ -681,7 +689,7 @@ conventions," "fail-safe default requirements," "past SDK-related
 lessons."
 
 **Step 3: Gather evidence.** For each query, run the standard
-retrieval pipeline (hybrid search + reranking, steps 3–6 from
+retrieval pipeline (hybrid search + reranking, steps 3–5 from
 mechanical retrieval). Collect the top results across all queries.
 
 **Step 4: Evaluate sufficiency.** The agent reviews the gathered
@@ -704,31 +712,70 @@ path).
 as the tool's output.
 
 The key differences from Hindsight's reflect that koan does NOT
-adopt:
-- **No disposition traits.** Hindsight uses skepticism, literalism,
-  and empathy parameters to shape how the agent interprets facts.
-  Koan's reflect produces factual briefings, not opinionated
-  interpretations. The project's knowledge speaks for itself.
-- **No opinion formation.** Hindsight's reflect creates and updates
-  opinions with confidence scores. Koan's memory system stores
-  facts, decisions, and procedures — not beliefs. The reflect tool
-  synthesizes existing knowledge; it does not form new conclusions.
-- **No mental models.** Hindsight's reflect checks pre-computed
-  summary responses first. Koan's `_index.md` files serve a similar
-  function (compressed type-level overviews) but are loaded during
-  orientation rather than as a separate retrieval tier.
+adopt: no disposition traits (Hindsight uses skepticism,
+literalism, and empathy parameters — koan's reflect produces
+factual briefings, not opinionated interpretations), and no
+opinion formation (Hindsight creates and updates opinions with
+confidence scores — koan stores facts and decisions, not
+beliefs).
 
-What koan DOES adopt from Hindsight's reflect:
-- **The agentic loop.** The reflect tool is not a single LLM call
-  but an iterative evidence-gathering process that can make
-  multiple searches and evaluate sufficiency.
-- **Hierarchical retrieval.** Check summaries for orientation first,
-  then search individual entries for detail.
-- **Evidence-before-synthesis guardrail.** The agent must gather
-  entries before producing a briefing — it cannot answer from its
-  parametric knowledge alone.
-- **Citation validation.** The briefing can only cite entries that
-  were actually retrieved during the evidence-gathering loop.
+What koan DOES adopt from Hindsight's reflect: the agentic loop
+(iterative evidence gathering, not a single LLM call), the
+evidence-before-synthesis guardrail (the agent must gather
+entries before producing a briefing — it cannot answer from its
+parametric knowledge alone), and citation validation (the briefing
+can only cite entries that were actually retrieved).
+
+#### How the two mechanisms interact
+
+The two mechanisms are complementary, not redundant. Mechanical
+injection casts a wider net guided by structural knowledge about
+each phase's typical needs. Agent tools make targeted queries
+guided by the agent's evolving reasoning.
+
+A concrete example: the execution phase's mechanical injection
+surfaces a procedure about "always verify testing policy before
+code generation" and a lesson about "executor hardcoded
+credentials in docker-compose.yml." The agent reads these,
+starts working, and midway through realizes it needs to know
+specifically how the existing secret management works — so it
+calls `koan_search("secret management pattern .env files")` to
+get the relevant context entry. The injection caught the unknown
+unknowns (the agent didn't know a testing policy existed); the
+agent tool handled the known unknown (the agent recognized it
+needed implementation details).
+
+#### Rejected alternative: LLM-generated directives
+
+An alternative design would have the orchestrator generate the
+retrieval directive at runtime — asking the LLM "what memory
+should I look for before starting this phase?" This was rejected
+because it collapses the two retrieval mechanisms into one.
+
+If the orchestrator generates the directive, the queries will
+reflect what the orchestrator *thinks* it needs — which is
+exactly what agent-invoked tools already handle. The
+orchestrator can already call `koan_search` for anything it
+recognizes as a gap. Generating a directive from the
+orchestrator's reasoning produces queries biased toward known
+unknowns: topics the orchestrator is already aware of and could
+query for itself.
+
+The value of mechanical injection comes precisely from the fact
+that it does *not* depend on the agent's assessment of its own
+knowledge gaps. The static directive encodes structural knowledge
+that the workflow designer has about what each phase type
+typically needs — knowledge that is stable across runs and
+independent of any particular agent's reasoning state. An
+execution phase needs procedures and lessons about the subsystem
+being modified, regardless of whether the orchestrator thinks
+to ask for them. A verification phase needs testing policies and
+known pitfalls, regardless of whether the verifier knows those
+exist.
+
+Making the directive dynamic would defeat this purpose. The
+unknown unknowns would remain unknown, and the injection would
+become a redundant copy of what `koan_search` already does.
 
 ### Retrieval backend
 
@@ -741,6 +788,35 @@ The index is a derived artifact, not a source of truth. It can be
 rebuilt from scratch at any time by re-reading all memory files in
 `.koan/memory/`. It should be excluded from version control (e.g.,
 added to `.gitignore`).
+
+---
+
+## Scaling path: topic-based clustering
+
+The flat directory structure is the starting point. When the
+knowledge base grows to the point where all entries no longer fit
+in a cheap model's context window for summary regeneration, that
+threshold signals the need for topic-based clustering.
+
+The scaling path introduces topic clusters derived from entry
+content similarity, following the approach validated by xMemory
+(Hu et al., 2026) and formalized by the (α, C, τ) framework
+(Talebirad et al., ICLR 2026). Topic clusters group entries that
+are semantically related — a decision about PostgreSQL, the
+infrastructure context it relates to, and a lesson about PostgreSQL
+migrations would cluster together regardless of their type fields.
+
+At that point, each topic cluster gets its own summary, and the
+root `summary.md` is regenerated from the topic summaries rather
+than from individual entries. This is the recursive summarization
+pattern: summarize the leaves, then summarize the summaries.
+
+The type field remains metadata throughout — it never becomes a
+clustering axis. Every hierarchical memory system in the literature
+groups by topical similarity, not by cognitive function.
+
+This scaling transition is a future milestone, not a current
+concern.
 
 ---
 
