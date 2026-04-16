@@ -66,27 +66,23 @@ class TestClaudeRunnerParseStreamEvent:
         evts = self.runner.parse_stream_event(line)
         assert evts == [StreamEvent(type="token_delta", content="hello")]
 
-    def test_stream_event_suppresses_assistant_text(self):
-        """Once stream_events are seen, assistant text/thinking blocks are skipped."""
-        # First: a stream_event sets the flag
+    def test_stream_event_suppresses_assistant_text_and_tool_use(self):
+        """Once stream_events are seen, assistant text/thinking/tool_use blocks are skipped."""
         delta_line = json.dumps({
             "type": "stream_event",
             "event": {"type": "content_block_delta", "index": 0,
                       "delta": {"type": "text_delta", "text": "hi"}},
         })
         self.runner.parse_stream_event(delta_line)
-        # Then: assistant message with text and tool_use
         msg_line = self._msg([
             {"type": "text", "text": "hi"},
             {"type": "tool_use", "name": "bash", "input": {"cmd": "ls"}},
         ])
         evts = self.runner.parse_stream_event(msg_line)
-        # text is skipped for streaming (already streamed), but assistant_text still emitted;
-        # tool_use is preserved
-        assert len(evts) == 2
-        assert evts[0].type == "tool_call"
-        assert evts[1].type == "assistant_text"
-        assert evts[1].content == "hi"
+        # Both text and tool_use are skipped; only assistant_text remains
+        assert len(evts) == 1
+        assert evts[0].type == "assistant_text"
+        assert evts[0].content == "hi"
 
     def test_result_success(self):
         line = json.dumps({"type": "result", "subtype": "success", "result": "done"})
@@ -141,6 +137,147 @@ class TestClaudeRunnerParseStreamEvent:
         ])
         evts = self.runner.parse_stream_event(line)
         assert evts == [StreamEvent(type="token_delta", content="valid"), StreamEvent(type="assistant_text", content="valid")]
+
+
+# -- ClaudeRunner: streaming tool_use events -----------------------------------
+
+class TestClaudeRunnerStreamingToolUse:
+    def setup_method(self):
+        self.runner = ClaudeRunner(subagent_dir="/tmp/test")
+
+    def _stream_event(self, inner: dict) -> str:
+        return json.dumps({"type": "stream_event", "event": inner})
+
+    def test_content_block_start_tool_use_emits_tool_start(self):
+        line = self._stream_event({
+            "type": "content_block_start", "index": 1,
+            "content_block": {"type": "tool_use", "id": "toolu_01", "name": "Write", "input": {}},
+        })
+        evts = self.runner.parse_stream_event(line)
+        assert len(evts) == 1
+        assert evts[0].type == "tool_start"
+        assert evts[0].tool_name == "write"
+        assert evts[0].tool_use_id == "toolu_01"
+        assert evts[0].block_index == 1
+
+    def test_input_json_delta_emits_tool_input_delta(self):
+        self.runner.parse_stream_event(self._stream_event({
+            "type": "content_block_start", "index": 1,
+            "content_block": {"type": "tool_use", "id": "toolu_01", "name": "Write", "input": {}},
+        }))
+        line = self._stream_event({
+            "type": "content_block_delta", "index": 1,
+            "delta": {"type": "input_json_delta", "partial_json": '{"file_pa'},
+        })
+        evts = self.runner.parse_stream_event(line)
+        assert len(evts) == 1
+        assert evts[0].type == "tool_input_delta"
+        assert evts[0].content == '{"file_pa'
+        assert evts[0].block_index == 1
+
+    def test_content_block_stop_emits_tool_stop_with_assembled_args(self):
+        self.runner.parse_stream_event(self._stream_event({
+            "type": "content_block_start", "index": 1,
+            "content_block": {"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {}},
+        }))
+        self.runner.parse_stream_event(self._stream_event({
+            "type": "content_block_delta", "index": 1,
+            "delta": {"type": "input_json_delta", "partial_json": '{"command":'},
+        }))
+        self.runner.parse_stream_event(self._stream_event({
+            "type": "content_block_delta", "index": 1,
+            "delta": {"type": "input_json_delta", "partial_json": '"ls -la"}'},
+        }))
+        evts = self.runner.parse_stream_event(self._stream_event({
+            "type": "content_block_stop", "index": 1,
+        }))
+        assert len(evts) == 1
+        assert evts[0].type == "tool_stop"
+        assert evts[0].tool_name == "bash"
+        assert evts[0].tool_args == {"command": "ls -la"}
+        assert evts[0].summary == "ls -la"
+
+    def test_streaming_suppresses_assistant_tool_use(self):
+        self.runner.parse_stream_event(self._stream_event({
+            "type": "content_block_start", "index": 1,
+            "content_block": {"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {}},
+        }))
+        msg_line = json.dumps({
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}},
+                {"type": "text", "text": "done"},
+            ]},
+        })
+        evts = self.runner.parse_stream_event(msg_line)
+        types = [e.type for e in evts]
+        assert "tool_call" not in types
+        assert "assistant_text" in types
+
+    def test_message_start_resets_accumulators(self):
+        self.runner.parse_stream_event(self._stream_event({
+            "type": "content_block_start", "index": 1,
+            "content_block": {"type": "tool_use", "id": "toolu_01", "name": "Write", "input": {}},
+        }))
+        self.runner.parse_stream_event(self._stream_event({
+            "type": "content_block_delta", "index": 1,
+            "delta": {"type": "input_json_delta", "partial_json": '{"file'},
+        }))
+        self.runner.parse_stream_event(self._stream_event({"type": "message_start"}))
+        stop_evts = self.runner.parse_stream_event(self._stream_event({
+            "type": "content_block_stop", "index": 1,
+        }))
+        assert len(stop_evts) == 0
+
+    def test_koan_tools_not_filtered_in_streaming(self):
+        line = self._stream_event({
+            "type": "content_block_start", "index": 0,
+            "content_block": {"type": "tool_use", "id": "toolu_02", "name": "koan_yield", "input": {}},
+        })
+        evts = self.runner.parse_stream_event(line)
+        assert len(evts) == 1
+        assert evts[0].type == "tool_start"
+        assert evts[0].tool_name == "koan_yield"
+
+    def test_parallel_tool_blocks(self):
+        self.runner.parse_stream_event(self._stream_event({
+            "type": "content_block_start", "index": 1,
+            "content_block": {"type": "tool_use", "id": "toolu_a", "name": "Read", "input": {}},
+        }))
+        self.runner.parse_stream_event(self._stream_event({
+            "type": "content_block_start", "index": 2,
+            "content_block": {"type": "tool_use", "id": "toolu_b", "name": "Bash", "input": {}},
+        }))
+        self.runner.parse_stream_event(self._stream_event({
+            "type": "content_block_delta", "index": 1,
+            "delta": {"type": "input_json_delta", "partial_json": '{"file_path":"/a.txt"}'},
+        }))
+        self.runner.parse_stream_event(self._stream_event({
+            "type": "content_block_delta", "index": 2,
+            "delta": {"type": "input_json_delta", "partial_json": '{"command":"pwd"}'},
+        }))
+        stop1 = self.runner.parse_stream_event(self._stream_event({"type": "content_block_stop", "index": 1}))
+        stop2 = self.runner.parse_stream_event(self._stream_event({"type": "content_block_stop", "index": 2}))
+        assert stop1[0].tool_name == "read"
+        assert stop1[0].tool_args == {"file_path": "/a.txt"}
+        assert stop2[0].tool_name == "bash"
+        assert stop2[0].tool_args == {"command": "pwd"}
+
+    def test_malformed_json_uses_lenient_fallback(self):
+        self.runner.parse_stream_event(self._stream_event({
+            "type": "content_block_start", "index": 0,
+            "content_block": {"type": "tool_use", "id": "toolu_x", "name": "Write", "input": {}},
+        }))
+        self.runner.parse_stream_event(self._stream_event({
+            "type": "content_block_delta", "index": 0,
+            "delta": {"type": "input_json_delta", "partial_json": '{"file_path": "/tmp/x.html", "content": "<html'},
+        }))
+        evts = self.runner.parse_stream_event(self._stream_event({
+            "type": "content_block_stop", "index": 0,
+        }))
+        assert len(evts) == 1
+        assert evts[0].type == "tool_stop"
+        assert evts[0].tool_args.get("file_path") == "/tmp/x.html"
 
 
 # -- CodexRunner: parse_stream_event -------------------------------------------

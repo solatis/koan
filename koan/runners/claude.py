@@ -4,10 +4,21 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..lib.partial_json import parse_partial
 from ..types import AgentInstallation, ModelInfo, ThinkingMode
 from .base import KOAN_MCP_TOOLS, RunnerDiagnostic, RunnerError, StreamEvent
+
+
+@dataclass
+class _ToolUseAccumulator:
+    tool_name: str
+    raw_name: str
+    tool_use_id: str
+    buffer: list[str] = field(default_factory=list)
+    latest_draft: dict | None = None
 
 # Map internal thinking mode names to Claude CLI --effort values.
 _EFFORT_MAP: dict[ThinkingMode, str] = {
@@ -75,6 +86,7 @@ class ClaudeRunner:
     def __init__(self, *, subagent_dir: str) -> None:
         self.subagent_dir = subagent_dir
         self._saw_stream_events = False
+        self._tool_accumulators: dict[int, _ToolUseAccumulator] = {}
 
     def list_models(self, binary: str) -> list[ModelInfo]:
         return [
@@ -172,12 +184,33 @@ class ClaudeRunner:
         if not isinstance(inner, dict):
             return []
         inner_type = inner.get("type")
+
         if inner_type == "message_start":
-            # New assistant turn — reset the flag so that if this turn
-            # doesn't produce content_block_delta events (e.g. after a
-            # long MCP call), the assistant message fallback kicks in.
             self._saw_stream_events = False
+            self._tool_accumulators = {}
             return []
+
+        if inner_type == "content_block_start":
+            block = inner.get("content_block", {})
+            if block.get("type") == "tool_use":
+                idx = inner.get("index", -1)
+                raw_name = block.get("name", "")
+                canonical = _normalize_tool_name(raw_name)
+                tool_use_id = block.get("id", "")
+                self._tool_accumulators[idx] = _ToolUseAccumulator(
+                    tool_name=canonical or raw_name,
+                    raw_name=raw_name,
+                    tool_use_id=tool_use_id,
+                )
+                self._saw_stream_events = True
+                return [StreamEvent(
+                    type="tool_start",
+                    tool_name=canonical,
+                    tool_use_id=tool_use_id,
+                    block_index=idx,
+                )]
+            return []
+
         if inner_type == "content_block_delta":
             self._saw_stream_events = True
             delta = inner.get("delta", {})
@@ -186,6 +219,41 @@ class ClaudeRunner:
                 return [StreamEvent(type="thinking", is_thinking=True, content=delta.get("thinking", ""))]
             if delta_type == "text_delta":
                 return [StreamEvent(type="token_delta", content=delta.get("text", ""))]
+            if delta_type == "input_json_delta":
+                idx = inner.get("index", -1)
+                partial = delta.get("partial_json", "")
+                acc = self._tool_accumulators.get(idx)
+                if acc is not None:
+                    acc.buffer.append(partial)
+                    acc.latest_draft = parse_partial("".join(acc.buffer))
+                return [StreamEvent(
+                    type="tool_input_delta",
+                    content=partial,
+                    tool_args=acc.latest_draft if acc else None,
+                    block_index=idx,
+                )]
+            return []
+
+        if inner_type == "content_block_stop":
+            idx = inner.get("index", -1)
+            acc = self._tool_accumulators.pop(idx, None)
+            if acc is not None:
+                full_json = "".join(acc.buffer)
+                try:
+                    args = json.loads(full_json) if full_json else {}
+                except json.JSONDecodeError:
+                    args = acc.latest_draft or {}
+                summary = _extract_tool_summary(acc.tool_name, args)
+                return [StreamEvent(
+                    type="tool_stop",
+                    tool_name=acc.tool_name,
+                    tool_args=args,
+                    summary=summary,
+                    tool_use_id=acc.tool_use_id,
+                    block_index=idx,
+                )]
+            return []
+
         return []
 
     def _parse_assistant(self, data: dict) -> list[StreamEvent]:
@@ -205,9 +273,10 @@ class ClaudeRunner:
                 continue
             block_type = block.get("type")
             if block_type == "tool_use":
+                if self._saw_stream_events:
+                    continue
                 raw_name = block.get("name")
                 canonical = _normalize_tool_name(raw_name)
-                # Drop koan MCP tool events -- the MCP endpoint is authoritative
                 if canonical in KOAN_MCP_TOOLS:
                     continue
                 args = block.get("input") or {}

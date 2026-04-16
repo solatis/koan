@@ -10,6 +10,7 @@ dependencies = [
     "jsonpatch",
     "pyyaml",
     "google-genai>=1.0",
+    "json-repair>=0.59.4",
 ]
 
 [project.scripts]
