@@ -28,11 +28,39 @@ class TestModuleShape:
         assert isinstance(curation.SYSTEM_PROMPT, str)
         assert len(curation.SYSTEM_PROMPT) > 100
 
-    def test_system_prompt_writing_discipline(self):
-        # The writing-discipline pillars must be present.
+    def test_system_prompt_writing_discipline_is_high_level_only(self):
+        # Post-rewrite: writing discipline in the system prompt is a
+        # one-paragraph high-level summary. The full rules and the
+        # contrastive examples live in step 2's body, rendered at the
+        # drafting moment. The system prompt keeps just the pillars
+        # ("temporally grounded, attributed, event-style") and an
+        # explicit pointer to step 2.
         sp = curation.SYSTEM_PROMPT.lower()
-        for term in ("temporally", "attribut", "stand alone", "concretely"):
-            assert term in sp, f"missing {term!r} in SYSTEM_PROMPT"
+        assert "temporally grounded" in sp
+        assert "attributed" in sp
+        assert "event-style" in sp
+        assert "step 2" in sp  # points at where the full rules live
+
+    def test_system_prompt_has_type_discrimination_tree(self):
+        sp = curation.SYSTEM_PROMPT
+        # The 4-question tree, with first-match-wins semantics, must
+        # be present as a procedure (not just definitions).
+        assert "Picking the type for a candidate" in sp
+        assert "first match wins" in sp.lower() or "FIRST match wins" in sp
+        # Each of the four types must appear as a tree outcome.
+        for type_name in ("decision", "lesson", "procedure", "context"):
+            assert type_name in sp
+        # Lesson trigger includes the user-correction case.
+        assert "correct the agent" in sp
+
+    def test_system_prompt_derivable_rule_preserves_decisions(self):
+        # The "what not to capture" rule must explicitly preserve
+        # decisions' rationale and prior-workflow lessons, even when
+        # the resulting implementation is in code.
+        sp = curation.SYSTEM_PROMPT
+        assert "EXCEPT" in sp
+        assert "rationale and rejected alternatives" in sp
+        assert "lessons from prior workflows" in sp
 
     def test_system_prompt_enumerates_memory_tools(self):
         # Tools must be visible at the role layer.
@@ -181,6 +209,18 @@ class TestStep1Inventory:
         text = "\n".join(curation.step_guidance(1, _ctx()).instructions)
         assert "candidate list" in text.lower()
 
+    def test_points_at_type_discrimination_tree(self):
+        # Step 1 must reference the system prompt's type discrimination
+        # tree at the point where types are assigned, so the orchestrator
+        # applies the tree procedurally rather than picking types from
+        # the abstract definitions alone.
+        # Flatten whitespace so the substring match works across line wraps.
+        import re
+        text = "\n".join(curation.step_guidance(1, _ctx()).instructions)
+        flat = re.sub(r"\s+", " ", text).lower()
+        assert "discrimination tree" in flat
+        assert "first match wins" in flat
+
 
 class TestStep2Memorize:
     def test_title_is_memorize(self):
@@ -205,18 +245,80 @@ class TestStep2Memorize:
         assert "koan_forget" in text
         assert "koan_yield" in text
 
-    def test_does_not_redefine_writing_discipline(self):
-        # Writing discipline lives in the system prompt; step 2 should not
-        # duplicate it. Sentinel: "1-3 sentences" is system-prompt-only.
+    def test_renders_writing_discipline_at_drafting_moment(self):
+        # Post-rewrite: writing discipline is now INTENTIONALLY rendered
+        # in step 2's body, right at the drafting moment. The previous
+        # design kept it only in the system prompt, which was too far
+        # from the drafting turn; 7/10 entries in the audit violated
+        # rules the system prompt had correctly stated.
         text = "\n".join(curation.step_guidance(2, _ctx()).instructions)
-        assert "1-3 sentences" not in text
+        assert "## Writing discipline" in text
+        # All 5 rules must be visible inline, not by reference.
+        assert "Open with a named subsystem" in text
+        assert "Temporally ground every claim" in text
+        assert "Attribute every claim" in text
+        assert "Event-style, past tense" in text
+        assert "Name things concretely" in text
 
-    def test_includes_anticipatory_check(self):
-        # The anticipatory check is the central new defense against the
-        # "phase ended with zero writes" failure.
+    def test_renders_contrastive_examples(self):
+        # Two contrastive bad/good pairs must appear in step 2's body:
+        # one decision pair (Redis session storage), one lesson pair
+        # (Alembic migration). Examples are general-purpose, not
+        # koan-specific.
         text = "\n".join(curation.step_guidance(2, _ctx()).instructions)
-        assert "Anticipatory check" in text
-        assert "did you call" in text.lower() or "did you call `koan_memorize`" in text.lower() or "Did you call" in text
+        assert '<example type="decision-bad">' in text
+        assert '<example type="decision-good">' in text
+        assert '<example type="lesson-bad">' in text
+        assert '<example type="lesson-good">' in text
+        # Decision good-example sentinel:
+        assert "Redis 7.2" in text
+        # Lesson good-example sentinel:
+        assert "Alembic" in text
+        # Examples must NOT reference koan itself.
+        assert "koan" not in text.lower() or "koan_" in text  # tool names OK
+        # "What changed between bad and good" explanations must follow each pair.
+        assert text.count("What changed between bad and good") == 2
+
+    def test_renders_6_substep_loop(self):
+        # The per-batch loop has 6 committed sub-operations in order:
+        # Draft -> Self-critique -> Revise -> Yield -> Apply -> Cross off.
+        text = "\n".join(curation.step_guidance(2, _ctx()).instructions)
+        for header in (
+            "### A. Draft",
+            "### B. Self-critique",
+            "### C. Revise",
+            "### D. Yield",
+            "### E. Apply",
+            "### F. Cross off",
+        ):
+            assert header in text, f"missing substep header: {header!r}"
+        # The critical anti-simulated-refinement guardrails.
+        assert "Do not collapse substeps" in text
+        assert "Do not skip this substep" in text
+
+    def test_renders_draft_quality_checklist(self):
+        # The 5-item checklist must be present as a schema the orchestrator
+        # can apply per-draft in substep B.
+        text = "\n".join(curation.step_guidance(2, _ctx()).instructions)
+        assert "Draft-quality checklist" in text
+        assert "PASS / FAIL" in text
+        # The checklist items map 1-to-1 onto the 5 writing discipline rules.
+        for item in (
+            "Opens with named subsystem",
+            "Contains absolute date",
+            "Contains attribution",
+            "Event-style, past tense",
+            "Concrete naming",
+        ):
+            assert item in text, f"missing checklist item: {item!r}"
+
+    def test_includes_anticipatory_tool_call_check(self):
+        # The tool-call anticipatory check from the previous round is
+        # preserved (renamed to "Anticipatory tool-call check" to
+        # distinguish from the new draft-quality gate in substeps B/C).
+        text = "\n".join(curation.step_guidance(2, _ctx()).instructions)
+        assert "Anticipatory tool-call check" in text
+        assert "Did you call" in text  # the verification question
 
     def test_wrap_up_calls_memory_status(self):
         # Wrap-up (folded in from former step 3) calls koan_memory_status

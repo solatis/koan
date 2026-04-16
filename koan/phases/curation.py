@@ -127,6 +127,37 @@ SYSTEM_PROMPT = (
     "- **procedure** -- behavioral rules for agents. Checkable conditions\n"
     "                   and concrete actions. Often paired with a lesson.\n"
     "\n"
+    "## Picking the type for a candidate\n"
+    "\n"
+    "The definitions above say what each type IS. This tree says how to\n"
+    "PICK one for a given candidate. Walk the four questions in order;\n"
+    "the FIRST match wins.\n"
+    "\n"
+    "| # | Question                                              | If YES    |\n"
+    "|---|-------------------------------------------------------|-----------|\n"
+    "| 1 | Does this entry name a choice between alternatives,   | decision  |\n"
+    "|   | with rationale (why X over Y)?                        |           |\n"
+    "| 2 | Did the user correct the agent during this run       | lesson    |\n"
+    "|   | (agent first thought X, but the right answer was Y), |           |\n"
+    "|   | OR does this entry record a thing that went wrong    |           |\n"
+    "|   | with an identified root cause?                        |           |\n"
+    "| 3 | Does this entry tell a future agent what to do       | procedure |\n"
+    "|   | under condition X (a behavioral rule)?                |           |\n"
+    "| 4 | Is this a stable fact about the project (team,       | context   |\n"
+    "|   | infrastructure, conventions) that does not tell       |           |\n"
+    "|   | anyone what to do?                                    |           |\n"
+    "\n"
+    "If none match, the candidate is probably not memory-worthy -- drop\n"
+    "it. Candidates can match multiple rows; first-match-wins means:\n"
+    "\n"
+    "- An actionable rule that came from a specific corrected mistake\n"
+    "  stays as a lesson (question 2 fires before question 3). The\n"
+    "  generalized procedure can be a follow-up entry, linked via\n"
+    "  `related`.\n"
+    "- An architectural choice with rationale is a decision even when\n"
+    "  it implies a rule for future agents (question 1 fires before\n"
+    "  question 3).\n"
+    "\n"
     "## Classification schema\n"
     "\n"
     "Before drafting any candidate, classify it against existing memory:\n"
@@ -140,31 +171,31 @@ SYSTEM_PROMPT = (
     "                   is DEPRECATE; the tool is `koan_forget` -- they\n"
     "                   refer to the same operation.)\n"
     "\n"
-    "## Writing discipline\n"
+    "## Writing discipline (high-level)\n"
     "\n"
-    "Every entry body is 100-500 tokens of event-style prose:\n"
+    "Every entry is 100-500 tokens of **temporally grounded, attributed,\n"
+    "event-style** prose -- a historical fact that stays true regardless\n"
+    "of when it is read. The full rules, two contrastive bad/good\n"
+    "examples, and a 5-item self-validation checklist appear in step 2\n"
+    "(Memorize), rendered at the drafting moment. Do NOT skim the step 2\n"
+    "examples -- your default register for technical content is timeless\n"
+    "documentation prose, and the examples are the only thing that\n"
+    "overrides that default.\n"
     "\n"
-    "- **Open with context.** The first 1-3 sentences situate the entry in\n"
-    "  the project. They get embedded for semantic search; vague openings\n"
-    "  hurt retrieval.\n"
-    "- **Temporally ground every claim.** Use absolute dates (\"On 2026-04-10,\n"
-    "  user decided...\") so the entry stays true regardless of when it is\n"
-    "  read.\n"
-    "- **Attribute the source.** \"User stated\", \"LLM inferred\", \"Post-mortem\n"
-    "  identified\". User-stated facts carry higher trust than inferences.\n"
-    "- **Name things concretely.** \"PostgreSQL 16.2\", not \"the database\".\n"
-    "- **Stand alone.** Each entry must be interpretable without reading\n"
-    "  any other entry.\n"
-    "- **No forward-looking language.** Not \"we will\" but \"On <date>, user\n"
-    "  stated the plan was to...\".\n"
-    "\n"
-    "Use the `related` field (filenames like `0002-infrastructure.md`) to\n"
-    "link a lesson to its derived procedure, or a decision to its\n"
+    "Use the `related` field (filenames like `0002-infrastructure.md`)\n"
+    "to link a lesson to its derived procedure, or a decision to its\n"
     "motivating context.\n"
     "\n"
     "## What not to capture\n"
     "\n"
-    "- Anything derivable from reading the code.\n"
+    "- Implementation details derivable from reading the code, EXCEPT:\n"
+    "  - The **rationale and rejected alternatives** behind architectural\n"
+    "    decisions. These are NOT in code -- they are in the heads of the\n"
+    "    people who made the choice, and in the conversations that\n"
+    "    surfaced the choice. Capture them.\n"
+    "  - The **lessons from prior workflows** -- corrected mistakes,\n"
+    "    surprises, root causes of failures. These are not in code;\n"
+    "    they are history. Capture them.\n"
     "- Temporary implementation details that will not matter next week.\n"
     "- Opinions without grounding in project experience.\n"
     "- Anything already adequately captured (use NOOP, not a duplicate).\n"
@@ -218,6 +249,10 @@ def _tools_this_step_block(current_step: int) -> list[str]:
     if current_step == 2:
         return [
             "<tools_this_step>",
+            "Writing discipline, two contrastive examples, and a 5-item",
+            "draft-quality checklist appear in this step's body below.",
+            "Read them BEFORE drafting your first candidate.",
+            "",
             "1. `koan_yield`         -- present each batch of proposals to the user.",
             "2. `koan_memorize`      -- write approved ADD / UPDATE entries.",
             "3. `koan_forget`        -- delete approved DEPRECATE entries.",
@@ -301,7 +336,12 @@ def _step_1_inventory(ctx: PhaseContext) -> StepGuidance:
         "   koan memory -- treat it as read-only input only.",
         "",
         "6. Build a numbered candidate list. For each candidate note:",
-        "   - type           (decision / context / lesson / procedure)",
+        "   - type           -- assign using the 4-question discrimination",
+        "                       tree in the system prompt above (\"Picking",
+        "                       the type for a candidate\"). Walk the four",
+        "                       questions in order; first match wins. If",
+        "                       none match, drop the candidate as not",
+        "                       memory-worthy.",
         "   - title          (one line)",
         "   - classification (ADD / UPDATE / NOOP / DEPRECATE)",
         "   - entry_id       (only for UPDATE / DEPRECATE)",
@@ -330,60 +370,271 @@ def _step_2_memorize(ctx: PhaseContext) -> StepGuidance:
         "",
         "This is the writing step. Your candidate list from step 1 becomes",
         "`koan_memorize` and `koan_forget` calls, gated by user approval",
-        "via `koan_yield`. The classification schema, writing discipline,",
-        "and tool semantics live in your role context above -- do not",
-        "redefine them here.",
+        "via `koan_yield`.",
         "",
-        "## The loop",
+        "Read the writing discipline, contrastive examples, and the",
+        "draft-quality checklist below BEFORE drafting your first",
+        "candidate. The rules are rendered here, at the drafting moment,",
+        "because verbal rules from the system prompt do not survive the",
+        "distance to this step -- your default register for technical",
+        "content is timeless documentation prose, which violates every",
+        "rule. The examples are how you override that default.",
         "",
-        "Repeat for each batch of 3-5 candidates from your step 1 list:",
+        "## Writing discipline (full rules)",
         "",
-        "1. **Draft** proposals for the batch. Each proposal includes",
-        "   `type`, `title`, `body`, `related`, plus `entry_id` for UPDATE",
-        "   and DEPRECATE.",
+        "Every entry body obeys these five rules. Each rule has a",
+        "corresponding check in the self-critique substep below.",
         "",
-        "2. **Yield** the batch to the user. Call `koan_yield` with the",
-        "   proposals as markdown plus these structured suggestions:",
+        "**1. Open with a named subsystem.** The first 1-3 sentences",
+        "situate the entry by naming the specific subsystem, artifact,",
+        "or decision it is about (examples: \"the session storage for",
+        "the user-facing web service\", \"the deployment pipeline's cache",
+        "layer\", \"the configuration loader\"). If the entry is about the",
+        "project as a whole, the first sentence names the project",
+        "explicitly. Vague openings (\"This system uses...\", \"The",
+        "project enforces...\") hurt retrieval because embeddings have",
+        "no specific anchor.",
+        "",
+        "**2. Temporally ground every claim.** Use absolute dates in",
+        "YYYY-MM-DD form (\"On 2025-09-12, the team decided...\"). A year",
+        "alone, or relative terms like \"recently\", \"currently\", \"at the",
+        "moment\" fail. Temporal grounding turns every entry into a",
+        "historical fact that stays true regardless of when it is read.",
+        "",
+        "**3. Attribute every claim to its source.** Name who said or",
+        "discovered the fact: \"user stated\", \"the team decided\",",
+        "\"post-mortem identified\", \"LLM inferred\", \"developer",
+        "confirmed\", \"maintainer agreed\". User-stated facts carry higher",
+        "trust than inferences; readers need to know which is which.",
+        "",
+        "**4. Event-style, past tense.** Describe what happened, not",
+        "what is. \"We use Redis\" fails; \"On <date>, the team adopted",
+        "Redis 7.2...\" passes. Forward-looking language (\"we will\",",
+        "\"should\", \"must\") also fails unless embedded inside a past-",
+        "tense attribution (\"On <date>, the team decided that the rule",
+        "is to...\").",
+        "",
+        "**5. Name things concretely.** Use specific versions, file",
+        "paths, tool names, table names, column names, environment",
+        "variable names. \"The database\" fails; \"PostgreSQL 16.2\"",
+        "passes. \"Some config\" fails; \"the BUILD_TARGET environment",
+        "variable in deploy/production.env\" passes.",
+        "",
+        "## Contrastive examples",
+        "",
+        "These are general-purpose templates, not examples from koan",
+        "itself. Study each bad/good pair and the explanation of what",
+        "changed. The GOOD versions are the shape your drafts must",
+        "take.",
+        "",
+        "<example type=\"decision-bad\">",
+        "We use Redis for session storage because it's fast and reliable.",
+        "</example>",
+        "",
+        "<example type=\"decision-good\">",
+        "This entry documents the choice of session storage for the",
+        "user-facing web service. On 2025-09-12, the team decided to",
+        "adopt Redis 7.2 for session storage, replacing in-process",
+        "Python dicts. Rationale: horizontal scaling required session",
+        "state to live outside individual app workers, and the existing",
+        "operational tooling already supported Redis. Alternatives",
+        "rejected: Memcached (no built-in persistence, complicating",
+        "session continuity across restarts), PostgreSQL session table",
+        "(added 40-80 ms of latency to every request per the team's",
+        "staging benchmarks). Decision surfaced during a post-mortem on",
+        "a session-loss incident under load on 2025-09-08.",
+        "</example>",
+        "",
+        "What changed between bad and good:",
+        "",
+        "- Bad opens with \"We use\" (timeless present); good opens by",
+        "  naming the subsystem (\"session storage for the user-facing",
+        "  web service\") and follows with a dated event.",
+        "- Bad has no date; good anchors both the decision (2025-09-12)",
+        "  and the motivating incident (2025-09-08).",
+        "- Bad has no attribution; good attributes to \"the team\" and",
+        "  names the surfacing context (a post-mortem).",
+        "- Bad names nothing concretely; good names Redis 7.2, the",
+        "  rejected alternatives, the specific latency numbers, and the",
+        "  incident that drove the decision.",
+        "- Bad would become stale if Redis is later replaced; good",
+        "  remains true as a historical record forever.",
+        "",
+        "<example type=\"lesson-bad\">",
+        "Don't forget to update the schema migration when adding new columns.",
+        "</example>",
+        "",
+        "<example type=\"lesson-good\">",
+        "This entry records a deployment failure in the user-management",
+        "service. On 2025-11-03, a feature branch added a `last_seen_at`",
+        "column to the users table at the ORM model level but omitted",
+        "the corresponding Alembic migration file. The change passed",
+        "local tests because the local test database used SQLite, which",
+        "auto-creates columns from ORM model definitions. Staging",
+        "deployment failed when PostgreSQL rejected inserts referencing",
+        "the missing column. Root cause: the test harness used a",
+        "different database engine than production, hiding schema drift",
+        "at merge time. Correction applied on 2025-11-04: the team",
+        "added a CI step that runs all Alembic migrations against an",
+        "empty PostgreSQL instance before test suites execute, catching",
+        "ORM/schema drift before merge.",
+        "</example>",
+        "",
+        "What changed between bad and good:",
+        "",
+        "- Bad is a forward-looking instruction (\"don't forget\"); good",
+        "  is an event record of a specific dated failure.",
+        "- Bad has no root cause; good identifies it (test harness",
+        "  used a different database than production).",
+        "- Bad has no concrete artifacts; good names Alembic, SQLite,",
+        "  PostgreSQL, `last_seen_at`, the users table, and the new CI",
+        "  step.",
+        "- Bad would become stale if the team switches migration tools;",
+        "  good stays true as a dated historical record.",
+        "",
+        "## The per-batch loop (6 sub-operations, in order)",
+        "",
+        "For each batch of 3-5 candidates from your step 1 list, run",
+        "these sub-operations IN ORDER. Each sub-operation produces a",
+        "committed, VISIBLE output in your response before the next",
+        "begins. Do not collapse substeps. Do not skip ahead. The",
+        "committed-artifact structure is the load-bearing quality gate --",
+        "collapsing it lets the model sandbag drafts to manufacture",
+        "obvious improvements at the revise step without actually",
+        "improving anything.",
+        "",
+        "### A. Draft",
+        "",
+        "Write each non-NOOP candidate as a complete entry, modeled on",
+        "the GOOD examples above. Include type, title, body, related,",
+        "and (for UPDATE / DEPRECATE) entry_id.",
+        "",
+        "Output all drafts for this batch as a visible list BEFORE",
+        "moving to substep B. You must commit to the drafts as-is",
+        "before self-critiquing them.",
+        "",
+        "### B. Self-critique",
+        "",
+        "For each draft produced in substep A, run the 5-item draft-",
+        "quality checklist below. Output the checklist result PER",
+        "DRAFT in this exact format:",
+        "",
+        "    Draft 1 ({title}):",
+        "      1. Opens with named subsystem: PASS / FAIL",
+        "      2. Contains absolute date:     PASS / FAIL",
+        "      3. Contains attribution:       PASS / FAIL",
+        "      4. Event-style, past tense:    PASS / FAIL",
+        "      5. Concrete naming:            PASS / FAIL",
+        "",
+        "    Draft 2 ({title}):",
+        "      ...",
+        "",
+        "Do not skip this substep. Do not merge it into substep A or C.",
+        "The explicit checklist output is the committed artifact that",
+        "prevents simulated refinement -- if substep B is absent, the",
+        "whole quality gate collapses.",
+        "",
+        "### C. Revise",
+        "",
+        "For every draft with any FAIL in its checklist, rewrite the",
+        "entry completely. Do not patch in place -- rewrite it, using",
+        "the GOOD example template as the target form. After each",
+        "rewrite, re-run the 5-item checklist on the revised draft.",
+        "Loop until all 5 items PASS for all drafts in the batch.",
+        "",
+        "You MAY NOT proceed to substep D (Yield) while any draft in",
+        "this batch has an outstanding FAIL.",
+        "",
+        "### D. Yield",
+        "",
+        "Call `koan_yield` with the final (all-PASS) proposals as",
+        "markdown plus these structured suggestions:",
+        "",
         '   - {id: "approve", label: "Approve all",          command: "Approve all entries in this batch"}',
         '   - {id: "skip",    label: "Skip all",             command: "Skip this batch"}',
         '   - {id: "review",  label: "Review individually",  command: "Let me review each entry"}',
         "",
-        "3. **Apply** approved changes:",
-        "   - ADD       -> `koan_memorize` (no `entry_id`)",
-        "   - UPDATE    -> `koan_memorize` (with `entry_id`)",
-        "   - DEPRECATE -> `koan_forget`   (with `entry_id`)",
-        "   - NOOP      -> nothing",
+        "### E. Apply",
         "",
-        "4. **Cross items off** your candidate list. Loop back to step 1",
-        "   of this loop until the list is empty or the user tells you",
-        "   to stop.",
+        "Apply approved changes:",
+        "- ADD       -> `koan_memorize` (no `entry_id`)",
+        "- UPDATE    -> `koan_memorize` (with `entry_id`)",
+        "- DEPRECATE -> `koan_forget`   (with `entry_id`)",
+        "- NOOP      -> nothing",
         "",
-        "## Anticipatory check (BEFORE the wrap-up)",
+        "### F. Cross off",
         "",
-        "Stop and verify:",
+        "Cross items off your candidate list and loop back to substep",
+        "A with the next batch. Continue until the list is empty or",
+        "the user tells you to stop.",
         "",
-        "- Did you call `koan_memorize` at least once for the ADD / UPDATE",
-        "  items on your step 1 candidate list?",
+        "## Draft-quality checklist (schema for substep B)",
+        "",
+        "For each draft, verify all 5 items. Any FAIL means the draft",
+        "cannot be yielded -- it must go back through substep C.",
+        "",
+        "**1. Opens with a named subsystem.**",
+        "First sentence names the specific subsystem, decision, or",
+        "artifact this entry is about. If the entry is about the",
+        "project as a whole, the first sentence names the project",
+        "explicitly. Openings like \"This system...\", \"The project...\",",
+        "or a rule statement with no subject FAIL this check.",
+        "",
+        "**2. Contains at least one absolute date.**",
+        "Body has one or more dates in YYYY-MM-DD form anchoring an",
+        "event. A year alone, or words like \"recently\", \"currently\",",
+        "\"at the moment\" FAIL.",
+        "",
+        "**3. Contains an attribution phrase.**",
+        "Body explicitly states who said or discovered each claim:",
+        "\"user stated\", \"the team decided\", \"post-mortem identified\",",
+        "\"LLM inferred\", \"developer confirmed\", \"maintainer agreed\".",
+        "Anonymous declarations (\"it was decided that...\" without a",
+        "subject) FAIL.",
+        "",
+        "**4. Event-style, past tense.**",
+        "Body describes events that happened (\"On <date>, X did Y\"),",
+        "not timeless facts (\"We use X\"). Present-tense \"is\"",
+        "statements about how things currently work FAIL. Forward-",
+        "looking language (\"we will\", \"should\", \"must\") also FAILS",
+        "unless embedded inside a past-tense attribution.",
+        "",
+        "**5. Concrete naming.**",
+        "Body names specific entities: versions, file paths, tool",
+        "names, table names, column names, environment variable names.",
+        "\"The database\" FAILS; \"PostgreSQL 16.2\" passes. \"Some config\"",
+        "FAILS; \"the BUILD_TARGET environment variable in",
+        "deploy/production.env\" passes.",
+        "",
+        "## Anticipatory tool-call check (BEFORE the wrap-up)",
+        "",
+        "After all batches have been processed, before you call",
+        "`koan_complete_step`, verify:",
+        "",
+        "- Did you call `koan_memorize` at least once for the ADD /",
+        "  UPDATE items on your step 1 candidate list?",
         "- Did you call `koan_forget` for any DEPRECATE items?",
         "",
-        "If NO and your step 1 list was non-empty: you have not done the",
-        "work of this phase. Loop back to draft proposals and call",
-        "`koan_yield`. Do not advance to the wrap-up with zero writes.",
+        "If NO and your step 1 list was non-empty: you have not done",
+        "the work of this phase. Loop back to substep A with the",
+        "remaining candidates. Do not advance to the wrap-up with zero",
+        "writes.",
         "",
-        "If your step 1 list was explicitly empty (\"all candidates were",
-        "NOOPs because X\"), zero writes is correct -- continue to wrap-up.",
+        "If your step 1 list was explicitly empty (\"all candidates",
+        "were NOOPs because X\"), zero writes is correct -- continue",
+        "to wrap-up.",
         "",
         "## Wrap-up",
         "",
-        "1. Call `koan_memory_status` once. This triggers just-in-time",
+        "1. Call `koan_memory_status` once. Triggers just-in-time",
         "   summary regeneration if any entries changed.",
         "",
         "2. Report the final counts to the user inline:",
         "   `{added: N, updated: N, deprecated: N, noop: N}`",
         "   plus a one-line note on anything deferred for a future run.",
         "",
-        "3. Call `koan_complete_step`. The curation phase ends here and",
-        "   the workflow is complete.",
+        "3. Call `koan_complete_step`. The curation phase ends here",
+        "   and the workflow is complete.",
     ]
     return StepGuidance(title=STEP_NAMES[2], instructions=instructions)
 
