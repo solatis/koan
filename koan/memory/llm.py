@@ -8,7 +8,7 @@ import os
 from google import genai
 from google.genai import types
 
-DEFAULT_MODEL = "gemini-3-flash-lite"
+DEFAULT_MODEL = "gemini-flash-lite-latest"
 
 
 def _api_key() -> str:
