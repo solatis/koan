@@ -1120,12 +1120,22 @@ async def koan_memory_status(type: str | None = None) -> str:
         if type is not None:
             _validate_memory_type(type)
 
+        log.info("koan_memory_status type=%s", type or "*")
         store = _get_memory_store()
 
         regenerated = False
-        if _summary_is_stale(store):
-            await store.regenerate_summary()
-            regenerated = True
+        regen_error: str | None = None
+        stale = _summary_is_stale(store)
+        log.debug("koan_memory_status summary_stale=%s", stale)
+        if stale:
+            log.info("koan_memory_status regenerating stale summary")
+            try:
+                await store.regenerate_summary()
+                regenerated = True
+                log.info("koan_memory_status summary regenerated")
+            except Exception:
+                log.exception("koan_memory_status summary regeneration failed")
+                regen_error = "Summary regeneration failed -- see server logs."
 
         summary = store.get_summary() or ""
         entries = store.list_entries(type=type)  # type: ignore[arg-type]
@@ -1142,12 +1152,19 @@ async def koan_memory_status(type: str | None = None) -> str:
             }
             for e in entries
         ]
+        log.info(
+            "koan_memory_status returning %d entries, summary_len=%d, regenerated=%s",
+            len(out_entries), len(summary), regenerated,
+        )
 
-        result_str = json.dumps({
+        result: dict = {
             "summary": summary,
             "entries": out_entries,
             "regenerated": regenerated,
-        })
+        }
+        if regen_error:
+            result["error"] = regen_error
+        result_str = json.dumps(result)
         result_str = _drain_and_append_steering(result_str, agent)
         return result_str
     finally:

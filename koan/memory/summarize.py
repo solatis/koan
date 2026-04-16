@@ -52,6 +52,7 @@ async def generate_summary(
     entries = store.list_entries()
 
     if not entries:
+        log.debug("generate_summary: no entries, writing empty summary")
         summary = "No memory entries exist yet."
         store._memory_dir.mkdir(parents=True, exist_ok=True)
         (store._memory_dir / "summary.md").write_text(summary + "\n", "utf-8")
@@ -65,15 +66,18 @@ async def generate_summary(
         f"{context}"
     )
 
+    log.info("generate_summary: sending %d entries (%d chars) to LLM", len(entries), len(context))
     try:
         summary = await generate(prompt, system=_SUMMARY_SYSTEM, max_tokens=2500)
+        log.info("generate_summary: LLM returned %d chars", len(summary))
     except Exception:
         log.exception("LLM call failed for project summary generation")
-        summary = "Summary generation failed."
+        raise
 
     summary = summary.strip()
     store._memory_dir.mkdir(parents=True, exist_ok=True)
     (store._memory_dir / "summary.md").write_text(summary + "\n", "utf-8")
+    log.debug("generate_summary: wrote summary.md (%d chars)", len(summary))
     return summary
 
 

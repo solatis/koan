@@ -106,16 +106,18 @@ class TestGenerateSummary:
         assert store.get_summary() is not None
 
     @pytest.mark.anyio
-    async def test_llm_failure_produces_fallback(self, tmp_path):
+    async def test_llm_failure_propagates(self, tmp_path):
         store = _populated_store(tmp_path)
 
         async def failing_generate(prompt, system="", max_tokens=1024):
             raise RuntimeError("API error")
 
         with patch("koan.memory.summarize.generate", side_effect=failing_generate):
-            summary = await generate_summary(store)
+            with pytest.raises(RuntimeError, match="API error"):
+                await generate_summary(store)
 
-        assert "failed" in summary.lower()
+        # summary.md must not be written on failure
+        assert not (store._memory_dir / "summary.md").exists()
 
     @pytest.mark.anyio
     async def test_forgotten_entry_not_in_prompt(self, tmp_path):
