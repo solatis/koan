@@ -176,7 +176,7 @@ SYSTEM_PROMPT = (
     "Every entry is 100-500 tokens of **temporally grounded, attributed,\n"
     "event-style** prose -- a historical fact that stays true regardless\n"
     "of when it is read. The full rules, two contrastive bad/good\n"
-    "examples, and a 5-item self-validation checklist appear in step 2\n"
+    "examples, and a 6-item self-validation checklist appear in step 2\n"
     "(Memorize), rendered at the drafting moment. Do NOT skim the step 2\n"
     "examples -- your default register for technical content is timeless\n"
     "documentation prose, and the examples are the only thing that\n"
@@ -188,17 +188,51 @@ SYSTEM_PROMPT = (
     "\n"
     "## What not to capture\n"
     "\n"
-    "- Implementation details derivable from reading the code, EXCEPT:\n"
-    "  - The **rationale and rejected alternatives** behind architectural\n"
-    "    decisions. These are NOT in code -- they are in the heads of the\n"
-    "    people who made the choice, and in the conversations that\n"
-    "    surfaced the choice. Capture them.\n"
-    "  - The **lessons from prior workflows** -- corrected mistakes,\n"
-    "    surprises, root causes of failures. These are not in code;\n"
-    "    they are history. Capture them.\n"
+    "**Structural information** the agent encounters through normal code\n"
+    "reading should NOT be captured: file layout, API signatures, type\n"
+    "definitions, import paths, module structure, function names. The\n"
+    "agent's working context already includes this when it opens the\n"
+    "relevant files.\n"
+    "\n"
+    "**Behavioral knowledge** that needs proactive surfacing MUST be\n"
+    "captured, even when the knowledge also appears in a project\n"
+    "document (docs/, AGENTS.md, README.md, etc.). The RAG retrieval\n"
+    "layer indexes only memory entries -- it does not index project\n"
+    "files. If a lesson, decision, procedure, or constraint lives only\n"
+    "in a document, the RAG cannot surface it at the right moment.\n"
+    "The document is the source; the memory entry is the extraction.\n"
+    "Examples of behavioral knowledge that must be captured:\n"
+    "\n"
+    "- Rationale and rejected alternatives behind architectural\n"
+    "  decisions -- these live in people's heads and conversations.\n"
+    "- Lessons from prior workflows -- corrected mistakes, surprises,\n"
+    "  root causes of failures.\n"
+    "- Procedures and constraints for agents -- rules that govern\n"
+    "  behavior but are not obvious from the code itself.\n"
+    "\n"
+    "Also do NOT capture:\n"
     "- Temporary implementation details that will not matter next week.\n"
     "- Opinions without grounding in project experience.\n"
     "- Anything already adequately captured (use NOOP, not a duplicate).\n"
+    "\n"
+    "## Self-contained entries (critical)\n"
+    "\n"
+    "A memory entry must contain the actual knowledge it captures, not\n"
+    "a reference to where the knowledge is written. Never produce\n"
+    "entries whose primary content is a pointer to another document.\n"
+    "\n"
+    "FAILS: \"docs/architecture.md documents 13 anti-patterns for\n"
+    "orchestrator prompt design.\"\n"
+    "\n"
+    "PASSES: One self-contained entry per anti-pattern, each with its\n"
+    "own rationale, context, and attribution, readable without opening\n"
+    "docs/architecture.md.\n"
+    "\n"
+    "If a source document contains multiple distinct pieces of\n"
+    "knowledge, each piece becomes its own independent entry. The RAG\n"
+    "retrieval layer does not dereference pointers; it only surfaces\n"
+    "the text of memory entries. Knowledge that is not in the entry's\n"
+    "body cannot reach the agent.\n"
 )
 
 
@@ -249,7 +283,7 @@ def _tools_this_step_block(current_step: int) -> list[str]:
     if current_step == 2:
         return [
             "<tools_this_step>",
-            "Writing discipline, two contrastive examples, and a 5-item",
+            "Writing discipline, two contrastive examples, and a 6-item",
             "draft-quality checklist appear in this step's body below.",
             "Read them BEFORE drafting your first candidate.",
             "",
@@ -515,7 +549,7 @@ def _step_2_memorize(ctx: PhaseContext) -> StepGuidance:
         "",
         "### B. Self-critique",
         "",
-        "For each draft produced in substep A, run the 5-item draft-",
+        "For each draft produced in substep A, run the 6-item draft-",
         "quality checklist below. Output the checklist result PER",
         "DRAFT in this exact format:",
         "",
@@ -525,6 +559,7 @@ def _step_2_memorize(ctx: PhaseContext) -> StepGuidance:
         "      3. Contains attribution:       PASS / FAIL",
         "      4. Event-style, past tense:    PASS / FAIL",
         "      5. Concrete naming:            PASS / FAIL",
+        "      6. Contains knowledge, not pointer: PASS / FAIL",
         "",
         "    Draft 2 ({title}):",
         "      ...",
@@ -539,7 +574,7 @@ def _step_2_memorize(ctx: PhaseContext) -> StepGuidance:
         "For every draft with any FAIL in its checklist, rewrite the",
         "entry completely. Do not patch in place -- rewrite it, using",
         "the GOOD example template as the target form. After each",
-        "rewrite, re-run the 5-item checklist on the revised draft.",
+        "rewrite, re-run the 6-item checklist on the revised draft.",
         "Loop until all 5 items PASS for all drafts in the batch.",
         "",
         "You MAY NOT proceed to substep D (Yield) while any draft in",
@@ -570,7 +605,7 @@ def _step_2_memorize(ctx: PhaseContext) -> StepGuidance:
         "",
         "## Draft-quality checklist (schema for substep B)",
         "",
-        "For each draft, verify all 5 items. Any FAIL means the draft",
+        "For each draft, verify all 6 items. Any FAIL means the draft",
         "cannot be yielded -- it must go back through substep C.",
         "",
         "**1. Opens with a named subsystem.**",
@@ -605,6 +640,14 @@ def _step_2_memorize(ctx: PhaseContext) -> StepGuidance:
         "\"The database\" FAILS; \"PostgreSQL 16.2\" passes. \"Some config\"",
         "FAILS; \"the BUILD_TARGET environment variable in",
         "deploy/production.env\" passes.",
+        "",
+        "**6. Contains the knowledge, not a pointer.**",
+        "The entry body contains the actual knowledge -- rationale,",
+        "lesson, procedure, or context fact -- not a reference to where",
+        "the knowledge is written. Entries that read \"X documents Y\" or",
+        "\"X file defines Y\" FAIL. The entry must answer \"what is the",
+        "knowledge?\" directly in its body, readable without opening any",
+        "other file.",
         "",
         "## Anticipatory tool-call check (BEFORE the wrap-up)",
         "",

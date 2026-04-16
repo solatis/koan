@@ -53,14 +53,15 @@ class TestModuleShape:
         # Lesson trigger includes the user-correction case.
         assert "correct the agent" in sp
 
-    def test_system_prompt_derivable_rule_preserves_decisions(self):
-        # The "what not to capture" rule must explicitly preserve
-        # decisions' rationale and prior-workflow lessons, even when
-        # the resulting implementation is in code.
+    def test_system_prompt_behavioral_knowledge_must_be_captured(self):
+        # The "what not to capture" section must require behavioral
+        # knowledge (decisions, lessons, procedures) to be captured
+        # even when it also appears in project documents.
         sp = curation.SYSTEM_PROMPT
-        assert "EXCEPT" in sp
-        assert "rationale and rejected alternatives" in sp
-        assert "lessons from prior workflows" in sp
+        assert "Behavioral knowledge" in sp
+        assert "MUST be" in sp
+        assert "Rationale and rejected alternatives" in sp
+        assert "Lessons from prior workflows" in sp
 
     def test_system_prompt_enumerates_memory_tools(self):
         # Tools must be visible at the role layer.
