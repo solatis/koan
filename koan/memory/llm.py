@@ -8,6 +8,10 @@ import os
 from google import genai
 from google.genai import types
 
+from ..logger import get_logger
+
+log = get_logger("memory.llm")
+
 DEFAULT_MODEL = "gemini-flash-lite-latest"
 
 
@@ -28,12 +32,14 @@ async def generate(prompt: str, system: str = "", max_tokens: int = 1024) -> str
     """Call Gemini and return the text response.
 
     Configuration:
-      - Model: via env var KOAN_LLM_MODEL (default "gemini-3-flash-lite")
+      - Model: via env var KOAN_LLM_MODEL (default "gemini-flash-lite-latest")
       - API key: via env var GEMINI_API_KEY or GOOGLE_API_KEY
       - Temperature: 0.0 (deterministic for summaries)
 
     Raises RuntimeError if the API key is not set or the call fails.
     """
+    model = _model()
+    log.info("generate model=%s prompt_len=%d system_len=%d max_tokens=%d", model, len(prompt), len(system), max_tokens)
     client = genai.Client(api_key=_api_key())
     config = types.GenerateContentConfig(
         system_instruction=system or None,
@@ -41,8 +47,10 @@ async def generate(prompt: str, system: str = "", max_tokens: int = 1024) -> str
         max_output_tokens=max_tokens,
     )
     response = await client.aio.models.generate_content(
-        model=_model(),
+        model=model,
         contents=prompt,
         config=config,
     )
-    return response.text or ""
+    text = response.text or ""
+    log.info("generate complete response_len=%d", len(text))
+    return text

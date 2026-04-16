@@ -971,6 +971,7 @@ async def koan_memorize(
         store = _get_memory_store()
 
         if entry_id is None:
+            log.info("koan_memorize CREATE type=%s title=%r body_len=%d", type, title, len(body))
             entry = store.add_entry(
                 type=type,   # type: ignore[arg-type]
                 title=title,
@@ -978,6 +979,7 @@ async def koan_memorize(
                 related=related or [],
             )
             new_id = _entry_id_from_path(entry.file_path.name) if entry.file_path else None
+            log.info("koan_memorize CREATED entry_id=%s file=%s", new_id, entry.file_path.name if entry.file_path else "?")
             result_str = json.dumps({
                 "op": "created",
                 "type": type,
@@ -987,6 +989,7 @@ async def koan_memorize(
                 "modified": entry.modified,
             })
         else:
+            log.info("koan_memorize UPDATE entry_id=%d type=%s title=%r", entry_id, type, title)
             existing = store.get_entry(entry_id)
             if existing is None:
                 raise ToolError(json.dumps({
@@ -1006,6 +1009,7 @@ async def koan_memorize(
             if related is not None:
                 existing.related = related
             store.update_entry(existing)
+            log.info("koan_memorize UPDATED entry_id=%d file=%s", entry_id, existing.file_path.name if existing.file_path else "?")
             result_str = json.dumps({
                 "op": "updated",
                 "type": type,
@@ -1045,6 +1049,7 @@ async def koan_forget(entry_id: int, type: str | None = None) -> str:
         if type is not None:
             _validate_memory_type(type)
 
+        log.info("koan_forget entry_id=%d type=%s", entry_id, type or "*")
         store = _get_memory_store()
         existing = store.get_entry(entry_id)
         if existing is None:
@@ -1061,7 +1066,9 @@ async def koan_forget(entry_id: int, type: str | None = None) -> str:
                 ),
             }))
         path_str = str(existing.file_path) if existing.file_path else None
+        log.info("koan_forget DELETING %s type=%s title=%r", existing.file_path.name if existing.file_path else "?", existing.type, existing.title)
         store.forget_entry(existing)
+        log.info("koan_forget DELETED entry_id=%d", entry_id)
         result_str = json.dumps({
             "op": "forgotten",
             "type": existing.type,
