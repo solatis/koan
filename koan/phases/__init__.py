@@ -84,50 +84,14 @@ ORCHESTRATOR_SYSTEM_PROMPT = (
 )
 
 
-# -- Phase module registry ----------------------------------------------------
-# Maps each SubagentRole string to its phase module (for subagent spawn lookup).
+# -- Subagent module registry --------------------------------------------------
+# Maps SubagentRole strings to phase modules for non-orchestrator subagent
+# spawns (scouts, executors). Orchestrator phase dispatch uses
+# Workflow.get_module() instead -- see koan/lib/workflows.py.
 
-from . import (
-    brief_writer,
-    core_flows,
-    cross_artifact_validation,
-    curation,
-    executor,
-    intake,
-    orchestrator,
-    scout,
-    tech_plan as planner,
-    ticket_breakdown,
-    execute as execute_phase,
-    plan_review,
-    plan_spec,
-)
+from . import executor, scout
+
 PHASE_MODULE_MAP: dict[str, Any] = {
-    "intake": intake,
     "scout": scout,
-    "orchestrator": orchestrator,
-    "planner": planner,
     "executor": executor,
-}
-
-# -- Phase guidance map -------------------------------------------------------
-# Maps WorkflowPhase strings to the phase module that provides step guidance.
-# Used by koan_set_phase to load the module for the new phase.
-
-PHASE_GUIDANCE_MAP: dict[str, Any] = {
-    # General-purpose phases (reusable by any workflow)
-    "intake":   intake,
-    "execute":  execute_phase,
-    "curation": curation,
-    # Plan workflow phases (SCOPE="plan")
-    "plan-spec":   plan_spec,
-    "plan-review": plan_review,
-    # Legacy phases (SCOPE="legacy" --dead code, available for future workflows)
-    "brief-generation":          brief_writer,
-    "core-flows":                core_flows,
-    "tech-plan":                 planner,
-    "ticket-breakdown":          ticket_breakdown,
-    "cross-artifact-validation": cross_artifact_validation,
-    "execution":                 executor,
-    "implementation-validation": cross_artifact_validation,
 }

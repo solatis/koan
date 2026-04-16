@@ -1,50 +1,101 @@
 # Workflow definitions for the koan orchestrator.
 #
-# A Workflow defines the phases available to the orchestrator, their suggested
-# transition order, phase descriptions shown at boundaries, and per-phase
-# guidance injected into step 1 instructions.
+# A Workflow composes its phases directly via a dict[str, PhaseBinding].
+# Each PhaseBinding carries the phase module reference and the per-workflow
+# guidance injection. No global registry is needed at runtime -- dispatch
+# reads from the workflow's phases dict, making the binding explicit and
+# the invariant (module agrees with workflow) structurally enforced.
 #
 # Design notes:
-#   - frozen=True prevents field reassignment after construction (mutation protection).
-#   - frozen=True does NOT make Workflow hashable --dict fields are unhashable.
-#     Do not use Workflow as a dict key or set member.
+#   - frozen=True prevents field reassignment after construction.
+#   - frozen=True does NOT make Workflow hashable -- dict fields are unhashable.
 #   - Workflows are defined as module-level constants (PLAN_WORKFLOW, etc.).
-#   - Phase transition validation: any phase in available_phases is reachable
-#     from any other (user-directed), except self-transitions.
+#   - Phase transition validation: any phase in phases.keys() is reachable
+#     from any other (user-directed), except self-transitions. The transitions
+#     dict guides UI suggestions but does not constrain.
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
+
+from ..phases import (
+    curation,
+    execute as execute_phase,
+    intake,
+    plan_review,
+    plan_spec,
+)
+
+
+# -- Types --------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class PhaseBinding:
+    """Binds a phase module to its per-workflow configuration.
+
+    Each workflow maps phase name strings to PhaseBinding values.
+    The binding carries the module reference and the guidance
+    injection, keeping them co-located so dispatch cannot desync.
+    """
+    module: Any          # phase module (e.g. intake, curation)
+    description: str = ""
+    guidance: str = ""   # injected as ctx.phase_instructions at step 1
 
 
 @dataclass(frozen=True)
 class Workflow:
-    """Immutable workflow definition.
+    """Immutable workflow definition with explicit phase bindings.
+
+    The workflow composes its phases directly: each PhaseBinding
+    carries the phase module reference, description, and guidance.
+    Dispatch reads from get_module() / get_binding() instead of a
+    global registry.
 
     Attributes:
         name: Short identifier (e.g. "plan", "milestones").
         description: Human-readable description shown in the UI.
-        available_phases: All phases the user can transition to in this workflow.
-        initial_phase: Phase the orchestrator starts in.
-        suggested_transitions: Per-phase ordered list of suggested next phases.
-            Guides the orchestrator's boundary response; user can override.
-        phase_descriptions: One-line description of each phase shown at boundaries.
-        phase_guidance: Per-phase scope framing injected at the top of step 1
-            guidance. Controls investigation depth, question posture, etc.
-
-            Only workflow-agnostic phases (intake, execute) need entries here.
-            These phases are reused across workflows, so the workflow injects
-            context they cannot hardcode. Workflow-specific phases (plan-spec,
-            plan-review) carry their own context -- they do not need injection
-            because they ARE the workflow.
+        phases: Ordered dict of phase name -> PhaseBinding. Insertion
+            order determines UI display order. Each binding carries
+            the module reference and per-workflow guidance injection.
+        initial_phase: Phase name the orchestrator starts in.
+        transitions: Per-phase ordered list of suggested next phase
+            names. Guides the orchestrator's boundary response; user
+            can override. Any-to-any within the workflow is valid.
     """
     name: str
     description: str
-    available_phases: tuple[str, ...]
+    phases: dict[str, PhaseBinding]
     initial_phase: str
-    suggested_transitions: dict[str, list[str]]
-    phase_descriptions: dict[str, str]
-    phase_guidance: dict[str, str]
+    transitions: dict[str, list[str]]
+
+    # -- Derived accessors (backward compat) ----------------------------------
+
+    @property
+    def available_phases(self) -> tuple[str, ...]:
+        """All phase names in this workflow (insertion-ordered)."""
+        return tuple(self.phases.keys())
+
+    @property
+    def phase_descriptions(self) -> dict[str, str]:
+        """Phase name -> description mapping."""
+        return {k: b.description for k, b in self.phases.items()}
+
+    @property
+    def phase_guidance(self) -> dict[str, str]:
+        """Phase name -> guidance text mapping (non-empty entries only)."""
+        return {k: b.guidance for k, b in self.phases.items() if b.guidance}
+
+    # -- Lookup ---------------------------------------------------------------
+
+    def get_binding(self, name: str) -> PhaseBinding | None:
+        """Look up a PhaseBinding by phase name."""
+        return self.phases.get(name)
+
+    def get_module(self, name: str) -> Any | None:
+        """Look up the phase module by phase name."""
+        b = self.phases.get(name)
+        return b.module if b else None
 
 
 # -- Curation directives (injected as phase_instructions) ---------------------
@@ -164,72 +215,84 @@ _STANDALONE_DIRECTIVE = (
 
 
 # -- Plan workflow -------------------------------------------------------------
-# intake → plan-spec → plan-review → execute → curation
+# intake -> plan-spec -> plan-review -> execute -> curation
 # Lightweight focused-change pipeline. Single executor spawn.
 
 PLAN_WORKFLOW = Workflow(
     name="plan",
     description="Plan an implementation approach, review it, then execute",
-    available_phases=("intake", "plan-spec", "plan-review", "execute", "curation"),
+    phases={
+        "intake": PhaseBinding(
+            module=intake,
+            description="Explore the codebase and align on requirements through Q&A",
+            guidance=(
+                "## Scope\n"
+                "This is a **plan** workflow -- a focused change touching a bounded\n"
+                "area of the codebase.\n"
+                "\n"
+                "## Downstream\n"
+                "The understanding you build here feeds into an implementation plan.\n"
+                "The planner needs enough context to write specific file-level\n"
+                "instructions, but does not need exhaustive coverage of the entire\n"
+                "codebase.\n"
+                "\n"
+                "## Investigation posture\n"
+                "- **Prefer direct reading.** For focused changes, reading the referenced\n"
+                "  files yourself is faster and more precise than dispatching scouts.\n"
+                "- **Dispatch scouts** when the task references subsystems you're unfamiliar\n"
+                "  with, or when dependency tracing would require opening more than ~10 files.\n"
+                "- If you dispatch scouts, 1-3 is typical for a plan workflow.\n"
+                "\n"
+                "## Question posture\n"
+                "- Always ask at least one round of questions. Even well-specified tasks\n"
+                "  benefit from confirming assumptions and surfacing implicit decisions.\n"
+                "- A plan workflow needs 2-4 targeted questions covering: approach\n"
+                "  confirmation, constraint verification, and scope boundaries.\n"
+                "- The user wants to be consulted -- asking questions is a feature, not a\n"
+                "  burden. When in doubt, ask.\n"
+                "\n"
+                "## User override\n"
+                "The user can always ask you to go deeper, dispatch more scouts, or ask\n"
+                "more questions. Follow their lead over these defaults."
+            ),
+        ),
+        "plan-spec": PhaseBinding(
+            module=plan_spec,
+            description="Write a technical implementation plan grounded in the codebase",
+        ),
+        "plan-review": PhaseBinding(
+            module=plan_review,
+            description="Evaluate the plan for completeness, correctness, and risks",
+        ),
+        "execute": PhaseBinding(
+            module=execute_phase,
+            description="Hand off the plan to an executor agent for implementation",
+            guidance=(
+                "## What to hand off\n"
+                "Call `koan_request_executor` with:\n"
+                "- **artifacts**: `[\"plan.md\"]` -- the implementation plan.\n"
+                "- **instructions**: Key decisions from plan-review, user clarifications,\n"
+                "  or constraints. Do NOT repeat plan.md contents -- the executor reads\n"
+                "  it directly. Instructions are for context that isn't in the files.\n"
+                "\n"
+                "## After execution\n"
+                "Report the result. If the executor failed or asked questions, relay\n"
+                "the situation to the user and suggest next steps."
+            ),
+        ),
+        "curation": PhaseBinding(
+            module=curation,
+            description="Capture lessons, decisions, and context from the completed run",
+            guidance=_POSTMORTEM_DIRECTIVE,
+        ),
+    },
     initial_phase="intake",
-    suggested_transitions={
+    transitions={
         "intake":       ["plan-spec", "execute"],
         "plan-spec":    ["plan-review", "execute"],
         "plan-review":  ["plan-spec", "execute"],
         "execute":      ["curation", "plan-review"],
         "curation":     [],
-    },
-    phase_descriptions={
-        "intake":      "Explore the codebase and align on requirements through Q&A",
-        "plan-spec":   "Write a technical implementation plan grounded in the codebase",
-        "plan-review": "Evaluate the plan for completeness, correctness, and risks",
-        "execute":     "Hand off the plan to an executor agent for implementation",
-        "curation":    "Capture lessons, decisions, and context from the completed run",
-    },
-    phase_guidance={
-        "intake": (
-            "## Scope\n"
-            "This is a **plan** workflow \u2014 a focused change touching a bounded\n"
-            "area of the codebase.\n"
-            "\n"
-            "## Downstream\n"
-            "The understanding you build here feeds into an implementation plan.\n"
-            "The planner needs enough context to write specific file-level\n"
-            "instructions, but does not need exhaustive coverage of the entire\n"
-            "codebase.\n"
-            "\n"
-            "## Investigation posture\n"
-            "- **Prefer direct reading.** For focused changes, reading the referenced\n"
-            "  files yourself is faster and more precise than dispatching scouts.\n"
-            "- **Dispatch scouts** when the task references subsystems you're unfamiliar\n"
-            "  with, or when dependency tracing would require opening more than ~10 files.\n"
-            "- If you dispatch scouts, 1\u20133 is typical for a plan workflow.\n"
-            "\n"
-            "## Question posture\n"
-            "- Always ask at least one round of questions. Even well-specified tasks\n"
-            "  benefit from confirming assumptions and surfacing implicit decisions.\n"
-            "- A plan workflow needs 2\u20134 targeted questions covering: approach\n"
-            "  confirmation, constraint verification, and scope boundaries.\n"
-            "- The user wants to be consulted \u2014 asking questions is a feature, not a\n"
-            "  burden. When in doubt, ask.\n"
-            "\n"
-            "## User override\n"
-            "The user can always ask you to go deeper, dispatch more scouts, or ask\n"
-            "more questions. Follow their lead over these defaults."
-        ),
-        "execute": (
-            "## What to hand off\n"
-            "Call `koan_request_executor` with:\n"
-            "- **artifacts**: `[\"plan.md\"]` \u2014 the implementation plan.\n"
-            "- **instructions**: Key decisions from plan-review, user clarifications,\n"
-            "  or constraints. Do NOT repeat plan.md contents \u2014 the executor reads\n"
-            "  it directly. Instructions are for context that isn't in the files.\n"
-            "\n"
-            "## After execution\n"
-            "Report the result. If the executor failed or asked questions, relay\n"
-            "the situation to the user and suggest next steps."
-        ),
-        "curation": _POSTMORTEM_DIRECTIVE,
     },
 )
 
@@ -240,60 +303,60 @@ PLAN_WORKFLOW = Workflow(
 MILESTONES_WORKFLOW = Workflow(
     name="milestones",
     description="Break work into milestones with phased delivery (coming soon)",
-    available_phases=("intake",),
-    initial_phase="intake",
-    suggested_transitions={"intake": []},
-    phase_descriptions={
-        "intake": "Explore the codebase and align on requirements through Q&A",
-    },
-    phase_guidance={
-        "intake": (
-            "## Scope\n"
-            "This is a **milestones** workflow \u2014 a broad initiative spanning\n"
-            "multiple subsystems requiring significant codebase exploration.\n"
-            "\n"
-            "## Downstream\n"
-            "The understanding you build here feeds into milestone decomposition\n"
-            "and multi-phase planning. Downstream phases need comprehensive\n"
-            "coverage: every affected subsystem, integration point, and constraint\n"
-            "must be documented.\n"
-            "\n"
-            "## Investigation posture\n"
-            "- **Dispatch scouts broadly.** Explore every subsystem the task touches\n"
-            "  and adjacent areas that might be affected. 3\u20135 scouts is typical.\n"
-            "- **Also read directly** \u2014 verify key scout findings against the actual\n"
-            "  code, especially integration points and conventions.\n"
-            "\n"
-            "## Question posture\n"
-            "- Ask multiple rounds of questions. For broad initiatives, 2\u20133 rounds\n"
-            "  of 3\u20136 questions is typical.\n"
-            "- Surface assumptions early. Each answer may reveal new areas to probe.\n"
-            "- Probe cross-cutting concerns: shared patterns, naming conventions,\n"
-            "  error handling strategies, test coverage expectations.\n"
-            "\n"
-            "## User override\n"
-            "The user can always tell you to narrow scope or skip questions.\n"
-            "Follow their lead over these defaults."
+    phases={
+        "intake": PhaseBinding(
+            module=intake,
+            description="Explore the codebase and align on requirements through Q&A",
+            guidance=(
+                "## Scope\n"
+                "This is a **milestones** workflow -- a broad initiative spanning\n"
+                "multiple subsystems requiring significant codebase exploration.\n"
+                "\n"
+                "## Downstream\n"
+                "The understanding you build here feeds into milestone decomposition\n"
+                "and multi-phase planning. Downstream phases need comprehensive\n"
+                "coverage: every affected subsystem, integration point, and constraint\n"
+                "must be documented.\n"
+                "\n"
+                "## Investigation posture\n"
+                "- **Dispatch scouts broadly.** Explore every subsystem the task touches\n"
+                "  and adjacent areas that might be affected. 3-5 scouts is typical.\n"
+                "- **Also read directly** -- verify key scout findings against the actual\n"
+                "  code, especially integration points and conventions.\n"
+                "\n"
+                "## Question posture\n"
+                "- Ask multiple rounds of questions. For broad initiatives, 2-3 rounds\n"
+                "  of 3-6 questions is typical.\n"
+                "- Surface assumptions early. Each answer may reveal new areas to probe.\n"
+                "- Probe cross-cutting concerns: shared patterns, naming conventions,\n"
+                "  error handling strategies, test coverage expectations.\n"
+                "\n"
+                "## User override\n"
+                "The user can always tell you to narrow scope or skip questions.\n"
+                "Follow their lead over these defaults."
+            ),
         ),
     },
+    initial_phase="intake",
+    transitions={"intake": []},
 )
 
 
 # -- Curation workflow --------------------------------------------------------
-# Standalone memory maintenance workflow (review directive).
+# Standalone memory maintenance workflow (standalone directive).
 
 CURATION_WORKFLOW = Workflow(
     name="curation",
     description="Maintain the project memory: review, bootstrap, or ingest documents",
-    available_phases=("curation",),
+    phases={
+        "curation": PhaseBinding(
+            module=curation,
+            description="Review and maintain the project's memory entries",
+            guidance=_STANDALONE_DIRECTIVE,
+        ),
+    },
     initial_phase="curation",
-    suggested_transitions={"curation": []},
-    phase_descriptions={
-        "curation": "Review and maintain the project's memory entries",
-    },
-    phase_guidance={
-        "curation": _STANDALONE_DIRECTIVE,
-    },
+    transitions={"curation": []},
 )
 
 
@@ -316,13 +379,13 @@ def get_workflow(name: str) -> Workflow:
 
 def get_suggested_phases(workflow: Workflow, phase: str) -> list[str]:
     """Return the ordered suggested next phases for the current phase."""
-    return list(workflow.suggested_transitions.get(phase, []))
+    return list(workflow.transitions.get(phase, []))
 
 
 def is_valid_transition(workflow: Workflow, from_phase: str, to_phase: str) -> bool:
     """Any phase in the workflow is reachable from any other (except self-transition).
 
-    The user drives macro-level progression; suggested_transitions guides defaults
+    The user drives macro-level progression; transitions guides defaults
     but does not constrain choices.
     """
     return to_phase in workflow.available_phases and to_phase != from_phase

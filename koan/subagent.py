@@ -29,7 +29,8 @@ from .events import (
     build_tool_write,
 )
 from .logger import get_logger
-from .phases import ORCHESTRATOR_SYSTEM_PROMPT, PHASE_GUIDANCE_MAP, PHASE_MODULE_MAP, PhaseContext
+from .lib.workflows import get_workflow
+from .phases import ORCHESTRATOR_SYSTEM_PROMPT, PHASE_MODULE_MAP, PhaseContext
 from .runners import RunnerDiagnostic, RunnerError
 from .runners.registry import RunnerRegistry
 
@@ -147,10 +148,14 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
     phase_ctx = _build_phase_ctx(task, subagent_dir)
 
     # Look up phase module and system prompt.
-    # Persistent orchestrator: uses intake as initial step-guidance module;
-    # ORCHESTRATOR_SYSTEM_PROMPT as the spawn-time --system-prompt.
+    # Persistent orchestrator: uses the workflow's initial_phase to select
+    # the step-guidance module. This must agree with driver.py which sets
+    # app_state.phase = workflow.initial_phase. Falls back to "plan"
+    # workflow when no workflow name is on the task.
     if role == "orchestrator":
-        phase_module = PHASE_GUIDANCE_MAP.get("intake")
+        workflow_name = task.get("workflow", "plan")
+        workflow = get_workflow(workflow_name)
+        phase_module = workflow.get_module(workflow.initial_phase)
         system_prompt = ORCHESTRATOR_SYSTEM_PROMPT
     else:
         phase_module = PHASE_MODULE_MAP.get(role)

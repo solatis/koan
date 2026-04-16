@@ -47,7 +47,7 @@ from ..lib.permissions import check_permission
 from ..lib.workflows import get_suggested_phases, is_valid_transition as wf_is_valid
 from ..logger import get_logger
 from ..memory import MEMORY_TYPES, MemoryStore
-from ..phases import PHASE_GUIDANCE_MAP, PhaseContext, StepGuidance
+from ..phases import PhaseContext, StepGuidance
 from ..phases.format_step import format_phase_complete, format_steering_messages, format_step, format_user_messages
 from .interactions import activate_next_interaction, enqueue_interaction
 
@@ -514,12 +514,12 @@ async def koan_set_phase(phase: str) -> str:
                 ),
             }))
 
-        # Look up new phase module
-        new_module = PHASE_GUIDANCE_MAP.get(phase)
+        # Look up new phase module from the workflow's bindings
+        new_module = workflow.get_module(phase) if workflow else None
         if new_module is None:
             raise ToolError(json.dumps({
                 "error": "unknown_phase",
-                "message": f"Phase '{phase}' has no module implementation",
+                "message": f"Phase '{phase}' has no module in workflow '{workflow.name if workflow else '?'}'",
             }))
 
         # Update driver state
@@ -550,7 +550,8 @@ async def koan_set_phase(phase: str) -> str:
         )
 
         # Inject per-workflow phase guidance for the new phase
-        phase_guidance = workflow.phase_guidance.get(phase, "") if workflow else ""
+        binding = workflow.get_binding(phase) if workflow else None
+        phase_guidance = binding.guidance if binding else ""
 
         # Switch phase module and reset step counter
         agent.phase_module = new_module
