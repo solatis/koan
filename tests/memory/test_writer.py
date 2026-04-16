@@ -6,7 +6,7 @@ import time
 
 from koan.memory.parser import parse_entry
 from koan.memory.types import MemoryEntry
-from koan.memory.writer import _slugify, update_entry, write_entry
+from koan.memory.writer import _render_frontmatter, _slugify, update_entry, write_entry
 
 
 def _entry(**overrides) -> MemoryEntry:
@@ -38,6 +38,56 @@ class TestSlugify:
         title = "a" * 49 + " b"
         slug = _slugify(title)
         assert not slug.endswith("-")
+
+    def test_truncates_at_word_boundary_not_mid_word(self):
+        # Regression: previously truncated to 50 chars unconditionally,
+        # producing slugs like "...is-one-sentence-on" with a meaningless
+        # word fragment at the end.
+        slug = _slugify("Step-first workflow boot prompt is one sentence on call")
+        assert slug == "step-first-workflow-boot-prompt-is-one-sentence"
+        # The fragment "on" must not appear as a trailing word.
+        assert not slug.endswith("-on")
+        assert not slug.endswith("-sc")
+
+    def test_truncates_cleanly_when_no_hyphen_in_window(self):
+        # If there's no hyphen at all within max_len, fall back to hard
+        # truncation rather than returning empty.
+        slug = _slugify("a" * 100)
+        assert len(slug) > 0
+        assert len(slug) <= 50
+
+
+class TestRenderFrontmatter:
+    """Frontmatter must always render in block style, regardless of which
+    fields are present. Previously the writer used default_flow_style=None
+    which let PyYAML pick flow-style for entries without a 'related' list,
+    producing inconsistent files."""
+
+    def test_block_style_without_related(self):
+        e = MemoryEntry(
+            type="context", title="No related field", body="b",
+            created="2026-01-01T00:00:00Z", modified="2026-01-01T00:00:00Z",
+            related=[],
+        )
+        fm = _render_frontmatter(e)
+        # Block style: every key on its own line. Flow style would put the
+        # whole dict on a single line wrapped in braces.
+        assert "{" not in fm
+        assert "}" not in fm
+        assert "title: No related field" in fm
+        assert fm.count("\n") >= 3  # at least 4 lines
+
+    def test_block_style_with_related(self):
+        e = MemoryEntry(
+            type="decision", title="Has related field", body="b",
+            created="2026-01-01T00:00:00Z", modified="2026-01-01T00:00:00Z",
+            related=["0001-foo.md"],
+        )
+        fm = _render_frontmatter(e)
+        assert "{" not in fm
+        assert "}" not in fm
+        assert "related:" in fm
+        assert "- 0001-foo.md" in fm
 
 
 class TestWriteEntry:

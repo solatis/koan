@@ -16,12 +16,24 @@ def _now_iso() -> str:
 
 
 def _slugify(title: str, max_len: int = 50) -> str:
-    """Convert a title to a filename-safe slug."""
+    """Convert a title to a filename-safe slug.
+
+    Truncates at the last word boundary (hyphen) within ``max_len`` so the
+    final filename does not end on a meaningless word fragment like ``-on``
+    or ``-sc``. Falls back to hard truncation only when the entire ``max_len``
+    window contains no hyphen.
+    """
     slug = title.lower()
     slug = re.sub(r"[^a-z0-9\s-]", "", slug)
     slug = re.sub(r"[\s]+", "-", slug).strip("-")
     slug = re.sub(r"-+", "-", slug)
-    return slug[:max_len].rstrip("-")
+    if len(slug) <= max_len:
+        return slug
+    cut = slug[:max_len]
+    last_hyphen = cut.rfind("-")
+    if last_hyphen > 0:
+        cut = cut[:last_hyphen]
+    return cut.rstrip("-")
 
 
 def _next_sequence_number(directory: Path) -> int:
@@ -49,7 +61,7 @@ def _render_frontmatter(entry: MemoryEntry) -> str:
 
     return yaml.dump(
         meta,
-        default_flow_style=None,
+        default_flow_style=False,
         sort_keys=False,
         allow_unicode=False,
     ).rstrip("\n")
