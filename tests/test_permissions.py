@@ -158,6 +158,11 @@ class TestOrchestratorPhasePermissions:
             r = check_permission("orchestrator", "koan_complete_step", current_phase=phase)
             assert r["allowed"]
 
+    def test_koan_search_allowed_in_every_phase(self):
+        for phase in ("intake", "brief-generation", "execution", "implementation-validation", "curation"):
+            r = check_permission("orchestrator", "koan_search", current_phase=phase)
+            assert r["allowed"], f"koan_search should be allowed in phase '{phase}'"
+
 
 # -- Exhaustive role x tool matrix ---------------------------------------------
 

@@ -899,25 +899,28 @@ async def koan_skip_story(story_id: str, reason: str = "") -> str:
 
 # -- Memory tools --------------------------------------------------------------
 
-def _validate_memory_type(type_str: str) -> None:
-    if type_str not in MEMORY_TYPES:
-        raise ToolError(json.dumps({
-            "error": "invalid_type",
-            "message": (
-                f"'{type_str}' is not a valid memory type. "
-                f"Valid types: {list(MEMORY_TYPES)}"
-            ),
-        }))
+from ..memory import ops as memory_ops
+from ..memory.ops import EntryNotFoundError, TypeMismatchError
+from ..memory.types import MEMORY_TYPES
+from ..memory.retrieval import RetrievalIndex, search as retrieval_search
+
+_retrieval_index: RetrievalIndex | None = None
 
 
-def _entry_id_from_path(path_name: str) -> int | None:
-    """Extract NNNN prefix from 'NNNN-slug.md'."""
-    if len(path_name) < 5 or path_name[4] != "-":
-        return None
-    try:
-        return int(path_name[:4])
-    except ValueError:
-        return None
+def _get_retrieval_index() -> RetrievalIndex:
+    global _retrieval_index
+    if _retrieval_index is None:
+        assert _app_state is not None
+        project_dir = _app_state.project_dir or "."
+        memory_dir = Path(project_dir) / ".koan" / "memory"
+        _retrieval_index = RetrievalIndex(memory_dir)
+    return _retrieval_index
+
+
+def _reset_retrieval_index() -> None:
+    """Test hook: clear the cached RetrievalIndex."""
+    global _retrieval_index
+    _retrieval_index = None
 
 
 @mcp.tool(name="koan_memorize")
@@ -958,7 +961,6 @@ async def koan_memorize(
     _check_or_raise(agent, "koan_memorize", {
         "type": type, "title": title, "entry_id": entry_id,
     })
-
     call_id = begin_tool_call(
         agent, "koan_memorize",
         {"type": type, "title": title, "entry_id": entry_id},
@@ -966,61 +968,17 @@ async def koan_memorize(
     )
     result_str: str | None = None
     try:
-        _validate_memory_type(type)
-
         store = _get_memory_store()
-
-        if entry_id is None:
-            log.info("koan_memorize CREATE type=%s title=%r body_len=%d", type, title, len(body))
-            entry = store.add_entry(
-                type=type,   # type: ignore[arg-type]
-                title=title,
-                body=body,
-                related=related or [],
-            )
-            new_id = _entry_id_from_path(entry.file_path.name) if entry.file_path else None
-            log.info("koan_memorize CREATED entry_id=%s file=%s", new_id, entry.file_path.name if entry.file_path else "?")
-            result_str = json.dumps({
-                "op": "created",
-                "type": type,
-                "entry_id": new_id,
-                "file_path": str(entry.file_path) if entry.file_path else None,
-                "created": entry.created,
-                "modified": entry.modified,
-            })
-        else:
-            log.info("koan_memorize UPDATE entry_id=%d type=%s title=%r", entry_id, type, title)
-            existing = store.get_entry(entry_id)
-            if existing is None:
-                raise ToolError(json.dumps({
-                    "error": "entry_not_found",
-                    "message": f"No entry with id {entry_id}",
-                }))
-            if existing.type != type:
-                raise ToolError(json.dumps({
-                    "error": "type_mismatch",
-                    "message": (
-                        f"Entry {entry_id} has type '{existing.type}', "
-                        f"not '{type}'"
-                    ),
-                }))
-            existing.title = title
-            existing.body = body
-            if related is not None:
-                existing.related = related
-            store.update_entry(existing)
-            log.info("koan_memorize UPDATED entry_id=%d file=%s", entry_id, existing.file_path.name if existing.file_path else "?")
-            result_str = json.dumps({
-                "op": "updated",
-                "type": type,
-                "entry_id": entry_id,
-                "file_path": str(existing.file_path) if existing.file_path else None,
-                "created": existing.created,
-                "modified": existing.modified,
-            })
-
+        result = memory_ops.memorize(store, type, title, body, related, entry_id)
+        result_str = json.dumps(result)
         result_str = _drain_and_append_steering(result_str, agent)
         return result_str
+    except EntryNotFoundError as e:
+        raise ToolError(json.dumps({"error": "entry_not_found", "message": str(e)}))
+    except TypeMismatchError as e:
+        raise ToolError(json.dumps({"error": "type_mismatch", "message": str(e)}))
+    except ValueError as e:
+        raise ToolError(json.dumps({"error": "invalid_type", "message": str(e)}))
     finally:
         end_tool_call(agent, call_id, "koan_memorize", result_str)
 
@@ -1038,7 +996,6 @@ async def koan_forget(entry_id: int, type: str | None = None) -> str:
     """
     agent = _get_agent()
     _check_or_raise(agent, "koan_forget", {"type": type, "entry_id": entry_id})
-
     call_id = begin_tool_call(
         agent, "koan_forget",
         {"type": type, "entry_id": entry_id},
@@ -1046,55 +1003,19 @@ async def koan_forget(entry_id: int, type: str | None = None) -> str:
     )
     result_str: str | None = None
     try:
-        if type is not None:
-            _validate_memory_type(type)
-
-        log.info("koan_forget entry_id=%d type=%s", entry_id, type or "*")
         store = _get_memory_store()
-        existing = store.get_entry(entry_id)
-        if existing is None:
-            raise ToolError(json.dumps({
-                "error": "entry_not_found",
-                "message": f"No entry with id {entry_id}",
-            }))
-        if type is not None and existing.type != type:
-            raise ToolError(json.dumps({
-                "error": "type_mismatch",
-                "message": (
-                    f"Entry {entry_id} has type '{existing.type}', "
-                    f"not '{type}'"
-                ),
-            }))
-        path_str = str(existing.file_path) if existing.file_path else None
-        log.info("koan_forget DELETING %s type=%s title=%r", existing.file_path.name if existing.file_path else "?", existing.type, existing.title)
-        store.forget_entry(existing)
-        log.info("koan_forget DELETED entry_id=%d", entry_id)
-        result_str = json.dumps({
-            "op": "forgotten",
-            "type": existing.type,
-            "entry_id": entry_id,
-            "file_path": path_str,
-        })
+        result = memory_ops.forget(store, entry_id, type)
+        result_str = json.dumps(result)
         result_str = _drain_and_append_steering(result_str, agent)
         return result_str
+    except EntryNotFoundError as e:
+        raise ToolError(json.dumps({"error": "entry_not_found", "message": str(e)}))
+    except TypeMismatchError as e:
+        raise ToolError(json.dumps({"error": "type_mismatch", "message": str(e)}))
+    except ValueError as e:
+        raise ToolError(json.dumps({"error": "invalid_type", "message": str(e)}))
     finally:
         end_tool_call(agent, call_id, "koan_forget", result_str)
-
-
-def _summary_is_stale(store: MemoryStore) -> bool:
-    """Return True if summary.md is missing or older than any entry file."""
-    summary_path = store._memory_dir / "summary.md"
-    if not summary_path.is_file():
-        # Only stale if at least one entry exists; otherwise there is
-        # nothing to summarize and we do not force a regeneration.
-        return store.entry_count() > 0
-    summary_mtime = summary_path.stat().st_mtime
-    for e in store.list_entries():
-        if e.file_path is None:
-            continue
-        if e.file_path.stat().st_mtime > summary_mtime:
-            return True
-    return False
 
 
 @mcp.tool(name="koan_memory_status")
@@ -1111,64 +1032,77 @@ async def koan_memory_status(type: str | None = None) -> str:
     """
     agent = _get_agent()
     _check_or_raise(agent, "koan_memory_status", {"type": type})
-
     call_id = begin_tool_call(
         agent, "koan_memory_status", {"type": type}, type or "all",
     )
     result_str: str | None = None
     try:
-        if type is not None:
-            _validate_memory_type(type)
-
-        log.info("koan_memory_status type=%s", type or "*")
         store = _get_memory_store()
-
-        regenerated = False
-        regen_error: str | None = None
-        stale = _summary_is_stale(store)
-        log.debug("koan_memory_status summary_stale=%s", stale)
-        if stale:
-            log.info("koan_memory_status regenerating stale summary")
-            try:
-                await store.regenerate_summary()
-                regenerated = True
-                log.info("koan_memory_status summary regenerated")
-            except Exception:
-                log.exception("koan_memory_status summary regeneration failed")
-                regen_error = "Summary regeneration failed -- see server logs."
-
-        summary = store.get_summary() or ""
-        entries = store.list_entries(type=type)  # type: ignore[arg-type]
-        out_entries = [
-            {
-                "entry_id": (
-                    _entry_id_from_path(e.file_path.name)
-                    if e.file_path else None
-                ),
-                "title": e.title,
-                "type": e.type,
-                "created": e.created,
-                "modified": e.modified,
-            }
-            for e in entries
-        ]
-        log.info(
-            "koan_memory_status returning %d entries, summary_len=%d, regenerated=%s",
-            len(out_entries), len(summary), regenerated,
-        )
-
-        result: dict = {
-            "summary": summary,
-            "entries": out_entries,
-            "regenerated": regenerated,
-        }
-        if regen_error:
-            result["error"] = regen_error
+        result = await memory_ops.status(store, type=type)
         result_str = json.dumps(result)
         result_str = _drain_and_append_steering(result_str, agent)
         return result_str
+    except ValueError as e:
+        raise ToolError(json.dumps({
+            "error": "invalid_type",
+            "message": str(e),
+        }))
     finally:
         end_tool_call(agent, call_id, "koan_memory_status", result_str)
+
+
+@mcp.tool(name="koan_search")
+async def koan_search(
+    query: str,
+    type: str | None = None,
+    k: int = 5,
+) -> str:
+    """Search memory entries by semantic similarity.
+
+    Runs hybrid dense + BM25 search with cross-encoder reranking.
+    Returns the top k entries most relevant to the query.
+
+    Args:
+        query: Search query string
+        type: Filter results to a specific memory type (optional)
+        k: Number of results to return (default: 5)
+    """
+    agent = _get_agent()
+    _check_or_raise(agent, "koan_search", {"type": type})
+    call_id = begin_tool_call(
+        agent, "koan_search",
+        {"query": query, "type": type, "k": k},
+        f"query={query!r} type={type or 'all'} k={k}",
+    )
+    result_str: str | None = None
+    try:
+        if type is not None and type not in MEMORY_TYPES:
+            raise ValueError(f"invalid type: {type!r}")
+        index = _get_retrieval_index()
+        results = await retrieval_search(index, query, k=k, type_filter=type)
+        out = {
+            "results": [
+                {
+                    "entry_id": r.entry_id,
+                    "title": r.entry.title,
+                    "type": r.entry.type,
+                    "score": r.score,
+                    "created": r.entry.created,
+                    "modified": r.entry.modified,
+                    "body": r.entry.body,
+                }
+                for r in results
+            ]
+        }
+        result_str = json.dumps(out)
+        result_str = _drain_and_append_steering(result_str, agent)
+        return result_str
+    except ValueError as e:
+        raise ToolError(json.dumps({"error": "invalid_type", "message": str(e)}))
+    except RuntimeError as e:
+        raise ToolError(json.dumps({"error": "search_failed", "message": str(e)}))
+    finally:
+        end_tool_call(agent, call_id, "koan_search", result_str)
 
 
 # -- ASGI wrapper --------------------------------------------------------------

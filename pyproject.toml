@@ -11,6 +11,8 @@ dependencies = [
     "pyyaml",
     "google-genai>=1.0",
     "json-repair>=0.59.4",
+    "voyageai>=0.3",
+    "lancedb>=0.20",
 ]
 
 [project.scripts]

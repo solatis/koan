@@ -119,6 +119,19 @@ class MemoryStore:
         log.debug("get_summary no summary.md found")
         return None
 
+    def summary_is_stale(self) -> bool:
+        """True if summary.md is missing or older than any entry file."""
+        summary_path = self._memory_dir / "summary.md"
+        if not summary_path.is_file():
+            return self.entry_count() > 0
+        summary_mtime = summary_path.stat().st_mtime
+        for e in self.list_entries():
+            if e.file_path is None:
+                continue
+            if e.file_path.stat().st_mtime > summary_mtime:
+                return True
+        return False
+
     async def regenerate_summary(self, project_name: str = "") -> None:
         """Regenerate summary.md from all current entries."""
         log.info("regenerate_summary starting (project_name=%r, entry_count=%d)", project_name, self.entry_count())

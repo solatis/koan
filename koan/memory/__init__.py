@@ -14,6 +14,7 @@ from .validation import validate_entry
 from .store import MemoryStore
 from .llm import generate as llm_generate
 from .summarize import generate_summary, regenerate_summary
+from . import ops
 
 __all__ = [
     "MemoryType",
@@ -28,4 +29,5 @@ __all__ = [
     "llm_generate",
     "generate_summary",
     "regenerate_summary",
+    "ops",
 ]

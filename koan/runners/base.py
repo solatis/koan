@@ -69,6 +69,7 @@ class Runner(Protocol):
 KOAN_MCP_TOOLS: frozenset[str] = frozenset({
     "koan_complete_step",
     "koan_set_phase",
+    "koan_yield",
     "koan_request_scouts",
     "koan_ask_question",
     "koan_request_executor",
@@ -76,4 +77,8 @@ KOAN_MCP_TOOLS: frozenset[str] = frozenset({
     "koan_complete_story",
     "koan_retry_story",
     "koan_skip_story",
+    "koan_memorize",
+    "koan_forget",
+    "koan_memory_status",
+    "koan_search",
 })

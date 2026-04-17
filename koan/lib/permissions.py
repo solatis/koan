@@ -8,6 +8,17 @@
 #      Only executor has unrestricted write access.
 #   5. The orchestrator role uses phase-aware permissions (current_phase parameter).
 #
+# Enforcement layers:
+#   This fence gates MCP tool calls only.  Claude Code built-in tools (Read,
+#   Write, Edit, Bash, etc.) are restricted at the CLI level via --tools
+#   whitelists in subagent.py (CLAUDE_TOOL_WHITELISTS).  The two layers are
+#   complementary: --tools controls which built-in tools exist in the model's
+#   context; this fence controls which MCP tools are callable per role/phase.
+#
+#   Path-scoping for write/edit (below) validates paths when called through
+#   the MCP endpoint.  Built-in Write/Edit bypass MCP entirely, so path
+#   scoping for those relies on prompt engineering and the --tools whitelist.
+#
 # Pure functions -- no I/O, no mutable state.
 
 from __future__ import annotations
@@ -56,6 +67,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
         "koan_memorize",
         "koan_forget",
         "koan_memory_status",
+        "koan_search",
         "edit",
         "write",
         "bash",
@@ -109,7 +121,7 @@ _ORCHESTRATOR_STORY_TOOLS: frozenset[str] = frozenset({
 
 # Memory tools are available to the orchestrator in every phase.
 _ORCHESTRATOR_MEMORY_TOOLS: frozenset[str] = frozenset({
-    "koan_memorize", "koan_forget", "koan_memory_status",
+    "koan_memorize", "koan_forget", "koan_memory_status", "koan_search",
 })
 
 _ORCHESTRATOR_BASH_PHASES: frozenset[str] = frozenset({
