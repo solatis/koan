@@ -51,18 +51,33 @@ def _normalize_tool_name(name: str | None) -> str | None:
     return _TOOL_NAME_MAP.get(name, name.lower())
 
 
+def _coerce_int(value: object) -> int | None:
+    # Models occasionally emit numeric tool arguments as strings; Read itself
+    # accepts both, so we coerce here to match that lenience for display.
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
 def _extract_tool_summary(tool: str, args: dict) -> str:
     """Extract human-readable detail from Claude tool arguments."""
     if tool == "read":
         path = args.get("file_path", "")
-        offset = args.get("offset")
-        limit = args.get("limit")
+        offset = _coerce_int(args.get("offset"))
+        limit = _coerce_int(args.get("limit"))
         if offset is not None and limit is not None:
             return f"{path}:{offset}-{offset + limit}"
         if offset is not None:
             return f"{path}:{offset}+"
-        start = args.get("start_line")
-        end = args.get("end_line")
+        start = _coerce_int(args.get("start_line"))
+        end = _coerce_int(args.get("end_line"))
         if start is not None and end is not None:
             return f"{path}:{start}-{end}"
         return path
