@@ -272,7 +272,21 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
 
         async for raw in proc.stdout:
             line = raw.decode("utf-8", errors="replace").rstrip("\n")
-            events = runner.parse_stream_event(line)
+            try:
+                events = runner.parse_stream_event(line)
+            except Exception as exc:
+                log.warning(
+                    "parse_stream_event failed for %s (agent_id=%s): %s",
+                    role, agent_id, exc,
+                )
+                for _idx, (cid, tname) in streaming_call_ids.items():
+                    store.push_event(
+                        "tool_stopped",
+                        build_tool_stopped(cid, tname),
+                        agent_id=agent_id,
+                    )
+                streaming_call_ids.clear()
+                continue
             for ev in events:
                 # Close implicit in-flight tool (non-streaming path) when
                 # the LLM moves on to thinking or text output.
