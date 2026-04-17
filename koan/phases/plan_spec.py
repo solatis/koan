@@ -18,7 +18,7 @@ STEP_NAMES: dict[int, str] = {
     2: "Write",
 }
 
-SYSTEM_PROMPT = (
+PHASE_ROLE_CONTEXT = (
     "You are a technical architect writing an implementation plan for a coding task.\n"
     "\n"
     "You read the codebase thoroughly before planning. Your plans reference actual"

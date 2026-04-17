@@ -19,7 +19,7 @@ STEP_NAMES: dict[int, str] = {
     2: "Evaluate",
 }
 
-SYSTEM_PROMPT = (
+PHASE_ROLE_CONTEXT = (
     "You are the adversarial reviewer for an implementation plan.\n"
     "\n"
     "You are the ONLY phase in this workflow that independently verifies claims\n"

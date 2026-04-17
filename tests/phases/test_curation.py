@@ -25,8 +25,8 @@ class TestModuleShape:
         assert curation.STEP_NAMES == {1: "Inventory", 2: "Memorize"}
 
     def test_system_prompt_is_nonempty(self):
-        assert isinstance(curation.SYSTEM_PROMPT, str)
-        assert len(curation.SYSTEM_PROMPT) > 100
+        assert isinstance(curation.PHASE_ROLE_CONTEXT, str)
+        assert len(curation.PHASE_ROLE_CONTEXT) > 100
 
     def test_system_prompt_writing_discipline_is_high_level_only(self):
         # Post-rewrite: writing discipline in the system prompt is a
@@ -35,14 +35,14 @@ class TestModuleShape:
         # drafting moment. The system prompt keeps just the pillars
         # ("temporally grounded, attributed, event-style") and an
         # explicit pointer to step 2.
-        sp = curation.SYSTEM_PROMPT.lower()
+        sp = curation.PHASE_ROLE_CONTEXT.lower()
         assert "temporally grounded" in sp
         assert "attributed" in sp
         assert "event-style" in sp
         assert "step 2" in sp  # points at where the full rules live
 
     def test_system_prompt_has_type_discrimination_tree(self):
-        sp = curation.SYSTEM_PROMPT
+        sp = curation.PHASE_ROLE_CONTEXT
         # The 4-question tree, with first-match-wins semantics, must
         # be present as a procedure (not just definitions).
         assert "Picking the type for a candidate" in sp
@@ -57,7 +57,7 @@ class TestModuleShape:
         # The "what not to capture" section must require behavioral
         # knowledge (decisions, lessons, procedures) to be captured
         # even when it also appears in project documents.
-        sp = curation.SYSTEM_PROMPT
+        sp = curation.PHASE_ROLE_CONTEXT
         assert "Behavioral knowledge" in sp
         assert "MUST be" in sp
         assert "Rationale and rejected alternatives" in sp
@@ -65,24 +65,24 @@ class TestModuleShape:
 
     def test_system_prompt_enumerates_memory_tools(self):
         # Tools must be visible at the role layer.
-        sp = curation.SYSTEM_PROMPT
+        sp = curation.PHASE_ROLE_CONTEXT
         assert "koan_memorize" in sp
         assert "koan_forget" in sp
         assert "koan_memory_status" in sp
 
     def test_system_prompt_declares_classification_schema(self):
-        sp = curation.SYSTEM_PROMPT
+        sp = curation.PHASE_ROLE_CONTEXT
         for label in ("ADD", "UPDATE", "NOOP", "DEPRECATE"):
-            assert label in sp, f"schema label {label!r} missing from SYSTEM_PROMPT"
+            assert label in sp, f"schema label {label!r} missing from PHASE_ROLE_CONTEXT"
 
     def test_system_prompt_declares_structural_invariant(self):
         # Propose-then-write must be stated, not buried.
-        sp = curation.SYSTEM_PROMPT.lower()
+        sp = curation.PHASE_ROLE_CONTEXT.lower()
         assert "propose" in sp and "approve" in sp
 
     def test_system_prompt_declares_read_write_asymmetry(self):
         # Reads of .koan/memory/*.md are allowed; writes are not.
-        sp = curation.SYSTEM_PROMPT
+        sp = curation.PHASE_ROLE_CONTEXT
         # Reads explicitly allowed and explained:
         assert "Reading individual entries" in sp
         assert ".koan/memory/" in sp
@@ -91,7 +91,7 @@ class TestModuleShape:
 
     def test_system_prompt_acknowledges_coding_agent_memory(self):
         # CLAUDE.md / AGENTS.md / .cursor/ etc. are a separate, read-only system.
-        sp = curation.SYSTEM_PROMPT
+        sp = curation.PHASE_ROLE_CONTEXT
         assert "coding agent" in sp.lower()
         assert "CLAUDE.md" in sp
         assert "READ-ONLY" in sp

@@ -88,6 +88,7 @@ Phase routing is driven by the orchestrator via `koan_set_phase` rather than
 the driver's routing loop.
 
 The driver still:
+
 - Validates every phase transition (`is_valid_transition()` in the tool handler)
 - Updates `run-state.json` atomically
 - Emits projection events
@@ -104,27 +105,40 @@ required successors.
 
 ## 4. Default-Deny Permissions
 
-Every tool call passes through a role-based permission fence. Unknown roles
-and tools are blocked. The orchestrator role uses **phase-aware permissions**:
-available tools vary by `current_phase`. Planning-phase write access is
-path-scoped to the run directory.
+Two enforcement layers restrict what tools each agent can use:
+
+1. **CLI tool whitelist** (`CLAUDE_TOOL_WHITELISTS` in `subagent.py`) --
+   controls which built-in tools exist in the model's context. Unlisted tools
+   are not presented to the model; it cannot call them. Agents should not have
+   access to tools they are never intended to need.
+2. **MCP permission fence** (`check_permission()` in `permissions.py`) --
+   gates koan MCP tool calls per role and phase. Unknown roles and tools are
+   blocked.
 
 The fence also supports step-level gating: `write` and `edit` are blocked
 during brief-generation step 1 (the read step).
 
-**Orchestrator tool availability by phase:**
+**CLI tool whitelists (per agent type):**
 
-| Tool | Available phases |
-|------|-----------------|
-| `koan_complete_step` | All phases |
-| `koan_set_phase` | All phases (blocked mid-story during execution); accepts `"done"` as tombstone |
-| `koan_yield` | All phases |
-| `koan_ask_question` | All phases |
-| `koan_request_scouts` | `intake`, `core-flows`, `tech-plan`, `ticket-breakdown`, `cross-artifact-validation`, `plan-spec`, `plan-review` |
-| `koan_request_executor` | `execution`, `execute` |
-| `koan_select_story`, `koan_complete_story`, `koan_retry_story`, `koan_skip_story` | `execution` only |
-| `write`, `edit` (run_dir scoped) | All phases except `brief-generation` step 1 |
-| `bash` | `execution`, `implementation-validation` |
+| Role         | Built-in tools                                                                                                               |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| orchestrator | `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `WebFetch`, `WebSearch`                                                     |
+| executor     | `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet`, `TaskStop`, `TaskOutput` |
+| scout        | `Read`, `Bash`, `Glob`, `Grep`                                                                                               |
+
+**MCP permission fence -- orchestrator tool availability by phase:**
+
+| Tool                                                                              | Available phases                                                                                                 |
+| --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `koan_complete_step`                                                              | All phases                                                                                                       |
+| `koan_set_phase`                                                                  | All phases (blocked mid-story during execution); accepts `"done"` as tombstone                                   |
+| `koan_yield`                                                                      | All phases                                                                                                       |
+| `koan_ask_question`                                                               | All phases                                                                                                       |
+| `koan_request_scouts`                                                             | `intake`, `core-flows`, `tech-plan`, `ticket-breakdown`, `cross-artifact-validation`, `plan-spec`, `plan-review` |
+| `koan_request_executor`                                                           | `execution`, `execute`                                                                                           |
+| `koan_select_story`, `koan_complete_story`, `koan_retry_story`, `koan_skip_story` | `execution` only                                                                                                 |
+| `write`, `edit` (run_dir scoped)                                                  | All phases except `brief-generation` step 1                                                                      |
+| `bash`                                                                            | `execution`, `implementation-validation`                                                                         |
 
 ## 5. Need-to-Know Prompts
 

@@ -18,7 +18,7 @@ STEP_NAMES: dict[int, str] = {
     2: "Core Flows",
 }
 
-SYSTEM_PROMPT = (
+PHASE_ROLE_CONTEXT = (
     "You are a core-flows analyst for a coding task planner. You read intake"
     " output and the epic brief, then define the user journeys and interaction"
     " flows that the implementation must support.\n"

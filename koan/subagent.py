@@ -32,7 +32,8 @@ from .events import (
 )
 from .logger import get_logger
 from .lib.workflows import get_workflow
-from .phases import ORCHESTRATOR_SYSTEM_PROMPT, PHASE_MODULE_MAP, PhaseContext
+from .phases import PHASE_MODULE_MAP, PhaseContext
+from .prompts import AGENT_TYPE_PROMPTS
 from .runners import RunnerDiagnostic, RunnerError
 from .runners.registry import RunnerRegistry
 
@@ -41,6 +42,24 @@ if TYPE_CHECKING:
     from .state import AppState
 
 log = get_logger("subagent")
+
+# -- Tool whitelists (Claude Code --tools) -------------------------------------
+#
+# Agents should not have access to tools they are never intended to need.
+# Restricting the tool vocabulary at the CLI level prevents the model from
+# even seeing irrelevant tools (EnterPlanMode, Agent, TaskCreate, etc.),
+# which reduces misbehavior and token waste.  The MCP permission fence
+# remains the authority for koan-specific tools; this whitelist controls
+# only Claude Code built-in tools.
+#
+# These are Claude Code PascalCase tool names.  Other runners (codex, gemini)
+# have their own mechanisms and are not affected by this whitelist.
+
+CLAUDE_TOOL_WHITELISTS: dict[str, str] = {
+    "orchestrator": "Read,Write,Edit,Bash,Glob,Grep,WebFetch,WebSearch",
+    "executor":     "Read,Write,Edit,Bash,Glob,Grep,TaskCreate,TaskUpdate,TaskList,TaskGet,TaskStop,TaskOutput",
+    "scout":        "Read,Bash,Glob,Grep",
+}
 
 
 def _now_iso() -> str:
@@ -158,10 +177,11 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
         workflow_name = task.get("workflow", "plan")
         workflow = get_workflow(workflow_name)
         phase_module = workflow.get_module(workflow.initial_phase)
-        system_prompt = ORCHESTRATOR_SYSTEM_PROMPT
     else:
         phase_module = PHASE_MODULE_MAP.get(role)
-        system_prompt = getattr(phase_module, "SYSTEM_PROMPT", "") or "" if phase_module else ""
+
+    # Agent-type system prompt -- per role, not per phase.
+    system_prompt = AGENT_TYPE_PROMPTS.get(role, "")
 
     if phase_module is None:
         log.error("no phase module for role %s", role)
@@ -184,7 +204,7 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
         phase_ctx=phase_ctx,
         event_log=event_log,
         model=model,
-        is_primary=(role != "scout"),
+        is_primary=(role == "orchestrator"),
     )
     app_state.agents[agent_id] = agent
 
@@ -211,6 +231,15 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
         await event_log.close()
         del app_state.agents[agent_id]
         return SubagentResult(exit_code=1)
+
+    # Claude-specific tool restriction: append --tools whitelist, disable skills,
+    # and isolate MCP sources so the model only sees tools it actually needs.
+    if runner.name == "claude":
+        whitelist = CLAUDE_TOOL_WHITELISTS.get(role)
+        if whitelist is not None:
+            cmd.extend(["--tools", whitelist])
+        cmd.append("--disable-slash-commands")
+        cmd.append("--strict-mcp-config")
 
     # Emit agent_spawned only after build_command succeeds -- process is about to start
     store.push_event("agent_spawned", build_agent_spawned(agent), agent_id=agent_id)

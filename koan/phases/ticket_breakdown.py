@@ -18,7 +18,7 @@ STEP_NAMES: dict[int, str] = {
     2: "Breakdown",
 }
 
-SYSTEM_PROMPT = (
+PHASE_ROLE_CONTEXT = (
     "You are a ticket-breakdown writer for a coding task planner. You read the"
     " epic brief, core flows, and technical plan, then split the work into"
     " independent, story-sized implementation tickets with clear dependency"

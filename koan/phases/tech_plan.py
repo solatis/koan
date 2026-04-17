@@ -20,7 +20,7 @@ STEP_NAMES: dict[int, str] = {
     3: "Verification Design",
 }
 
-SYSTEM_PROMPT = (
+PHASE_ROLE_CONTEXT = (
     "You are an implementation planner for a single coding story. You produce a"
     " detailed, step-by-step plan that a coding agent can execute without making"
     " judgment calls. You bridge the gap between high-level story intent and"

@@ -29,11 +29,11 @@ are nested naturally rather than flattened into a shared namespace.
 
 Role-specific fields:
 
-| Role           | Additional fields                                 |
-| -------------- | ------------------------------------------------- |
-| `orchestrator` | `project_dir`, `task_description`                 |
-| `scout`        | `question`, `investigator_role`                   |
-| `executor`     | `artifacts`, `instructions`                       |
+| Role           | Additional fields                 |
+| -------------- | --------------------------------- |
+| `orchestrator` | `project_dir`, `task_description` |
+| `scout`        | `question`, `investigator_role`   |
+| `executor`     | `artifacts`, `instructions`       |
 
 ### Lifecycle
 
@@ -218,45 +218,86 @@ The driver/parent reads those files after the subagent exits.
 
 ## Permissions
 
-Default-deny, role-based, enforced at runtime via `check_permission()` in
-`koan/lib/permissions.py`.
+Two enforcement layers restrict what tools each agent can use:
 
-### READ_TOOLS (always allowed)
+1. **CLI tool whitelist** (`CLAUDE_TOOL_WHITELISTS` in `subagent.py`) --
+   controls which Claude Code built-in tools exist in the model's context.
+   Unlisted tools are not presented to the model at all; it has no awareness
+   they exist and cannot attempt to call them.
+2. **MCP permission fence** (`check_permission()` in `koan/lib/permissions.py`)
+   -- controls which koan MCP tools are callable per role and phase.
+
+These layers are complementary. The CLI whitelist gates built-in tools (Read,
+Write, Edit, Bash, etc.). The MCP fence gates koan tools (koan_complete_step,
+koan_set_phase, etc.). Together they implement defense-in-depth: an agent
+never sees tools it should not use, and tools it can see are still validated
+per-call.
+
+### CLI tool whitelists
+
+Agents should not have access to tools they are never intended to need. A
+smaller tool vocabulary reduces misbehavior, token waste, and the chance of
+the model drifting toward irrelevant built-in capabilities (plan mode,
+autonomous scheduling, subagent spawning) that compete with koan's step-first
+workflow.
+
+| Role             | Built-in tools                                                                                                               |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| **orchestrator** | `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `WebFetch`, `WebSearch`                                                     |
+| **executor**     | `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet`, `TaskStop`, `TaskOutput` |
+| **scout**        | `Read`, `Bash`, `Glob`, `Grep`                                                                                               |
+
+All agents also receive `--disable-slash-commands` (no skills) and
+`--strict-mcp-config` (only koan's MCP server, no ambient servers).
+
+Notably excluded from all roles: `Agent` (bypasses spawn lifecycle),
+`EnterPlanMode`/`ExitPlanMode` (competes with step-first workflow),
+`ScheduleWakeup`/`CronCreate` (autonomous scheduling), `EnterWorktree`
+(breaks directory assumptions).
+
+### MCP permission fence
+
+Default-deny, role-based, enforced at runtime.
+
+#### READ_TOOLS (always allowed)
 
 `bash`, `read`, `grep`, `glob`, `find`, `ls` -- allowed for all roles. This is
 an accepted limitation: `bash` can write files, but distinguishing read-bash
 from write-bash is intractable at the permission layer.
 
-### Role permission matrix
+#### Role permission matrix
 
-The orchestrator role uses **phase-aware permissions** — available tools
+The orchestrator role uses **phase-aware permissions** -- available tools
 vary by the current phase. Executor and scout use static permission sets.
 
 **Orchestrator phase-aware permissions:**
 
-| Tool | Available phases |
-|------|-----------------|
-| `koan_complete_step` | All phases |
-| `koan_set_phase` | All phases (blocked mid-story during execution) |
-| `koan_ask_question` | All phases |
-| `koan_request_scouts` | `intake`, `core-flows`, `tech-plan`, `ticket-breakdown`, `cross-artifact-validation`, `plan-spec`, `plan-review` |
-| `koan_request_executor` | `execution`, `execute` |
-| `koan_select_story`, `koan_complete_story`, `koan_retry_story`, `koan_skip_story` | `execution` only |
-| `write`, `edit` (run_dir scoped) | All phases except `brief-generation` step 1 |
-| `bash` | `execution`, `implementation-validation` |
+| Tool                                                                              | Available phases                                                                                                 |
+| --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `koan_complete_step`                                                              | All phases                                                                                                       |
+| `koan_set_phase`                                                                  | All phases (blocked mid-story during execution)                                                                  |
+| `koan_ask_question`                                                               | All phases                                                                                                       |
+| `koan_request_scouts`                                                             | `intake`, `core-flows`, `tech-plan`, `ticket-breakdown`, `cross-artifact-validation`, `plan-spec`, `plan-review` |
+| `koan_request_executor`                                                           | `execution`, `execute`                                                                                           |
+| `koan_select_story`, `koan_complete_story`, `koan_retry_story`, `koan_skip_story` | `execution` only                                                                                                 |
+| `write`, `edit` (run_dir scoped)                                                  | All phases except `brief-generation` step 1                                                                      |
+| `bash`                                                                            | `execution`, `implementation-validation`                                                                         |
 
 **Other role static permissions:**
 
-| Role           | koan tools                                   | write/edit             | notes                                       |
-| -------------- | -------------------------------------------- | ---------------------- | ------------------------------------------- |
-| **scout**      | `koan_complete_step`                         | none                   | No user interaction. No nested scouts. No file writing. |
-| **executor**   | `koan_complete_step`, `koan_ask_question`    | **unrestricted**       | Must modify the actual codebase             |
+| Role         | koan tools                                | write/edit       | notes                                                   |
+| ------------ | ----------------------------------------- | ---------------- | ------------------------------------------------------- |
+| **scout**    | `koan_complete_step`                      | none             | No user interaction. No nested scouts. No file writing. |
+| **executor** | `koan_complete_step`, `koan_ask_question` | **unrestricted** | Must modify the actual codebase                         |
 
-### Path scoping
+#### Path scoping
 
 Planning roles (orchestrator, scout) can only `write`/`edit` files inside the
-run directory. The permission check resolves both the tool's `path` argument
-and the run directory, then verifies the tool path starts with the run path.
+run directory via MCP write/edit tools. The permission check resolves both the
+tool's `path` argument and the run directory, then verifies the tool path
+starts with the run path. Built-in Write/Edit bypass MCP and are not subject
+to this check; path discipline for built-in tools relies on prompt engineering
+and the CLI whitelist.
 
 ---
 
@@ -266,18 +307,18 @@ The executor is spawned by the orchestrator via `koan_request_executor`. It
 receives structured inputs via `task.json` and implements code changes in a
 3-step workflow:
 
-| Step | Name | What happens |
-|------|------|--------------|
-| 1 | Comprehend | Read all artifacts listed in `task.json`. Understand the plan and codebase context. |
-| 2 | Plan | Identify the specific file edits needed. Do not write code yet. |
-| 3 | Implement | Apply changes, verify they match the plan, report what was done. |
+| Step | Name       | What happens                                                                        |
+| ---- | ---------- | ----------------------------------------------------------------------------------- |
+| 1    | Comprehend | Read all artifacts listed in `task.json`. Understand the plan and codebase context. |
+| 2    | Plan       | Identify the specific file edits needed. Do not write code yet.                     |
+| 3    | Implement  | Apply changes, verify they match the plan, report what was done.                    |
 
 `task.json` fields for the executor role:
 
-| Field | Type | Purpose |
-|-------|------|---------|
-| `artifacts` | `list[str]` | Paths relative to `run_dir` that the executor must read before coding |
-| `instructions` | `str` | Free-form context: key decisions, user direction, review findings. Does NOT repeat artifact contents. |
+| Field          | Type        | Purpose                                                                                               |
+| -------------- | ----------- | ----------------------------------------------------------------------------------------------------- |
+| `artifacts`    | `list[str]` | Paths relative to `run_dir` that the executor must read before coding                                 |
+| `instructions` | `str`       | Free-form context: key decisions, user direction, review findings. Does NOT repeat artifact contents. |
 
 The executor has unrestricted `write`/`edit` access — it must be able to modify
 the actual codebase. It may call `koan_ask_question` if it encounters genuine
@@ -294,11 +335,11 @@ receives a success/failure summary and reports it to the user at the execute pha
 
 Koan has 6+ roles, but they cluster into 3 capability bands:
 
-| Tier         | Roles                          | Why this tier                                                    |
-| ------------ | ------------------------------ | ---------------------------------------------------------------- |
-| **strong**   | orchestrator                   | Complex multi-step reasoning                                     |
-| **standard** | executor                       | Code implementation: reliable tool use without deepest reasoning |
-| **cheap**    | scout                          | Narrow codebase investigation: reading files, writing findings   |
+| Tier         | Roles        | Why this tier                                                    |
+| ------------ | ------------ | ---------------------------------------------------------------- |
+| **strong**   | orchestrator | Complex multi-step reasoning                                     |
+| **standard** | executor     | Code implementation: reliable tool use without deepest reasoning |
+| **cheap**    | scout        | Narrow codebase investigation: reading files, writing findings   |
 
 The role-to-tier mapping is defined in `koan/config.py`. Adding a new role
 requires updating that map.
@@ -313,15 +354,32 @@ to `~/.koan/config.json`:
 ```json
 {
   "agentInstallations": [
-    { "alias": "claude-sonnet", "runnerType": "claude", "binary": "claude", "extraArgs": [] }
+    {
+      "alias": "claude-sonnet",
+      "runnerType": "claude",
+      "binary": "claude",
+      "extraArgs": []
+    }
   ],
   "profiles": [
     {
       "name": "balanced",
       "tiers": {
-        "strong":   { "runnerType": "claude", "model": "claude-sonnet-4-5", "thinking": "disabled" },
-        "standard": { "runnerType": "claude", "model": "claude-sonnet-4-5", "thinking": "disabled" },
-        "cheap":    { "runnerType": "claude", "model": "claude-haiku-4-5",  "thinking": "disabled" }
+        "strong": {
+          "runnerType": "claude",
+          "model": "claude-sonnet-4-5",
+          "thinking": "disabled"
+        },
+        "standard": {
+          "runnerType": "claude",
+          "model": "claude-sonnet-4-5",
+          "thinking": "disabled"
+        },
+        "cheap": {
+          "runnerType": "claude",
+          "model": "claude-haiku-4-5",
+          "thinking": "disabled"
+        }
       }
     }
   ],
@@ -404,8 +462,8 @@ Agent registration and deregistration are tracked in the in-process
 
 Intake sub-phase derivation happens server-side based on step number:
 
-| Step | Sub-phase     |
-| ---- | ------------- |
-| 1    | `"gather"`    |
-| 2    | `"evaluate"`  |
-| 3    | `"write"`     |
+| Step | Sub-phase    |
+| ---- | ------------ |
+| 1    | `"gather"`   |
+| 2    | `"evaluate"` |
+| 3    | `"write"`    |

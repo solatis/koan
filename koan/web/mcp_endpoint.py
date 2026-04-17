@@ -209,7 +209,7 @@ def _drain_and_append_steering(result: str, agent: AgentState | None = None) -> 
 # -- koan_complete_step private helpers ----------------------------------------
 
 async def _step_phase_handshake(agent: AgentState) -> str:
-    """Handle step 0 → 1: deliver step 1 guidance prepended with phase SYSTEM_PROMPT."""
+    """Handle step 0 -> 1: deliver step 1 guidance prepended with phase role context."""
     assert _app_state is not None
 
     phase_module = agent.phase_module
@@ -233,12 +233,12 @@ async def _step_phase_handshake(agent: AgentState) -> str:
     agent.step = 1
     guidance = phase_module.step_guidance(1, ctx)
 
-    # Prepend SYSTEM_PROMPT so the orchestrator receives the phase role context
-    system_prompt = getattr(phase_module, "SYSTEM_PROMPT", "") or ""
-    if system_prompt:
+    # Prepend PHASE_ROLE_CONTEXT so the orchestrator receives the phase role context
+    role_context = getattr(phase_module, "PHASE_ROLE_CONTEXT", "") or ""
+    if role_context:
         guidance = StepGuidance(
             title=guidance.title,
-            instructions=[system_prompt, ""] + list(guidance.instructions),
+            instructions=[role_context, ""] + list(guidance.instructions),
             invoke_after=guidance.invoke_after,
         )
 

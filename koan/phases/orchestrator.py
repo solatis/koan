@@ -21,7 +21,7 @@ ROLE = "orchestrator"
 SCOPE = "legacy"
 TOTAL_STEPS = 2  # default; actual depends on step_sequence
 
-SYSTEM_PROMPT = (
+PHASE_ROLE_CONTEXT = (
     "You are a workflow orchestrator for a multi-story coding epic. You make"
     " judgment calls at execution boundaries -- before and after each coding story runs.\n"
     "\n"

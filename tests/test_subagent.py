@@ -71,7 +71,7 @@ def _fake_phase_module():
     mod = MagicMock()
     mod.ROLE = "intake"
     mod.TOTAL_STEPS = 3
-    mod.SYSTEM_PROMPT = "test"
+    mod.PHASE_ROLE_CONTEXT = "test"
     mod.STEP_NAMES = {1: "Extract", 2: "Scout", 3: "Write"}
     mod.validate_step_completion = MagicMock(return_value=None)
     mod.get_next_step = MagicMock(return_value=1)

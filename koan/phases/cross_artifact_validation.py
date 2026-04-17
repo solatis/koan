@@ -18,7 +18,7 @@ STEP_NAMES: dict[int, str] = {
     2: "Validate",
 }
 
-SYSTEM_PROMPT = (
+PHASE_ROLE_CONTEXT = (
     "You are a cross-artifact validator for a coding task planner. You read all"
     " spec artifacts produced by upstream phases and validate that they are"
     " internally consistent and complete.\n"

@@ -1,7 +1,8 @@
-# Intake phase -- 2-step workflow.
+# Intake phase -- 3-step workflow.
 #
-#   Step 1 (Gather)  -- read task description, explore obvious files, dispatch scouts
-#   Step 2 (Deepen)  -- process scout results, deepen through dialogue, summarize
+#   Step 1 (Gather)    -- read task description, explore obvious files, dispatch scouts
+#   Step 2 (Deepen)    -- process scout results, deepen through dialogue
+#   Step 3 (Summarize) -- synthesize findings into a handoff summary
 #
 # Workflow scope framing (phase_instructions) appears at the top of step 1 guidance.
 
@@ -11,14 +12,15 @@ from . import PhaseContext, StepGuidance
 
 ROLE = "intake"
 SCOPE = "general"        # reusable by any workflow
-TOTAL_STEPS = 2
+TOTAL_STEPS = 3
 
 STEP_NAMES: dict[int, str] = {
     1: "Gather",
     2: "Deepen",
+    3: "Summarize",
 }
 
-SYSTEM_PROMPT = (
+PHASE_ROLE_CONTEXT = (
     "You are an intake analyst for a coding task planner. You read a task"
     " description, explore the codebase, and ask the user targeted questions"
     " until you have complete context for planning.\n"
@@ -244,9 +246,14 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "- No answer you received left you with a 'I think I know what they mean'",
                 "  feeling -- you either confirmed it or asked.",
                 "",
-                "## 4. Summarize and transition",
-                "",
-                "When deepening is complete, synthesize a concise summary covering:",
+            ],
+        )
+
+    if step == 3:
+        return StepGuidance(
+            title=STEP_NAMES[3],
+            instructions=[
+                "Synthesize a concise summary covering:",
                 "",
                 "- **Task scope**: What is being built or changed, in the user's framing.",
                 "- **Key codebase findings**: Entry points, current behavior, integration points.",

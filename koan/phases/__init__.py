@@ -42,46 +42,12 @@ class PhaseModule(Protocol):
     ROLE: str
     SCOPE: str
     TOTAL_STEPS: int
-    SYSTEM_PROMPT: str
+    PHASE_ROLE_CONTEXT: str
 
     def step_guidance(self, step: int, ctx: PhaseContext) -> StepGuidance: ...
     def get_next_step(self, step: int, ctx: PhaseContext) -> int | None: ...
     def validate_step_completion(self, step: int, ctx: PhaseContext) -> str | None: ...
     async def on_loop_back(self, from_step: int, to_step: int, ctx: PhaseContext) -> None: ...
-
-
-# -- Orchestrator base system prompt ------------------------------------------
-# Delivered via --system-prompt at spawn time. Phase-specific role context
-# is injected via koan_complete_step's step-1 guidance (SYSTEM_PROMPT prepend).
-
-ORCHESTRATOR_SYSTEM_PROMPT = (
-    "You are the koan workflow orchestrator. You run a coding task planning and"
-    " execution pipeline from start to finish in a single continuous session.\n"
-    "\n"
-    "You work through phases in sequence: each phase has numbered steps. Call"
-    " koan_complete_step to advance through steps.\n"
-    "\n"
-    "When a phase ends, koan_complete_step tells you to summarize and yield.\n"
-    "Call koan_yield with a summary and structured suggestions for the user.\n"
-    "Each suggestion needs:\n"
-    "- id: phase name (e.g. \"plan-spec\") or \"done\"\n"
-    "- label: short action label (e.g. \"Write implementation plan\")\n"
-    "- command: task-specific sentence pre-filled in the chat input when clicked\n"
-    "Always include a \"done\" suggestion so the user can end the workflow.\n"
-    "\n"
-    "koan_yield blocks until the user sends a message and returns it to you.\n"
-    "Respond conversationally. Call koan_yield again to continue the conversation.\n"
-    "When the user confirms a direction, call koan_set_phase with the phase name.\n"
-    "When the user is done, call koan_set_phase with \"done\".\n"
-    "\n"
-    "At the start of each phase, koan_complete_step returns your role context for"
-    " that phase alongside the first step's instructions.\n"
-    "\n"
-    "Rules:\n"
-    "- Only call koan_set_phase after the user has confirmed the direction.\n"
-    "- Use koan_yield for all user interaction at phase boundaries.\n"
-    "- Available tools change depending on the current phase."
-)
 
 
 # -- Subagent module registry --------------------------------------------------

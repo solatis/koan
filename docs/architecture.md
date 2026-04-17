@@ -140,14 +140,27 @@ user can request any available phase. Invalid phase strings raise `ToolError`.
 
 ### 4. Default-deny permissions
 
-Every tool call passes through a permission fence (`check_permission()` in
-`koan/lib/permissions.py`). Unknown roles are blocked. Unknown tools are
-blocked. Planning roles can only write inside the run directory.
+Two enforcement layers restrict what tools each agent can use:
+
+1. **CLI tool whitelist** (`CLAUDE_TOOL_WHITELISTS` in `subagent.py`) --
+   controls which Claude Code built-in tools exist in the model's context.
+   Unlisted tools are not presented to the model; it cannot call them.
+2. **MCP permission fence** (`check_permission()` in `permissions.py`) --
+   gates koan MCP tool calls per role and phase. Unknown roles and tools are
+   blocked. Planning roles can only write inside the run directory.
+
+Agents should not have access to tools they are never intended to need.
+Restricting the tool vocabulary prevents the model from drifting toward
+irrelevant capabilities (autonomous scheduling, subagent spawning, plan mode)
+that compete with koan's step-first workflow.
 
 The one accepted limitation: `READ_TOOLS` (bash, read, grep, glob, find, ls)
 are always allowed because distinguishing "read bash" from "write bash" is
 intractable at the permission layer. **Prompt engineering constrains intended
 bash use; enforcement does not.**
+
+See [subagents.md -- Permissions](./subagents.md#permissions) for per-role
+whitelists and the full MCP permission matrix.
 
 ### 5. Need-to-know prompts
 
@@ -172,13 +185,13 @@ reaches the LLM before it reads task details.
 
 The injection contract every `phase_guidance` entry must cover:
 
-| Section | Purpose |
-|---------|---------|
-| **Scope** | What kind of task this workflow targets |
-| **Downstream consumer** | What phase reads the output, what detail level it needs |
-| **Investigation posture** | Direct reading vs. scouts, typical scout count |
-| **Question posture** | How aggressively to ask, typical round count |
-| **User override** | Always present, always last: "follow their lead" |
+| Section                   | Purpose                                                 |
+| ------------------------- | ------------------------------------------------------- |
+| **Scope**                 | What kind of task this workflow targets                 |
+| **Downstream consumer**   | What phase reads the output, what detail level it needs |
+| **Investigation posture** | Direct reading vs. scouts, typical scout count          |
+| **Question posture**      | How aggressively to ask, typical round count            |
+| **User override**         | Always present, always last: "follow their lead"        |
 
 ### 6. Directory-as-contract
 
@@ -227,7 +240,6 @@ disciplinary synchronization. Any divergence produces subtle display bugs that
 are hard to trace. JSON Patch makes correctness structural: one fold, one
 source of truth, mechanical application on the client.
 
-
 ---
 
 ## Workflow System
@@ -240,12 +252,12 @@ and suggested transitions between phases. Two workflows are defined in
 
 **plan** — intake → plan-spec → plan-review → execute
 
-| Phase | Role | Steps | Artifact |
-|-------|------|-------|---------|
-| `intake` | Requirement gathering | 3 (Gather → Deepen → Summarize) | Chat summary only |
-| `plan-spec` | Technical planning | 2 (Analyze → Write) | `plan.md` |
-| `plan-review` | Quality review | 2 (Read → Evaluate) | Chat report only |
-| `execute` | Implementation handoff | 2 (Compose → Request) | Code changes via executor |
+| Phase         | Role                   | Steps                           | Artifact                  |
+| ------------- | ---------------------- | ------------------------------- | ------------------------- |
+| `intake`      | Requirement gathering  | 3 (Gather → Deepen → Summarize) | Chat summary only         |
+| `plan-spec`   | Technical planning     | 2 (Analyze → Write)             | `plan.md`                 |
+| `plan-review` | Quality review         | 2 (Read → Evaluate)             | Chat report only          |
+| `execute`     | Implementation handoff | 2 (Compose → Request)           | Code changes via executor |
 
 **milestones** — stub workflow; runs intake only, then yields with a single
 "done" suggestion.
@@ -254,6 +266,7 @@ and suggested transitions between phases. Two workflows are defined in
 
 The user selects a workflow at run start. The selection is stored in
 `AppState.workflow` and used throughout the run for:
+
 - Phase transition validation (`is_valid_transition`)
 - Phase boundary suggestions (`get_suggested_phases`)
 - Phase guidance injection (`workflow.phase_guidance[phase]`)
@@ -324,6 +337,7 @@ Output: a single in-memory `Projection` covering all agents, run state, and
 UI interactions. Consumed by the browser frontend via SSE.
 
 When adding new observable state, decide which system it belongs to:
+
 - State visible only in logs/debugging → audit fold
 - State visible in the browser UI → projection fold
 

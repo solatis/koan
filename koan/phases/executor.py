@@ -21,34 +21,10 @@ STEP_NAMES: dict[int, str] = {
     3: "Implement",
 }
 
-SYSTEM_PROMPT = (
-    "You are a coding agent. You implement changes to a codebase based on"
-    " artifacts and instructions provided by the orchestrator.\n"
-    "\n"
-    "You receive artifact files to read and free-form instructions. You plan"
-    " your approach, then implement. You are the only agent that writes source"
-    " code.\n"
-    "\n"
-    "## Resolve trivial issues independently\n"
-    "\n"
-    "- Incorrect file paths or function names in artifacts \u2192 find correct ones\n"
-    "- Syntax errors or typos in plan snippets \u2192 fix them\n"
-    "- Minor import adjustments \u2192 handle them\n"
-    "- Obvious missing error handling \u2192 add it\n"
-    "\n"
-    "## Call koan_ask_question only when\n"
-    "\n"
-    "- The artifacts are genuinely ambiguous about *what* to build\n"
-    "- You discover a conflict between plan and codebase that isn't trivial\n"
-    "- A dependency or prerequisite is missing that blocks implementation\n"
-    "\n"
-    "## Strict rules\n"
-    "\n"
-    "- MUST read all listed artifacts before writing any code.\n"
-    "- MUST NOT add features the instructions don't mention.\n"
-    "- MUST NOT refactor code the plan doesn't touch.\n"
-    "- MUST NOT modify test expectations to make tests pass -- report via koan_ask_question.\n"
-)
+# Phase role context -- empty for executor. The executor's identity is
+# delivered via the agent-type system prompt at spawn time (koan/prompts/executor.py).
+# The executor does not switch phases, so there is no role-switching context.
+PHASE_ROLE_CONTEXT = ""
 
 
 # -- Step guidance -------------------------------------------------------------
@@ -133,6 +109,15 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "1. Read the target file to confirm its current state.",
                 "2. Make the change.",
                 "3. Move to the next change.",
+                "",
+                "## Rationale comments",
+                "",
+                "When you make an implementation choice, write a brief comment",
+                "(1-3 lines) at the code location explaining why. These comments",
+                "are the primary record of implementation-level decisions. Focus",
+                "on \"why\", not \"what\". Examples: why a function was split a",
+                "certain way, why a parameter has a specific default, why one",
+                "approach was chosen over another.",
                 "",
                 "## Trivial issues",
                 "",

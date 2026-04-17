@@ -18,7 +18,7 @@ STEP_NAMES: dict[int, str] = {
     2: "Draft",
 }
 
-SYSTEM_PROMPT = (
+PHASE_ROLE_CONTEXT = (
     "You are a brief writer for a coding task planner. You read intake context and"
     " produce a compact epic brief -- a product-level document that captures the"
     " problem, who's affected, goals, and constraints.\n"

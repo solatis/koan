@@ -42,13 +42,20 @@ STEP_NAMES: dict[int, str] = {
 }
 
 
-# -- System prompt -------------------------------------------------------------
-# Injected at the top of step 1. The orchestrator already has its own boot
-# identity from ORCHESTRATOR_SYSTEM_PROMPT; this prompt adds the curator
-# role layer on top. It does not redeclare the orchestrator identity.
+# -- Phase role context --------------------------------------------------------
+# Injected at the top of step 1. The orchestrator's agent-type system prompt
+# (koan/prompts/orchestrator.py) provides a high-level memory overview. This
+# role context adds the full curation procedure on top -- detailed writing
+# discipline, classification schema, quality checklist.
 
-SYSTEM_PROMPT = (
-    "You are now operating as the project's knowledge curator. Your job is\n"
+PHASE_ROLE_CONTEXT = (
+    "You are now operating as the project's knowledge curator. Your\n"
+    "agent-type system prompt gave you a high-level overview of the memory\n"
+    "system. This phase provides the FULL curation procedure. Read every\n"
+    "section below -- the writing discipline, classification tree, and\n"
+    "quality rules here override any assumptions from the overview.\n"
+    "\n"
+    "Your job is\n"
     "to maintain a small, high-quality memory of decisions, context, lessons,\n"
     "and procedures that helps AI coding agents work effectively across\n"
     "workflow runs.\n"
@@ -170,13 +177,16 @@ SYSTEM_PROMPT = (
     "                   Propose removal via `koan_forget`. (The action label\n"
     "                   is DEPRECATE; the tool is `koan_forget` -- they\n"
     "                   refer to the same operation.)\n"
+    "- **COMMENT** -- this knowledge is better expressed as a code comment\n"
+    "                 next to the relevant function. Drop from memory\n"
+    "                 candidates.\n"
     "\n"
     "## Writing discipline (high-level)\n"
     "\n"
     "Every entry is 100-500 tokens of **temporally grounded, attributed,\n"
     "event-style** prose -- a historical fact that stays true regardless\n"
     "of when it is read. The full rules, two contrastive bad/good\n"
-    "examples, and a 6-item self-validation checklist appear in step 2\n"
+    "examples, and a 7-item self-validation checklist appear in step 2\n"
     "(Memorize), rendered at the drafting moment. Do NOT skim the step 2\n"
     "examples -- your default register for technical content is timeless\n"
     "documentation prose, and the examples are the only thing that\n"
@@ -193,6 +203,14 @@ SYSTEM_PROMPT = (
     "definitions, import paths, module structure, function names. The\n"
     "agent's working context already includes this when it opens the\n"
     "relevant files.\n"
+    "\n"
+    "**Implementation rationale** scoped to a single function or module\n"
+    "should be a code comment, not a memory entry. Apply this test:\n"
+    "\"Would a code comment next to the relevant function give a future\n"
+    "agent the same benefit?\" If yes, the candidate fails and should be\n"
+    "classified COMMENT. Examples that fail the test: why a function was\n"
+    "split a certain way, why a parameter has a specific default value, a\n"
+    "pattern scoped to one module.\n"
     "\n"
     "**Behavioral knowledge** that needs proactive surfacing MUST be\n"
     "captured, even when the knowledge also appears in a project\n"
@@ -283,7 +301,7 @@ def _tools_this_step_block(current_step: int) -> list[str]:
     if current_step == 2:
         return [
             "<tools_this_step>",
-            "Writing discipline, two contrastive examples, and a 6-item",
+            "Writing discipline, two contrastive examples, and a 7-item",
             "draft-quality checklist appear in this step's body below.",
             "Read them BEFORE drafting your first candidate.",
             "",
@@ -377,7 +395,7 @@ def _step_1_inventory(ctx: PhaseContext) -> StepGuidance:
         "                       none match, drop the candidate as not",
         "                       memory-worthy.",
         "   - title          (one line)",
-        "   - classification (ADD / UPDATE / NOOP / DEPRECATE)",
+        "   - classification (ADD / UPDATE / NOOP / DEPRECATE / COMMENT)",
         "   - entry_id       (only for UPDATE / DEPRECATE)",
         "   When a candidate is close to an existing topic, read the suspect",
         "   entries directly from `.koan/memory/` before classifying.",
@@ -549,7 +567,7 @@ def _step_2_memorize(ctx: PhaseContext) -> StepGuidance:
         "",
         "### B. Self-critique",
         "",
-        "For each draft produced in substep A, run the 6-item draft-",
+        "For each draft produced in substep A, run the 7-item draft-",
         "quality checklist below. Output the checklist result PER",
         "DRAFT in this exact format:",
         "",
@@ -560,6 +578,7 @@ def _step_2_memorize(ctx: PhaseContext) -> StepGuidance:
         "      4. Event-style, past tense:    PASS / FAIL",
         "      5. Concrete naming:            PASS / FAIL",
         "      6. Contains knowledge, not pointer: PASS / FAIL",
+        "      7. Passes code-comment test:        PASS / FAIL",
         "",
         "    Draft 2 ({title}):",
         "      ...",
@@ -574,8 +593,8 @@ def _step_2_memorize(ctx: PhaseContext) -> StepGuidance:
         "For every draft with any FAIL in its checklist, rewrite the",
         "entry completely. Do not patch in place -- rewrite it, using",
         "the GOOD example template as the target form. After each",
-        "rewrite, re-run the 6-item checklist on the revised draft.",
-        "Loop until all 5 items PASS for all drafts in the batch.",
+        "rewrite, re-run the 7-item checklist on the revised draft.",
+        "Loop until all 7 items PASS for all drafts in the batch.",
         "",
         "You MAY NOT proceed to substep D (Yield) while any draft in",
         "this batch has an outstanding FAIL.",
@@ -596,6 +615,7 @@ def _step_2_memorize(ctx: PhaseContext) -> StepGuidance:
         "- UPDATE    -> `koan_memorize` (with `entry_id`)",
         "- DEPRECATE -> `koan_forget`   (with `entry_id`)",
         "- NOOP      -> nothing",
+        "- COMMENT   -> skip",
         "",
         "### F. Cross off",
         "",
@@ -605,7 +625,7 @@ def _step_2_memorize(ctx: PhaseContext) -> StepGuidance:
         "",
         "## Draft-quality checklist (schema for substep B)",
         "",
-        "For each draft, verify all 6 items. Any FAIL means the draft",
+        "For each draft, verify all 7 items. Any FAIL means the draft",
         "cannot be yielded -- it must go back through substep C.",
         "",
         "**1. Opens with a named subsystem.**",
@@ -648,6 +668,14 @@ def _step_2_memorize(ctx: PhaseContext) -> StepGuidance:
         "\"X file defines Y\" FAIL. The entry must answer \"what is the",
         "knowledge?\" directly in its body, readable without opening any",
         "other file.",
+        "",
+        "**7. Passes the code-comment test.**",
+        "Candidates that describe why a single function is structured a",
+        "certain way, why a parameter has a specific value, or a pattern",
+        "scoped to one module FAIL this check and should be reclassified",
+        "as COMMENT. Ask: \"Would a code comment next to the relevant",
+        "function give a future agent the same benefit?\" If yes, classify",
+        "as COMMENT and skip.",
         "",
         "## Anticipatory tool-call check (BEFORE the wrap-up)",
         "",

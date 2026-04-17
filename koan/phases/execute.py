@@ -20,7 +20,7 @@ STEP_NAMES: dict[int, str] = {
     2: "Request",
 }
 
-SYSTEM_PROMPT = (
+PHASE_ROLE_CONTEXT = (
     "You are an execution coordinator. The plan has been written and reviewed.\n"
     "Your job is to compose a clean handoff to the executor agent. You do NOT\n"
     "write code and you do NOT re-evaluate the plan.\n"
