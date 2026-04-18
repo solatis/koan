@@ -51,7 +51,7 @@ _TIER_PRIORITY: dict[ModelTier, list[tuple[str, str]]] = {
 # Fixed built-in profiles: (runner_type, model) per tier, no fallback logic
 _FIXED_PROFILE_SPECS: dict[str, dict[ModelTier, tuple[str, str]]] = {
     "frontier": {
-        "strong": ("claude", "opus"),
+        "strong": ("claude", "opus[1m]"),
         "standard": ("claude", "sonnet"),
         "cheap": ("claude", "haiku"),
     },

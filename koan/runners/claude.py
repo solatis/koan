@@ -106,7 +106,7 @@ class ClaudeRunner:
     def list_models(self, binary: str) -> list[ModelInfo]:
         return [
             ModelInfo(
-                alias="opus", display_name="Opus",
+                alias="opus[1m]", display_name="Opus",
                 thinking_modes=frozenset({"disabled", "low", "medium", "high", "xhigh"}),
                 tier_hint="strong",
             ),

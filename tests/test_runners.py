@@ -529,7 +529,7 @@ class TestClaudeRunnerListModels:
     def test_opus_all_thinking_modes(self):
         runner = ClaudeRunner(subagent_dir="/tmp/x")
         models = runner.list_models("claude")
-        opus = [m for m in models if m.alias == "opus"][0]
+        opus = [m for m in models if m.alias == "opus[1m]"][0]
         assert opus.thinking_modes == frozenset({"disabled", "low", "medium", "high", "xhigh"})
 
     def test_sonnet_all_thinking_modes(self):
