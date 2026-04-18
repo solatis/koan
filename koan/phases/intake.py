@@ -89,6 +89,9 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
             lines.insert(0, f"Active workflow: **{ctx.workflow_name}**")
             lines.insert(1, "")
 
+        if ctx.memory_injection:
+            lines.extend([ctx.memory_injection, ""])
+
         lines.extend([
             "Read the task description, orient yourself in the codebase, and plan your investigation.",
             "",

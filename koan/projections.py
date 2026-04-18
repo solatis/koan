@@ -62,6 +62,7 @@ EventType = Literal[
     # Yield — orchestrator hands control back to the user
     "yield_started",
     "yield_cleared",
+    "phase_summary_captured",
     # Steering
     "steering_queued",
     "steering_delivered",
@@ -356,6 +357,10 @@ class Run(KoanBaseModel):
     completion: CompletionInfo | None = None
     steering: list[SteeringMessage] = []   # pending steering messages shown above chat
     active_yield: ActiveYield | None = None  # non-None while orchestrator is in koan_yield
+    # Keyed by phase name. Populated on the first koan_yield of each phase
+    # from the orchestrator's last assistant text. Used as context anchor for
+    # the next phase's mechanical RAG injection. Wire-visible; frontend ignores.
+    phase_summaries: dict[str, str] = {}
 
 class Projection(KoanBaseModel):
     settings: Settings = Field(default_factory=Settings)
@@ -1245,6 +1250,19 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 if projection.run is None:
                     return projection
                 new_run = projection.run.model_copy(update={"active_yield": None})
+                return projection.model_copy(update={"run": new_run})
+
+            case "phase_summary_captured":
+                # agent_id is carried for audit only; phase_summaries is run-scoped.
+                if projection.run is None:
+                    return projection
+                phase = payload.get("phase", "")
+                summary = payload.get("summary", "")
+                if not phase:
+                    return projection
+                new_summaries = dict(projection.run.phase_summaries)
+                new_summaries[phase] = summary
+                new_run = projection.run.model_copy(update={"phase_summaries": new_summaries})
                 return projection.model_copy(update={"run": new_run})
 
             case _:

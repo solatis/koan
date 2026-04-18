@@ -35,6 +35,10 @@ class PhaseContext:
     available_phases: list[str] = field(default_factory=list)
     scout_question: str | None = None
     scout_investigator_role: str | None = None
+    # Pre-rendered markdown block set by _step_phase_handshake. Phase modules
+    # prepend this to step 1 guidance. Empty string means no injection (either
+    # no directive on the binding or retrieval failed gracefully).
+    memory_injection: str = ""
 
 
 @runtime_checkable

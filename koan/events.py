@@ -209,6 +209,15 @@ def build_yield_started(suggestions: list[dict]) -> dict:
     return {"suggestions": suggestions}
 
 
+def build_phase_summary_captured(phase: str, summary: str) -> dict:
+    """Build phase_summary_captured event payload.
+
+    Carries only phase + summary. agent_id is passed separately at push_event
+    time for audit; the fold reads only phase and summary (run-scoped state).
+    """
+    return {"phase": phase, "summary": summary}
+
+
 # -- Configuration event builders ---------------------------------------------
 
 def build_probe_completed(results: dict[str, bool]) -> dict:

@@ -56,3 +56,29 @@ async def inject(
     results = await rerank_results(directive, merged_list, k)
     log.debug("reranked to %d results", len(results))
     return results
+
+
+def render_injection_block(results: list[SearchResult]) -> str:
+    """Render SearchResult list as a markdown block for step-1 injection.
+
+    Returns "" when results is empty so the caller can omit the block
+    without branching on truthiness elsewhere.
+    """
+    if not results:
+        return ""
+    lines: list[str] = [
+        "## Relevant memory",
+        "",
+        "The following memory entries were retrieved based on the retrieval",
+        "directive for this phase and the current workflow context. Treat",
+        "them as prior knowledge -- decisions, procedures, lessons, and",
+        "context from past workflow runs that are likely to matter here.",
+        "",
+    ]
+    for r in results:
+        lines.append(f"### {r.entry.title}")
+        lines.append(f"*type: {r.entry.type} | modified: {r.entry.modified}*")
+        lines.append("")
+        lines.append(r.entry.body.strip())
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"

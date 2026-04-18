@@ -58,7 +58,10 @@ PHASE_ROLE_CONTEXT = (
 
 def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
     if step == 1:
-        lines = [
+        lines: list[str] = []
+        if ctx.memory_injection:
+            lines.extend([ctx.memory_injection, ""])
+        lines.extend([
             "Read and analyze before writing the plan. Do NOT write any files in this step.",
             "",
             "## What to read",
@@ -87,7 +90,7 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
             "- Files that will be modified",
             "- Key decisions and rationale",
             "- Any ambiguities or risks spotted",
-        ]
+        ])
         if ctx.phase_instructions:
             lines.extend(["", "## Additional Context from Workflow Orchestrator", "", ctx.phase_instructions])
         return StepGuidance(title=STEP_NAMES[1], instructions=lines)

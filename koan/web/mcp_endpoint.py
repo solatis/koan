@@ -50,6 +50,7 @@ from ..memory import MEMORY_TYPES, MemoryStore
 from ..phases import PhaseContext, StepGuidance
 from ..phases.format_step import format_phase_complete, format_steering_messages, format_step, format_user_messages
 from .interactions import activate_next_interaction, enqueue_interaction
+from ..projections import TextEntry
 
 if TYPE_CHECKING:
     from ..state import AgentState, AppState
@@ -206,6 +207,92 @@ def _drain_and_append_steering(result: str, agent: AgentState | None = None) -> 
     return result
 
 
+# -- RAG injection helpers ----------------------------------------------------
+
+def _compose_rag_anchor(
+    task_description: str,
+    run_dir: str | None,
+    prior_phase: str | None,
+    phase_summaries: dict[str, str],
+) -> str:
+    """Compose the anchor string fed to rag.generate_queries().
+
+    Order: task -> artifacts (mtime ascending) -> immediate prior-phase summary.
+    Chronological artifact ordering puts the most recent artifact closest to
+    the summary, placing the most directly relevant content last (where
+    attention is strongest).
+    """
+    sections: list[str] = []
+    if task_description:
+        sections.append(f"# Task description\n\n{task_description}")
+
+    if run_dir:
+        run_dir_path = Path(run_dir)
+        if run_dir_path.is_dir():
+            md_files = sorted(
+                (p for p in run_dir_path.glob("*.md") if p.is_file()),
+                key=lambda p: p.stat().st_mtime,
+            )
+            for p in md_files:
+                try:
+                    body = p.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                sections.append(f"# Artifact: {p.name}\n\n{body}")
+
+    if prior_phase:
+        summary = phase_summaries.get(prior_phase, "")
+        if summary:
+            sections.append(f"# Prior phase summary ({prior_phase})\n\n{summary}")
+
+    return "\n\n".join(sections)
+
+
+async def _compute_memory_injection(agent: AgentState) -> str:
+    """Run the mechanical RAG injection pipeline for the current phase.
+
+    Returns a rendered markdown block, or "" if the phase has no retrieval
+    directive, memory is unavailable, or retrieval fails. Retrieval is
+    best-effort: failure must never block the phase handshake.
+    """
+    assert _app_state is not None
+    workflow = _app_state.workflow
+    if workflow is None:
+        return ""
+    binding = workflow.get_binding(_app_state.phase)
+    if binding is None or not binding.retrieval_directive:
+        return ""
+
+    run = _app_state.projection_store.projection.run
+    prior_phase = agent.phase_ctx.completed_phase
+    phase_summaries = dict(run.phase_summaries) if run else {}
+
+    anchor = _compose_rag_anchor(
+        task_description=_app_state.task_description or "",
+        run_dir=agent.phase_ctx.run_dir or _app_state.run_dir,
+        prior_phase=prior_phase,
+        phase_summaries=phase_summaries,
+    )
+
+    try:
+        from ..memory.retrieval.rag import inject, render_injection_block
+        index = _get_retrieval_index()
+        results = await inject(
+            index=index,
+            directive=binding.retrieval_directive,
+            anchor=anchor,
+            k=5,
+        )
+        return render_injection_block(results)
+    except Exception:
+        log.warning(
+            "mechanical memory injection failed for phase %r; continuing without injection",
+            _app_state.phase,
+            exc_info=True,
+        )
+        return ""
+
+
 # -- koan_complete_step private helpers ----------------------------------------
 
 async def _step_phase_handshake(agent: AgentState) -> str:
@@ -229,6 +316,11 @@ async def _step_phase_handshake(agent: AgentState) -> str:
         build_step_advanced(1, step_name, total_steps=phase_module.TOTAL_STEPS),
         agent_id=agent.agent_id,
     )
+
+    # Mechanical memory injection runs once per phase, at the step 0 -> 1
+    # handshake. The rendered block is stashed on ctx.memory_injection and
+    # phase modules prepend it to their step 1 instructions.
+    ctx.memory_injection = await _compute_memory_injection(agent)
 
     agent.step = 1
     guidance = phase_module.step_guidance(1, ctx)
@@ -373,6 +465,39 @@ async def koan_complete_step(thoughts: str = "") -> str:
         end_tool_call(agent, call_id, "koan_complete_step", result_str)
 
 
+# -- Summary extraction -------------------------------------------------------
+
+def _extract_last_orchestrator_text(agent: AgentState) -> str:
+    """Return the most recent textual turn from the primary agent.
+
+    Concatenates any completed TextEntry at the tail of conversation.entries
+    with the current pending_text (which has not yet been flushed by a
+    subsequent tool call). Returns "" if neither is present.
+
+    Runner buffering may deliver the tool call before the final text deltas
+    are folded into the projection. This is observable: suspiciously short
+    captures are logged as warnings by the caller.
+    """
+    assert _app_state is not None
+    run = _app_state.projection_store.projection.run
+    if run is None:
+        return ""
+    proj_agent = run.agents.get(agent.agent_id)
+    if proj_agent is None:
+        return ""
+    conv = proj_agent.conversation
+    # Walk entries backward to find the tail TextEntry chain (same turn).
+    tail: list[str] = []
+    for entry in reversed(conv.entries):
+        if isinstance(entry, TextEntry):
+            tail.insert(0, entry.text)
+        else:
+            break
+    pending = conv.pending_text or ""
+    combined = "\n".join([*tail, pending]).strip()
+    return combined
+
+
 # -- koan_yield ---------------------------------------------------------------
 
 @mcp.tool(name="koan_yield")
@@ -429,6 +554,42 @@ async def koan_yield(
     try:
         assert _app_state is not None
         from ..state import drain_user_messages, drain_steering_messages
+
+        # Capture phase summary on the FIRST yield of each phase.
+        # Contract: the orchestrator's assistant text immediately preceding
+        # koan_yield is treated as the phase summary. Subsequent yields in the
+        # same phase do not overwrite.
+        #
+        # Ordering note: stream_delta events and tool calls both flow through the
+        # same asyncio event loop, but runner buffering may deliver the tool call
+        # before the final text deltas have been folded into the projection. When
+        # the captured summary is suspiciously short we log a warning so the
+        # failure is observable; we do NOT block the yield on it.
+        if agent.is_primary and _app_state.phase:
+            run = _app_state.projection_store.projection.run
+            already_captured = bool(run and run.phase_summaries.get(_app_state.phase))
+            if not already_captured:
+                summary_text = _extract_last_orchestrator_text(agent)
+                if summary_text:
+                    if len(summary_text) < 50:
+                        log.warning(
+                            "phase summary for %r is suspiciously short (%d chars);"
+                            " text deltas may not have been fully flushed before"
+                            " koan_yield fired",
+                            _app_state.phase, len(summary_text),
+                        )
+                    from ..events import build_phase_summary_captured
+                    _app_state.projection_store.push_event(
+                        "phase_summary_captured",
+                        build_phase_summary_captured(_app_state.phase, summary_text),
+                        agent_id=agent.agent_id,
+                    )
+                else:
+                    log.warning(
+                        "phase summary for %r not captured: no assistant text found"
+                        " before koan_yield",
+                        _app_state.phase,
+                    )
 
         # Emit yield_started — renders YieldEntry in the conversation stream and
         # sets run.active_yield so the UI pins pills above the chat input.

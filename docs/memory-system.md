@@ -181,7 +181,7 @@ Koan classifies memories into four types. The type field is metadata
 for filtering and curation heuristics — it does not determine where
 the file is stored. All entries live in a single flat directory.
 
-### Decisions — *Why is the project the way it is?*
+### Decisions — _Why is the project the way it is?_
 
 The most critical memory type. Decisions capture **why** the project
 is the way it is — not just what was chosen, but what was rejected
@@ -196,14 +196,14 @@ Decisions include both explicit choices (user-stated) and implicit
 choices (LLM-inferred from user behavior). Implicit decisions
 should be clearly attributed as inferred in the prose body.
 
-### Context — *What do I need to know that isn't in the code?*
+### Context — _What do I need to know that isn't in the code?_
 
 Objective facts about the project, team, domain, and infrastructure
 that are not derivable from the codebase and are expected to remain
 stable across sessions. Team size, deployment setup, external
 dependencies, business constraints.
 
-### Lessons — *What went wrong before?*
+### Lessons — _What went wrong before?_
 
 Mistakes made during workflows and the corrections applied. Each
 entry captures: what happened, what the user did to correct it,
@@ -212,7 +212,7 @@ root cause, and what should change to prevent recurrence.
 A lesson often produces a new decision or procedure, but the lesson
 itself is the error record — the ground truth about what went wrong.
 
-### Procedures — *How should I approach things in this project?*
+### Procedures — _How should I approach things in this project?_
 
 Patterns, strategies, and behavioral rules that emerged from
 experience. Procedures capture actionable "how-to" knowledge that
@@ -549,7 +549,7 @@ reasoning, recognizes a gap in its knowledge, and formulates a
 targeted query. "What's the session management architecture?"
 or "What constraints apply to database migrations?" The agent
 is aware of its own gap and goes looking. This works when the
-agent has enough context to know *what* it doesn't know.
+agent has enough context to know _what_ it doesn't know.
 
 **Mechanical injection handles unknown unknowns.** The agent
 doesn't know that a testing policy exists. It doesn't know that
@@ -570,36 +570,29 @@ memory injection by providing a **retrieval directive**: a static,
 human-authored sentence describing what kind of knowledge is
 most likely to matter for the phase.
 
-The injection pipeline has five steps:
+The injection pipeline has four steps:
 
-**Step 1: Load project summary.** `summary.md` is loaded in full.
-Always present, not retrieved via search. Budget: ~2000 tokens.
-This step runs only at intake (the first phase); subsequent
-phases inherit the summary from the orchestrator's context.
-
-**Step 2: Generate search queries.** A cheap-tier model receives
-two inputs and produces 1–3 search queries:
+**Step 1: Generate search queries.** A cheap-tier model receives
+two inputs and produces 1-3 search queries:
 
 The first input is the **retrieval directive** from the phase
 definition. This is a static sentence written by the workflow
-designer that describes the retrieval intent for the phase —
+designer that describes the retrieval intent for the phase --
 what kind of knowledge typically matters. For example, an
 execution phase might carry the directive "procedures,
 conventions, and past lessons related to the subsystem being
 modified." A verification phase might carry "quality policies,
 testing conventions, and known pitfalls." The directive
-provides the *what to look for* dimension.
+provides the _what to look for_ dimension.
 
 The second input is **recent artifacts and context** that provide
-the *where to look* dimension — the topical anchor. The preferred
-source is the artifacts produced by the preceding phase (the
-milestone spec, the technical plan, the decomposition output),
-because artifacts are well-structured prose with controlled
-format and high information density. When no artifact is
-available, the last N messages from the orchestrator's event log
-serve the same purpose, though with more noise. The cheap model
-combines topic (from the artifacts/context) with intent (from
-the directive) to produce well-formed queries.
+the _where to look_ dimension -- the topical anchor. The anchor
+is composed from: the task description, all `.md` files in the
+run directory sorted by mtime ascending, and the prior phase's
+summary (captured automatically on the first `koan_yield` of
+each phase). The cheap model combines topic (from the
+artifacts/context) with intent (from the directive) to produce
+well-formed queries.
 
 Example: the execution phase has directive "procedures,
 conventions, and past lessons related to the subsystem being
@@ -609,31 +602,32 @@ The cheap model generates queries like "authentication token
 refresh procedures," "Auth0 integration lessons," "credential
 handling conventions."
 
-**Step 3: Per-query hybrid retrieval.** For each query, two
+**Step 2: Per-query hybrid retrieval.** For each query, two
 parallel searches run against the index:
-- Dense vector search → top N candidates by embedding similarity
-- BM25 keyword search → top N candidates by lexical matching
+
+- Dense vector search -> top N candidates by embedding similarity
+- BM25 keyword search -> top N candidates by lexical matching
+
 N = 20 per retriever per query (tunable; 20 is sufficient for
 knowledge bases of hundreds to low thousands of entries).
 
-**Step 4: Per-query fusion and cross-query merge.** For each query,
+**Step 3: Per-query fusion and cross-query merge.** For each query,
 merge the two result lists using Reciprocal Rank Fusion:
-`score = Σ 1/(60 + rank)` across retrievers. Combine the fused
-lists from all queries, deduplicate entries. Pass the candidate
-pool (typically 30–50 unique entries after dedup) through a
-cross-encoder reranker, which scores each (query, entry) pair
-with full attention over both texts.
+`score = sum(1/(60 + rank))` across retrievers. Combine the
+fused lists from all queries, deduplicate entries. Pass the
+candidate pool (typically 30-50 unique entries after dedup)
+through a cross-encoder reranker, which scores each
+(query, entry) pair with full attention over both texts.
 
-**Step 5: Take top 3–5 entries.** The highest-scoring entries
+**Step 4: Take top 3-5 entries.** The highest-scoring entries
 after reranking are injected into the agent's context before
 the phase begins, with their metadata (type, created/modified
 dates).
 
-Total mechanical context per injection: 3–5 entries (~500–2500
-tokens). The 3–5 budget follows SimpleMem's saturation finding:
+Total mechanical context per injection: 3-5 entries (~500-2500
+tokens). The 3-5 budget follows SimpleMem's saturation finding:
 near-optimal retrieval performance at k=3, diminishing returns
-beyond k=5. At intake, the summary adds ~2000 tokens for a
-total of ~2500–4500 tokens.
+beyond k=5.
 
 Not every phase needs injection. The workflow definition
 controls this: a phase either declares a retrieval directive
@@ -642,11 +636,44 @@ context plus agent-invoked tools). In practice, most phases
 that spawn new agents or shift to a different problem domain
 should declare a directive.
 
+#### Implementation mapping
+
+The design above maps to the following code locations:
+
+- **Attachment point**: `_step_phase_handshake` in
+  `koan/web/mcp_endpoint.py`, executed on the step 0 -> 1 transition of
+  every orchestrator phase.
+- **Directive location**: `PhaseBinding.retrieval_directive` in
+  `koan/lib/workflows.py`. The directive is a static, human-authored
+  string set per workflow binding. An empty string disables injection
+  for that phase (the curation phase uses an empty string because
+  `koan_memory_status` already surfaces the full entry listing).
+- **Anchor composition**: `_compose_rag_anchor()` in
+  `koan/web/mcp_endpoint.py`. Order is task description, then all
+  `*.md` files in the run directory sorted by mtime ascending, then
+  `Run.phase_summaries[prior_phase]`.
+- **Summary capture**: The orchestrator's last assistant text preceding
+  the first `koan_yield` of a phase is captured into
+  `Run.phase_summaries[phase]` via the `phase_summary_captured` event.
+  Subsequent yields in the same phase do not overwrite. Projection
+  code: `_extract_last_orchestrator_text()` in
+  `koan/web/mcp_endpoint.py`.
+- **Rendering**: `render_injection_block()` in
+  `koan/memory/retrieval/rag.py` produces a `## Relevant memory`
+  markdown block. Phase modules (intake, plan-spec, plan-review,
+  execute) prepend this block to their step 1 guidance via
+  `ctx.memory_injection`.
+- **Failure mode**: Retrieval errors (missing `VOYAGE_API_KEY`, empty
+  memory, LanceDB errors) are logged at `warning` and the phase
+  proceeds without the injection block.
+- **Agent scope**: Orchestrator phases only. Scouts and executors are
+  excluded from mechanical injection.
+
 #### Agent-invoked tools
 
 During reasoning, the orchestrator has access to two memory tools.
 These complement mechanical injection by handling the agent's
-*recognized* information needs — questions that arise during
+_recognized_ information needs — questions that arise during
 reasoning that the agent is aware it cannot answer from its
 current context.
 
@@ -753,7 +780,7 @@ should I look for before starting this phase?" This was rejected
 because it collapses the two retrieval mechanisms into one.
 
 If the orchestrator generates the directive, the queries will
-reflect what the orchestrator *thinks* it needs — which is
+reflect what the orchestrator _thinks_ it needs — which is
 exactly what agent-invoked tools already handle. The
 orchestrator can already call `koan_search` for anything it
 recognizes as a gap. Generating a directive from the
@@ -762,7 +789,7 @@ unknowns: topics the orchestrator is already aware of and could
 query for itself.
 
 The value of mechanical injection comes precisely from the fact
-that it does *not* depend on the agent's assessment of its own
+that it does _not_ depend on the agent's assessment of its own
 knowledge gaps. The static directive encodes structural knowledge
 that the workflow designer has about what each phase type
 typically needs — knowledge that is stable across runs and

@@ -55,6 +55,9 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
             "",
         ]
 
+        if ctx.memory_injection:
+            lines.extend([ctx.memory_injection, ""])
+
         if ctx.phase_instructions:
             lines.extend([
                 "## Workflow guidance",

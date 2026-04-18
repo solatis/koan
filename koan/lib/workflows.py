@@ -41,6 +41,11 @@ class PhaseBinding:
     module: Any          # phase module (e.g. intake, curation)
     description: str = ""
     guidance: str = ""   # injected as ctx.phase_instructions at step 1
+    # Static retrieval directive for mechanical RAG injection at step 1.
+    # Empty string disables injection for this phase. The directive belongs
+    # here (not in the phase module) so the same module can be reused across
+    # workflows with different retrieval intent.
+    retrieval_directive: str = ""
 
 
 @dataclass(frozen=True)
@@ -255,14 +260,31 @@ PLAN_WORKFLOW = Workflow(
                 "The user can always ask you to go deeper, dispatch more scouts, or ask\n"
                 "more questions. Follow their lead over these defaults."
             ),
+            retrieval_directive=(
+                "Architectural decisions, constraints, and context entries that shape"
+                " how this codebase is organized. Entries about subsystems the task"
+                " may touch, team conventions, and deployment invariants."
+            ),
         ),
         "plan-spec": PhaseBinding(
             module=plan_spec,
             description="Write a technical implementation plan grounded in the codebase",
+            retrieval_directive=(
+                "Implementation decisions, procedures, and conventions that constrain"
+                " how changes are made in this codebase. Entries about coding patterns,"
+                " module layout rules, and past lessons from similar changes."
+            ),
         ),
         "plan-review": PhaseBinding(
             module=plan_review,
             description="Evaluate the plan for completeness, correctness, and risks",
+            # Same directive as plan-spec: review evaluates against the same
+            # implementation-level knowledge that spec used to write the plan.
+            retrieval_directive=(
+                "Implementation decisions, procedures, and conventions that constrain"
+                " how changes are made in this codebase. Entries about coding patterns,"
+                " module layout rules, and past lessons from similar changes."
+            ),
         ),
         "execute": PhaseBinding(
             module=execute_phase,
@@ -279,11 +301,19 @@ PLAN_WORKFLOW = Workflow(
                 "Report the result. If the executor failed or asked questions, relay\n"
                 "the situation to the user and suggest next steps."
             ),
+            retrieval_directive=(
+                "Procedures, conventions, and past lessons related to the subsystems"
+                " being modified. Executor-facing rules about testing policy, secret"
+                " handling, file placement, and other coding-time constraints."
+            ),
         ),
         "curation": PhaseBinding(
             module=curation,
             description="Capture lessons, decisions, and context from the completed run",
             guidance=_POSTMORTEM_DIRECTIVE,
+            # Curation already calls koan_memory_status which surfaces the full
+            # entry listing. Mechanical injection would be redundant and noisy.
+            retrieval_directive="",
         ),
     },
     initial_phase="intake",
@@ -335,6 +365,11 @@ MILESTONES_WORKFLOW = Workflow(
                 "The user can always tell you to narrow scope or skip questions.\n"
                 "Follow their lead over these defaults."
             ),
+            retrieval_directive=(
+                "Architectural decisions, constraints, and context entries that shape"
+                " how this codebase is organized. Entries about subsystems the task"
+                " may touch, team conventions, and deployment invariants."
+            ),
         ),
     },
     initial_phase="intake",
@@ -353,6 +388,7 @@ CURATION_WORKFLOW = Workflow(
             module=curation,
             description="Review and maintain the project's memory entries",
             guidance=_STANDALONE_DIRECTIVE,
+            retrieval_directive="",  # explicit: curation uses koan_memory_status instead
         ),
     },
     initial_phase="curation",

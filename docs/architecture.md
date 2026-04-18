@@ -16,6 +16,7 @@ principles, and pitfalls that govern the codebase.
 - [Projections](./projections.md) -- versioned event log, pure fold, JSON Patch
   protocol, projection model, camelCase wire format
 - [Intake Loop](./intake-loop.md) -- two-step intake design, prompt engineering principles
+- [Memory System](./memory-system.md) -- project memory, curation, and the RAG injection wired into phase transitions
 
 ---
 
@@ -192,6 +193,13 @@ The injection contract every `phase_guidance` entry must cover:
 | **Investigation posture** | Direct reading vs. scouts, typical scout count          |
 | **Question posture**      | How aggressively to ask, typical round count            |
 | **User override**         | Always present, always last: "follow their lead"        |
+
+**Memory injection.** At step 1 of every orchestrator phase, the
+`_step_phase_handshake` response may include a `## Relevant memory`
+block of top-5 memory entries retrieved by a per-phase static directive.
+The mechanism is described in [memory-system.md](./memory-system.md);
+the directive for each phase lives on its `PhaseBinding.retrieval_directive`
+in `koan/lib/workflows.py`.
 
 ### 6. Directory-as-contract
 

@@ -139,6 +139,10 @@ during brief-generation step 1 (the read step).
 | `koan_select_story`, `koan_complete_story`, `koan_retry_story`, `koan_skip_story` | `execution` only                                                                                                 |
 | `write`, `edit` (run_dir scoped)                                                  | All phases except `brief-generation` step 1                                                                      |
 | `bash`                                                                            | `execution`, `implementation-validation`                                                                         |
+| `koan_memorize`                                                                   | All phases                                                                                                       |
+| `koan_forget`                                                                     | All phases                                                                                                       |
+| `koan_memory_status`                                                              | All phases                                                                                                       |
+| `koan_search`                                                                     | All phases                                                                                                       |
 
 ## 5. Need-to-Know Prompts
 
