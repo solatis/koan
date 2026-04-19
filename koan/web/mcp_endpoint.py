@@ -498,6 +498,50 @@ def _extract_last_orchestrator_text(agent: AgentState) -> str:
     return combined
 
 
+# -- yolo helpers -------------------------------------------------------------
+
+def _yolo_yield_response(suggestions: list[dict] | None) -> str:
+    """Return the auto-response text for koan_yield when running in yolo mode.
+
+    Priority: first recommended non-done suggestion's command
+              -> first non-done suggestion's command
+              -> "proceed"
+
+    Driving by suggestion command keeps the orchestrator on the workflow's
+    intended path without hardcoding any phase names here.
+    """
+    if not suggestions:
+        return "proceed"
+    for s in suggestions:
+        if s.get("recommended") and s.get("id") != "done":
+            return s.get("command", "proceed")
+    for s in suggestions:
+        if s.get("id") != "done":
+            return s.get("command", "proceed")
+    return "proceed"
+
+
+def _yolo_ask_answer(questions: list[dict]) -> dict:
+    """Return a synthetic answer dict for koan_ask_question when running in yolo mode.
+
+    For each question, selects the option marked recommended: true (using its
+    label). Falls back to "use your best judgement" when no option is
+    recommended, giving the orchestrator latitude to decide.
+
+    Returns a dict matching the shape expected by the existing answer-formatting
+    loop: {"answers": [{"answer": "..."}]}.
+    """
+    answers = []
+    for q in questions:
+        options = q.get("options") or []
+        recommended = next((o for o in options if o.get("recommended")), None)
+        if recommended:
+            answers.append({"answer": recommended.get("label", recommended.get("value", ""))})
+        else:
+            answers.append({"answer": "use your best judgement"})
+    return {"answers": answers}
+
+
 # -- koan_yield ---------------------------------------------------------------
 
 @mcp.tool(name="koan_yield")
@@ -605,20 +649,26 @@ async def koan_yield(
             agent_id=agent.agent_id,
         )
 
-        # Check for already-buffered messages (user typed before we yielded)
-        messages = drain_user_messages(_app_state) + drain_steering_messages(_app_state)
+        if _app_state.yolo:
+            # Resolve immediately without blocking -- the projection event above
+            # already rendered the yield card in the UI; the synthesized response
+            # closes it on the next tick.
+            result_str = _yolo_yield_response(suggestions)
+        else:
+            # Check for already-buffered messages (user typed before we yielded)
+            messages = drain_user_messages(_app_state) + drain_steering_messages(_app_state)
 
-        if not messages:
-            loop = asyncio.get_running_loop()
-            future = loop.create_future()
-            _app_state.yield_future = future
+            if not messages:
+                loop = asyncio.get_running_loop()
+                future = loop.create_future()
+                _app_state.yield_future = future
 
-            await future  # yields to event loop; POST /api/chat resolves it
+                await future  # yields to event loop; POST /api/chat resolves it
 
-            _app_state.yield_future = None
-            messages = drain_user_messages(_app_state)
+                _app_state.yield_future = None
+                messages = drain_user_messages(_app_state)
 
-        result_str = format_user_messages(messages) if messages else "No message received."
+            result_str = format_user_messages(messages) if messages else "No message received."
         result_str = _drain_and_append_steering(result_str, agent)
         return result_str
     finally:
@@ -867,6 +917,11 @@ async def koan_ask_question(questions: list[dict] | None = None) -> str:
         assert _app_state is not None
 
         future = await enqueue_interaction(agent, _app_state, "ask", {"questions": questions or []})
+        if _app_state.yolo:
+            # Resolve the future synchronously before awaiting so it returns on
+            # the next event-loop tick without ever blocking on a POST /api/interact.
+            # Safe: no external POST can race this within the same coroutine frame.
+            future.set_result(_yolo_ask_answer(questions or []))
         result = await future
 
         if isinstance(result, dict) and "error" in result:
