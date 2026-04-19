@@ -1,0 +1,45 @@
+.tsb {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* ---- Header row (dot + name + op count) ---- */
+.tsb-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tsb-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.tsb-opcount {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+/* ---- Meta lines (aligned under the tool name, past the dot) ---- */
+.tsb-meta {
+  display: flex;
+  flex-direction: column;
+  padding-left: 16px;
+}
+
+.tsb-meta-line {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+/* ---- Active variant ---- */
+.tsb--active .tsb-name {
+  color: var(--color-orange);
+}

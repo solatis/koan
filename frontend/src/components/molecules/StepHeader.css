@@ -1,0 +1,19 @@
+.sh {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sh-label {
+  font-size: var(--type-step-indicator);
+  font-weight: 500;
+}
+
+.sh-label--active  { color: var(--color-orange); }
+.sh-label--complete { color: var(--color-teal); }
+
+.sh-name {
+  font-size: var(--type-step-header);
+  font-weight: 500;
+  color: var(--text-primary);
+}

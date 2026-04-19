@@ -1,0 +1,48 @@
+.fi {
+  position: relative;
+  background: var(--bg-card);
+  border: 1.5px solid var(--border-input);
+  border-radius: var(--radius-xl);
+  padding: var(--padding-input);
+}
+
+.fi--focused {
+  border-color: var(--color-orange);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.fi--disabled {
+  opacity: 0.5;
+}
+
+/* ---- Textarea ---- */
+.fi-textarea {
+  display: block;
+  width: 100%;
+  border: none;
+  background: transparent;
+  font-family: var(--font-body);
+  font-size: var(--type-body);
+  color: var(--text-primary);
+  line-height: 1.5;
+  resize: vertical;
+  outline: none;
+  min-height: 40px;
+}
+
+.fi-textarea::placeholder {
+  color: var(--text-placeholder);
+}
+
+/* ---- Footer row ---- */
+.fi-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 10px;
+}
+
+.fi-hint {
+  font-size: 11px;
+  color: var(--text-hint);
+}

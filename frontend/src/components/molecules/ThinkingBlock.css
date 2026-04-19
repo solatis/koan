@@ -1,0 +1,69 @@
+.thinking-block {
+  background: var(--bg-thinking);
+  border-radius: var(--radius-xl);
+  padding: 16px 20px;
+}
+
+/* ---- Label row ---- */
+.thinking-block__header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  margin-bottom: 8px;
+}
+
+/* Collapsed: remove bottom margin since there's no body */
+.thinking-block__body ~ .thinking-block__header,
+.thinking-block:not(:has(.thinking-block__body)) .thinking-block__header {
+  margin-bottom: 0;
+}
+
+/* Navy circle with inner lavender dot */
+.thinking-block__icon {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-circle);
+  background: var(--color-navy);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.thinking-block__icon-inner {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-circle);
+  background: #b8b0d0; /* lavender inner dot — derived from thinking palette */
+}
+
+.thinking-block__label {
+  font-size: var(--type-label);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-thinking-label);
+}
+
+.thinking-block__toggle {
+  font-size: 10px;
+  color: var(--text-thinking-label);
+  margin-left: auto;
+}
+
+/* ---- Body ---- */
+.thinking-block__body {
+  font-size: var(--type-body);
+  color: var(--text-thinking);
+  line-height: 1.65;
+}
+
+.thinking-block__body p {
+  margin: 0 0 8px 0;
+}
+
+.thinking-block__body p:last-child {
+  margin-bottom: 0;
+}

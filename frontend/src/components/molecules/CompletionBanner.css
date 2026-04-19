@@ -1,0 +1,17 @@
+.cb {
+  border-radius: var(--radius-xl);
+  padding: 14px;
+  text-align: center;
+  font-size: var(--type-body);
+}
+
+.cb--success {
+  background: var(--bg-completion);
+  color: var(--text-completion);
+}
+
+.cb--error {
+  background: var(--bg-base);
+  color: var(--status-failed);
+  border: 1px solid var(--status-failed);
+}

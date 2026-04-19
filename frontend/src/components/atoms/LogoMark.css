@@ -1,0 +1,25 @@
+.logo-mark {
+  position: relative;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.logo-mark__orange {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-circle);
+  background: var(--color-orange);
+}
+
+.logo-mark__teal {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-circle);
+  background: var(--color-teal);
+}

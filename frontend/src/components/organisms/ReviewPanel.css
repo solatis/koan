@@ -1,0 +1,197 @@
+/* ReviewPanel -- full-width artifact review surface.
+   Card with header / scrollable body / footer. */
+
+.rp {
+  background: var(--bg-card);
+  border-radius: var(--radius-2xl);
+  border: 0.5px solid var(--border-card);
+  border-top: 3px solid var(--color-orange);
+  display: flex;
+  flex-direction: column;
+  max-height: 100%;
+  min-height: 0;
+}
+
+.rp-spacer {
+  flex: 1;
+}
+
+/* ---------- Header ---------- */
+
+.rp-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 24px;
+  border-bottom: 0.5px solid var(--border-divider-light);
+  flex-shrink: 0;
+}
+
+.rp-label {
+  font-family: var(--font-body);
+  font-size: var(--type-label);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--color-orange);
+}
+
+.rp-path {
+  font-family: var(--font-mono);
+  font-size: var(--type-tool-type);
+  color: var(--text-muted);
+}
+
+.rp-badge {
+  font-family: var(--font-body);
+  font-size: var(--type-badge);
+  color: var(--text-muted);
+  padding: 2px 10px;
+  background: var(--bg-tool-row);
+  border-radius: var(--radius-pill);
+}
+
+.rp-badge-new {
+  font-family: var(--font-body);
+  font-size: var(--type-badge);
+  color: var(--color-orange);
+  font-weight: 500;
+  padding: 2px 8px;
+  background: var(--bg-selected);
+  border: 0.5px solid var(--color-orange);
+  border-radius: var(--radius-pill);
+}
+
+/* ---------- Body + markdown typography ---------- */
+
+.rp-body {
+  padding: 20px 24px 12px 24px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.rp-body h1 {
+  font-size: 20px;
+  font-weight: 500;
+  margin: 4px 0 12px 0;
+  letter-spacing: -0.3px;
+  color: var(--text-primary);
+}
+
+.rp-body h2 {
+  font-size: var(--type-section-title);
+  font-weight: 500;
+  margin: 24px 0 8px 0;
+  color: var(--text-primary);
+}
+
+.rp-body h3 {
+  font-size: var(--type-body);
+  font-weight: 500;
+  margin: 16px 0 6px 0;
+  color: var(--text-primary);
+}
+
+.rp-body p {
+  font-size: var(--type-body);
+  line-height: 1.65;
+  margin: 6px 0;
+  color: var(--text-body);
+}
+
+.rp-body ul,
+.rp-body ol {
+  font-size: var(--type-body);
+  line-height: 1.65;
+  margin: 6px 0 6px 20px;
+  color: var(--text-body);
+}
+
+.rp-body li {
+  margin: 3px 0;
+}
+
+.rp-body code {
+  font-family: var(--font-mono);
+  font-size: var(--type-tool-type);
+  background: var(--bg-tool-row);
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+}
+
+.rp-body pre {
+  background: var(--color-navy);
+  color: var(--text-on-dark);
+  padding: 14px 18px;
+  border-radius: var(--radius-lg);
+  font-family: var(--font-mono);
+  font-size: var(--type-tool-type);
+  line-height: 1.6;
+  margin: 8px 0;
+  overflow-x: auto;
+}
+
+.rp-body pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  color: inherit;
+}
+
+/* ---------- Footer ---------- */
+
+.rp-footer {
+  border-top: 0.5px solid var(--border-divider-light);
+  padding: 16px 24px;
+  flex-shrink: 0;
+}
+
+.rp-footer-label {
+  font-family: var(--font-body);
+  font-size: var(--type-label);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.rp-footer-ta {
+  width: 100%;
+  min-height: 52px;
+  padding: 10px 14px;
+  border: 1.5px solid var(--border-input);
+  border-radius: var(--radius-lg);
+  font-family: var(--font-body);
+  font-size: var(--type-breadcrumb);
+  line-height: 1.5;
+  color: var(--text-body);
+  background: var(--bg-card);
+  resize: vertical;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.rp-footer-ta::placeholder {
+  color: var(--text-placeholder);
+}
+
+.rp-footer-ta:focus {
+  border-color: var(--color-orange);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.rp-footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.rp-footer-hint {
+  font-family: var(--font-body);
+  font-size: var(--type-label);
+  color: var(--text-hint);
+}

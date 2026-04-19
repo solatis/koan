@@ -1,0 +1,12 @@
+# Koan project worktree hooks
+# Docs: https://worktrunk.dev/hook/
+
+[post-create]
+deps = "uv sync --dev"
+
+[post-start]
+copy = "wt step copy-ignored"
+
+[pre-merge]
+check = "uv run ruff check ."
+test = "uv run pytest"

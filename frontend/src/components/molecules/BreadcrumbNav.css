@@ -1,0 +1,29 @@
+.bcn {
+  display: flex;
+  align-items: center;
+}
+
+.bcn-phase {
+  font-size: var(--type-breadcrumb);
+  color: var(--text-on-dark-muted);
+  font-weight: 400;
+}
+
+.bcn-chevron {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  margin: 0 6px;
+}
+
+.bcn-step {
+  font-size: var(--type-breadcrumb);
+  color: var(--text-on-dark);
+  font-weight: 500;
+}
+
+.bcn-segments {
+  display: flex;
+  gap: var(--gap-progress-segments);
+  margin-left: 12px;
+}

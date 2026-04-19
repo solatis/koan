@@ -1,0 +1,63 @@
+.ac {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: var(--padding-artifact);
+  background: var(--bg-card-warm);
+  border-radius: var(--radius-lg);
+  border: 0.5px solid var(--border-divider);
+  transition: background var(--duration-fast) var(--ease-default),
+              border-color var(--duration-fast) var(--ease-default),
+              outline-color var(--duration-fast) var(--ease-default);
+}
+
+.ac--clickable {
+  cursor: pointer;
+}
+
+.ac--clickable:hover {
+  background: var(--bg-selected);
+}
+
+.ac--active {
+  background: var(--bg-selected);
+  outline: 0.5px solid var(--color-orange);
+  outline-offset: -0.5px;
+}
+
+/* ---- Icon square ---- */
+.ac-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-lg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.ac-icon--recent { background: var(--color-navy); }
+.ac-icon--stable { background: var(--color-teal); }
+
+/* ---- Text column ---- */
+.ac-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.ac-filename {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ac-time {
+  font-size: var(--type-timestamp);
+  color: var(--text-artifact-time);
+  margin-top: 1px;
+}

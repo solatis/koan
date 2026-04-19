@@ -1,0 +1,290 @@
+.nrf {
+  max-width: var(--form-max-width);
+  margin: 0 auto;
+  padding: var(--form-page-padding);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-form-sections);
+}
+
+/* Button should not stretch to full width in a flex column */
+.nrf > .atom-btn {
+  align-self: flex-start;
+}
+
+/* ---- Header ---- */
+.nrf-header {
+  display: flex;
+  flex-direction: column;
+}
+
+.nrf-title {
+  font-size: var(--type-page-title);
+  font-weight: 500;
+  color: var(--text-primary);
+  letter-spacing: -0.5px;
+  margin: 0 0 6px;
+}
+
+.nrf-project {
+  font-size: 13px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+/* ---- Card sections ---- */
+.nrf-card {
+  background: var(--bg-card);
+  border-radius: var(--radius-2xl);
+  border: 0.5px solid var(--border-card);
+  padding: var(--padding-card-form);
+}
+
+/* ---- Workflow selection ---- */
+.nrf-wf-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.nrf-wf-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px; /* slightly more than --padding-radio for the larger card feel */
+  border-radius: var(--radius-xl);
+  border: 1.5px solid var(--border-radio);
+  background: var(--bg-card);
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+}
+
+.nrf-wf-option--selected {
+  border: 2px solid var(--color-orange);
+  background: var(--bg-selected);
+}
+
+.nrf-wf-option--disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Radio circle */
+.nrf-wf-radio {
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-circle);
+  border: 2px solid var(--border-input);
+  flex-shrink: 0;
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.nrf-wf-radio--selected {
+  border-color: var(--color-orange);
+}
+
+.nrf-wf-radio-inner {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-circle);
+  background: var(--color-orange);
+}
+
+.nrf-wf-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nrf-wf-name {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nrf-wf-desc {
+  font-size: 13px;
+  color: var(--text-subtle);
+  line-height: 1.4;
+}
+
+/* ---- Description ---- */
+.nrf-helper {
+  font-size: 13px;
+  color: var(--text-subtle);
+  margin: 8px 0 10px;
+}
+
+.nrf-textarea {
+  display: block;
+  width: 100%;
+  min-height: 80px;
+  padding: 12px 14px;
+  background: var(--bg-base);
+  border: 1.5px solid var(--border-input);
+  border-radius: var(--radius-lg);
+  font-family: var(--font-body);
+  font-size: var(--type-body);
+  color: var(--text-primary);
+  line-height: 1.5;
+  resize: vertical;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.nrf-textarea:focus {
+  border-color: var(--color-orange);
+}
+
+/* ---- Configuration ---- */
+.nrf-config-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  margin-top: 12px;
+}
+
+.nrf-field-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+
+/* Select-style div */
+.nrf-select {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--bg-base);
+  border: 1.5px solid var(--border-input);
+  border-radius: var(--radius-lg);
+  font-family: var(--font-mono);
+  font-size: var(--type-body);
+  color: var(--text-primary);
+}
+
+.nrf-select--flex {
+  flex: 1;
+}
+
+/* Agent row */
+.nrf-agent-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.nrf-agent-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.nrf-agent-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: var(--bg-thinking); /* lavender — agents are "thinking entities" */
+  border-radius: var(--radius-md);
+  flex-shrink: 0;
+}
+
+.nrf-agent-name {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-thinking); /* dark purple — ties to thinking/agent palette */
+}
+
+/* Scout concurrency */
+.nrf-concurrency-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.nrf-concurrency-input {
+  width: 60px;
+  padding: 10px 14px;
+  background: var(--bg-base);
+  border: 1.5px solid var(--border-input);
+  border-radius: var(--radius-lg);
+  font-family: var(--font-mono);
+  font-size: var(--type-body);
+  color: var(--text-primary);
+  text-align: center;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.nrf-concurrency-input:focus {
+  border-color: var(--color-orange);
+}
+
+.nrf-concurrency-hint {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* ---- Real select dropdown (replaces static display div) ---- */
+.nrf-real-select {
+  display: block;
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--bg-base);
+  border: 1.5px solid var(--border-input);
+  border-radius: var(--radius-lg);
+  font-family: var(--font-mono);
+  font-size: var(--type-body);
+  color: var(--text-primary);
+  outline: none;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%239a8e7e' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  padding-right: 36px;
+}
+
+.nrf-real-select:focus {
+  border-color: var(--color-orange);
+}
+
+.nrf-real-select--flex {
+  flex: 1;
+}
+
+.nrf-real-select--sm {
+  font-size: 13px;
+}
+
+.nrf-real-select option {
+  background: var(--bg-surface);
+  color: var(--text-body);
+}
+
+/* ---- Error message ---- */
+.nrf-error {
+  font-size: var(--type-breadcrumb);
+  color: var(--status-failed);
+}
+
+/* ---- Missing agent warning ---- */
+.nrf-missing {
+  font-family: var(--font-mono);
+  font-size: var(--type-label);
+  color: var(--status-failed);
+}

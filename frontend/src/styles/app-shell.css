@@ -1,0 +1,120 @@
+/* App shell layout — the page frame for all views */
+
+.app-root {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg-base);
+}
+
+/* Two-column workflow grid: content + sidebar */
+.workflow-grid {
+  flex: 1;
+  min-height: 0;
+  max-width: 1400px;
+  margin: 0 auto;
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 260px;
+}
+
+/* Left column of the workflow grid — scrollable content stream */
+.content-column {
+  overflow-y: auto;
+  padding: 28px 32px;
+  container-type: inline-size; /* enables @container queries for children */
+}
+
+/* Flex column for content stream items with standard gap */
+.content-stream {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-content);
+}
+
+/* When the command palette is open, fade all stream entries except the
+   last child (FeedbackInput) so focus goes to the input + palette. */
+.content-stream--faded > *:not(:last-child) {
+  opacity: 0.35;
+  transition: opacity var(--duration-fast) var(--ease-default);
+}
+
+/* Group consecutive tool call rows with tight spacing */
+.tool-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-tool-rows);
+}
+
+/* Single column layout — used for landing page, completion, loading */
+.single-column {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--bg-base);
+}
+
+/* Centered loading indicator */
+.loading-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-family: var(--font-mono);
+  font-size: var(--type-breadcrumb);
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+}
+
+/* Thinking indicator (no content yet) */
+.thinking-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: var(--type-breadcrumb);
+  color: var(--text-muted);
+  padding: 8px 0;
+  margin-top: 8px;
+}
+
+/* Pulsing dot animation */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
+
+.pulse-dot {
+  color: var(--color-orange);
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+/* Streaming cursor */
+.stream-cursor {
+  display: inline-block;
+  width: 6px;
+  height: 14px;
+  background: var(--color-orange);
+  border-radius: 1px;
+  vertical-align: text-bottom;
+  margin-left: 2px;
+  animation: cursor-blink 1s step-end infinite;
+}
+
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* Waiting state */
+.waiting-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+  color: var(--text-muted);
+  font-size: var(--type-prose);
+}
+
+

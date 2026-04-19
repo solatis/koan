@@ -1,0 +1,52 @@
+.sgp-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.sgp {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-step-guidance);
+  border-radius: var(--radius-lg);
+  padding: var(--padding-step-guidance);
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+/* ---- Dot ---- */
+.sgp-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-circle);
+  flex-shrink: 0;
+}
+
+.sgp-dot--active   { background: var(--color-orange); }
+.sgp-dot--complete { background: var(--color-teal); }
+
+/* ---- Label ---- */
+.sgp-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-subtle);
+}
+
+/* ---- Chevron ---- */
+.sgp-chevron {
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  transition: transform var(--duration-fast) var(--ease-default);
+}
+
+.sgp-chevron--up {
+  transform: rotate(180deg);
+}
+
+/* ---- Expanded content ---- */
+.sgp-content {
+  margin-top: 12px;
+}

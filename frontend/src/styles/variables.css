@@ -1,0 +1,306 @@
+/* ==========================================================================
+ * Koan Design Tokens
+ * ==========================================================================
+ * Source of truth: docs/design-system.md
+ * This file defines ALL visual tokens. Components reference var(--token)
+ * exclusively — no raw hex, px, or font-family values in component CSS.
+ * ========================================================================== */
+
+
+/* --------------------------------------------------------------------------
+ * TOKEN MIGRATION MAP
+ * --------------------------------------------------------------------------
+ * Old token                → New token(s)
+ *
+ * --bg                     → --bg-base
+ * --bg-surface             → --bg-surface
+ * --bg-elevated            → --bg-card
+ * --bg-inset               → --bg-tool-row  (closest equivalent)
+ * --bg-muted               → --bg-tool-row  (was undefined; used in markdown.css)
+ *
+ * --text                   → --text-body
+ * --text-strong            → --text-primary
+ * --text-muted             → --text-muted  (same name, new value)
+ * --text-ghost             → --text-placeholder  or  --text-hint
+ *
+ * --border                 → --border-card
+ * --border-strong          → --border-input
+ *
+ * --green                  → --status-done  /  --color-teal
+ * --green-bg               → --bg-completion
+ * --green-border           → --color-teal  (border usage)
+ * --copper                 → --color-orange  /  --status-running
+ * --copper-bg              → --bg-selected
+ * --copper-border          → --color-orange  (border usage)
+ * --caramel                → --color-orange  (no separate caramel in new system)
+ * --caramel-bg             → --bg-selected
+ * --caramel-border         → --color-orange
+ * --red                    → --status-failed
+ * --red-bg                 → (no equivalent bg; use light tint or --bg-base)
+ * --red-border             → --status-failed
+ * --ochre                  → --color-orange  (warning/in-flight → orange)
+ * --ochre-bg               → --bg-selected
+ * --ochre-border           → --color-orange
+ * --plum                   → --text-thinking-label  /  --color-navy
+ * --plum-bg                → --bg-thinking
+ *
+ * --font-sans              → --font-body
+ * --font-mono              → --font-mono  (same name, updated stack)
+ * (new)                    → --font-display  (serif, logo only)
+ *
+ * --font-size-xs (11px)    → --type-label (11px)
+ * --font-size-sm (13px)    → --type-breadcrumb (13px)
+ * --font-size-md (15px)    → --type-prose (15px)
+ * --font-size-lg (17px)    → --type-section-title (17px)
+ * --font-size-xl (22px)    → (removed; closest --type-page-title 26px)
+ * --font-size-display(28px)→ (removed; closest --type-page-title 26px)
+ *
+ * --space-1 (4px)          → --gap-tool-rows (3px)  (closest)
+ * --space-2 (8px)          → (component-specific padding tokens)
+ * --space-4 (16px)         → (component-specific padding/gap tokens)
+ * --space-6 (24px)         → --padding-card-form  /  --gap-form-sections
+ * --space-8 (32px)         → --page-padding
+ * --space-12 (48px)        → (removed)
+ * --space-16 (64px)        → (removed)
+ *
+ * --radius-sm (6px)        → --radius-md (6px)
+ * --radius-md (10px)       → --radius-xl (10px)
+ * --radius-lg (14px)       → --radius-2xl (12px)
+ *
+ * --duration-fast (150ms)  → --duration-fast (preserved)
+ * --duration-normal (250ms)→ --duration-normal (preserved)
+ * --duration-slow (400ms)  → --duration-slow (preserved)
+ * --ease-default (ease-out)→ --ease-default (preserved)
+ *
+ * --header-height (56px)   → --header-height (50px)
+ * --monitor-min-height     → (removed; scout bar is auto-sized)
+ * -------------------------------------------------------------------------- */
+
+
+/* --------------------------------------------------------------------------
+ * HARDCODED VALUES TO MIGRATE
+ * --------------------------------------------------------------------------
+ * These raw values appear in component CSS files and should eventually be
+ * replaced with token references during the component migration step.
+ *
+ * layout.css line 343:   rgba(188, 108, 37, 0.08) → focus ring, derive from --color-orange
+ * layout.css line 680:   #fff → white text on status bg → --text-on-dark or explicit white token
+ * layout.css line 693:   rgba(42, 31, 20, 0.5)    → overlay backdrop → define --overlay-backdrop
+ * layout.css line 49:    font-size: 20px           → logo size → --type-logo (17px)
+ * layout.css line 76:    max-width: 960px          → content max-width → --form-max-width or layout token
+ * layout.css line 9:     max-width: 1600px         → app max-width → layout token
+ *
+ * components.css line 455: #fff          → checkbox check color → white on accent
+ * components.css line 602: #fff          → primary button text  → white on accent
+ * components.css line 691: #fff          → notification text    → --text-on-dark
+ * components.css line 783: %23957E68     → SVG chevron stroke   → derive from --text-muted
+ * components.css line 836: rgba(78, 122, 66, 0.12) → result flash → derive from --color-teal
+ * components.css line 1097: rgba(42, 31, 20, 0.5)  → settings backdrop → --overlay-backdrop
+ * components.css line 1568: %23957E68   → SVG chevron stroke    → derive from --text-muted
+ *
+ * SettingsOverlay.tsx line 158:  marginTop: 12      → spacing token
+ * SettingsOverlay.tsx line 282:  padding/fontSize    → token refs
+ * SettingsOverlay.tsx line 299:  marginTop: 12       → spacing token
+ * SettingsOverlay.tsx line 472:  marginTop: 24       → spacing token
+ * SettingsOverlay.tsx line 576:  marginTop: 24       → spacing token
+ * Completion.tsx line 33:       color: 'var(--red)'  → --status-failed
+ * -------------------------------------------------------------------------- */
+
+
+:root {
+
+  /* ===== Core Colors ===== */
+  --color-navy:                #2e3a5e;
+  --color-orange:              #d4775a;
+  --color-orange-hover:        #c06a4f;
+  --color-teal:                #5a9a8a;
+
+
+  /* ===== Background Surfaces ===== */
+  --bg-base:                   #f8f6f2;
+  --bg-surface:                #f3efe8;
+  --bg-card:                   #ffffff;
+  --bg-tool-row:               #f0ede6;
+  --bg-thinking:               #eae5f2;
+  --bg-step-guidance:          #efece6;
+  --bg-completion:             #e8f5ee;
+  --bg-selected:               #fdf8f5;
+  --bg-danger:                 #fce8e8;
+  --bg-toggle-off:             #d3d1c7;
+
+
+  /* ===== Text Colors (light backgrounds) ===== */
+  --text-primary:              #2e3a5e;
+  --text-body:                 #4a4a5a;
+  --text-muted:                #9a8e7e;
+  --text-subtle:               #7a6e60;
+  --text-placeholder:          #b0a498;
+  --text-hint:                 #c8baa8;
+  --text-thinking:             #3a3460;
+  --text-thinking-label:       #5a5080;
+  --text-completion:           #2a6a4a;
+  --text-artifact-time:        #a89888;
+  --text-danger:               #791f1f;
+  --text-danger-body:          #a03030;
+
+
+  /* ===== Text Colors (dark backgrounds — header, scout bar) ===== */
+  --text-on-dark:              #f0e8d8;
+  --text-on-dark-muted:        rgba(240, 232, 216, 0.55);
+  --text-on-dark-subtle:       rgba(240, 232, 216, 0.4);
+  --text-on-dark-faint:        rgba(255, 255, 255, 0.15);
+  --text-on-dark-scouts-muted: rgba(240, 232, 216, 0.45);
+
+
+  /* ===== Border Colors ===== */
+  --border-card:               #eae6e0;
+  --border-input:              #c8c0b4;
+  --border-radio:              #e0d8cc;
+  --border-divider:            #e8e2d8;
+  --border-divider-light:      #f0ebe4;
+  --border-danger:             #e8c8c8;
+  --border-teal:               #b8d8cc;
+
+
+  /* ===== Semantic Status Colors ===== */
+  --status-running:            #d4775a;
+  --status-done:               #5a9a8a;
+  --status-queued:             #b8aca0;
+  --status-failed:             #c44;
+
+
+  /* ===== Tool Family Indicator Colors ===== */
+  --dot-read:                  #5a9a8a;
+  --dot-grep:                  #7ab0a0;
+  --dot-ls:                    #4a8878;
+
+
+  /* ===== Font Families ===== */
+  --font-display:              Georgia, "Times New Roman", serif;
+  --font-body:                 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono:                 "SF Mono", "Fira Code", "Cascadia Code", monospace;
+
+
+  /* ===== Type Scale (font-size values only) ===== */
+  --type-page-title:           26px;
+  --type-logo:                 17px;
+  --type-section-title:        17px;
+  --type-step-header:          16px;
+  --type-prose:                15px;
+  --type-body:                 14px;
+  --type-step-indicator:       14px;
+  --type-breadcrumb:           13px;
+  --type-tool-type:            12px;
+  --type-tool-path:            12px;
+  --type-label:                11px;
+  --type-badge:                10px;
+  --type-timestamp:            10px;
+
+
+  /* ===== Spacing — Page-level ===== */
+  --page-padding:              28px 32px;
+  --sidebar-padding:           20px 16px;
+  --header-height:             50px;
+  --form-max-width:            640px;
+  --form-page-padding:         40px 24px;
+  --settings-nav-width:        152px;
+  --settings-max-width:        960px;
+
+
+  /* ===== Spacing — Component Gaps ===== */
+  --gap-content:               20px;
+  --gap-tool-rows:             3px;
+  --gap-artifact-cards:        10px;
+  --gap-form-sections:         28px;
+  --gap-radio-options:         10px;
+  --gap-scout-summary:         16px;
+  --gap-progress-segments:     3px;
+  --gap-entity-rows:           8px;
+  --gap-form-rows:             12px;
+  --gap-form-controls:         8px;
+
+
+  /* ===== Spacing — Component Internal Padding ===== */
+  --padding-card:              14px 20px;
+  --padding-card-form:         20px 24px;
+  --padding-tool-row:          7px 14px;
+  --padding-step-guidance:     8px 16px;
+  --padding-artifact:          10px 12px;
+  --padding-scout-bar:         14px 24px;
+  --padding-scout-row:         8px 14px;
+  --padding-input:             14px 18px;
+  --padding-radio:             12px 14px;
+  --padding-card-settings:     22px 26px;
+  --padding-entity-row:        12px 16px;
+  --padding-inline-form:       22px 26px;
+
+
+  /* ===== Border Radius ===== */
+  --radius-sm:                 3px;
+  --radius-md:                 6px;
+  --radius-lg:                 8px;
+  --radius-xl:                 10px;
+  --radius-2xl:                12px;
+  --radius-pill:               20px;
+  --radius-circle:             50%;
+
+
+  /* ===== Preserved from Original ===== */
+  /* Motion tokens — not redefined in the new design system; kept as-is */
+  --duration-fast:             150ms;
+  --duration-normal:           250ms;
+  --duration-slow:             400ms;
+  --ease-default:              ease-out;
+
+
+  /* ===== Derived Tokens ===== */
+  /* These are not in the design system doc but are needed by component CSS.
+   * Each is derived from a core token or replaces a hardcoded value. */
+  --overlay-backdrop:          rgba(46, 58, 94, 0.45);  /* navy-tinted translucent backdrop for modals/overlays */
+  --focus-ring:                rgba(212, 119, 90, 0.12); /* orange-derived focus ring glow */
+  --flash-teal:                rgba(90, 154, 138, 0.12); /* teal-derived result flash animation */
+  --bg-card-warm:              #faf8f4;                  /* slightly warmer white for artifact cards, scout table interior (from design-system.md) */
+}
+
+
+/* ===== Global Reset (preserved) ===== */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg-base);
+  color: var(--text-body);
+  font-family: var(--font-body);
+  font-size: var(--type-prose);
+  line-height: 1.7;
+}
+
+/* ===== Scrollbar Styling (updated to new palette) ===== */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-input) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-input);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}

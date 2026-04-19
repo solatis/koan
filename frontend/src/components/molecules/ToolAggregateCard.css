@@ -1,0 +1,90 @@
+.tac {
+  background: var(--bg-card);
+  border: 0.5px solid var(--border-card);
+  border-left: 3px solid var(--color-orange);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+}
+
+/* ---- Header ---- */
+.tac-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 18px 9px 18px;
+  border-bottom: 1px solid var(--border-divider-light);
+}
+
+.tac-label {
+  font-size: var(--type-tool-type);
+  color: var(--text-muted);
+  letter-spacing: 0.3px;
+}
+
+.tac-count {
+  font-size: var(--type-body);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.tac-spacer {
+  flex: 1;
+}
+
+/* ---- Running indicator (header, when runningLabel is set) ---- */
+.tac-running {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.tac-running-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-circle);
+  background: var(--status-running);
+  animation: tac-pulse 1.5s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+.tac-running-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-orange);
+}
+
+/* ---- Elapsed (header, optional) ---- */
+.tac-elapsed {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-hint);
+  padding-left: 8px;
+}
+
+/* ---- Body (two-pane grid) ---- */
+.tac-body {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+}
+
+.tac-stats-pane {
+  background: var(--bg-card-warm);
+  border-right: 1px solid var(--border-divider-light);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tac-log-pane {
+  padding: 11px 18px 11px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+}
+
+@keyframes tac-pulse {
+  0%, 100% { opacity: 0.3; }
+  50%      { opacity: 1; }
+}

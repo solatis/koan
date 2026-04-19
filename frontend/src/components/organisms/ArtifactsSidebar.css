@@ -1,0 +1,27 @@
+.asb {
+  width: 260px;
+  flex-shrink: 0;
+  background: var(--bg-surface);
+  border-left: 1px solid var(--border-divider);
+  padding: var(--sidebar-padding);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.asb-header {
+  margin-bottom: 4px;
+}
+
+.asb-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-artifact-cards);
+}
+
+.asb-empty {
+  font-size: 12px;
+  color: var(--text-artifact-time);
+  text-align: center;
+  padding: 20px 0;
+}

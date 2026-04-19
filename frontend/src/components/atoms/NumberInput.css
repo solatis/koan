@@ -1,0 +1,23 @@
+.atom-number-input {
+  width: 48px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--bg-base);
+  border: 1.5px solid var(--border-input);
+  border-radius: var(--radius-lg);
+  padding: 8px 0;
+  outline: none;
+  transition: border-color var(--duration-fast) var(--ease-default);
+}
+
+.atom-number-input:focus {
+  border-color: var(--color-orange);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.atom-number-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

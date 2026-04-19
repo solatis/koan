@@ -1,0 +1,51 @@
+.prose-card {
+  background: var(--bg-card);
+  border: 0.5px solid var(--border-card);
+  border-left: 3px solid var(--color-orange);
+  border-radius: var(--radius-xl);
+  padding: var(--padding-card);
+  font-size: var(--type-prose);
+  color: var(--text-primary);
+  line-height: 1.7;
+}
+
+/* Paragraph spacing within prose */
+.prose-card p {
+  margin: 0 0 12px 0;
+}
+
+.prose-card p:last-child {
+  margin-bottom: 0;
+}
+
+/* Inline code inside prose */
+.prose-card code {
+  background: var(--bg-tool-row);
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  color: var(--text-primary);
+}
+
+/* Lists */
+.prose-card ul,
+.prose-card ol {
+  margin: 0 0 12px 0;
+  padding-left: 1.5em;
+}
+
+.prose-card ul:last-child,
+.prose-card ol:last-child {
+  margin-bottom: 0;
+}
+
+.prose-card li {
+  margin: 2px 0;
+}
+
+/* Bold text */
+.prose-card strong {
+  font-weight: 500;
+  color: var(--text-primary);
+}

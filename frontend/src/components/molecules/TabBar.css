@@ -1,0 +1,29 @@
+.tab-bar {
+  display: flex;
+  gap: 20px;
+  border-bottom: 1px solid var(--border-divider);
+  margin-bottom: 18px;
+}
+
+.tab-bar-tab {
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-muted);
+  padding-bottom: 8px;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px; /* overlaps container border so active underline sits ON divider */
+  cursor: pointer;
+  user-select: none;
+  transition: color var(--duration-fast) var(--ease-default);
+}
+
+.tab-bar-tab:hover {
+  color: var(--text-subtle);
+}
+
+.tab-bar-tab--active {
+  color: var(--text-primary);
+  font-weight: 500;
+  border-bottom-color: var(--color-orange);
+}

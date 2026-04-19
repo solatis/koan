@@ -1,0 +1,40 @@
+.stb {
+  background: var(--bg-selected);
+  border-left: 3px solid var(--color-orange);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  margin: 8px 0;
+  overflow: hidden;
+}
+
+.stb-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  font-family: var(--font-mono);
+  font-size: var(--type-label);
+  color: var(--color-orange);
+}
+
+.stb-messages {
+  padding: 0 16px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.stb-msg {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--text-body);
+  font-size: var(--type-breadcrumb);
+  line-height: 1.4;
+}
+
+.stb-badge {
+  font-family: var(--font-mono);
+  font-size: var(--type-label);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}

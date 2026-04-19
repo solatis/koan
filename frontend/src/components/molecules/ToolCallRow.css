@@ -1,0 +1,86 @@
+.tcr {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-tool-row);
+  border-radius: var(--radius-md);
+  padding: var(--padding-tool-row);
+}
+
+/* ---- Status indicator column ---- */
+.tcr-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  flex-shrink: 0;
+}
+
+.tcr-check {
+  width: 13px;
+  height: 13px;
+}
+
+.tcr-running-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-circle);
+  background: var(--status-running);
+  animation: tcr-pulse 1.5s ease-in-out infinite;
+}
+
+.tcr-error-x {
+  font-size: 11px;
+  line-height: 1;
+  color: var(--status-failed);
+}
+
+/* ---- Type label ---- */
+.tcr-type {
+  font-size: var(--type-tool-type);
+  color: var(--text-muted);
+  min-width: 36px;
+  flex-shrink: 0;
+}
+
+/* ---- Command / path ---- */
+.tcr-command {
+  font-family: var(--font-mono);
+  font-size: var(--type-tool-path);
+  color: var(--text-body);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* ---- Metric (optional) ---- */
+.tcr-metric {
+  font-family: var(--font-mono);
+  font-size: var(--type-tool-path);
+  color: var(--text-muted);
+  flex-shrink: 0;
+  padding-left: 12px;
+}
+
+/* ---- Status variants ---- */
+.tcr--running {
+  opacity: 0.8;
+}
+
+.tcr--error {
+  background: var(--bg-tool-row);
+}
+
+.tcr--error .tcr-command {
+  color: var(--status-failed);
+}
+
+.tcr--error .tcr-metric {
+  color: var(--status-failed);
+}
+
+@keyframes tcr-pulse {
+  0%, 100% { opacity: 0.3; }
+  50%      { opacity: 1; }
+}

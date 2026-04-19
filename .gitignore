@@ -1,4 +1,14 @@
-node_modules/
-dist/
 .pi/
 .DS_Store
+
+.claude/
+plans/
+.env
+.env.*
+*.log
+
+# Frontend build output (committed source lives in frontend/src/)
+koan/web/static/app/
+frontend/node_modules/
+frontend/dist/
+__pycache__/

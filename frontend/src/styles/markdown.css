@@ -1,0 +1,158 @@
+/* Markdown rendered content — inherits font from parent context so the
+ * same <Md> component works in both muted thinking cards and primary
+ * text blocks without special-casing. */
+
+.markdown {
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+/* Vertical rhythm: consistent spacing between block elements */
+.markdown > :first-child { margin-top: 0; }
+.markdown > :last-child  { margin-bottom: 0; }
+
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4 {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  margin: 1em 0 0.4em;
+  line-height: 1.3;
+}
+
+.markdown h1 { font-size: 1.3em; }
+.markdown h2 { font-size: 1.15em; }
+.markdown h3 { font-size: 1.05em; }
+.markdown h4 { font-size: 1em; }
+
+.markdown p {
+  margin: 0.5em 0;
+}
+
+/* Inline code */
+.markdown code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--bg-tool-row);
+  border: 1px solid var(--border-card);
+  border-radius: 3px;
+  padding: 1px 4px;
+}
+
+/* Code blocks — override inline code styles */
+.markdown pre {
+  margin: 0.6em 0;
+  padding: 8px 16px;
+  background: var(--bg-tool-row);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+}
+
+.markdown pre code {
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  font-size: var(--type-breadcrumb);
+  line-height: 1.5;
+}
+
+/* Lists */
+.markdown ul,
+.markdown ol {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
+}
+
+.markdown li {
+  margin: 0.2em 0;
+}
+
+.markdown li > p {
+  margin: 0.2em 0;
+}
+
+/* Nested lists — tighter spacing */
+.markdown li ul,
+.markdown li ol {
+  margin: 0.1em 0;
+}
+
+/* Tables (via remark-gfm) */
+.markdown table {
+  border-collapse: collapse;
+  margin: 0.6em 0;
+  font-size: 0.9em;
+  width: auto;
+}
+
+.markdown th,
+.markdown td {
+  border: 1px solid var(--border-card);
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.markdown th {
+  background: var(--bg-tool-row);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* Blockquotes */
+.markdown blockquote {
+  margin: 0.5em 0;
+  padding: 2px 0 2px 16px;
+  border-left: 3px solid var(--border-input);
+  color: var(--text-muted);
+}
+
+.markdown blockquote p {
+  margin: 0.2em 0;
+}
+
+/* Horizontal rules */
+.markdown hr {
+  border: none;
+  border-top: 1px solid var(--border-card);
+  margin: 0.8em 0;
+}
+
+/* Links */
+.markdown a {
+  color: var(--color-orange);
+  text-decoration: underline;
+  text-decoration-color: var(--color-orange);
+  text-underline-offset: 2px;
+}
+
+.markdown a:hover {
+  color: var(--text-primary);
+}
+
+/* Task lists (via remark-gfm) */
+.markdown ul.contains-task-list {
+  list-style: none;
+  padding-left: 0;
+}
+
+.markdown li.task-list-item {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+/* Strong / emphasis */
+.markdown strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* Images — constrain to content width */
+.markdown img {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius-md);
+}

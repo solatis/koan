@@ -1,0 +1,82 @@
+.sb {
+  background: var(--color-navy);
+  flex-shrink: 0;
+}
+
+.sb-inner {
+  max-width: 1400px;
+  margin: 0 auto;
+  width: 100%;
+  padding: 14px 24px; /* horizontal matches header bar's .hb-inner for left/right edge alignment */
+}
+
+/* ---- Summary line ---- */
+.sb-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.sb-label {
+  font-size: var(--type-label);
+  font-weight: 500;
+  color: var(--text-on-dark-muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-right: 8px; /* extra space before counts */
+}
+
+.sb-counts {
+  display: flex;
+  gap: var(--gap-scout-summary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.sb-count-group {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+/* Zero-value: both number and label use muted text */
+.sb-count-num {
+  color: var(--text-on-dark-muted);
+  font-weight: 500;
+}
+
+.sb-count-word {
+  color: var(--text-on-dark-muted);
+}
+
+/* Non-zero: number gets full status color, label gets warm white */
+.sb-count-group--active .sb-count-word {
+  color: var(--text-on-dark);
+}
+
+.sb-count--running { color: var(--status-running); }
+.sb-count--queued  { color: var(--status-queued); }
+.sb-count--done    { color: var(--status-done); }
+.sb-count--failed  { color: var(--status-failed); }
+
+/* ---- Table card ---- */
+.sb-table {
+  background: var(--bg-card-warm);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.sb-table-header {
+  display: grid;
+  grid-template-columns: 20px 1fr 60px 50px 70px 1fr;
+  align-items: center;
+  padding: 6px 14px;
+  border-bottom: 0.5px solid var(--border-divider);
+  font-family: var(--font-mono);
+  font-size: var(--type-badge);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 500;
+}

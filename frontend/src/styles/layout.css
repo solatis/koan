@@ -1,0 +1,753 @@
+/* Single centred column. max-width keeps the entire UI (header, sidebar,
+ * feed, monitor) as one cohesive panel in the middle of the viewport.
+ * The body background fills the remaining viewport edges. */
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  max-width: 1600px;
+  margin: 0 auto;
+}
+
+/* Loading state -- shown before first SSE snapshot arrives */
+.loading-state {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.loading-label {
+  font-family: var(--font-mono);
+  font-size: var(--type-breadcrumb);
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+}
+
+/* Header -- normal flex child, not fixed. Stays at top because .app is a
+ * flex column with overflow:hidden; child areas scroll internally. */
+.header {
+  flex-shrink: 0;
+  height: var(--header-height);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+  background: var(--bg-base);
+  border-bottom: 1px solid var(--border-card);
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.logo {
+  font-family: var(--font-display);
+  font-size: var(--type-logo);
+  font-weight: 500;
+  color: var(--text-primary);
+  letter-spacing: -0.3px;
+}
+
+/* Main panel -- fills all remaining vertical space */
+.main-panel {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Phase content area -- scrollable, fills remaining space */
+.phase-content {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.phase-inner {
+  width: 100%;
+  max-width: 960px;
+}
+
+/* Activity feed -- fills remaining space in phase-content, scrollable */
+.activity-feed-scroll {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: overlay;
+  padding: 24px 32px;
+  /* Subtle fade at top when scrolled */
+  mask-image: linear-gradient(to bottom, transparent, black 8px, black);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, black 8px, black);
+}
+
+/* The feed inner container IS the white surface. Text and tool lines
+ * sit directly on it. Thinking cards break out with their own inset
+ * background — they're the exception, not the rule. */
+.activity-feed-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-2xl);
+  padding: 24px;
+}
+
+/* ---- Thinking card -- muted inset that visually recedes ---- */
+.activity-card {
+  background: var(--bg-thinking);
+  border-left: 3px solid var(--text-thinking-label);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  margin: 8px 0;
+  overflow: hidden;
+}
+
+.activity-card-active {
+  border-left-color: var(--color-orange);
+}
+
+.activity-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 16px;
+  font-family: var(--font-mono);
+  font-size: var(--type-label);
+}
+
+.activity-card-tool {
+  color: var(--text-thinking-label);
+}
+
+.activity-card-thinking .activity-card-tool {
+  color: var(--text-thinking-label);
+}
+
+.activity-card-debug {
+  background: var(--bg-selected);
+  border-left-color: var(--color-orange);
+}
+
+.activity-card-debug .activity-card-tool {
+  color: var(--color-orange);
+}
+
+.activity-card-toggle {
+  color: var(--text-muted);
+  font-size: var(--type-label);
+}
+
+.activity-card-meta {
+  color: var(--text-muted);
+  font-size: var(--type-label);
+}
+
+.activity-elapsed {
+  color: var(--text-muted);
+}
+
+.activity-card-body {
+  padding: 0 16px 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.activity-card-body:not(.expanded) {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.activity-card-more {
+  padding: 2px 16px 8px;
+  font-family: var(--font-mono);
+  font-size: var(--type-label);
+  color: var(--color-orange);
+  cursor: pointer;
+  user-select: none;
+}
+
+/* ---- Scout dispatch card ---- */
+
+.activity-card-scouts .activity-card-tool {
+  color: var(--color-orange);
+}
+
+.scout-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 16px 8px;
+}
+
+.scout-entry {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 8px;
+  font-family: var(--font-mono);
+  font-size: var(--type-label);
+  border-left: 2px solid var(--border-card);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+}
+
+/* Status-based accent bar colors -- synced with agent status convention */
+.scout-queued    { border-left-color: var(--text-muted); }
+.scout-running   { border-left-color: var(--color-orange); background: var(--bg-selected); }
+.scout-completed { border-left-color: var(--color-teal);      background: var(--bg-completion); }
+.scout-failed    { border-left-color: var(--status-failed);        background: var(--bg-base); }
+
+.scout-name {
+  color: var(--text-muted);
+  font-weight: 500;
+  min-width: 20ch;
+  flex-shrink: 0;
+}
+
+.scout-role {
+  color: var(--text-placeholder);
+}
+
+.activity-card-more:hover {
+  color: var(--text-primary);
+}
+
+.activity-line {
+  display: flex;
+  gap: var(--gap-tool-rows);
+  font-family: var(--font-mono);
+  font-size: var(--type-label);
+  color: var(--text-muted);
+  padding: 2px 0;
+  line-height: 1.4;
+  min-height: 18px;
+}
+
+.activity-line.activity-done {
+  color: var(--text-placeholder);
+}
+
+.activity-status {
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+}
+
+.activity-inflight .activity-status {
+  color: var(--color-orange);
+}
+
+.activity-done .activity-status {
+  color: var(--color-teal);
+  font-size: 10px;
+}
+
+.activity-tool {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  width: 42px;
+  white-space: nowrap;
+}
+
+.activity-inflight .activity-tool {
+  color: var(--color-orange);
+}
+
+.activity-summary {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+/* Step header -- separates steps in the activity feed */
+.step-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 16px 0 8px;
+  margin-top: 16px;
+  border-bottom: 1px solid var(--border-card);
+  font-family: var(--font-mono);
+  font-size: var(--type-breadcrumb);
+}
+
+.step-header-label {
+  color: var(--color-orange);
+  font-weight: 600;
+}
+
+.step-header-name {
+  color: var(--text-primary);
+  font-weight: 500;
+  text-transform: capitalize;
+}
+
+/* Stream output -- LLM text on the shared white surface */
+.stream-output {
+  font-family: var(--font-mono);
+  font-size: var(--type-breadcrumb);
+  color: var(--text-body);
+  padding: 16px 0 8px;
+}
+
+/* Thinking indicator */
+.activity-thinking-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: var(--type-breadcrumb);
+  color: var(--text-muted);
+  padding: 8px 0;
+  margin-top: 8px;
+}
+
+.activity-detail {
+  color: var(--text-placeholder);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---- Chat input (inside feed card) ---- */
+
+.chat-input-area {
+  margin-top: 16px;
+  border-top: 1px solid var(--border-card);
+  padding-top: 16px;
+}
+
+.chat-input-box {
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  transition: border-color 200ms, box-shadow 200ms;
+}
+
+.chat-input-box:focus-within {
+  border-color: var(--color-orange);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.chat-input-textarea {
+  width: 100%;
+  border: none;
+  background: transparent;
+  font-family: var(--font-body);
+  font-size: 14px;
+  color: var(--text-body);
+  padding: 10px 12px;
+  outline: none;
+  resize: none;
+  line-height: 1.5;
+  min-height: 24px;
+  max-height: 120px;
+  display: block;
+}
+
+.chat-input-textarea::placeholder {
+  color: var(--text-placeholder);
+}
+
+.chat-input-textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.chat-input-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 12px 8px;
+}
+
+.chat-input-hint {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-placeholder);
+}
+
+.chat-input-send {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-orange);
+  font-weight: 600;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: 4px;
+  transition: background 150ms;
+}
+
+.chat-input-send:hover:not(:disabled) {
+  background: var(--bg-selected);
+}
+
+.chat-input-send:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/* Monitor -- sticky bottom, sizes to content, centered like activity feed.
+ * No border-top or mask fade -- it connects seamlessly with the sidebars. */
+.monitor {
+  flex: 0 0 auto;
+  max-height: 40vh;
+  overflow-y: overlay;
+  background: var(--bg-surface);
+  padding: 16px 24px;
+}
+
+.monitor-inner {
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+.agent-table-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.monitor-label {
+  font-family: var(--font-mono);
+  font-size: var(--type-label);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.agent-badges {
+  display: flex;
+  gap: var(--gap-tool-rows);
+}
+
+.token-totals {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--type-breadcrumb);
+  color: var(--text-muted);
+}
+
+/* ---- Live layout: activity feed + status sidebar ---- */
+
+/* Row wrapper for live mode: sidebar (left) + activity feed (right).
+ * No centering or margin-top needed -- the parent .app handles both. */
+.live-layout {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+}
+
+/* Left column -- takes all remaining width, scroll contained within. */
+.live-main {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---- Status sidebar ----
+ * Sits on the LEFT of the activity feed inside the centred .live-layout
+ * container. Width uses clamp(240px, 20vw, 300px): 20vw scales with the
+ * viewport; 240px/300px bound the range. Typography is mono throughout.
+ * The sidebar scrolls independently of the feed column. */
+
+.status-sidebar {
+  width: clamp(180px, 14vw, 240px);
+  flex-shrink: 0;
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border-card);
+  overflow-y: auto;
+  padding: 16px;
+  font-family: var(--font-mono);
+}
+
+.sidebar-waiting {
+  color: var(--text-placeholder);
+  font-size: 11px;
+}
+
+.sidebar-divider {
+  height: 1px;
+  background: var(--border-card);
+  margin: 16px 0;
+}
+
+/* Phase section */
+
+.sidebar-phase-section {
+  margin-bottom: 8px;
+}
+
+.sidebar-section-label {
+  font-size: 10px;
+  color: var(--text-placeholder);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 6px;
+}
+
+.sidebar-phase-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+
+.sidebar-step-block {
+  margin-top: 10px;
+}
+
+.sidebar-step-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.sidebar-step-bar {
+  height: 4px;
+  background: var(--border-card);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.sidebar-step-fill {
+  height: 100%;
+  background: var(--color-orange);
+  border-radius: 2px;
+  transition: width 300ms ease;
+}
+
+/* Agent section */
+
+.sidebar-agent-section {
+  /* no extra margin needed — divider handles spacing */
+}
+
+.sidebar-model-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  margin-bottom: 10px;
+}
+
+.sidebar-model-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-teal);
+  flex-shrink: 0;
+}
+
+.sidebar-model-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-body);
+}
+
+.sidebar-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-metric-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 2px 0;
+}
+
+.sidebar-metric-row span:last-child {
+  color: var(--text-body);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Workspace shell: three-column layout ---- */
+
+.workspace {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+}
+
+.workspace-main {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.artifacts-sidebar {
+  width: clamp(180px, 14vw, 240px);
+  flex-shrink: 0;
+  background: var(--bg-surface);
+  border-left: 1px solid var(--border-card);
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+}
+
+.artifacts-empty {
+  color: var(--text-placeholder);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 16px 0;
+}
+
+/* ---- Artifact tree ---- */
+
+.tree-folder {
+  margin-bottom: 2px;
+}
+
+.tree-folder-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  padding: 3px 4px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  border-radius: var(--radius-md);
+  user-select: none;
+}
+
+.tree-folder-label:hover {
+  color: var(--text-primary);
+  background: var(--bg-tool-row);
+}
+
+.tree-children {
+  padding-left: 14px;
+}
+
+.tree-file {
+  display: flex;
+  flex-direction: column;
+  padding: 3px 4px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  margin-bottom: 1px;
+}
+
+.tree-hover {
+  background: var(--bg-tool-row);
+}
+
+.tree-file-name {
+  color: var(--color-orange);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.tree-file-meta {
+  color: var(--text-placeholder);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.tree-new-badge {
+  display: inline-block;
+  background: var(--color-teal);
+  color: var(--text-on-dark);
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+/* ---- Artifact overlay ---- */
+
+.artifact-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--overlay-backdrop);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+
+.artifact-overlay-panel {
+  background: var(--bg-card);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-2xl);
+  width: 860px;
+  max-width: 92vw;
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.artifact-overlay-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border-card);
+  flex-shrink: 0;
+}
+
+.artifact-overlay-title {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.artifact-overlay-path {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-placeholder);
+  margin-top: 2px;
+}
+
+.artifact-overlay-readonly-badge {
+  font-size: 10px;
+  color: var(--text-placeholder);
+  border: 1px solid var(--border-card);
+  padding: 2px 6px;
+  border-radius: 3px;
+  margin-left: 8px;
+  vertical-align: middle;
+  font-weight: 400;
+}
+
+.artifact-overlay-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 28px;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--text-muted);
+}

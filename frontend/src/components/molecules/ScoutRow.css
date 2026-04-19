@@ -1,0 +1,69 @@
+.sr {
+  display: grid;
+  grid-template-columns: 20px 1fr 60px 50px 70px 1fr;
+  align-items: center;
+  padding: var(--padding-scout-row);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  border-bottom: 0.5px solid var(--border-divider-light);
+}
+
+.sr:last-child {
+  border-bottom: none;
+}
+
+/* ---- Cells ---- */
+.sr-dot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sr-name {
+  color: var(--text-primary);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sr-model {
+  display: flex;
+  align-items: center;
+}
+
+.sr-tools {
+  color: var(--text-muted);
+}
+
+.sr-elapsed {
+  color: var(--text-muted);
+}
+
+.sr-step {
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sr-step--active {
+  color: var(--color-orange);
+}
+
+/* ---- Status variants ---- */
+.sr--done {
+  opacity: 0.7;
+}
+
+.sr--done .sr-step {
+  color: var(--color-teal);
+}
+
+.sr--failed .sr-step {
+  color: var(--status-failed);
+}
+
+.sr--queued {
+  opacity: 0.5;
+}

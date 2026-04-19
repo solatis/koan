@@ -1,0 +1,97 @@
+.ro {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: var(--padding-radio);
+  border-radius: var(--radius-lg);
+  border: 1.5px solid var(--border-radio);
+  cursor: pointer;
+  transition: border-color var(--duration-fast), background var(--duration-fast);
+}
+
+.ro--selected {
+  border-color: var(--color-orange);
+  background: var(--bg-selected);
+}
+
+.ro--recommended {
+  border-left: 3px solid var(--color-orange);
+  background: var(--bg-selected);
+}
+
+.ro--recommended.ro--selected {
+  border-left-width: 1.5px;
+}
+
+/* ---- Radio circle ---- */
+.ro-circle {
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-circle);
+  border: 2px solid var(--border-input);
+  flex-shrink: 0;
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color var(--duration-fast);
+}
+
+.ro--selected .ro-circle {
+  border-color: var(--color-orange);
+}
+
+.ro-circle-inner {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-circle);
+  background: var(--color-orange);
+}
+
+/* ---- Content column (label + optional input) ---- */
+.ro-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.ro-label-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.ro-label {
+  font-size: var(--type-body);
+  color: var(--text-primary);
+  line-height: 1.5;
+  flex: 1;
+}
+
+/* Custom / "Other" variant */
+.ro--custom .ro-label {
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+/* ---- Custom text input (visible only when isCustom + selected) ---- */
+.ro-custom-input {
+  display: block;
+  width: 100%;
+  padding: 8px 0;
+  margin-top: 8px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border-card);
+  font-family: var(--font-body);
+  font-size: var(--type-body);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.ro-custom-input::placeholder {
+  color: var(--text-placeholder);
+}
+
+.ro-custom-input:focus {
+  border-bottom-color: var(--border-input);
+}

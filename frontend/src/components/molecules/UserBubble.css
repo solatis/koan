@@ -1,0 +1,16 @@
+.ub {
+  background: var(--bg-card);
+  border-radius: var(--radius-xl);
+  padding: var(--padding-card);
+  border: 0.5px solid var(--border-card);
+  border-left: 3px solid var(--text-muted);
+  font-size: var(--type-prose);
+  color: var(--text-primary);
+  line-height: 1.7;
+}
+
+.ub-time {
+  font-size: var(--type-timestamp);
+  color: var(--text-muted);
+  margin-top: 4px;
+}

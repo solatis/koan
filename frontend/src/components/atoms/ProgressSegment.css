@@ -1,0 +1,11 @@
+.progress-segment {
+  display: inline-block;
+  width: 24px;
+  height: 4px;
+  border-radius: var(--radius-md);
+}
+
+/* States */
+.progress-segment--completed { background: var(--color-teal); }
+.progress-segment--active    { background: var(--color-orange); }
+.progress-segment--future    { background: var(--text-on-dark-faint); }

@@ -1,0 +1,51 @@
+.tlr {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ---- Running dot (inline, intentionally not StatusDot) ---- */
+.tlr-running-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-circle);
+  background: var(--status-running);
+  animation: tlr-pulse 1.5s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+/* ---- Command / path ---- */
+.tlr-command {
+  color: var(--text-body);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
+}
+
+/* ---- Metric (optional) ---- */
+.tlr-metric {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  padding-left: 12px;
+}
+
+/* ---- Running-state text treatment ---- */
+.tlr--running .tlr-command {
+  color: var(--text-subtle);
+}
+
+.tlr--running .tlr-metric {
+  color: var(--color-orange);
+}
+
+@keyframes tlr-pulse {
+  0%, 100% { opacity: 0.3; }
+  50%      { opacity: 1; }
+}
