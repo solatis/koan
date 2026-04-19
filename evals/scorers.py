@@ -1,90 +1,205 @@
 # evals/scorers.py
-# LLM-as-judge scorers for koan eval tasks.
+# Rubric-driven scorers for koan eval tasks.
 #
-# All three scorers use model_graded_qa, which takes a template string
-# embedding the question/rubric. The "answer" field is the concatenated
-# artifact content from state.output. PASS/FAIL is extracted from the
-# model's response via the default grade_pattern ("PASS" / "FAIL").
+# Each scorer loads a fixture-level rubric (required) plus an optional
+# task-level addendum for a (phase, section) pair, selects the matching
+# payload slice from state.metadata["harvest"], and asks a judge model for
+# PASS or FAIL. Missing rubric -> scorer returns None -> inspect_ai skips it.
+#
+# Section enum per phase: summary | questions | artifacts | overall.
+# Workflow-level cross-cutter: rubrics/overall.md at the fixture root.
 
-from inspect_ai.scorer import Scorer, model_graded_qa
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Callable
+
+from inspect_ai.model import get_model
+from inspect_ai.scorer import (
+    Score, Scorer, accuracy, scorer, stderr, value_to_float,
+)
+from inspect_ai.solver import TaskState
 
 
-# Pin the judge model so results are reproducible regardless of the caller's
-# --model flag or INSPECT_EVAL_MODEL env. Gemini 3.1 Pro has a 1M-token input
-# window, which matters because {answer} is the concatenated artifacts from a
-# full plan run and can be large.
 JUDGE_MODEL = "google/gemini-3.1-pro-preview"
 
+# inspect_ai's default value_to_float only recognises CORRECT/INCORRECT/PARTIAL
+# and yes/true/no/false/numeric. Scorers here return "PASS" / "FAIL" as
+# Score.value to match rubric authoring conventions and the last-line grade
+# pattern, so a custom ValueToFloat is required for accuracy() / stderr().
+_PF_TO_FLOAT = value_to_float(correct="PASS", incorrect="FAIL")
+_PF_METRICS = [accuracy(to_float=_PF_TO_FLOAT), stderr(to_float=_PF_TO_FLOAT)]
 
-_PLAN_SPECIFICITY_TEMPLATE = """
-You are evaluating a software engineering plan produced by an AI orchestrator.
 
-Plan artifacts:
-{answer}
+# -- Rubric loading ------------------------------------------------------------
 
-Rubric:
-Grade whether the plan references specific file paths and function names from
-the actual codebase rather than vague descriptions.
+def _load_rubric(state: TaskState, phase: str, section: str) -> str | None:
+    fixture_dir = Path(state.metadata["fixture_dir"])
+    task_dir = Path(state.metadata["task_dir"])
+    fixture_rubric = fixture_dir / "rubrics" / phase / f"{section}.md"
+    task_rubric = task_dir / "rubrics" / phase / f"{section}.md"
+    parts = []
+    if fixture_rubric.exists():
+        parts.append(fixture_rubric.read_text(encoding="utf-8"))
+    if task_rubric.exists():
+        parts.append(
+            "\n\n## Task-specific additions\n\n"
+            + task_rubric.read_text(encoding="utf-8")
+        )
+    return "\n\n".join(parts) if parts else None
 
-Score PASS if the plan cites at least 5 specific file paths and at least 3
-specific function names that would be found in the codebase.
-Score FAIL if the plan uses only vague descriptions, generic module names,
-or fewer than the required specific references.
 
-Respond with exactly one word on the last line: PASS or FAIL.
+def _load_workflow_rubric(state: TaskState) -> str | None:
+    fixture_dir = Path(state.metadata["fixture_dir"])
+    task_dir = Path(state.metadata["task_dir"])
+    f_rubric = fixture_dir / "rubrics" / "overall.md"
+    t_rubric = task_dir / "rubrics" / "overall.md"
+    parts = []
+    if f_rubric.exists():
+        parts.append(f_rubric.read_text(encoding="utf-8"))
+    if t_rubric.exists():
+        parts.append(
+            "\n\n## Task-specific additions\n\n"
+            + t_rubric.read_text(encoding="utf-8")
+        )
+    return "\n\n".join(parts) if parts else None
+
+
+# -- Payload selection ---------------------------------------------------------
+
+def _payload_summary(harvest: dict, phase: str) -> str:
+    summary = harvest.get("phase_summaries", {}).get(phase)
+    if not summary:
+        return "(no summary captured for this phase)"
+    return summary
+
+
+def _payload_questions(harvest: dict, phase: str) -> str:
+    calls = harvest.get("tool_calls_by_phase", {}).get(phase, [])
+    asks = [c for c in calls if c["tool"] == "koan_ask_question"]
+    if not asks:
+        return "(no koan_ask_question calls during this phase)"
+    return json.dumps([c["args"] for c in asks], indent=2)
+
+
+def _payload_artifacts(harvest: dict, phase: str) -> str:
+    art = harvest.get("artifacts_by_phase", {}).get(phase, {
+        "created": {}, "modified": {}, "all_present": {},
+    })
+    blocks = []
+    for kind in ("created", "modified", "all_present"):
+        items = art.get(kind, {})
+        if not items:
+            blocks.append(f"### {kind}\n(none)")
+        else:
+            blocks.append(
+                f"### {kind}\n"
+                + "\n".join(
+                    f"#### {p}\n```\n{c}\n```"
+                    for p, c in items.items()
+                )
+            )
+    return "\n\n".join(blocks)
+
+
+def _payload_overall(harvest: dict, phase: str) -> str:
+    return (
+        f"## summary\n{_payload_summary(harvest, phase)}\n\n"
+        f"## questions\n{_payload_questions(harvest, phase)}\n\n"
+        f"## artifacts\n{_payload_artifacts(harvest, phase)}\n\n"
+        f"## all_tool_calls\n"
+        + json.dumps(
+            harvest.get("tool_calls_by_phase", {}).get(phase, []),
+            indent=2,
+        )
+    )
+
+
+def _payload_workflow(harvest: dict) -> str:
+    summaries = harvest.get("phase_summaries", {})
+    tools = harvest.get("tool_calls_by_phase", {})
+    blocks = []
+    for phase in sorted(summaries.keys()):
+        blocks.append(
+            f"# phase: {phase}\n\n"
+            f"## summary\n{summaries.get(phase, '')}\n\n"
+            f"## tool_calls\n{json.dumps(tools.get(phase, []), indent=2)}\n\n"
+            f"## artifacts\n{_payload_artifacts(harvest, phase)}"
+        )
+    return "\n\n---\n\n".join(blocks)
+
+
+# -- Judge invocation ----------------------------------------------------------
+
+_JUDGE_PROMPT = """You are grading an AI orchestrator against a rubric.
+
+## Rubric
+
+{rubric}
+
+## Data
+
+{payload}
+
+Respond with a brief rationale, then on the last line exactly one of:
+PASS
+FAIL
 """
 
 
-_QUESTION_QUALITY_TEMPLATE = """
-You are evaluating the intake questions posed by an AI orchestrator during
-a software planning session.
-
-Session artifacts (look for any intake questions section):
-{answer}
-
-Rubric:
-Grade whether the orchestrator surfaced targeted, non-obvious questions.
-
-Score PASS if at least 2 questions address genuine ambiguities that are not
-directly answerable from the task description alone -- for example: scope
-boundaries, approach trade-offs, constraint verification, or integration risks.
-Score FAIL if the questions are generic (e.g. "what is the deadline?"), redundant
-with information already in the task, or derivable mechanically from the task text.
-
-Respond with exactly one word on the last line: PASS or FAIL.
-"""
+async def _grade(rubric: str, payload: str) -> Score:
+    model = get_model(JUDGE_MODEL)
+    out = await model.generate(_JUDGE_PROMPT.format(rubric=rubric, payload=payload))
+    text = out.completion.strip()
+    last_line = text.splitlines()[-1].strip().upper() if text else "FAIL"
+    value = "PASS" if last_line == "PASS" else "FAIL"
+    return Score(value=value, explanation=text)
 
 
-_MEMORY_RELEVANCE_TEMPLATE = """
-You are evaluating the memory entries captured by an AI orchestrator after
-completing a software planning session.
+# -- Scorer factories ----------------------------------------------------------
 
-Memory / curation artifacts:
-{answer}
-
-Rubric:
-Grade whether the captured memory entries are substantive and task-specific.
-
-Score PASS if at least one entry has type=decision or type=lesson and a body
-that is specific to this particular task (not a restatement of general
-engineering boilerplate or a copy of an existing invariant).
-Score FAIL if all entries are structural or procedural repetitions of
-pre-existing invariants, or if no decision/lesson entries were captured.
-
-Respond with exactly one word on the last line: PASS or FAIL.
-"""
+def _scorer_name(phase: str, section: str) -> str:
+    # Normalize phase names like "plan-spec" to underscores so log columns
+    # render cleanly and match the Python factory variable names.
+    return f"{phase.replace('-', '_')}_{section}"
 
 
-def plan_specificity() -> Scorer:
-    """Grade whether the plan cites specific file paths and function names."""
-    return model_graded_qa(template=_PLAN_SPECIFICITY_TEMPLATE, model=JUDGE_MODEL)
+def _rubric_scorer(phase: str, section: str, payload_fn: Callable):
+    # Returns a scorer factory (call with () to get a Scorer). The inner
+    # _build function is decorated with @scorer so inspect_ai picks it up;
+    # name= is set explicitly so the registry key matches the factory variable.
+    @scorer(metrics=_PF_METRICS, name=_scorer_name(phase, section))
+    def _build() -> Scorer:
+        async def score(state: TaskState, target) -> Score | None:
+            rubric = _load_rubric(state, phase, section)
+            if rubric is None:
+                # No rubric for this (phase, section) -> skip gracefully.
+                return None
+            harvest = state.metadata.get("harvest", {})
+            payload = payload_fn(harvest, phase)
+            return await _grade(rubric, payload)
+        return score
+    return _build
 
 
-def question_quality() -> Scorer:
-    """Grade whether the orchestrator asked targeted, non-obvious questions."""
-    return model_graded_qa(template=_QUESTION_QUALITY_TEMPLATE, model=JUDGE_MODEL)
+intake_summary    = _rubric_scorer("intake",    "summary",   _payload_summary)
+intake_questions  = _rubric_scorer("intake",    "questions", _payload_questions)
+intake_artifacts  = _rubric_scorer("intake",    "artifacts", _payload_artifacts)
+intake_overall    = _rubric_scorer("intake",    "overall",   _payload_overall)
+
+plan_spec_summary   = _rubric_scorer("plan-spec", "summary",   _payload_summary)
+plan_spec_questions = _rubric_scorer("plan-spec", "questions", _payload_questions)
+plan_spec_artifacts = _rubric_scorer("plan-spec", "artifacts", _payload_artifacts)
+plan_spec_overall   = _rubric_scorer("plan-spec", "overall",   _payload_overall)
 
 
-def memory_relevance() -> Scorer:
-    """Grade whether captured memory entries are specific to the task."""
-    return model_graded_qa(template=_MEMORY_RELEVANCE_TEMPLATE, model=JUDGE_MODEL)
+@scorer(metrics=_PF_METRICS, name="workflow_overall")
+def workflow_overall() -> Scorer:
+    async def score(state: TaskState, target) -> Score | None:
+        rubric = _load_workflow_rubric(state)
+        if rubric is None:
+            return None
+        harvest = state.metadata.get("harvest", {})
+        return await _grade(rubric, _payload_workflow(harvest))
+    return score
