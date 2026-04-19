@@ -50,7 +50,7 @@ from ..memory import MEMORY_TYPES, MemoryStore
 from ..phases import PhaseContext, StepGuidance
 from ..phases.format_step import format_phase_complete, format_steering_messages, format_step, format_user_messages
 from .interactions import activate_next_interaction, enqueue_interaction
-from ..projections import TextEntry
+from ..projections import BaseToolEntry, TextEntry
 
 if TYPE_CHECKING:
     from ..state import AgentState, AppState
@@ -468,15 +468,16 @@ async def koan_complete_step(thoughts: str = "") -> str:
 # -- Summary extraction -------------------------------------------------------
 
 def _extract_last_orchestrator_text(agent: AgentState) -> str:
-    """Return the most recent textual turn from the primary agent.
+    """Return the assistant prose immediately preceding the current koan_yield.
 
-    Concatenates any completed TextEntry at the tail of conversation.entries
-    with the current pending_text (which has not yet been flushed by a
-    subsequent tool call). Returns "" if neither is present.
+    At call time the in-flight koan_yield tool entry itself sits at the tail
+    of conversation.entries (appended by the tool_started fold handler that
+    fires on content_block_start, which precedes the MCP dispatch). Skip
+    trailing in-flight tool entries, then collect the contiguous TextEntry
+    chain immediately behind them.
 
-    Runner buffering may deliver the tool call before the final text deltas
-    are folded into the projection. This is observable: suspiciously short
-    captures are logged as warnings by the caller.
+    pending_text has already been flushed into a TextEntry by tool_started,
+    so it does not need to be consulted here.
     """
     assert _app_state is not None
     run = _app_state.projection_store.projection.run
@@ -485,17 +486,15 @@ def _extract_last_orchestrator_text(agent: AgentState) -> str:
     proj_agent = run.agents.get(agent.agent_id)
     if proj_agent is None:
         return ""
-    conv = proj_agent.conversation
-    # Walk entries backward to find the tail TextEntry chain (same turn).
+    entries = list(reversed(proj_agent.conversation.entries))
+    i = 0
+    while i < len(entries) and isinstance(entries[i], BaseToolEntry) and entries[i].in_flight:
+        i += 1
     tail: list[str] = []
-    for entry in reversed(conv.entries):
-        if isinstance(entry, TextEntry):
-            tail.insert(0, entry.text)
-        else:
-            break
-    pending = conv.pending_text or ""
-    combined = "\n".join([*tail, pending]).strip()
-    return combined
+    while i < len(entries) and isinstance(entries[i], TextEntry):
+        tail.insert(0, entries[i].text)
+        i += 1
+    return "\n".join(tail).strip()
 
 
 # -- yolo helpers -------------------------------------------------------------
@@ -542,11 +541,32 @@ def _yolo_ask_answer(questions: list[dict]) -> dict:
     return {"answers": answers}
 
 
+def _directed_yolo_response(directed_phases: list[str], current_phase: str) -> str:
+    """Build the auto-response text when directed_phases is set.
+
+    Finds current_phase in directed_phases and returns a command that steers
+    the orchestrator toward the next phase in the list. Returns "proceed" when
+    current_phase is not found or is already the last entry.
+
+    Pure function -- keeps AppState out of the helper, consistent with the
+    _yolo_yield_response pattern and easy to unit-test independently.
+    """
+    try:
+        idx = directed_phases.index(current_phase)
+    except ValueError:
+        return "proceed"
+    if idx + 1 >= len(directed_phases):
+        return "proceed"
+    next_phase = directed_phases[idx + 1]
+    if next_phase == "done":
+        return 'The workflow is complete. Call koan_set_phase("done") to end.'
+    return f"Proceed to the {next_phase} phase."
+
+
 # -- koan_yield ---------------------------------------------------------------
 
 @mcp.tool(name="koan_yield")
 async def koan_yield(
-    summary: str = "",
     suggestions: list[dict] | None = None,
 ) -> str:
     """Yield to the user and wait for their reply. ORCHESTRATOR-ONLY.
@@ -589,14 +609,13 @@ async def koan_yield(
     (pre-filled text on click).
 
     Args:
-        summary: Brief context about what the agent is waiting for.
         suggestions: Pills shown above the chat input.
     """
     agent = _get_agent()
-    _check_or_raise(agent, "koan_yield", {"summary": summary, "suggestions": suggestions})
+    _check_or_raise(agent, "koan_yield", {"suggestions": suggestions})
 
     call_id = begin_tool_call(
-        agent, "koan_yield", {"summary": summary},
+        agent, "koan_yield", {},
         f"{len(suggestions or [])} suggestion(s)",
     )
     result_str: str | None = None
@@ -653,7 +672,13 @@ async def koan_yield(
             # Resolve immediately without blocking -- the projection event above
             # already rendered the yield card in the UI; the synthesized response
             # closes it on the next tick.
-            result_str = _yolo_yield_response(suggestions)
+            directed = _app_state.directed_phases
+            if directed is not None:
+                # Directed mode: steer toward the next phase in the sequence
+                # rather than picking from suggestions.
+                result_str = _directed_yolo_response(directed, _app_state.phase)
+            else:
+                result_str = _yolo_yield_response(suggestions)
         else:
             # Check for already-buffered messages (user typed before we yielded)
             messages = drain_user_messages(_app_state) + drain_steering_messages(_app_state)

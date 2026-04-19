@@ -75,6 +75,9 @@ class AppState:
     open_browser: bool = True
     initial_prompt: str = ""
     yolo: bool = False
+    # Non-None when running in directed mode (e.g. from eval harness).
+    # Stores the ordered phase sequence; koan_yield steers toward the next entry.
+    directed_phases: list[str] | None = None
     debug: bool = False
     config_write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # Installation selections for the current run: runner_type -> alias.
