@@ -656,3 +656,79 @@ class TestBinaryNotFoundSpawn:
         diag_events = [json.loads(l) for l in lines if "runner_diagnostic" in l]
         assert len(diag_events) >= 1
         assert diag_events[0]["code"] == "binary_not_found"
+
+
+# -- _claude_post_build_args --------------------------------------------------
+
+class TestClaudePostBuildArgs:
+    """Unit tests for the pure _claude_post_build_args helper.
+
+    The helper composes claude-only argv entries without I/O. Tests exercise
+    the full whitelist/dir/permission_mode combinations directly.
+    """
+
+    from koan.subagent import CLAUDE_TOOL_WHITELISTS as _WHITELISTS
+
+    def test_orchestrator_full_args(self):
+        from koan.subagent import _claude_post_build_args, CLAUDE_TOOL_WHITELISTS
+        args = _claude_post_build_args("orchestrator", "/run", "/proj")
+        assert "--tools" in args
+        tools_idx = args.index("--tools")
+        assert args[tools_idx + 1] == CLAUDE_TOOL_WHITELISTS["orchestrator"]
+        assert "--disable-slash-commands" in args
+        assert "--strict-mcp-config" in args
+        assert "--add-dir" in args
+        # Both dirs present
+        add_dir_indices = [i for i, a in enumerate(args) if a == "--add-dir"]
+        add_dirs = [args[i + 1] for i in add_dir_indices]
+        assert "/proj" in add_dirs
+        assert "/run" in add_dirs
+        assert "--permission-mode" in args
+        pm_idx = args.index("--permission-mode")
+        assert args[pm_idx + 1] == "acceptEdits"
+
+    def test_executor_gets_executor_whitelist(self):
+        from koan.subagent import _claude_post_build_args, CLAUDE_TOOL_WHITELISTS
+        args = _claude_post_build_args("executor", "/run", "/proj")
+        tools_idx = args.index("--tools")
+        assert args[tools_idx + 1] == CLAUDE_TOOL_WHITELISTS["executor"]
+
+    def test_scout_gets_scout_whitelist(self):
+        from koan.subagent import _claude_post_build_args, CLAUDE_TOOL_WHITELISTS
+        args = _claude_post_build_args("scout", "/run", "/proj")
+        tools_idx = args.index("--tools")
+        assert args[tools_idx + 1] == CLAUDE_TOOL_WHITELISTS["scout"]
+
+    def test_unknown_role_omits_tools_flag(self):
+        from koan.subagent import _claude_post_build_args
+        args = _claude_post_build_args("bogus", "/run", "/proj")
+        assert "--tools" not in args
+
+    def test_empty_run_dir_skipped(self):
+        from koan.subagent import _claude_post_build_args
+        args = _claude_post_build_args("orchestrator", "", "/proj")
+        add_dir_indices = [i for i, a in enumerate(args) if a == "--add-dir"]
+        add_dirs = [args[i + 1] for i in add_dir_indices]
+        assert "/proj" in add_dirs
+        assert "" not in add_dirs
+
+    def test_empty_project_dir_skipped(self):
+        from koan.subagent import _claude_post_build_args
+        args = _claude_post_build_args("orchestrator", "/run", "")
+        add_dir_indices = [i for i, a in enumerate(args) if a == "--add-dir"]
+        add_dirs = [args[i + 1] for i in add_dir_indices]
+        assert "/run" in add_dirs
+        assert "" not in add_dirs
+
+    def test_both_dirs_empty(self):
+        from koan.subagent import _claude_post_build_args
+        args = _claude_post_build_args("orchestrator", "", "")
+        assert "--add-dir" not in args
+
+    def test_permission_mode_always_present(self):
+        from koan.subagent import _claude_post_build_args
+        # Even with empty dirs and unknown role, permission mode is always set.
+        args = _claude_post_build_args("bogus", "", "")
+        assert "--permission-mode" in args
+        pm_idx = args.index("--permission-mode")
+        assert args[pm_idx + 1] == "acceptEdits"

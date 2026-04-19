@@ -510,9 +510,10 @@ async def _refresh_probe_state(st: AppState, broadcast: bool = True) -> None:
     st.probe_results = await probe_all_runners()
     st.builtin_profiles = compute_builtin_profiles(st.probe_results)
 
-    # --yolo: per-runner permission-skipping flags for default installations
+    # --yolo: per-runner permission-skipping flags for default installations.
+    # Claude is excluded: new default installations receive --permission-mode
+    # acceptEdits unconditionally via _claude_post_build_args at spawn time.
     _YOLO_ARGS: dict[str, list[str]] = {
-        "claude": ["--dangerously-skip-permissions"],
         "codex": ["--dangerously-bypass-approvals-and-sandbox"],
         "gemini": ["--yolo"],
     }

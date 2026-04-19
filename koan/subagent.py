@@ -110,6 +110,35 @@ CLAUDE_TOOL_WHITELISTS: dict[str, str] = {
 }
 
 
+def _claude_post_build_args(role: str, run_dir: str, project_dir: str) -> list[str]:
+    """Compose claude-only post-build args: tool whitelist, slash-command disable,
+    strict MCP config, additional directories, and permission mode.
+
+    Returns a list of argv entries to append to a claude command. Pure function --
+    no I/O, no globals beyond the CLAUDE_TOOL_WHITELISTS module constant.
+
+    project_dir is listed before run_dir so the project is searched first.
+    Empty dir strings are skipped to avoid passing --add-dir "" to the CLI.
+    """
+    args: list[str] = []
+    whitelist = CLAUDE_TOOL_WHITELISTS.get(role)
+    if whitelist is not None:
+        args.extend(["--tools", whitelist])
+    args.append("--disable-slash-commands")
+    args.append("--strict-mcp-config")
+    # Add project and run directories so the CLI can read/edit files in both
+    # locations without prompting; acceptEdits gates writes at the tool level.
+    if project_dir:
+        args.extend(["--add-dir", project_dir])
+    if run_dir:
+        args.extend(["--add-dir", run_dir])
+    # acceptEdits is safe for all roles: the CLAUDE_TOOL_WHITELISTS already
+    # restrict which roles receive Write/Edit in their tool vocabulary, so
+    # scouts cannot write even though the permission mode is permissive.
+    args.extend(["--permission-mode", "acceptEdits"])
+    return args
+
+
 def _now_iso() -> str:
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat()
@@ -280,14 +309,14 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
         del app_state.agents[agent_id]
         return SubagentResult(exit_code=1)
 
-    # Claude-specific tool restriction: append --tools whitelist, disable skills,
-    # and isolate MCP sources so the model only sees tools it actually needs.
+    # Claude-specific post-build: tool whitelist, slash-command disable,
+    # strict MCP config, additional working directories, and permission mode.
     if runner.name == "claude":
-        whitelist = CLAUDE_TOOL_WHITELISTS.get(role)
-        if whitelist is not None:
-            cmd.extend(["--tools", whitelist])
-        cmd.append("--disable-slash-commands")
-        cmd.append("--strict-mcp-config")
+        cmd.extend(_claude_post_build_args(
+            role=role,
+            run_dir=task.get("run_dir", ""),
+            project_dir=task.get("project_dir", ""),
+        ))
 
     # Emit agent_spawned only after build_command succeeds -- process is about to start
     store.push_event("agent_spawned", build_agent_spawned(agent), agent_id=agent_id)
