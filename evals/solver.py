@@ -204,21 +204,30 @@ def koan_solver(timeout: int = DEFAULT_TIMEOUT) -> Solver:
 
     async def solve(state: TaskState, generate) -> TaskState:
         import uvicorn
-        from koan.config import KoanConfig
+        from koan.config import load_koan_config
         from koan.state import AppState
         from koan.web.app import create_app
 
         snapshot_path = Path(state.metadata["snapshot_path"])
 
         with tempfile.TemporaryDirectory() as project_tmp:
-            # Extract the project snapshot so the orchestrator can inspect it.
-            # If no snapshot exists yet (no fixtures committed), skip silently.
+            # Extract the project snapshot so the orchestrator sees it as the
+            # project root. If no snapshot exists yet (no fixtures committed),
+            # leave project_tmp empty and koan will operate on an empty dir.
             if snapshot_path.exists():
                 with tarfile.open(snapshot_path, "r:gz") as tar:
                     tar.extractall(project_tmp)
 
             app_state = AppState()
-            app_state.config = KoanConfig()
+            # Load the user's real config so probe_results finds installed
+            # agents. Without this, /api/start-run fails with no_runners.
+            app_state.config = await load_koan_config()
+            # Point koan at the extracted snapshot rather than the solver's
+            # CWD. AppState.project_dir flows through task.json to every
+            # spawned subagent as its spawn cwd.
+            app_state.project_dir = project_tmp
+            # Don't try to open a browser during headless evals.
+            app_state.open_browser = False
             app = create_app(app_state)
 
             port = _find_free_port()

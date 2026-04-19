@@ -12,8 +12,3 @@ koan/web/static/app/
 frontend/node_modules/
 frontend/dist/
 __pycache__/
-
-# Eval fixture snapshots are large binaries captured manually by Leon.
-# Only README.md and task.md are committed; snapshot.tar.gz and memory/ are local.
-evals/fixtures/*/snapshot.tar.gz
-evals/fixtures/*/memory/

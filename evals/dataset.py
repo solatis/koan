@@ -2,8 +2,10 @@
 # Loads benchmark fixtures as an Inspect AI MemoryDataset.
 #
 # Each fixture directory must contain task.md (the task description).
-# snapshot.tar.gz and memory/ are optional at load time (the solver checks
-# for them at run time). Directories without task.md are skipped silently.
+# snapshot.tar.gz is optional at load time (the solver checks at run time).
+# The snapshot is a `git archive` of the project, so .koan/memory/*.md rides
+# along inside it -- no separate memory/ directory. Directories without
+# task.md are skipped silently.
 
 from pathlib import Path
 
@@ -29,7 +31,6 @@ def load_dataset(fixtures_dir: Path = FIXTURES_DIR) -> MemoryDataset:
                 "fixture_dir": str(fixture_dir),
                 "fixture_name": fixture_dir.name,
                 "snapshot_path": str(fixture_dir / "snapshot.tar.gz"),
-                "memory_path": str(fixture_dir / "memory"),
             },
         ))
     return MemoryDataset(samples, name="koan-bench")
