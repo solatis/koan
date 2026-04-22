@@ -1,8 +1,11 @@
 ---
-title: New read-only memory tools must be added to _UNIVERSAL_MEMORY_TOOLS in koan/lib/permissions.py
+title: New read-only MCP tools must be added to a tool-family-specific _UNIVERSAL_*_TOOLS
+  frozenset in koan/lib/permissions.py
 type: procedure
 created: '2026-04-18T14:36:10Z'
-modified: '2026-04-18T14:36:10Z'
+modified: '2026-04-21T13:20:07Z'
+related:
+- 0066-synthesis-expensive-memory-tools-scoped-to.md
 ---
 
-The permission gate in `koan/lib/permissions.py` provides a universal fast-path for read-only memory query tools via the `_UNIVERSAL_MEMORY_TOOLS` frozenset. On 2026-04-18, Leon identified that `koan_memory_status` and `koan_search` had been accidentally scoped to the orchestrator role only -- they appeared in `_ORCHESTRATOR_MEMORY_TOOLS` but were absent from the non-orchestrator `ROLE_PERMISSIONS` dicts (`scout`, `executor`, `intake`, `planner`), causing scouts and executors to be silently blocked from querying memory. Leon directed the fix: add both tools to a new `_UNIVERSAL_MEMORY_TOOLS` frozenset placed between the `_NON_BASH_READ_TOOLS` fast-path and the orchestrator branch in `check_permission()`. The resulting behavioral rule: any new read-only memory tool added to the koan MCP endpoint must also be registered in `_UNIVERSAL_MEMORY_TOOLS` to be available for all agent roles. Placing a new memory read tool only in `_ORCHESTRATOR_MEMORY_TOOLS` will silently restrict it to the orchestrator with no error.
+This entry documents the permission-fence pattern for making cheap cross-role MCP reads available without per-role enumeration. On 2026-04-21, Leon confirmed that new read-only MCP tools must be added to a tool-family-specific `_UNIVERSAL_*_TOOLS` frozenset in `koan/lib/permissions.py`; the fast-path branch for each frozenset appears in `check_permission()` before the orchestrator dispatch and before the role-specific `ROLE_PERMISSIONS` check, so every role (orchestrator, scout, planner, executor) inherits access through a single allow-statement. Two such frozensets exist: `_UNIVERSAL_MEMORY_TOOLS` (contains `koan_memory_status`, `koan_search`) and `_UNIVERSAL_READ_TOOLS` (contains `koan_artifact_list`, `koan_artifact_view`). The alternative of duplicating a tool name across every role's entry in `ROLE_PERMISSIONS` was rejected by Leon because per-role enumeration diverges over time as new roles are added. Expensive or synthesis-heavy tools (for example `koan_reflect`, per entry 66) remain orchestrator-only; universality is reserved for single-query reads. Adding a new read-only tool requires exactly two edits: add the tool name to the appropriate `_UNIVERSAL_*_TOOLS` frozenset, and register the MCP handler in `koan/web/mcp_endpoint.py`.

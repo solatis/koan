@@ -1,0 +1,8 @@
+---
+title: Tool-return string contracts are rendered server-side, not in the frontend
+type: decision
+created: '2026-04-21T13:20:03Z'
+modified: '2026-04-21T13:20:03Z'
+---
+
+This entry documents the server-side ownership rule for MCP tool-return formatter functions in koan. On 2026-04-21, during the `koan_artifact_propose` implementation, the TypeScript helper `formatReviewMessage()` in `frontend/src/App.tsx` (original lines 797-850) was ported to `_render_review_payload()` in `koan/web/mcp_endpoint.py`, and the JavaScript version was deleted from the same commit. Byte-exact parity between the old and new formatter was pinned by characterization tests in `tests/test_render_review_payload.py` that take the frontend's pre-existing output strings as ground-truth fixtures for the four review branches (approval, structured-with-inline-comments, free-form-summary, combined). Leon's rationale for the port, stated on 2026-04-21: when a tool returns a human-readable string that the orchestrator pattern-matches on (for example the "I've reviewed `<path>` and approve it as-is" sentinel used by the review feedback loop), a frontend-owned formatter silently couples orchestrator decision logic to UI refactors -- a Zustand or React change could accidentally break the sentinel format and the failure would not surface in the Python test suite. The generalizable rule, adopted on 2026-04-21: MCP tool-return contracts are owned by the backend; the frontend POSTs the structured user input (the `ReviewSubmitPayload` shape in this case: `{summary, comments: [{blockIndex, text, blockPreview}]}`), and the backend renders whatever string the orchestrator sees. Frontend-side ports of the same formatter exist only as short-lived refactor staging.

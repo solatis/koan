@@ -1,0 +1,13 @@
+---
+title: koan_artifact_propose decouples artifact production and review from koan_yield
+  via a dedicated blocking primitive
+type: decision
+created: '2026-04-21T13:19:47Z'
+modified: '2026-04-21T13:19:47Z'
+related:
+- 0053-new-read-only-memory-tools-must-be-added-to.md
+- 0033-new-mcp-tool-handlers-in-koanwebmcpendpointpy.md
+- 0016-steering-vs-phase-boundary-message-routing-dual.md
+---
+
+This entry documents the koan_artifact_propose MCP tool and the surrounding re-architecture of the artifact surface in `koan/web/mcp_endpoint.py` and `koan/lib/permissions.py`. On 2026-04-21, Leon introduced `koan_artifact_propose(filename, content)` as an orchestrator-only blocking MCP tool. The handler writes `{run_dir}/{filename}` atomically (`.tmp` + `os.rename`, utf-8), emits `artifact_created`/`artifact_modified` via `_push_artifact_diff(app_state)`, emits a new `artifact_review_started` event registered alongside the existing `yield_started`, and then parks on a new `app_state.interactions.artifact_review_future` until the user submits a review via `POST /api/artifact-review`. A companion `ActiveArtifactReview` projection model and `Run.active_artifact_review` field mirror `ActiveYield` and `Run.active_yield`, cleared symmetrically on `phase_started` and `workflow_completed`. `koan_yield` is now used exclusively for phase-end user-direction; its REVIEW FEEDBACK LOOP docstring was removed in the same change. The orchestrator's `write`/`edit` MCP permissions were fully revoked in `_check_orchestrator_permission`, making `koan_artifact_propose` the only artifact-mutation path. Two companion tools (`koan_artifact_list`, `koan_artifact_view`) were made universal across roles via a new `_UNIVERSAL_READ_TOOLS` frozenset in `check_permission()`. Leon's stated rationale: a first-class artifact MCP surface enables a forthcoming "live artifact writing" UI and produces an obvious contract boundary that `grep` reveals at a glance. Alternatives rejected during intake on 2026-04-21: a unified interaction primitive replacing both yield and review (rejected for grep-readability and to avoid coupling two independent blocking flows); an announce-only propose over an orchestrator-written file (rejected because it kept the review-loop contract on `koan_yield`). Filename policy enforced in the handler: strict root basename matching `[a-z0-9][a-z0-9_-]*\.md`, no slashes, no subdirectories; atomic write on every call (full-rewrite semantics on re-propose). `koan/phases/plan_spec.py` step 2 was the first phase migrated; legacy `koan/phases/brief_writer.py` (`SCOPE="legacy"`, `ROLE="brief-writer"` absent from `ROLE_PERMISSIONS`) was deliberately left untouched.
