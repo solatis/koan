@@ -137,12 +137,15 @@ during brief-generation step 1 (the read step).
 | `koan_request_scouts`                                                             | `intake`, `core-flows`, `tech-plan`, `ticket-breakdown`, `cross-artifact-validation`, `plan-spec`, `plan-review` |
 | `koan_request_executor`                                                           | `execution`, `execute`                                                                                           |
 | `koan_select_story`, `koan_complete_story`, `koan_retry_story`, `koan_skip_story` | `execution` only                                                                                                 |
-| `write`, `edit` (run_dir scoped)                                                  | All phases except `brief-generation` step 1                                                                      |
 | `bash`                                                                            | `execution`, `implementation-validation`                                                                         |
 | `koan_memorize`                                                                   | All phases                                                                                                       |
 | `koan_forget`                                                                     | All phases                                                                                                       |
 | `koan_memory_status`                                                              | All phases                                                                                                       |
 | `koan_search`                                                                     | All phases                                                                                                       |
+| `koan_reflect`                                                                    | All phases (orchestrator only)                                                                                   |
+| `koan_artifact_propose`                                                           | All phases (orchestrator only)                                                                                   |
+| `koan_artifact_list`                                                              | All phases (all roles via universal read-tool path)                                                              |
+| `koan_artifact_view`                                                              | All phases (all roles via universal read-tool path)                                                              |
 
 ## 5. Need-to-Know Prompts
 

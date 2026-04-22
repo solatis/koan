@@ -11,6 +11,11 @@ from pathlib import Path
 
 from ..memory import ops
 from ..memory.retrieval import RetrievalIndex, search as retrieval_search, inject as rag_inject
+from ..memory.retrieval import (
+    IterationCapExceeded,
+    ReflectTraceEvent,
+    run_reflect_agent,
+)
 from ..memory.store import MemoryStore
 
 
@@ -186,6 +191,61 @@ def cmd_rag(args: argparse.Namespace) -> None:
             print(sep)
 
 
+def cmd_reflect(args: argparse.Namespace) -> None:
+    store = _make_store()
+    index = _make_index(store)
+    json_output = getattr(args, "json_output", False)
+    show_trace = getattr(args, "show_trace", False)
+
+    def on_trace(event: ReflectTraceEvent) -> None:
+        if event.tool == "search":
+            q = event.args.get("query", "")
+            tf = event.args.get("type")
+            rc = event.result_count if event.result_count is not None else "?"
+            tag = f" type={tf}" if tf else ""
+            print(
+                f"[iter {event.iteration}] search({q!r}{tag}) -> {rc} results",
+                file=sys.stderr,
+            )
+        elif event.tool == "done":
+            ids = event.args.get("memory_ids") or []
+            print(f"[iter {event.iteration}] done(memory_ids={ids})", file=sys.stderr)
+
+    try:
+        result = asyncio.run(run_reflect_agent(
+            index,
+            args.question,
+            context=getattr(args, "context", None),
+            on_trace=on_trace if show_trace else None,
+        ))
+    except IterationCapExceeded as e:
+        _die(f"iteration_cap_exceeded after {e.iterations} iterations")
+        return
+    except RuntimeError as e:
+        _die(str(e))
+        return
+
+    if json_output:
+        out = {
+            "answer": result.answer,
+            "citations": [{"id": c.id, "title": c.title} for c in result.citations],
+            "iterations": result.iterations,
+        }
+        print(json.dumps(out))
+    else:
+        print("# Briefing")
+        print(result.answer)
+        print()
+        print("# Citations")
+        if not result.citations:
+            print("(none)")
+        else:
+            for c in result.citations:
+                print(f"- [{c.id:04d}] {c.title}")
+        print()
+        print(f"(iterations: {result.iterations})", file=sys.stderr)
+
+
 def cmd_memory(args: argparse.Namespace) -> None:
     cmd = getattr(args, "memory_command", None)
     if cmd == "memorize":
@@ -199,8 +259,7 @@ def cmd_memory(args: argparse.Namespace) -> None:
     elif cmd == "rag":
         cmd_rag(args)
     elif cmd == "reflect":
-        print("koan memory reflect: not yet implemented", file=sys.stderr)
-        sys.exit(1)
+        cmd_reflect(args)
     else:
         mem_parser = getattr(args, "_mem_parser", None)
         if mem_parser is not None:

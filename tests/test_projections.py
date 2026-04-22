@@ -731,6 +731,49 @@ class TestFoldArtifacts:
 
 
 # ---------------------------------------------------------------------------
+# fold: artifact review
+# ---------------------------------------------------------------------------
+
+class TestFoldArtifactReview:
+
+    def test_artifact_review_started_sets_path(self):
+        p = _proj_with_run()
+        r = fold(p, _e("artifact_review_started", {"path": "plan.md"}))
+        assert r.run.active_artifact_review is not None
+        assert r.run.active_artifact_review.path == "plan.md"
+
+    def test_artifact_review_cleared_nulls_field(self):
+        p = _proj_with_run()
+        p = fold(p, _e("artifact_review_started", {"path": "plan.md"}))
+        r = fold(p, _e("artifact_review_cleared", {}))
+        assert r.run.active_artifact_review is None
+
+    def test_phase_started_clears_active_artifact_review(self):
+        p = _proj_with_run()
+        p = fold(p, _e("artifact_review_started", {"path": "plan.md"}))
+        assert p.run.active_artifact_review is not None
+        r = fold(p, _e("phase_started", {"phase": "plan-review"}))
+        assert r.run.active_artifact_review is None
+
+    def test_workflow_completed_clears_active_artifact_review(self):
+        p = _proj_with_run()
+        p = fold(p, _e("artifact_review_started", {"path": "plan.md"}))
+        assert p.run.active_artifact_review is not None
+        r = fold(p, _e("workflow_completed", {"success": True, "summary": "done"}))
+        assert r.run.active_artifact_review is None
+
+    def test_artifact_review_started_without_run_noop(self):
+        p = Projection()
+        r = fold(p, _e("artifact_review_started", {"path": "plan.md"}))
+        assert r.run is None
+
+    def test_artifact_review_cleared_without_run_noop(self):
+        p = Projection()
+        r = fold(p, _e("artifact_review_cleared", {}))
+        assert r.run is None
+
+
+# ---------------------------------------------------------------------------
 # fold: safety
 # ---------------------------------------------------------------------------
 

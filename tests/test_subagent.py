@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -15,34 +13,20 @@ from koan.audit import EventLog, Projection
 from koan.audit.events import RunnerDiagnosticEvent
 from koan.phases import PhaseContext, StepGuidance
 from koan.runners.base import RunnerDiagnostic, StreamEvent
+from koan.state import AppState
 
 
-# -- Fixtures -----------------------------------------------------------------
+# -- Fake Context for handler tests -------------------------------------------
 
-@dataclass
-class FakeConfig:
-    model_tiers: Any = None
-    scout_concurrency: int = 2
+class _FakeContext:
+    """Minimal fastmcp Context substitute for calling handler closures in tests."""
+    def __init__(self, agent):
+        self._agent = agent
 
-
-@dataclass
-class FakeAppState:
-    agents: dict = field(default_factory=dict)
-    config: FakeConfig = field(default_factory=FakeConfig)
-    builtin_profiles: dict = field(default_factory=dict)
-    port: int = 9999
-    active_interaction: Any = None
-    interaction_queue: Any = field(default_factory=lambda: __import__("collections").deque())
-    interaction_queue_max: int = 8
-    run_dir: str | None = None
-    projection_store: object = field(default_factory=lambda: __import__('koan.projections', fromlist=['ProjectionStore']).ProjectionStore())
-    run_installations: dict = field(default_factory=dict)
-    _active_processes: dict = field(default_factory=dict)
-    yield_future: Any = None
-    steering_queue: list = field(default_factory=list)
-    phase: str = "intake"
-    project_dir: str = ""
-    task_description: str = ""
+    async def get_state(self, key):
+        if key == "agent":
+            return self._agent
+        return None
 
 
 class FakeRunner:
@@ -65,6 +49,18 @@ class FakeRunnerSuccess:
 
     def parse_stream_event(self, line):
         return []
+
+
+def FakeAppState(port: int = 9999, run_dir: str = "") -> AppState:
+    """Construct a real AppState with the given server port and run_dir.
+
+    Tests that previously used a FakeAppState dataclass now use real AppState
+    so they exercise the actual sub-state structure rather than a stub.
+    """
+    st = AppState()
+    st.server.port = port
+    st.run.run_dir = run_dir
+    return st
 
 
 def _fake_phase_module():
@@ -152,29 +148,31 @@ class TestCompleteStep:
     @pytest.mark.anyio
     async def test_step_0_to_1_returns_guidance(self):
         from koan.state import AgentState
+        from koan.web.mcp_endpoint import build_mcp_server
 
         phase_mod = _fake_phase_module()
         event_log = AsyncMock()
         event_log.emit_step_transition = AsyncMock()
 
+        app_state = AppState()
+        app_state.run.phase = "intake"
+
+        # role=orchestrator passes _check_or_raise for koan_complete_step on intake
         agent = AgentState(
             agent_id="test-1",
-            role="intake",
+            role="orchestrator",
             subagent_dir="/tmp/test",
             step=0,
             phase_module=phase_mod,
             phase_ctx=PhaseContext(run_dir="/tmp", subagent_dir="/tmp/test"),
             event_log=event_log,
         )
+        app_state.agents[agent.agent_id] = agent
 
-        from koan.web.mcp_endpoint import _agent_ctx, koan_complete_step
+        _, handlers = build_mcp_server(app_state)
+        ctx = _FakeContext(agent)
 
-        token = _agent_ctx.set(agent)
-        try:
-            with patch("koan.web.mcp_endpoint._check_or_raise"):
-                result = await koan_complete_step(thoughts="")
-        finally:
-            _agent_ctx.reset(token)
+        result = await handlers.koan_complete_step(ctx, thoughts="")
 
         assert "Extract" in result
         assert agent.step == 1
@@ -182,58 +180,59 @@ class TestCompleteStep:
 
     @pytest.mark.anyio
     async def test_validation_failure_raises(self):
+        from fastmcp.exceptions import ToolError
         from koan.state import AgentState
+        from koan.web.mcp_endpoint import build_mcp_server
 
         phase_mod = _fake_phase_module()
         phase_mod.validate_step_completion = MagicMock(return_value="Must write landscape.md first")
 
+        app_state = AppState()
+        app_state.run.phase = "intake"
+
         agent = AgentState(
             agent_id="test-2",
-            role="intake",
+            role="orchestrator",
             subagent_dir="/tmp/test",
             step=4,
             phase_module=phase_mod,
             phase_ctx=PhaseContext(run_dir="/tmp", subagent_dir="/tmp/test"),
             event_log=AsyncMock(),
         )
+        app_state.agents[agent.agent_id] = agent
 
-        from fastmcp.exceptions import ToolError
+        _, handlers = build_mcp_server(app_state)
+        ctx = _FakeContext(agent)
 
-        from koan.web.mcp_endpoint import _agent_ctx, koan_complete_step
-
-        token = _agent_ctx.set(agent)
-        try:
-            with patch("koan.web.mcp_endpoint._check_or_raise"):
-                with pytest.raises(ToolError):
-                    await koan_complete_step(thoughts="")
-        finally:
-            _agent_ctx.reset(token)
+        with pytest.raises(ToolError):
+            await handlers.koan_complete_step(ctx, thoughts="")
 
     @pytest.mark.anyio
     async def test_loop_back_calls_on_loop_back(self):
         from koan.state import AgentState
+        from koan.web.mcp_endpoint import build_mcp_server
 
         phase_mod = _fake_phase_module()
         phase_mod.get_next_step = MagicMock(return_value=2)
 
+        app_state = AppState()
+        app_state.run.phase = "intake"
+
         agent = AgentState(
             agent_id="test-3",
-            role="intake",
+            role="orchestrator",
             subagent_dir="/tmp/test",
             step=4,
             phase_module=phase_mod,
             phase_ctx=PhaseContext(run_dir="/tmp", subagent_dir="/tmp/test"),
             event_log=AsyncMock(),
         )
+        app_state.agents[agent.agent_id] = agent
 
-        from koan.web.mcp_endpoint import _agent_ctx, koan_complete_step
+        _, handlers = build_mcp_server(app_state)
+        ctx = _FakeContext(agent)
 
-        token = _agent_ctx.set(agent)
-        try:
-            with patch("koan.web.mcp_endpoint._check_or_raise"):
-                await koan_complete_step(thoughts="")
-        finally:
-            _agent_ctx.reset(token)
+        await handlers.koan_complete_step(ctx, thoughts="")
 
         phase_mod.on_loop_back.assert_called_once_with(4, 2, agent.phase_ctx)
         assert agent.step == 2
@@ -323,7 +322,7 @@ class TestSpawnSubagent:
         )
 
         app_state = FakeAppState(port=9999)
-        app_state.config = config
+        app_state.runner_config.config = config
 
         subagent_dir = str(tmp_path / "sub")
         Path(subagent_dir).mkdir()
@@ -380,19 +379,20 @@ class TestRequestScouts:
     async def test_aggregation_ordering(self, tmp_path):
         """Scouts results are aggregated in request order."""
         from koan.state import AgentState
-        from koan.web.mcp_endpoint import _agent_ctx, _app_state, koan_request_scouts
+        from koan.web.mcp_endpoint import build_mcp_server
 
         app_state = FakeAppState(port=9999, run_dir=str(tmp_path))
 
         agent = AgentState(
             agent_id="scout-parent",
-            role="intake",
+            role="orchestrator",
             subagent_dir=str(tmp_path),
             run_dir=str(tmp_path),
             phase_module=_fake_phase_module(),
             phase_ctx=PhaseContext(run_dir=str(tmp_path), subagent_dir=str(tmp_path)),
             event_log=AsyncMock(),
         )
+        app_state.agents[agent.agent_id] = agent
 
         findings = ["Finding A", "Finding B", "Finding C"]
         call_idx = 0
@@ -404,22 +404,16 @@ class TestRequestScouts:
             from koan.subagent import SubagentResult
             return SubagentResult(exit_code=0, final_response=findings[idx])
 
-        import koan.web.mcp_endpoint as mcp_mod
-        old_app_state = mcp_mod._app_state
-        mcp_mod._app_state = app_state
+        _, handlers = build_mcp_server(app_state)
+        ctx = _FakeContext(agent)
 
-        token = _agent_ctx.set(agent)
-        try:
-            with patch("koan.web.mcp_endpoint._check_or_raise"), \
-                 patch("koan.subagent.spawn_subagent", side_effect=fake_spawn):
-                result = await koan_request_scouts(questions=[
-                    {"id": "a", "prompt": "Q1"},
-                    {"id": "b", "prompt": "Q2"},
-                    {"id": "c", "prompt": "Q3"},
-                ])
-        finally:
-            _agent_ctx.reset(token)
-            mcp_mod._app_state = old_app_state
+        with patch("koan.web.mcp_endpoint._check_or_raise"), \
+             patch("koan.subagent.spawn_subagent", side_effect=fake_spawn):
+            result = await handlers.koan_request_scouts(ctx, questions=[
+                {"id": "a", "prompt": "Q1"},
+                {"id": "b", "prompt": "Q2"},
+                {"id": "c", "prompt": "Q3"},
+            ])
 
         assert "Finding A" in result
         assert "Finding B" in result
@@ -432,20 +426,22 @@ class TestRequestScouts:
     async def test_semaphore_bounds_concurrency(self, tmp_path):
         """Scout concurrency is bounded by semaphore from config."""
         from koan.state import AgentState
-        from koan.web.mcp_endpoint import _agent_ctx, koan_request_scouts
+        from koan.web.mcp_endpoint import build_mcp_server
 
         app_state = FakeAppState(port=9999, run_dir=str(tmp_path))
-        app_state.config.scout_concurrency = 1  # serial execution
+        # Set via sub-state path; handler reads app_state.runner_config.config.scout_concurrency
+        app_state.runner_config.config.scout_concurrency = 1
 
         agent = AgentState(
             agent_id="scout-parent",
-            role="intake",
+            role="orchestrator",
             subagent_dir=str(tmp_path),
             run_dir=str(tmp_path),
             phase_module=_fake_phase_module(),
             phase_ctx=PhaseContext(run_dir=str(tmp_path), subagent_dir=str(tmp_path)),
             event_log=AsyncMock(),
         )
+        app_state.agents[agent.agent_id] = agent
 
         max_concurrent = 0
         current_concurrent = 0
@@ -463,22 +459,16 @@ class TestRequestScouts:
             from koan.subagent import SubagentResult
             return SubagentResult(exit_code=0, final_response="ok")
 
-        import koan.web.mcp_endpoint as mcp_mod
-        old_app_state = mcp_mod._app_state
-        mcp_mod._app_state = app_state
+        _, handlers = build_mcp_server(app_state)
+        ctx = _FakeContext(agent)
 
-        token = _agent_ctx.set(agent)
-        try:
-            with patch("koan.web.mcp_endpoint._check_or_raise"), \
-                 patch("koan.subagent.spawn_subagent", side_effect=fake_spawn):
-                await koan_request_scouts(questions=[
-                    {"id": "x", "prompt": "Q1"},
-                    {"id": "y", "prompt": "Q2"},
-                    {"id": "z", "prompt": "Q3"},
-                ])
-        finally:
-            _agent_ctx.reset(token)
-            mcp_mod._app_state = old_app_state
+        with patch("koan.web.mcp_endpoint._check_or_raise"), \
+             patch("koan.subagent.spawn_subagent", side_effect=fake_spawn):
+            await handlers.koan_request_scouts(ctx, questions=[
+                {"id": "x", "prompt": "Q1"},
+                {"id": "y", "prompt": "Q2"},
+                {"id": "z", "prompt": "Q3"},
+            ])
 
         assert max_concurrent <= 1, f"Expected max 1 concurrent, got {max_concurrent}"
 
@@ -486,39 +476,34 @@ class TestRequestScouts:
     async def test_missing_state_json_treated_as_failure(self, tmp_path):
         """Scout with missing state.json is unsuccessful even if exit code 0."""
         from koan.state import AgentState
-        from koan.web.mcp_endpoint import _agent_ctx, koan_request_scouts
+        from koan.web.mcp_endpoint import build_mcp_server
 
         app_state = FakeAppState(port=9999, run_dir=str(tmp_path))
 
         agent = AgentState(
             agent_id="scout-parent",
-            role="intake",
+            role="orchestrator",
             subagent_dir=str(tmp_path),
             run_dir=str(tmp_path),
             phase_module=_fake_phase_module(),
             phase_ctx=PhaseContext(run_dir=str(tmp_path), subagent_dir=str(tmp_path)),
             event_log=AsyncMock(),
         )
+        app_state.agents[agent.agent_id] = agent
 
         async def fake_spawn(task, app, runner=None):
-            # Exit 0 but return no final_response — treated as no findings
+            # Exit 0 but return no final_response -- treated as no findings
             from koan.subagent import SubagentResult
             return SubagentResult(exit_code=0)
 
-        import koan.web.mcp_endpoint as mcp_mod
-        old_app_state = mcp_mod._app_state
-        mcp_mod._app_state = app_state
+        _, handlers = build_mcp_server(app_state)
+        ctx = _FakeContext(agent)
 
-        token = _agent_ctx.set(agent)
-        try:
-            with patch("koan.web.mcp_endpoint._check_or_raise"), \
-                 patch("koan.subagent.spawn_subagent", side_effect=fake_spawn):
-                result = await koan_request_scouts(questions=[
-                    {"id": "q", "prompt": "Q1"},
-                ])
-        finally:
-            _agent_ctx.reset(token)
-            mcp_mod._app_state = old_app_state
+        with patch("koan.web.mcp_endpoint._check_or_raise"), \
+             patch("koan.subagent.spawn_subagent", side_effect=fake_spawn):
+            result = await handlers.koan_request_scouts(ctx, questions=[
+                {"id": "q", "prompt": "Q1"},
+            ])
 
         assert result == "No findings returned."
 
@@ -625,7 +610,7 @@ class TestBinaryNotFoundSpawn:
         )
 
         app_state = FakeAppState(port=9999)
-        app_state.config = config
+        app_state.runner_config.config = config
         subagent_dir = str(tmp_path / "sub")
         Path(subagent_dir).mkdir()
 
@@ -741,4 +726,4 @@ class TestClaudePostBuildArgs:
             args = _claude_post_build_args(role, "/run", "/proj")
             assert "--allowedTools" in args, role
             at_idx = args.index("--allowedTools")
-            assert args[at_idx + 1] == "mcp__koan__*", role
+            assert args[at_idx + 1] == "mcp__koan__*,Bash", role

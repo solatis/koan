@@ -208,12 +208,12 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
     # Resolve runner via registry
     if runner is None:
         try:
-            config = app_state.config
+            config = app_state.runner_config.config
             registry = RunnerRegistry()
             installation, model_alias, thinking_mode = registry.resolve_agent_config(
                 role, config,
-                builtin_profiles=app_state.builtin_profiles,
-                run_installations=app_state.run_installations,
+                builtin_profiles=app_state.runner_config.builtin_profiles,
+                run_installations=app_state.run.run_installations,
             )
 
             runner = registry.get_runner(installation.runner_type, subagent_dir)
@@ -239,9 +239,13 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
         thinking_mode = None
 
     # Write task.json
-    mcp_url = f"http://127.0.0.1:{app_state.port}/mcp/?agent_id={agent_id}"
+    mcp_url = f"http://127.0.0.1:{app_state.server.port}/mcp/?agent_id={agent_id}"
     task_on_disk = {**task, "mcp_url": mcp_url}
     await write_task_json(subagent_dir, task_on_disk)
+    log.debug(
+        "task.json written: path=%s bytes=%d",
+        subagent_dir, len(json.dumps(task_on_disk)),
+    )
 
     # Build PhaseContext
     phase_ctx = _build_phase_ctx(task, subagent_dir)
@@ -319,6 +323,10 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
             project_dir=task.get("project_dir", ""),
         ))
 
+    log.debug(
+        "spawn command: role=%s argc=%d cmd[0]=%s",
+        role, len(cmd), cmd[0] if cmd else "",
+    )
     # Emit agent_spawned only after build_command succeeds -- process is about to start
     store.push_event("agent_spawned", build_agent_spawned(agent), agent_id=agent_id)
 
@@ -519,6 +527,11 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
                         )
                 elif ev.type == "turn_complete":
                     pass
+                else:
+                    log.debug(
+                        "unknown stream event type=%s agent=%s",
+                        ev.type, agent_id[:8],
+                    )
 
         # Close any in-flight streaming tools at stdout EOF
         for _idx, (cid, tname) in streaming_call_ids.items():
@@ -625,19 +638,27 @@ def _cancel_pending_interactions(agent_id: str, app_state: AppState) -> None:
     store = app_state.projection_store
 
     # Cancel queued interactions belonging to this agent silently
+    original_queue_len = len(app_state.interactions.interaction_queue)
     remaining = []
-    for item in app_state.interaction_queue:
+    for item in app_state.interactions.interaction_queue:
         if item.agent_id == agent_id:
             if not item.future.done():
                 item.future.set_result(error_result)
             # No projection event for queued (never-active) interactions
         else:
             remaining.append(item)
-    app_state.interaction_queue.clear()
-    app_state.interaction_queue.extend(remaining)
+    app_state.interactions.interaction_queue.clear()
+    app_state.interactions.interaction_queue.extend(remaining)
+
+    cancelled_count = original_queue_len - len(remaining)
+    if cancelled_count:
+        log.debug(
+            "cancelled %d queued interactions for agent=%s",
+            cancelled_count, agent_id[:8],
+        )
 
     # Cancel active interaction with a typed cancellation event
-    active = app_state.active_interaction
+    active = app_state.interactions.active_interaction
     if active is not None and active.agent_id == agent_id:
         token = active.token
 
@@ -651,8 +672,12 @@ def _cancel_pending_interactions(agent_id: str, app_state: AppState) -> None:
         if not active.future.done():
             active.future.set_result(error_result)
         activate_next_interaction(app_state)
+        log.debug(
+            "cancelled active interaction type=%s token=%s for agent=%s",
+            active.type, active.token, agent_id[:8],
+        )
 
     # Clear yield_future if it was set (orchestrator crashed at phase boundary)
-    if app_state.yield_future is not None and not app_state.yield_future.done():
-        app_state.yield_future.set_result(False)
-    app_state.yield_future = None
+    if app_state.interactions.yield_future is not None and not app_state.interactions.yield_future.done():
+        app_state.interactions.yield_future.set_result(False)
+    app_state.interactions.yield_future = None

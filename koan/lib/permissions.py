@@ -53,7 +53,10 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
         "koan_complete_step",
     }),
     "orchestrator": frozenset({
-        # Base set; actual permissions are phase-aware — see _check_orchestrator_permission
+        # Documentation of the tools the orchestrator may use;
+        # actual allow/deny lives in _check_orchestrator_permission.
+        # write/edit are intentionally absent -- all artifact mutations
+        # flow through koan_artifact_propose per this task's design.
         "koan_complete_step",
         "koan_set_phase",
         "koan_yield",
@@ -68,8 +71,9 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
         "koan_forget",
         "koan_memory_status",
         "koan_search",
-        "edit",
-        "write",
+        "koan_reflect",
+        "koan_artifact_propose",
+        "koan_memory_propose",
         "bash",
     }),
     "planner": frozenset({
@@ -110,6 +114,14 @@ _UNIVERSAL_MEMORY_TOOLS: frozenset[str] = frozenset({
     "koan_search",
 })
 
+# Read-only artifact tools -- always allowed for all roles in every phase.
+# Mirroring _UNIVERSAL_MEMORY_TOOLS pattern (memory entry 0053): a single
+# frozenset avoids per-role divergence as roles evolve.
+_UNIVERSAL_READ_TOOLS: frozenset[str] = frozenset({
+    "koan_artifact_list",
+    "koan_artifact_view",
+})
+
 # -- Orchestrator phase-specific constants ------------------------------------
 
 _ORCHESTRATOR_SCOUT_PHASES: frozenset[str] = frozenset({
@@ -128,8 +140,12 @@ _ORCHESTRATOR_STORY_TOOLS: frozenset[str] = frozenset({
 })
 
 # Memory tools are available to the orchestrator in every phase.
+# koan_reflect is orchestrator-only (unlike koan_search/koan_memory_status
+# which are universal); it belongs here so the phase-aware fast-path allows
+# it without duplicating the check in _check_orchestrator_permission.
 _ORCHESTRATOR_MEMORY_TOOLS: frozenset[str] = frozenset({
-    "koan_memorize", "koan_forget", "koan_memory_status", "koan_search",
+    "koan_memorize", "koan_forget", "koan_memory_status",
+    "koan_search", "koan_reflect",
 })
 
 _ORCHESTRATOR_BASH_PHASES: frozenset[str] = frozenset({
@@ -156,80 +172,132 @@ def _check_orchestrator_permission(
     # Non-bash read tools: unconditionally allowed (already handled in check_permission,
     # but guard here too for direct callers).
     if tool_name in _NON_BASH_READ_TOOLS:
+        log.debug(
+            "permission allow: role=orchestrator tool=%s phase=%s step=%s",
+            tool_name, phase, current_step,
+        )
         return {"allowed": True, "reason": None}
 
     # bash — execution and implementation-validation only
     if tool_name == "bash":
         if phase in _ORCHESTRATOR_BASH_PHASES:
+            log.debug(
+                "permission allow: role=orchestrator tool=bash phase=%s step=%s",
+                phase, current_step,
+            )
             return {"allowed": True, "reason": None}
-        return {"allowed": False, "reason": f"bash is not available in phase '{phase}'"}
+        reason = f"bash is not available in phase '{phase}'"
+        log.debug(
+            "permission deny: role=orchestrator tool=bash phase=%s reason=%s",
+            phase, reason,
+        )
+        return {"allowed": False, "reason": reason}
 
     # Always allowed base koan tools
     if tool_name in ("koan_complete_step", "koan_set_phase", "koan_yield"):
+        log.debug(
+            "permission allow: role=orchestrator tool=%s phase=%s step=%s",
+            tool_name, phase, current_step,
+        )
         return {"allowed": True, "reason": None}
 
     # Memory tools -- available to the orchestrator in every phase
     if tool_name in _ORCHESTRATOR_MEMORY_TOOLS:
+        log.debug(
+            "permission allow: role=orchestrator tool=%s phase=%s step=%s",
+            tool_name, phase, current_step,
+        )
         return {"allowed": True, "reason": None}
 
     # koan_ask_question — always allowed except brief-generation step 1
     if tool_name == "koan_ask_question":
         if phase == "brief-generation" and current_step == 1:
-            return {
-                "allowed": False,
-                "reason": (
-                    "koan_ask_question is not available during the Read step (step 1). "
-                    "Complete koan_complete_step first to advance to the next step."
-                ),
-            }
+            reason = (
+                "koan_ask_question is not available during the Read step (step 1). "
+                "Complete koan_complete_step first to advance to the next step."
+            )
+            log.debug(
+                "permission deny: role=orchestrator tool=koan_ask_question phase=%s reason=%s",
+                phase, reason,
+            )
+            return {"allowed": False, "reason": reason}
+        log.debug(
+            "permission allow: role=orchestrator tool=koan_ask_question phase=%s step=%s",
+            phase, current_step,
+        )
         return {"allowed": True, "reason": None}
 
     # koan_request_scouts — planning phases only (not brief-generation)
     if tool_name == "koan_request_scouts":
         if phase in _ORCHESTRATOR_SCOUT_PHASES:
+            log.debug(
+                "permission allow: role=orchestrator tool=koan_request_scouts phase=%s step=%s",
+                phase, current_step,
+            )
             return {"allowed": True, "reason": None}
-        return {"allowed": False, "reason": f"koan_request_scouts is not available in phase '{phase}'"}
+        reason = f"koan_request_scouts is not available in phase '{phase}'"
+        log.debug(
+            "permission deny: role=orchestrator tool=koan_request_scouts phase=%s reason=%s",
+            phase, reason,
+        )
+        return {"allowed": False, "reason": reason}
 
     # koan_request_executor — execute and execution phases
     if tool_name == "koan_request_executor":
         if phase in ("execution", "execute"):
+            log.debug(
+                "permission allow: role=orchestrator tool=koan_request_executor phase=%s step=%s",
+                phase, current_step,
+            )
             return {"allowed": True, "reason": None}
-        return {"allowed": False, "reason": f"koan_request_executor is not available in phase '{phase}'"}
+        reason = f"koan_request_executor is not available in phase '{phase}'"
+        log.debug(
+            "permission deny: role=orchestrator tool=koan_request_executor phase=%s reason=%s",
+            phase, reason,
+        )
+        return {"allowed": False, "reason": reason}
 
     # Story management tools — legacy execution phase only
     if tool_name in _ORCHESTRATOR_STORY_TOOLS:
         if phase == "execution":
+            log.debug(
+                "permission allow: role=orchestrator tool=%s phase=%s step=%s",
+                tool_name, phase, current_step,
+            )
             return {"allowed": True, "reason": None}
-        return {"allowed": False, "reason": f"{tool_name} is only available during the execution phase"}
+        reason = f"{tool_name} is only available during the execution phase"
+        log.debug(
+            "permission deny: role=orchestrator tool=%s phase=%s reason=%s",
+            tool_name, phase, reason,
+        )
+        return {"allowed": False, "reason": reason}
 
-    # write / edit — all phases except brief-generation step 1
-    if tool_name in WRITE_TOOLS:
-        if phase == "brief-generation" and current_step == 1:
-            return {
-                "allowed": False,
-                "reason": (
-                    f"{tool_name} is not available during the Read step (step 1). "
-                    "Complete koan_complete_step first to advance to the next step."
-                ),
-            }
-        # Path scoping
-        if run_dir and tool_args:
-            raw_path = tool_args.get("path")
-            if isinstance(raw_path, str):
-                resolved_tool = Path(raw_path).resolve()
-                resolved_run = Path(run_dir).resolve()
-                if resolved_tool != resolved_run and not str(resolved_tool).startswith(str(resolved_run) + "/"):
-                    log.warning(
-                        "Write blocked: path outside run dir: role=orchestrator tool=%s path=%s run=%s",
-                        tool_name, raw_path, run_dir,
-                    )
-                    return {
-                        "allowed": False,
-                        "reason": f'{tool_name} path "{raw_path}" is outside run directory',
-                    }
+    # koan_artifact_propose -- orchestrator-only, available in every phase.
+    # write/edit are intentionally absent: all artifact mutations flow through
+    # this tool so the review handshake cannot be bypassed.
+    if tool_name == "koan_artifact_propose":
+        log.debug(
+            "permission allow: role=orchestrator tool=koan_artifact_propose phase=%s step=%s",
+            phase, current_step,
+        )
         return {"allowed": True, "reason": None}
 
-    return {"allowed": False, "reason": f"{tool_name} is not available for the orchestrator role"}
+    # koan_memory_propose -- orchestrator-only, available in every phase.
+    # Parallels koan_artifact_propose: memory mutations flow through this tool
+    # so the review handshake cannot be bypassed.
+    if tool_name == "koan_memory_propose":
+        log.debug(
+            "permission allow: role=orchestrator tool=koan_memory_propose phase=%s step=%s",
+            phase, current_step,
+        )
+        return {"allowed": True, "reason": None}
+
+    reason = f"{tool_name} is not available for the orchestrator role"
+    log.debug(
+        "permission deny: role=orchestrator tool=%s phase=%s reason=%s",
+        tool_name, phase, reason,
+    )
+    return {"allowed": False, "reason": reason}
 
 
 def check_permission(
@@ -250,6 +318,18 @@ def check_permission(
     # need read-only memory access; placing this before the orchestrator branch
     # avoids duplicating it in _check_orchestrator_permission).
     if tool_name in _UNIVERSAL_MEMORY_TOOLS:
+        log.debug(
+            "permission allow: role=%s tool=%s phase=%s step=%s",
+            role, tool_name, current_phase, current_step,
+        )
+        return {"allowed": True, "reason": None}
+
+    # Read-only artifact tools -- always allowed for all roles in every phase.
+    if tool_name in _UNIVERSAL_READ_TOOLS:
+        log.debug(
+            "permission allow: role=%s tool=%s phase=%s step=%s",
+            role, tool_name, current_phase, current_step,
+        )
         return {"allowed": True, "reason": None}
 
     # Orchestrator uses phase-aware permission logic (handles bash phase-gating).
@@ -258,17 +338,23 @@ def check_permission(
 
     # bash always allowed for non-orchestrator roles.
     if tool_name == "bash":
+        log.debug(
+            "permission allow: role=%s tool=bash phase=%s step=%s",
+            role, current_phase, current_step,
+        )
         return {"allowed": True, "reason": None}
 
     # brief-generation step 1 (Read) is read-only — phase-aware gate.
     if current_phase == "brief-generation" and current_step == 1 and tool_name in STEP_1_BLOCKED_TOOLS:
-        return {
-            "allowed": False,
-            "reason": (
-                f"{tool_name} is not available during the Read step (step 1). "
-                "Complete koan_complete_step first to advance to the Draft step."
-            ),
-        }
+        reason = (
+            f"{tool_name} is not available during the Read step (step 1). "
+            "Complete koan_complete_step first to advance to the Draft step."
+        )
+        log.debug(
+            "permission deny: role=%s tool=%s phase=%s reason=%s",
+            role, tool_name, current_phase, reason,
+        )
+        return {"allowed": False, "reason": reason}
 
     # Unknown role: blocked under default-deny policy.
     if role not in ROLE_PERMISSIONS:
@@ -278,7 +364,12 @@ def check_permission(
     allowed_tools = ROLE_PERMISSIONS[role]
 
     if tool_name not in allowed_tools:
-        return {"allowed": False, "reason": f"{tool_name} is not available for role {role}"}
+        reason = f"{tool_name} is not available for role {role}"
+        log.debug(
+            "permission deny: role=%s tool=%s phase=%s reason=%s",
+            role, tool_name, current_phase, reason,
+        )
+        return {"allowed": False, "reason": reason}
 
     # Path-scope enforcement: planning roles may only write inside run dir.
     if tool_name in WRITE_TOOLS and role in PLANNING_ROLES:
@@ -296,6 +387,14 @@ def check_permission(
                         "allowed": False,
                         "reason": f'{tool_name} path "{raw_path}" is outside run directory',
                     }
+        log.debug(
+            "permission allow: role=%s tool=%s phase=%s step=%s",
+            role, tool_name, current_phase, current_step,
+        )
         return {"allowed": True, "reason": None}
 
+    log.debug(
+        "permission allow: role=%s tool=%s phase=%s step=%s",
+        role, tool_name, current_phase, current_step,
+    )
     return {"allowed": True, "reason": None}

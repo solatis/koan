@@ -44,7 +44,7 @@ def _make_probe_results() -> list[ProbeResult]:
 @pytest.fixture
 def app_state():
     st = AppState()
-    st.config = KoanConfig()
+    st.runner_config.config = KoanConfig()
     return st
 
 
@@ -75,7 +75,7 @@ def test_start_run_requires_task(client, app_state):
 
 
 def test_start_run_requires_profile(client, app_state):
-    app_state.probe_results = _make_probe_results()
+    app_state.runner_config.probe_results = _make_probe_results()
     resp = client.post("/api/start-run", json={"task": "build something"})
     assert resp.status_code == 422
     assert resp.json()["error"] == "validation_error"
@@ -83,7 +83,7 @@ def test_start_run_requires_profile(client, app_state):
 
 
 def test_start_run_rejects_empty_profile(client, app_state):
-    app_state.probe_results = _make_probe_results()
+    app_state.runner_config.probe_results = _make_probe_results()
     resp = client.post("/api/start-run", json={"task": "build something", "profile": ""})
     assert resp.status_code == 422
     assert resp.json()["error"] == "validation_error"
@@ -91,7 +91,7 @@ def test_start_run_rejects_empty_profile(client, app_state):
 
 
 def test_start_run_blocked_no_runners(client, app_state):
-    app_state.probe_results = [
+    app_state.runner_config.probe_results = [
         ProbeResult(runner_type="claude", available=False),
         ProbeResult(runner_type="codex", available=False),
         ProbeResult(runner_type="gemini", available=False),
@@ -106,8 +106,8 @@ def test_start_run_blocked_no_runners(client, app_state):
 
 def test_preflight_returns_required_types(client, app_state):
     from koan.runners.registry import compute_builtin_profiles
-    app_state.probe_results = _make_probe_results()
-    app_state.builtin_profiles = compute_builtin_profiles(app_state.probe_results)
+    app_state.runner_config.probe_results = _make_probe_results()
+    app_state.runner_config.builtin_profiles = compute_builtin_profiles(app_state.runner_config.probe_results)
     resp = client.get("/api/start-run/preflight?profile=balanced")
     assert resp.status_code == 200
     data = resp.json()
@@ -117,11 +117,11 @@ def test_preflight_returns_required_types(client, app_state):
 
 def test_preflight_shows_binary_validity(client, app_state, tmp_path):
     from koan.runners.registry import compute_builtin_profiles
-    app_state.probe_results = _make_probe_results()
-    app_state.builtin_profiles = compute_builtin_profiles(app_state.probe_results)
+    app_state.runner_config.probe_results = _make_probe_results()
+    app_state.runner_config.builtin_profiles = compute_builtin_profiles(app_state.runner_config.probe_results)
     real_binary = tmp_path / "claude"
     real_binary.touch()
-    app_state.config.agent_installations = [
+    app_state.runner_config.config.agent_installations = [
         AgentInstallation(alias="good", runner_type="claude", binary=str(real_binary)),
         AgentInstallation(alias="bad", runner_type="claude", binary="/nonexistent/claude"),
     ]
@@ -143,12 +143,12 @@ def test_preflight_missing_profile(client, app_state):
 
 def test_start_run_rejects_missing_binary(client, app_state):
     from koan.runners.registry import compute_builtin_profiles
-    app_state.probe_results = _make_probe_results()
-    app_state.builtin_profiles = compute_builtin_profiles(app_state.probe_results)
-    app_state.config.agent_installations = [
+    app_state.runner_config.probe_results = _make_probe_results()
+    app_state.runner_config.builtin_profiles = compute_builtin_profiles(app_state.runner_config.probe_results)
+    app_state.runner_config.config.agent_installations = [
         AgentInstallation(alias="broken", runner_type="claude", binary="/nonexistent/claude"),
     ]
-    app_state.run_installations = {"claude": "broken"}
+    app_state.run.run_installations = {"claude": "broken"}
     resp = client.post("/api/start-run", json={
         "task": "build something",
         "profile": "balanced",
@@ -160,7 +160,7 @@ def test_start_run_rejects_missing_binary(client, app_state):
 
 
 def test_start_run_rejects_unknown_installation_alias(client, app_state):
-    app_state.probe_results = _make_probe_results()
+    app_state.runner_config.probe_results = _make_probe_results()
     resp = client.post("/api/start-run", json={
         "task": "build something",
         "profile": "balanced",
@@ -176,8 +176,8 @@ def test_artifact_listing(client, app_state):
     with tempfile.TemporaryDirectory() as tmp:
         run_dir = Path(tmp)
         (run_dir / "landscape.md").write_text("# Landscape\n", "utf-8")
-        app_state.run_dir = str(run_dir)
-        app_state.start_event.set()
+        app_state.run.run_dir = str(run_dir)
+        app_state.run.start_event.set()
 
         resp = client.get("/api/artifacts")
         assert resp.status_code == 200
@@ -190,8 +190,8 @@ def test_artifact_content(client, app_state):
     with tempfile.TemporaryDirectory() as tmp:
         run_dir = Path(tmp)
         (run_dir / "landscape.md").write_text("# Hello\n", "utf-8")
-        app_state.run_dir = str(run_dir)
-        app_state.start_event.set()
+        app_state.run.run_dir = str(run_dir)
+        app_state.run.start_event.set()
 
         resp = client.get("/api/artifacts/landscape.md")
         assert resp.status_code == 200
@@ -204,8 +204,8 @@ def test_path_traversal_blocked(client, app_state):
     with tempfile.TemporaryDirectory() as tmp:
         run_dir = Path(tmp)
         run_dir.mkdir(exist_ok=True)
-        app_state.run_dir = str(run_dir)
-        app_state.start_event.set()
+        app_state.run.run_dir = str(run_dir)
+        app_state.run.start_event.set()
 
         # URL-normalized traversal (../) is resolved before routing and hits the SPA fallback.
         # Use URL-encoded slashes (%2F) to test path traversal within the artifact handler.
@@ -216,7 +216,7 @@ def test_path_traversal_blocked(client, app_state):
 # -- Profile endpoints --------------------------------------------------------
 
 def test_profiles_create_invalid_runner(client, app_state):
-    app_state.probe_results = _make_probe_results()
+    app_state.runner_config.probe_results = _make_probe_results()
 
     resp = client.post("/api/profiles", json={
         "name": "bad-runner",
@@ -229,7 +229,7 @@ def test_profiles_create_invalid_runner(client, app_state):
 
 
 def test_profiles_create_invalid_model(client, app_state):
-    app_state.probe_results = _make_probe_results()
+    app_state.runner_config.probe_results = _make_probe_results()
 
     resp = client.post("/api/profiles", json={
         "name": "bad-model",
@@ -242,7 +242,7 @@ def test_profiles_create_invalid_model(client, app_state):
 
 
 def test_profiles_create_invalid_thinking(client, app_state):
-    app_state.probe_results = _make_probe_results()
+    app_state.runner_config.probe_results = _make_probe_results()
 
     resp = client.post("/api/profiles", json={
         "name": "bad-thinking",
@@ -266,8 +266,194 @@ def test_profiles_delete_balanced_rejected(client, app_state):
     assert resp.json()["error"] == "read_only"
 
 
+# -- api_artifact_review endpoint ---------------------------------------------
+
+def test_artifact_review_no_active_review(client, app_state):
+    """POST /api/artifact-review returns 409 when no koan_artifact_propose is pending."""
+    resp = client.post("/api/artifact-review", json={
+        "path": "plan.md",
+        "payload": {"summary": "", "comments": []},
+    })
+    assert resp.status_code == 409
+    assert resp.json()["error"] == "no_active_review"
+
+
+def test_artifact_review_missing_path(client, app_state):
+    """POST /api/artifact-review returns 422 when path is absent."""
+    resp = client.post("/api/artifact-review", json={
+        "payload": {"summary": "", "comments": []},
+    })
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "missing_path"
+
+
+@pytest.mark.anyio
+async def test_artifact_propose_yolo(tmp_path):
+    """koan_artifact_propose in yolo mode: writes file, emits events, auto-approves."""
+    from unittest.mock import AsyncMock, patch
+    from koan.state import AgentState, AppState
+    from koan.phases import PhaseContext
+    from koan.web.mcp_endpoint import build_mcp_server
+
+    app_state = AppState()
+    app_state.server.yolo = True
+    app_state.run.phase = "plan-spec"
+    app_state.run.run_dir = str(tmp_path)
+
+    agent = AgentState(
+        agent_id="test-propose-yolo",
+        role="orchestrator",
+        subagent_dir=str(tmp_path),
+        run_dir=str(tmp_path),
+        step=2,
+        is_primary=True,
+        phase_ctx=PhaseContext(run_dir=str(tmp_path), subagent_dir=str(tmp_path)),
+        event_log=AsyncMock(),
+    )
+    app_state.agents[agent.agent_id] = agent
+
+    _, handlers = build_mcp_server(app_state)
+
+    class FakeContext:
+        async def get_state(self, key):
+            if key == "agent":
+                return agent
+            return None
+
+    result = await handlers.koan_artifact_propose(FakeContext(), "plan.md", "# Plan\n")
+
+    # File must exist on disk
+    assert (tmp_path / "plan.md").exists()
+    assert (tmp_path / "plan.md").read_text() == "# Plan\n"
+
+    # Yolo response is the canonical approval string
+    assert "I've reviewed" in result
+    assert "approve it as-is" in result
+
+    # Projection events emitted: artifact_review_started and artifact_review_cleared
+    event_types = [e.event_type for e in app_state.projection_store.events]
+    assert "artifact_review_started" in event_types
+    assert "artifact_review_cleared" in event_types
+
+    # active_artifact_review was cleared by the cleared event
+    run = app_state.projection_store.projection.run
+    # Run may be None (no run_started emitted in this test); check events only
+    started_events = [e for e in app_state.projection_store.events
+                      if e.event_type == "artifact_review_started"]
+    assert len(started_events) == 1
+    assert started_events[0].payload["path"] == "plan.md"
+
+
+@pytest.mark.anyio
+async def test_artifact_propose_invalid_filename(tmp_path):
+    """koan_artifact_propose raises ToolError for invalid filenames."""
+    from fastmcp.exceptions import ToolError
+    from unittest.mock import AsyncMock
+    from koan.state import AgentState, AppState
+    from koan.phases import PhaseContext
+    from koan.web.mcp_endpoint import build_mcp_server
+
+    app_state = AppState()
+    app_state.server.yolo = True
+    app_state.run.phase = "plan-spec"
+    app_state.run.run_dir = str(tmp_path)
+
+    agent = AgentState(
+        agent_id="test-propose-invalid",
+        role="orchestrator",
+        subagent_dir=str(tmp_path),
+        run_dir=str(tmp_path),
+        step=2,
+        event_log=AsyncMock(),
+        phase_ctx=PhaseContext(run_dir=str(tmp_path), subagent_dir=str(tmp_path)),
+    )
+    app_state.agents[agent.agent_id] = agent
+
+    _, handlers = build_mcp_server(app_state)
+
+    class FakeContext:
+        async def get_state(self, key):
+            if key == "agent":
+                return agent
+            return None
+
+    import json
+    with pytest.raises(ToolError) as exc_info:
+        await handlers.koan_artifact_propose(FakeContext(), "../evil.md", "bad")
+    body = json.loads(str(exc_info.value))
+    assert body["error"] == "invalid_filename"
+
+
+@pytest.mark.anyio
+async def test_artifact_review_resolves_future(tmp_path):
+    """POST /api/artifact-review resolves the koan_artifact_propose future."""
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+    from koan.state import AgentState, AppState
+    from koan.phases import PhaseContext
+    from koan.web.mcp_endpoint import build_mcp_server
+    from koan.web.app import create_app
+
+    app_state = AppState()
+    app_state.run.phase = "plan-spec"
+    app_state.run.run_dir = str(tmp_path)
+
+    agent = AgentState(
+        agent_id="test-propose-interactive",
+        role="orchestrator",
+        subagent_dir=str(tmp_path),
+        run_dir=str(tmp_path),
+        step=2,
+        is_primary=True,
+        event_log=AsyncMock(),
+        phase_ctx=PhaseContext(run_dir=str(tmp_path), subagent_dir=str(tmp_path)),
+    )
+    app_state.agents[agent.agent_id] = agent
+
+    _, handlers = build_mcp_server(app_state)
+
+    class FakeContext:
+        async def get_state(self, key):
+            if key == "agent":
+                return agent
+            return None
+
+    # Schedule the propose call in the background (it will block on the future)
+    propose_task = asyncio.create_task(
+        handlers.koan_artifact_propose(FakeContext(), "plan.md", "# Plan\n")
+    )
+
+    # Give the task a moment to reach the await point
+    await asyncio.sleep(0.01)
+
+    # The future should now be set
+    assert app_state.interactions.artifact_review_future is not None
+
+    # Resolve via the endpoint
+    with patch("koan.driver.driver_main", new_callable=AsyncMock):
+        from starlette.testclient import TestClient
+        app = create_app(app_state)
+        with TestClient(app) as client:
+            resp = client.post("/api/artifact-review", json={
+                "path": "plan.md",
+                "payload": {"summary": "", "comments": []},
+            })
+            assert resp.status_code == 200
+            assert resp.json()["ok"] is True
+
+    # Wait for the propose task to complete
+    result = await asyncio.wait_for(propose_task, timeout=2.0)
+
+    # Result is the approval string
+    assert "I've reviewed" in result
+    assert "approve it as-is" in result
+
+    # File exists
+    assert (tmp_path / "plan.md").exists()
+
+
 def test_profiles_create_non_dict_tiers(client, app_state):
-    app_state.probe_results = _make_probe_results()
+    app_state.runner_config.probe_results = _make_probe_results()
     resp = client.post("/api/profiles", json={
         "name": "bad-tiers",
         "tiers": [],
@@ -278,7 +464,7 @@ def test_profiles_create_non_dict_tiers(client, app_state):
 
 
 def test_profiles_create_non_dict_tier_entry(client, app_state):
-    app_state.probe_results = _make_probe_results()
+    app_state.runner_config.probe_results = _make_probe_results()
     resp = client.post("/api/profiles", json={
         "name": "bad-entry",
         "tiers": {"strong": "bad"},
@@ -289,8 +475,8 @@ def test_profiles_create_non_dict_tier_entry(client, app_state):
 
 
 def test_profiles_update_non_dict_tiers(client, app_state):
-    app_state.probe_results = _make_probe_results()
-    app_state.config.profiles.append(Profile(name="myprofile", tiers={}))
+    app_state.runner_config.probe_results = _make_probe_results()
+    app_state.runner_config.config.profiles.append(Profile(name="myprofile", tiers={}))
     resp = client.put("/api/profiles/myprofile", json={"tiers": "bad"})
     assert resp.status_code == 422
     assert resp.json()["error"] == "validation_error"
@@ -298,11 +484,11 @@ def test_profiles_update_non_dict_tiers(client, app_state):
 
 
 def test_profiles_delete_user_profile(client, app_state):
-    app_state.config.profiles.append(Profile(name="myprofile", tiers={}))
+    app_state.runner_config.config.profiles.append(Profile(name="myprofile", tiers={}))
     resp = client.delete("/api/profiles/myprofile")
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
-    assert not any(p.name == "myprofile" for p in app_state.config.profiles)
+    assert not any(p.name == "myprofile" for p in app_state.runner_config.config.profiles)
 
 
 # -- Agent detect endpoint ----------------------------------------------------
@@ -356,9 +542,9 @@ def test_sse_replay(app_state):
 def test_live_page_when_running(client, app_state):
     # After SPA migration, GET / always returns the SPA entry point.
     # The React app reads store state client-side to render the live view.
-    app_state.start_event.set()
-    app_state.run_dir = "/tmp/fake-run"
-    app_state.phase = "intake"
+    app_state.run.start_event.set()
+    app_state.run.run_dir = "/tmp/fake-run"
+    app_state.run.phase = "intake"
 
     resp = client.get("/")
     assert resp.status_code == 200
@@ -385,8 +571,8 @@ def test_model_config_removed(client, app_state):
 def test_landing_includes_profile_selector(client, app_state):
     # After SPA migration, GET / serves the React SPA, not server-rendered HTML.
     # Profile selector is rendered client-side by React.
-    app_state.probe_results = _make_probe_results()
-    app_state.builtin_profiles = {"balanced": Profile(name="balanced", tiers={
+    app_state.runner_config.probe_results = _make_probe_results()
+    app_state.runner_config.builtin_profiles = {"balanced": Profile(name="balanced", tiers={
         "strong": ProfileTier(runner_type="claude", model="opus", thinking="high"),
     })}
     resp = client.get("/")
@@ -395,7 +581,7 @@ def test_landing_includes_profile_selector(client, app_state):
 
 def test_landing_start_run_disabled_no_runners(client, app_state):
     # After SPA migration, runner availability is checked client-side via /api/probe.
-    app_state.probe_results = [
+    app_state.runner_config.probe_results = [
         ProbeResult(runner_type="claude", available=False),
         ProbeResult(runner_type="codex", available=False),
     ]
@@ -405,25 +591,25 @@ def test_landing_start_run_disabled_no_runners(client, app_state):
 
 def test_landing_start_run_enabled_with_runners(client, app_state):
     # After SPA migration, GET / serves the SPA regardless of runner state.
-    app_state.probe_results = _make_probe_results()
-    app_state.builtin_profiles = {"balanced": Profile(name="balanced", tiers={})}
+    app_state.runner_config.probe_results = _make_probe_results()
+    app_state.runner_config.builtin_profiles = {"balanced": Profile(name="balanced", tiers={})}
     resp = client.get("/")
     assert resp.status_code == 200
 
 
 def test_start_run_sends_profile(client, app_state):
-    app_state.probe_results = _make_probe_results()
+    app_state.runner_config.probe_results = _make_probe_results()
     resp = client.post(
         "/api/start-run",
         json={"task": "build something", "profile": "balanced"},
     )
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
-    assert app_state.config.active_profile == "balanced"
+    assert app_state.runner_config.config.active_profile == "balanced"
 
 
 def test_start_run_unknown_profile_rejected(client, app_state):
-    app_state.probe_results = _make_probe_results()
+    app_state.runner_config.probe_results = _make_probe_results()
     resp = client.post(
         "/api/start-run",
         json={"task": "build something", "profile": "nonexistent"},
@@ -433,7 +619,7 @@ def test_start_run_unknown_profile_rejected(client, app_state):
 
 
 def test_agents_list(client, app_state):
-    app_state.config.agent_installations.append(AgentInstallation(
+    app_state.runner_config.config.agent_installations.append(AgentInstallation(
         alias="my-claude", runner_type="claude", binary="/fake/bin/claude", extra_args=[],
     ))
     resp = client.get("/api/agents")
@@ -454,12 +640,12 @@ def test_agents_create_and_delete(client, app_state):
     })
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
-    assert any(i.alias == "test-agent" for i in app_state.config.agent_installations)
+    assert any(i.alias == "test-agent" for i in app_state.runner_config.config.agent_installations)
 
     resp = client.delete("/api/agents/test-agent")
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
-    assert not any(i.alias == "test-agent" for i in app_state.config.agent_installations)
+    assert not any(i.alias == "test-agent" for i in app_state.runner_config.config.agent_installations)
 
 
 # -- Probe refresh ------------------------------------------------------------
@@ -477,8 +663,8 @@ class TestProbeRefresh:
         fresh_builtins = {"balanced": fresh_profile}
 
         # Pre-populate with stale data
-        app_state.probe_results = _make_probe_results()
-        app_state.builtin_profiles = {}
+        app_state.runner_config.probe_results = _make_probe_results()
+        app_state.runner_config.builtin_profiles = {}
 
         with patch("koan.probe.probe_all_runners", new_callable=AsyncMock, return_value=fresh_probes) as mock_probe, \
              patch("koan.runners.registry.compute_builtin_profiles", return_value=fresh_builtins) as mock_builtins:
@@ -487,14 +673,14 @@ class TestProbeRefresh:
         assert resp.status_code == 200
         mock_probe.assert_called_once()
         mock_builtins.assert_called_once_with(fresh_probes)
-        assert app_state.probe_results is fresh_probes
-        assert app_state.builtin_profiles is fresh_builtins
+        assert app_state.runner_config.probe_results is fresh_probes
+        assert app_state.runner_config.builtin_profiles is fresh_builtins
         data = resp.json()
         assert len(data["runners"]) == 2
 
     def test_probe_no_refresh_skips_restate(self, client, app_state):
-        app_state.probe_results = _make_probe_results()
-        app_state.builtin_profiles = {"balanced": Profile(name="balanced", tiers={})}
+        app_state.runner_config.probe_results = _make_probe_results()
+        app_state.runner_config.builtin_profiles = {"balanced": Profile(name="balanced", tiers={})}
 
         with patch("koan.probe.probe_all_runners", new_callable=AsyncMock) as mock_probe:
             resp = client.get("/api/probe")

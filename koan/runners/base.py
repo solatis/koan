@@ -86,4 +86,5 @@ KOAN_MCP_TOOLS: frozenset[str] = frozenset({
     "koan_forget",
     "koan_memory_status",
     "koan_search",
+    "koan_reflect",
 })

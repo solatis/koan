@@ -441,8 +441,18 @@ Summary regeneration (inside `koan_memory_status`) uses a
 **cheap-tier model**. This is a mechanical operation — condensing
 existing entries into a prose overview.
 
-The `koan_reflect` tool uses a **cheap-tier model** for query
-generation and synthesis.
+The `koan_reflect` tool uses a **mid-tier model** (Gemini Flash,
+configurable via `KOAN_REFLECT_MODEL`). Reflect runs a multi-turn
+tool-calling loop in which a single LLM conversation plans queries,
+interprets results, judges sufficiency, and synthesizes the briefing.
+These tasks sit squarely in the regime that modern mid-tier models
+handle well — planning a handful of decomposed searches, reading
+structured results, writing a bounded briefing — and a Pro-class
+model is overkill for the latency cost. Cheap-tier models (flash-lite
+and below) degrade sharply here: they echo the user's question as a
+single query, produce malformed tool calls, and give up early.
+Mid-tier is the sweet spot; reflect runs infrequently (only on
+explicit invocation) so the per-call cost is acceptable.
 
 ### Direct human editing
 
@@ -697,46 +707,64 @@ knows it needs (known unknown).
 
 **`koan_reflect(question, context?)`** is a synthesized briefing.
 The agent poses a broad question and gets back a coherent answer
-that draws on multiple entries. This is modeled as a mini-agent
-(cheap-tier model) running an evidence-gathering loop, inspired
-by Hindsight's CARA reflect architecture.
+that draws on multiple entries. Reflect is a single-conversation
+LLM tool-calling loop: one strong-tier model conversation plans
+query angles, calls a `search` tool as many times as it needs,
+reviews accumulated evidence, and calls a `done` tool when it has
+enough to synthesize the briefing. The loop is inspired by
+Hindsight's CARA reflect architecture and implemented in
+`koan/memory/retrieval/reflect.py` (`run_reflect_agent`).
 
-The reflect tool runs the following agentic loop:
+The loop exposes exactly two tools to the model:
 
-**Step 1: Orient.** The reflect agent loads the project summary to
-understand what knowledge areas exist. This is a direct file read,
-not a search.
+- **`search(query, type?, k?)`** — the same hybrid search + reranking
+  pipeline used everywhere else (steps 3-5 from mechanical retrieval).
+  The optional `type` filter narrows to a specific memory type; `k`
+  defaults to 5 and is capped at 20. Every entry returned across the
+  loop is tracked in a retrieved-set dict keyed by `entry_id`.
+- **`done(answer, memory_ids)`** — terminates the loop. `answer` is
+  markdown prose (target 300-500 tokens); `memory_ids` is a list of
+  integer entry IDs backing the briefing. The driver validates each
+  id against the retrieved set, drops unmatched ids with a log entry,
+  and resolves surviving ids to `{id, title}` citation pairs using
+  the retrieved-set dict. The calling agent receives
+  `{answer, citations, iterations}`.
 
-**Step 2: Plan queries.** Based on the question and the
-orientation context, the agent generates 3–5 search queries from
-different angles. Example: question "what constraints and patterns
-should guide SDK design?" produces queries like "SDK architecture
-decisions," "sensor lifecycle procedures," "testing philosophy
-conventions," "fail-safe default requirements," "past SDK-related
-lessons."
+The model drives the loop itself rather than having the Python caller
+orchestrate separate single-turn prompts for planning, sufficiency
+judgment, and synthesis. A single conversation lets the model adapt
+its next search to what it just found — a capability lost when
+control flow lives outside the LLM. The system prompt instructs the
+model to decompose the question into 3-5 component searches targeting
+different entities and concepts (decomposition examples are included
+in the prompt because models default to echoing the user's full
+question as a single query otherwise).
 
-**Step 3: Gather evidence.** For each query, run the standard
-retrieval pipeline (hybrid search + reranking, steps 3–5 from
-mechanical retrieval). Collect the top results across all queries.
+The loop is capped at 10 tool calls. Reaching the cap without a
+`done` call is a fail-fast: the MCP handler raises
+`ToolError("iteration_cap_exceeded")` and no partial briefing is
+returned. The iteration cap is a safety rail against runaway loops,
+not a soft budget to fill.
 
-**Step 4: Evaluate sufficiency.** The agent reviews the gathered
-entries and assesses whether they adequately answer the question.
-If critical gaps remain (the question asks about SDK testing but
-no testing-related entries were retrieved), generate 1–2
-additional targeted queries and retrieve more. This loop runs
-up to 3 iterations to prevent runaway searches.
+No `orient`, `list_entries`, or summary-load step runs at loop start.
+The model discovers vocabulary through exploratory searches, the same
+way `koan_search` callers do. Pre-loading the summary or listing all
+entries moves vocabulary discovery outside the loop and scales badly
+as the memory grows.
 
-**Step 5: Synthesize.** The agent reads all gathered entries
-(typically 8–15 after deduplication) and produces a coherent
-300–500 token briefing that answers the original question. The
-synthesis connects knowledge across different entry types —
-linking a decision about fail-safe defaults to a procedure about
-testing to a lesson about SDK initialization failures. Each claim
-in the briefing cites the specific entry it draws from (by file
-path).
+Citations flow as typed tool arguments, not as text embedded in the
+answer prose. The model emits `memory_ids: list[int]`; the driver
+resolves titles server-side from the retrieved set. The answer prose
+may reference entries by title for readability, but the canonical
+citation list is the structured `citations` field in the response.
+Parsing citations out of natural-language prose is explicitly out of
+scope — structured metadata belongs in tool schemas, not in
+free text.
 
-**Step 6: Return.** The briefing is returned to the calling agent
-as the tool's output.
+Hallucination validation stays structural. The driver drops any
+`memory_id` that was not returned by a `search` call during the loop.
+A judge-LLM pass over the answer prose is an evaluation-harness
+concern, not a synchronous tooling concern: it lives in `evals/`.
 
 The key differences from Hindsight's reflect that koan does NOT
 adopt: no disposition traits (Hindsight uses skepticism,
@@ -744,14 +772,17 @@ literalism, and empathy parameters — koan's reflect produces
 factual briefings, not opinionated interpretations), and no
 opinion formation (Hindsight creates and updates opinions with
 confidence scores — koan stores facts and decisions, not
-beliefs).
+beliefs). Koan also uses one search tool rather than Hindsight's
+five-tool surface: there is a single retrieval tier over a flat
+entry store, so no distinction between mental-model search,
+observation search, recall, and expand is needed.
 
-What koan DOES adopt from Hindsight's reflect: the agentic loop
-(iterative evidence gathering, not a single LLM call), the
-evidence-before-synthesis guardrail (the agent must gather
-entries before producing a briefing — it cannot answer from its
-parametric knowledge alone), and citation validation (the briefing
-can only cite entries that were actually retrieved).
+What koan DOES adopt from Hindsight's reflect: the
+single-conversation tool-calling loop (the LLM plans and adapts
+its own searches), the evidence-before-synthesis guardrail (the
+model must call `search` before claiming something is absent
+from memory), the 10-iteration cap, and post-hoc citation
+validation against the retrieved set.
 
 #### How the two mechanisms interact
 

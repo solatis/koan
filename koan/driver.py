@@ -21,10 +21,10 @@ log = get_logger("driver")
 
 def _push_artifact_diff(app_state: AppState) -> None:
     """Scan run artifacts and emit per-file diff events against current projection."""
-    if not app_state.run_dir:
+    if not app_state.run.run_dir:
         return
     try:
-        new_artifacts = list_artifacts(app_state.run_dir)
+        new_artifacts = list_artifacts(app_state.run.run_dir)
     except Exception:
         return
     run = app_state.projection_store.projection.run
@@ -34,8 +34,14 @@ def _push_artifact_diff(app_state: AppState) -> None:
         # build_artifact_diff expects dict[str, dict] with 'modified_at' and 'size' keys
         old = {path: {"path": info.path, "size": info.size, "modified_at": info.modified_at}
                for path, info in run.artifacts.items()}
+    emitted = 0
     for event_type, payload in build_artifact_diff(old, new_artifacts):
         app_state.projection_store.push_event(event_type, payload)
+        emitted += 1
+    log.debug(
+        "artifact diff pushed: new=%d existing=%d emitted=%d",
+        len(new_artifacts), len(old), emitted,
+    )
 
 
 # -- Main driver loop ---------------------------------------------------------
@@ -43,19 +49,23 @@ def _push_artifact_diff(app_state: AppState) -> None:
 async def driver_main(app_state: AppState) -> None:
     """Wait for start event, then spawn the persistent orchestrator for the entire run."""
     log.info("Driver waiting for start event...")
-    await app_state.start_event.wait()
+    await app_state.run.start_event.wait()
 
-    run_dir = app_state.run_dir
+    run_dir = app_state.run.run_dir
     if run_dir is None:
         log.error("run_dir is None after start event -- aborting")
         return
 
     # Use workflow's initial phase; default to "intake" if no workflow set
-    workflow = app_state.workflow
+    workflow = app_state.run.workflow
     initial_phase = workflow.initial_phase if workflow else "intake"
     workflow_name = workflow.name if workflow else "plan"
 
-    app_state.phase = initial_phase
+    log.info(
+        "run starting: run_dir=%s workflow=%s initial_phase=%s",
+        run_dir, workflow_name, initial_phase,
+    )
+    app_state.run.phase = initial_phase
     app_state.projection_store.push_event("phase_started", {"phase": initial_phase})
     subagent_dir = await ensure_subagent_directory(run_dir, "orchestrator")
 
@@ -66,17 +76,22 @@ async def driver_main(app_state: AppState) -> None:
         "role": "orchestrator",
         "run_dir": run_dir,
         "subagent_dir": subagent_dir,
-        "project_dir": app_state.project_dir,
-        "task_description": app_state.task_description,
+        "project_dir": app_state.run.project_dir,
+        "task_description": app_state.run.task_description,
         "workflow": workflow_name,
         "phase_instructions": initial_guidance,   # scope framing for initial phase
     }
 
+    log.info("spawning orchestrator: subagent_dir=%s", subagent_dir)
     result = await spawn_subagent(task, app_state)
 
-    # Orchestrator exited — workflow is over
+    log.info(
+        "workflow complete: exit_code=%d final_phase=%s",
+        result.exit_code, app_state.run.phase,
+    )
+    # Orchestrator exited -- workflow is over
     app_state.projection_store.push_event("workflow_completed", {
         "success": result.exit_code == 0,
-        "phase": app_state.phase,
-        "summary": f"Workflow ended in phase '{app_state.phase}'",
+        "phase": app_state.run.phase,
+        "summary": f"Workflow ended in phase '{app_state.run.phase}'",
     })

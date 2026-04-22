@@ -33,7 +33,9 @@ PHASE_ROLE_CONTEXT = (
     "\n"
     "## Output\n"
     "\n"
-    "One file: **plan.md** in the run directory.\n"
+    "One artifact: **plan.md**, produced via the MCP tool `koan_artifact_propose`."
+    " Do NOT write files directly; the tool writes `plan.md` to the run directory"
+    " and blocks until the user has reviewed it.\n"
     "\n"
     "## plan.md structure\n"
     "\n"
@@ -51,6 +53,8 @@ PHASE_ROLE_CONTEXT = (
     "  You read to understand structure, not to re-verify intake's findings.\n"
     "- MUST NOT write code -- write instructions for an executor that will write code.\n"
     "- MUST NOT invent file paths or function names you have not seen in the codebase.\n"
+    "- MUST use koan_artifact_propose to produce plan.md. Built-in Write and Edit\n"
+    "  tools are not available in this phase.\n"
 )
 
 
@@ -62,6 +66,24 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
         if ctx.memory_injection:
             lines.extend([ctx.memory_injection, ""])
         lines.extend([
+            "## Consult project memory",
+            "",
+            "Before reading any codebase file, check what the project already",
+            "knows about the subsystems you will plan changes for. Memory may",
+            "contain coding conventions, procedures, and constraints that",
+            "dictate HOW changes must be made in this codebase -- any of which",
+            "will shape the instructions you write for the executor.",
+            "",
+            "If relevant memory entries appeared above (`## Relevant memory`),",
+            "read them now.",
+            "",
+            "Then run `koan_reflect` with a broad question about the subsystems",
+            "you will be planning for (e.g. 'what conventions govern changes to",
+            "the X subsystem?'). Use `koan_search` for specific decisions or",
+            "procedures you need to respect.",
+            "",
+            "Only after this should you read codebase files.",
+            "",
             "Read and analyze before writing the plan. Do NOT write any files in this step.",
             "",
             "## What to read",
@@ -99,36 +121,60 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
         return StepGuidance(
             title=STEP_NAMES[2],
             instructions=[
-                f"Write `{ctx.run_dir}/plan.md` with a complete implementation plan.",
+                "Compose the full plan and submit it via `koan_artifact_propose`.",
                 "",
-                "## Required sections",
+                "```",
+                "koan_artifact_propose(",
+                '    filename="plan.md",',
+                '    content="""\\',
+                "# Plan title",
+                "...",
+                '""",',
+                ")",
+                "```",
+                "",
+                "## Required sections in `content`",
                 "",
                 "### Approach summary",
                 "2-4 sentences on the overall strategy.",
                 "",
                 "### Key decisions",
-                "Numbered list of architectural/design decisions. For each decision, state",
-                "the choice made and why (alternative considered + reason rejected if applicable).",
+                "Numbered list of architectural/design decisions. For each"
+                " decision, state the choice made and why (alternative"
+                " considered + reason rejected if applicable).",
                 "",
                 "### Implementation steps",
                 "Numbered list. Each step must specify:",
                 "- **File**: exact path relative to project root",
                 "- **Location**: function name, class, or section",
-                "- **Change**: what to add, modify, or remove -- be specific",
-                "  Include function signatures, type names, and interface names where relevant.",
+                "- **Change**: what to add, modify, or remove -- be specific.",
+                "  Include function signatures, type names, and interface names"
+                " where relevant.",
                 "",
-                "Order steps so that each step's dependencies are satisfied by prior steps.",
+                "Order steps so that each step's dependencies are satisfied by"
+                " prior steps.",
                 "",
                 "### Constraints",
-                "Hard boundaries the executor must respect (from intake findings).",
+                "Hard boundaries the executor must respect (from intake"
+                " findings).",
                 "",
                 "### Verification",
-                "How to verify the implementation is correct (tests to run, behaviors to check).",
+                "How to verify the implementation is correct (tests to run,"
+                " behaviors to check).",
                 "",
-                "## After writing",
+                "## About the tool",
                 "",
-                "plan.md is now available in the artifacts panel for review.",
-                "Call `koan_complete_step` when done.",
+                "`koan_artifact_propose` writes plan.md to the run directory"
+                " immediately and blocks until the user has reviewed it. The"
+                " tool returns the review outcome as a text string. If the user"
+                " approves, proceed normally. If the user requests revisions,"
+                " revise and call `koan_artifact_propose` again with the same"
+                " filename (full rewrite).",
+                "",
+                "Do NOT use Write or Edit -- those tools are not available in"
+                " this phase.",
+                "",
+                "Call `koan_complete_step` when the review is accepted.",
             ],
         )
 

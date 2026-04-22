@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 
@@ -23,8 +22,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 from .lib.workflows import WORKFLOWS
+from .logger import get_logger
 
-log = logging.getLogger("koan.projections")
+log = get_logger("projections")
 
 # ---------------------------------------------------------------------------
 # Event type registry
@@ -64,6 +64,9 @@ EventType = Literal[
     "yield_started",
     "yield_cleared",
     "phase_summary_captured",
+    # Artifact review — orchestrator blocked in koan_artifact_propose
+    "artifact_review_started",
+    "artifact_review_cleared",
     # Steering
     "steering_queued",
     "steering_delivered",
@@ -84,6 +87,21 @@ EventType = Literal[
     "profile_removed",
     "default_profile_changed",
     "default_scout_concurrency_changed",
+    # Memory curation — orchestrator blocked in koan_memory_propose
+    "memory_curation_started",
+    "memory_curation_cleared",
+    # Memory mutation — emitted by koan_memorize / koan_forget / koan_memory_status
+    "memory_entry_created",
+    "memory_entry_updated",
+    "memory_entry_deleted",
+    "memory_summary_updated",
+    # Reflect — background task lifecycle
+    "reflect_started",
+    "reflect_trace",
+    "reflect_done",
+    "reflect_cancelled",
+    "reflect_failed",
+    "reflect_cleared",
 ]
 
 
@@ -249,6 +267,14 @@ class ActiveYield(KoanBaseModel):
     """
     suggestions: list[Suggestion] = []
 
+class ActiveArtifactReview(KoanBaseModel):
+    """Run-level state while the orchestrator is blocked in koan_artifact_propose.
+
+    Non-None while the review_future is pending. Cleared on review submit,
+    phase_started, and workflow_completed.
+    """
+    path: str
+
 ConversationEntry = Annotated[
     ThinkingEntry | TextEntry | StepEntry | UserMessageEntry |
     ToolWriteEntry | ToolEditEntry | ToolBashEntry | ToolGenericEntry |
@@ -355,6 +381,69 @@ class RunConfig(KoanBaseModel):
 # Supporting types
 # ---------------------------------------------------------------------------
 
+# -- Memory types -------------------------------------------------------------
+# Flat optional strings rather than a discriminated union so the wire shape
+# maps directly to MemoryCurationPage.tsx proposal types without a discriminator.
+
+class Proposal(KoanBaseModel):
+    id: str
+    op: Literal["add", "update", "deprecate"]
+    type: Literal["decision", "context", "lesson", "procedure"]
+    seq: str
+    title: str
+    meta: str
+    rationale: str
+    body: str = ""       # used by add and deprecate
+    before: str = ""     # used by update
+    after: str = ""      # used by update
+
+class ActiveCurationBatch(KoanBaseModel):
+    proposals: list[Proposal]
+    batch_id: str
+    context_note: str = ""
+
+class MemoryEntrySummary(KoanBaseModel):
+    seq: str
+    type: Literal["decision", "context", "lesson", "procedure"]
+    title: str
+    created_ms: int
+    modified_ms: int
+
+class MemoryState(KoanBaseModel):
+    # Keyed by seq string (e.g. "0042"). Projection is project-scoped, not
+    # run-scoped, so it persists across workflow boundaries.
+    entries: dict[str, MemoryEntrySummary] = {}
+    summary: str = ""
+
+# -- Reflect types ------------------------------------------------------------
+
+class ReflectCitation(KoanBaseModel):
+    id: int
+    title: str
+
+class ReflectTrace(KoanBaseModel):
+    iteration: int
+    tool: Literal["search", "done"]
+    query: str = ""
+    type_filter: str = ""
+    result_count: int | None = None
+
+class ReflectRun(KoanBaseModel):
+    session_id: str
+    question: str
+    status: Literal["in_progress", "done", "cancelled", "failed"]
+    started_at_ms: int
+    completed_at_ms: int | None = None
+    iteration: int = 0
+    max_iterations: int = 10
+    model: str = ""
+    traces: list[ReflectTrace] = []
+    answer: str = ""
+    citations: list[ReflectCitation] = []
+    error: str = ""
+
+# -- Basic projection types ---------------------------------------------------
+
 class ArtifactInfo(KoanBaseModel):
     path: str
     size: int = 0
@@ -394,6 +483,8 @@ class Run(KoanBaseModel):
     completion: CompletionInfo | None = None
     steering: list[SteeringMessage] = []   # pending steering messages shown above chat
     active_yield: ActiveYield | None = None  # non-None while orchestrator is in koan_yield
+    active_artifact_review: ActiveArtifactReview | None = None  # non-None while orchestrator is in koan_artifact_propose
+    active_curation_batch: ActiveCurationBatch | None = None  # non-None while orchestrator is in koan_memory_propose
     # Keyed by phase name. Populated on the first koan_yield of each phase
     # from the orchestrator's last assistant text. Used as context anchor for
     # the next phase's mechanical RAG injection. Wire-visible; frontend ignores.
@@ -403,6 +494,11 @@ class Projection(KoanBaseModel):
     settings: Settings = Field(default_factory=Settings)
     run: Run | None = None                 # None → show landing page
     notifications: list[Notification] = []
+    # Memory is project-scoped, not run-scoped: persists across workflow
+    # boundaries and is reachable even when run is None.
+    memory: MemoryState = Field(default_factory=MemoryState)
+    # Reflect is project-scoped: not tied to a workflow run.
+    reflect: ReflectRun | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -568,7 +664,9 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                     return projection
                 new_run = projection.run.model_copy(update={
                     "phase": payload.get("phase", ""),
-                    "active_yield": None,  # clear yield when a new phase starts
+                    "active_yield": None,          # clear yield when a new phase starts
+                    "active_artifact_review": None, # clear any pending review on phase transition
+                    "active_curation_batch": None,  # clear any pending curation on phase transition
                 })
                 return projection.model_copy(update={"run": new_run})
 
@@ -583,7 +681,9 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 )
                 new_run = projection.run.model_copy(update={
                     "completion": completion,
-                    "active_yield": None,  # clear yield on completion
+                    "active_yield": None,          # clear yield on completion
+                    "active_artifact_review": None, # clear any pending review on completion
+                    "active_curation_batch": None,  # clear any pending curation on completion
                 })
                 return projection.model_copy(update={"run": new_run})
 
@@ -1409,6 +1509,23 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 new_run = projection.run.model_copy(update={"active_yield": None})
                 return projection.model_copy(update={"run": new_run})
 
+            case "artifact_review_started":
+                if projection.run is None:
+                    return projection
+                path = payload.get("path", "")
+                new_run = projection.run.model_copy(update={
+                    "active_artifact_review": ActiveArtifactReview(path=path),
+                })
+                return projection.model_copy(update={"run": new_run})
+
+            case "artifact_review_cleared":
+                if projection.run is None:
+                    return projection
+                new_run = projection.run.model_copy(update={
+                    "active_artifact_review": None,
+                })
+                return projection.model_copy(update={"run": new_run})
+
             case "phase_summary_captured":
                 # agent_id is carried for audit only; phase_summaries is run-scoped.
                 if projection.run is None:
@@ -1421,6 +1538,114 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 new_summaries[phase] = summary
                 new_run = projection.run.model_copy(update={"phase_summaries": new_summaries})
                 return projection.model_copy(update={"run": new_run})
+
+            # ── Memory curation ────────────────────────────────────────────
+
+            case "memory_curation_started":
+                if projection.run is None:
+                    return projection
+                batch = ActiveCurationBatch.model_validate(payload["batch"])
+                new_run = projection.run.model_copy(update={
+                    "active_curation_batch": batch,
+                })
+                return projection.model_copy(update={"run": new_run})
+
+            case "memory_curation_cleared":
+                if projection.run is None:
+                    return projection
+                new_run = projection.run.model_copy(update={
+                    "active_curation_batch": None,
+                })
+                return projection.model_copy(update={"run": new_run})
+
+            # ── Memory mutations ───────────────────────────────────────────
+
+            case "memory_entry_created" | "memory_entry_updated":
+                # No run guard: memory is project-scoped.
+                summary = MemoryEntrySummary.model_validate(payload)
+                new_entries = dict(projection.memory.entries)
+                new_entries[summary.seq] = summary
+                new_memory = projection.memory.model_copy(update={"entries": new_entries})
+                return projection.model_copy(update={"memory": new_memory})
+
+            case "memory_entry_deleted":
+                seq = payload.get("seq", "")
+                new_entries = dict(projection.memory.entries)
+                new_entries.pop(seq, None)
+                new_memory = projection.memory.model_copy(update={"entries": new_entries})
+                return projection.model_copy(update={"memory": new_memory})
+
+            case "memory_summary_updated":
+                new_memory = projection.memory.model_copy(update={
+                    "summary": payload.get("summary", ""),
+                })
+                return projection.model_copy(update={"memory": new_memory})
+
+            # ── Reflect ───────────────────────────────────────────────────
+
+            case "reflect_started":
+                new_reflect = ReflectRun(
+                    session_id=payload["session_id"],
+                    question=payload.get("question", ""),
+                    status="in_progress",
+                    started_at_ms=payload.get("started_at_ms", 0),
+                    max_iterations=payload.get("max_iterations", 10),
+                    model=payload.get("model", ""),
+                )
+                return projection.model_copy(update={"reflect": new_reflect})
+
+            case "reflect_trace":
+                r = projection.reflect
+                if r is None or r.session_id != payload.get("session_id"):
+                    return projection
+                trace = ReflectTrace.model_validate(payload.get("trace", {}))
+                new_traces = list(r.traces) + [trace]
+                new_reflect = r.model_copy(update={
+                    "traces": new_traces,
+                    "iteration": trace.iteration,
+                })
+                return projection.model_copy(update={"reflect": new_reflect})
+
+            case "reflect_done":
+                r = projection.reflect
+                if r is None or r.session_id != payload.get("session_id"):
+                    return projection
+                citations = [
+                    ReflectCitation.model_validate(c)
+                    for c in payload.get("citations", [])
+                ]
+                new_reflect = r.model_copy(update={
+                    "status": "done",
+                    "answer": payload.get("answer", ""),
+                    "citations": citations,
+                    "completed_at_ms": payload.get("completed_at_ms"),
+                    "iteration": payload.get("iterations", r.iteration),
+                })
+                return projection.model_copy(update={"reflect": new_reflect})
+
+            case "reflect_cancelled":
+                r = projection.reflect
+                if r is None or r.session_id != payload.get("session_id"):
+                    return projection
+                new_reflect = r.model_copy(update={
+                    "status": "cancelled",
+                    "completed_at_ms": payload.get("completed_at_ms"),
+                })
+                return projection.model_copy(update={"reflect": new_reflect})
+
+            case "reflect_failed":
+                r = projection.reflect
+                if r is None or r.session_id != payload.get("session_id"):
+                    return projection
+                new_reflect = r.model_copy(update={
+                    "status": "failed",
+                    "error": payload.get("error", ""),
+                    "completed_at_ms": payload.get("completed_at_ms"),
+                })
+                return projection.model_copy(update={"reflect": new_reflect})
+
+            case "reflect_cleared":
+                return projection.model_copy(update={"reflect": None})
 
             case _:
                 log.warning("fold: unknown event_type=%r", event_type)
@@ -1465,6 +1690,10 @@ class ProjectionStore:
         agent_id: str | None = None,
     ) -> VersionedEvent:
         """Append event, fold into projection, compute patch, broadcast to subscribers."""
+        log.debug(
+            "push_event: type=%s agent_id=%s",
+            event_type, (agent_id or "")[:8],
+        )
         self.version += 1
         event = VersionedEvent(
             version=self.version,

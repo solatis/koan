@@ -76,8 +76,23 @@ def main() -> None:
     mem_rag.add_argument("--json", action="store_true", dest="json_output",
                          help="Machine-readable JSON output")
 
-    mem_subs.add_parser("reflect",
-                        help="Reflect on memory entries (not yet implemented)")
+    mem_reflect = mem_subs.add_parser(
+        "reflect",
+        help="Reflect on memory entries via an LLM tool-calling loop",
+    )
+    mem_reflect.add_argument("question", help="The broad question to answer")
+    mem_reflect.add_argument(
+        "--context", default=None,
+        help="Optional caller context (e.g. subsystem being worked on)",
+    )
+    mem_reflect.add_argument(
+        "--show-trace", action="store_true", dest="show_trace",
+        help="Stream each search call to stderr during the loop",
+    )
+    mem_reflect.add_argument(
+        "--json", action="store_true", dest="json_output",
+        help="Machine-readable JSON output",
+    )
 
     args = parser.parse_args()
 

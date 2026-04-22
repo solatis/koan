@@ -5,36 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 from collections import deque
-from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 
-from koan.state import PendingInteraction
-
-
-# -- Fixtures -----------------------------------------------------------------
-
-@dataclass
-class FakeConfig:
-    model_tiers: Any = None
-    scout_concurrency: int = 2
-
-
-@dataclass
-class FakeAppState:
-    agents: dict = field(default_factory=dict)
-    config: FakeConfig = field(default_factory=FakeConfig)
-    port: int = 9999
-    active_interaction: PendingInteraction | None = None
-    interaction_queue: deque[PendingInteraction] = field(default_factory=deque)
-    interaction_queue_max: int = 8
-    run_dir: str | None = None
-    projection_store: object = field(default_factory=lambda: __import__('koan.projections', fromlist=['ProjectionStore']).ProjectionStore())
-    yield_future: asyncio.Future | None = None
-    steering_queue: list = field(default_factory=list)
-    phase: str = "intake"
+from koan.state import AppState, PendingInteraction
 
 
 def _make_interaction(
@@ -63,11 +39,11 @@ class TestQueueCap:
         from koan.state import AgentState
         from koan.web.interactions import enqueue_interaction
 
-        app_state = FakeAppState()
-        app_state.active_interaction = _make_interaction(agent_id="other")
+        app_state = AppState()
+        app_state.interactions.active_interaction = _make_interaction(agent_id="other")
 
         for i in range(8):
-            app_state.interaction_queue.append(
+            app_state.interactions.interaction_queue.append(
                 _make_interaction(agent_id=f"q-{i}")
             )
 
@@ -88,11 +64,11 @@ class TestQueueCap:
         from koan.state import AgentState
         from koan.web.interactions import enqueue_interaction
 
-        app_state = FakeAppState()
-        app_state.active_interaction = _make_interaction(agent_id="other")
+        app_state = AppState()
+        app_state.interactions.active_interaction = _make_interaction(agent_id="other")
 
         for i in range(7):
-            app_state.interaction_queue.append(
+            app_state.interactions.interaction_queue.append(
                 _make_interaction(agent_id=f"q-{i}")
             )
 
@@ -105,7 +81,7 @@ class TestQueueCap:
         future = await enqueue_interaction(agent, app_state, "ask", {"questions": []})
 
         assert not future.done()
-        assert len(app_state.interaction_queue) == 8
+        assert len(app_state.interactions.interaction_queue) == 8
 
 
 # -- TestStaleSubmit ----------------------------------------------------------
@@ -126,8 +102,9 @@ class TestStaleSubmit:
         assert resp.json()["error"] == "stale_interaction"
 
     @pytest.mark.anyio
-    async def test_artifact_review_route_removed(self):
-        """POST /api/artifact-review route is removed — returns 404 or 405."""
+    async def test_artifact_review_route_exists_and_validates(self):
+        """POST /api/artifact-review route now exists (artifact-propose task).
+        Returns 422 when the path field is missing, 409 when no review is pending."""
         from starlette.testclient import TestClient
 
         from koan.state import AppState
@@ -136,9 +113,17 @@ class TestStaleSubmit:
         app_state = AppState()
         app = create_app(app_state)
         client = TestClient(app, raise_server_exceptions=False)
-        # Route removed; SPA fallback returns 200 for GET but POST should 405 or 404
+        # Missing 'path' field -> 422
         resp = client.post("/api/artifact-review", json={"response": "Accept"})
-        assert resp.status_code in (404, 405, 409)
+        assert resp.status_code == 422
+        assert resp.json()["error"] == "missing_path"
+        # With path but no pending review -> 409
+        resp2 = client.post("/api/artifact-review", json={
+            "path": "plan.md",
+            "payload": {"summary": "", "comments": []},
+        })
+        assert resp2.status_code == 409
+        assert resp2.json()["error"] == "no_active_review"
 
 
 # -- TestFIFOActivation -------------------------------------------------------
@@ -148,30 +133,30 @@ class TestFIFOActivation:
     async def test_fifo_order_preserved(self):
         from koan.web.interactions import activate_next_interaction
 
-        app_state = FakeAppState()
+        app_state = AppState()
 
         a = _make_interaction(agent_id="A")
         b = _make_interaction(agent_id="B")
         c = _make_interaction(agent_id="C")
 
-        app_state.active_interaction = _make_interaction(agent_id="initial")
-        app_state.interaction_queue.extend([a, b, c])
+        app_state.interactions.active_interaction = _make_interaction(agent_id="initial")
+        app_state.interactions.interaction_queue.extend([a, b, c])
 
         # Resolve initial -> A becomes active
         activate_next_interaction(app_state)
-        assert app_state.active_interaction is a
+        assert app_state.interactions.active_interaction is a
 
         # Resolve A -> B becomes active
         activate_next_interaction(app_state)
-        assert app_state.active_interaction is b
+        assert app_state.interactions.active_interaction is b
 
         # Resolve B -> C becomes active
         activate_next_interaction(app_state)
-        assert app_state.active_interaction is c
+        assert app_state.interactions.active_interaction is c
 
         # Resolve C -> None
         activate_next_interaction(app_state)
-        assert app_state.active_interaction is None
+        assert app_state.interactions.active_interaction is None
 
 
 # -- TestCancellationOnExit ---------------------------------------------------
@@ -181,25 +166,25 @@ class TestCancellationOnExit:
     async def test_cancel_active_interaction_on_agent_exit(self):
         from koan.subagent import _cancel_pending_interactions
 
-        app_state = FakeAppState()
+        app_state = AppState()
         interaction = _make_interaction(agent_id="agent-1")
-        app_state.active_interaction = interaction
+        app_state.interactions.active_interaction = interaction
 
         _cancel_pending_interactions("agent-1", app_state)
 
         assert interaction.future.done()
         assert interaction.future.result()["error"] == "agent_exited"
-        assert app_state.active_interaction is None
+        assert app_state.interactions.active_interaction is None
 
     @pytest.mark.anyio
     async def test_cancel_queued_interactions_on_agent_exit(self):
         from koan.subagent import _cancel_pending_interactions
 
-        app_state = FakeAppState()
+        app_state = AppState()
         mine_1 = _make_interaction(agent_id="agent-1")
         mine_2 = _make_interaction(agent_id="agent-1")
         other = _make_interaction(agent_id="agent-2")
-        app_state.interaction_queue.extend([mine_1, other, mine_2])
+        app_state.interactions.interaction_queue.extend([mine_1, other, mine_2])
 
         _cancel_pending_interactions("agent-1", app_state)
 
@@ -209,36 +194,36 @@ class TestCancellationOnExit:
         assert mine_2.future.result()["error"] == "agent_exited"
 
         assert not other.future.done()
-        assert len(app_state.interaction_queue) == 1
-        assert app_state.interaction_queue[0] is other
+        assert len(app_state.interactions.interaction_queue) == 1
+        assert app_state.interactions.interaction_queue[0] is other
 
     @pytest.mark.anyio
     async def test_next_queued_activated_after_cancel(self):
         from koan.subagent import _cancel_pending_interactions
 
-        app_state = FakeAppState()
+        app_state = AppState()
         active_a = _make_interaction(agent_id="agent-A")
         queued_b = _make_interaction(agent_id="agent-B")
 
-        app_state.active_interaction = active_a
-        app_state.interaction_queue.append(queued_b)
+        app_state.interactions.active_interaction = active_a
+        app_state.interactions.interaction_queue.append(queued_b)
 
         _cancel_pending_interactions("agent-A", app_state)
 
         assert active_a.future.done()
-        assert app_state.active_interaction is queued_b
+        assert app_state.interactions.active_interaction is queued_b
 
     @pytest.mark.anyio
     async def test_yield_future_cleared_on_exit(self):
         """_cancel_pending_interactions clears yield_future."""
         from koan.subagent import _cancel_pending_interactions
 
-        app_state = FakeAppState()
+        app_state = AppState()
         loop = asyncio.get_running_loop()
         future = loop.create_future()
-        app_state.yield_future = future
+        app_state.interactions.yield_future = future
 
         _cancel_pending_interactions("agent-1", app_state)
 
         assert future.done()
-        assert app_state.yield_future is None
+        assert app_state.interactions.yield_future is None

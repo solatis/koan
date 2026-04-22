@@ -44,8 +44,8 @@ async def enqueue_interaction(
     interaction_type: Literal["ask"],
     payload: dict,
 ) -> asyncio.Future:
-    total = len(app_state.interaction_queue) + (1 if app_state.active_interaction else 0)
-    cap = app_state.interaction_queue_max + 1  # 1 active + N queued
+    total = len(app_state.interactions.interaction_queue) + (1 if app_state.interactions.active_interaction else 0)
+    cap = app_state.interactions.interaction_queue_max + 1  # 1 active + N queued
     if total >= cap:
         raise ToolError(
             json.dumps({"error": "interaction_queue_full", "message": "interaction_queue_full"})
@@ -60,20 +60,20 @@ async def enqueue_interaction(
     )
     agent.pending_tool = future
 
-    if app_state.active_interaction is None:
-        app_state.active_interaction = interaction
+    if app_state.interactions.active_interaction is None:
+        app_state.interactions.active_interaction = interaction
         _emit_interaction_request(app_state, interaction)
     else:
-        app_state.interaction_queue.append(interaction)
+        app_state.interactions.interaction_queue.append(interaction)
 
     return future
 
 
 def activate_next_interaction(app_state: AppState) -> None:
     """Promote the next queued interaction to active, emitting its request event."""
-    if app_state.interaction_queue:
-        nxt = app_state.interaction_queue.popleft()
-        app_state.active_interaction = nxt
+    if app_state.interactions.interaction_queue:
+        nxt = app_state.interactions.interaction_queue.popleft()
+        app_state.interactions.active_interaction = nxt
         _emit_interaction_request(app_state, nxt)
     else:
-        app_state.active_interaction = None
+        app_state.interactions.active_interaction = None

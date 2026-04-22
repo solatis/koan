@@ -8,7 +8,7 @@ import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 
 def _utcnow() -> datetime:
@@ -55,59 +55,109 @@ class AgentState:
     started_at: datetime = field(default_factory=_utcnow)
 
 
+# -- Sub-state dataclasses (grouped by access pattern) ------------------------
+
 @dataclass
-class AppState:
+class RunState:
     phase: WorkflowPhase = "intake"
+    workflow: Any = None  # Workflow | None -- imported lazily to avoid circular deps
+    workflow_done: bool = False
     run_dir: str | None = None
-    project_dir: str = ""
     task_description: str = ""
-    workflow: Any = None  # Workflow | None — imported lazily to avoid circular deps
+    project_dir: str = ""
     start_event: asyncio.Event = field(default_factory=asyncio.Event)
-    agents: dict[str, AgentState] = field(default_factory=dict)
-    projection_store: ProjectionStore = field(default_factory=ProjectionStore)
+    run_installations: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class InteractionState:
     active_interaction: PendingInteraction | None = None
     interaction_queue: deque[PendingInteraction] = field(default_factory=deque)
     interaction_queue_max: int = 8
+    user_message_buffer: list[ChatMessage] = field(default_factory=list)
+    yield_future: asyncio.Future | None = None
+    # Separate future for koan_artifact_propose -- parallel to yield_future,
+    # not unified, so each blocking interaction keeps its own invariants.
+    artifact_review_future: asyncio.Future | None = None
+    # Separate future for koan_memory_propose -- same isolation rationale.
+    memory_propose_future: asyncio.Future | None = None
+    # Background reflect task and its session id for the cancel path.
+    reflect_task: asyncio.Task | None = None
+    reflect_session_id: str | None = None
+    steering_queue: list[ChatMessage] = field(default_factory=list)
+
+
+@dataclass
+class RunnerConfigState:
     config: KoanConfig = field(default_factory=KoanConfig)
     builtin_profiles: dict[str, Profile] = field(default_factory=dict)
     probe_results: list[ProbeResult] = field(default_factory=list)
+    config_write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+@dataclass
+class MemoryServices:
+    # Eagerly constructed once project_dir is known, via init_memory_services().
+    # Using string forward references to avoid import-time cost of loading ML models.
+    memory_store: "MemoryStore | None" = None
+    retrieval_index: "RetrievalIndex | None" = None
+
+
+@dataclass
+class ServerConfig:
     port: int = 8000
     open_browser: bool = True
-    initial_prompt: str = ""
     yolo: bool = False
+    debug: bool = False
+    initial_prompt: str = ""
     # Non-None when running in directed mode (e.g. from eval harness).
     # Stores the ordered phase sequence; koan_yield steers toward the next entry.
     directed_phases: list[str] | None = None
-    debug: bool = False
-    config_write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    # Installation selections for the current run: runner_type -> alias.
-    # Set when a run starts; cleared when a new run begins.
-    run_installations: dict[str, str] = field(default_factory=dict)
+
+
+# -- AppState: composition root -----------------------------------------------
+
+@dataclass
+class AppState:
+    run: RunState = field(default_factory=RunState)
+    interactions: InteractionState = field(default_factory=InteractionState)
+    runner_config: RunnerConfigState = field(default_factory=RunnerConfigState)
+    memory: MemoryServices = field(default_factory=MemoryServices)
+    server: ServerConfig = field(default_factory=ServerConfig)
+    projection_store: ProjectionStore = field(default_factory=ProjectionStore)
+    agents: dict[str, AgentState] = field(default_factory=dict)
     # Track running subprocess handles so shutdown can kill them.
     _active_processes: dict[str, asyncio.subprocess.Process] = field(
         default_factory=dict, repr=False,
     )
-    # Buffered user chat messages — drained when koan_yield unblocks.
-    user_message_buffer: list[ChatMessage] = field(default_factory=list)
-    # Non-None while koan_yield is blocking, waiting for a user message.
-    yield_future: asyncio.Future | None = None
-    # True after koan_set_phase("done") — signals the orchestrator to exit.
-    workflow_done: bool = False
-    # Steering queue — user messages delivered on the next koan_* tool response.
-    # Separate from user_message_buffer so yield blocking and steering
-    # can be drained independently without double-delivery.
-    steering_queue: list[ChatMessage] = field(default_factory=list)
+
+    def init_memory_services(self) -> None:
+        """Eagerly construct memory services once project_dir is set.
+
+        Called after app_state.run.project_dir is populated. RetrievalIndex.__init__
+        is cheap (no model load); the store.init() call does mkdir(.koan/memory).
+        """
+        from pathlib import Path
+        from .memory.store import MemoryStore
+        from .memory.retrieval.index import RetrievalIndex
+        project_dir = self.run.project_dir or "."
+        store = MemoryStore(project_dir)
+        store.init()
+        self.memory.memory_store = store
+        self.memory.retrieval_index = RetrievalIndex(
+            Path(project_dir) / ".koan" / "memory"
+        )
 
 
 def drain_user_messages(app_state: AppState) -> list[ChatMessage]:
     """Atomically drain the user message buffer. Returns all buffered messages."""
-    messages = list(app_state.user_message_buffer)
-    app_state.user_message_buffer.clear()
+    messages = list(app_state.interactions.user_message_buffer)
+    app_state.interactions.user_message_buffer.clear()
     return messages
 
 
 def drain_steering_messages(app_state: AppState) -> list[ChatMessage]:
     """Atomically drain the steering queue. Returns all buffered messages."""
-    messages = list(app_state.steering_queue)
-    app_state.steering_queue.clear()
+    messages = list(app_state.interactions.steering_queue)
+    app_state.interactions.steering_queue.clear()
     return messages

@@ -238,6 +238,11 @@ def build_yield_started(suggestions: list[dict]) -> dict:
     return {"suggestions": suggestions}
 
 
+def build_artifact_review_started(path: str) -> dict:
+    """Build artifact_review_started event payload."""
+    return {"path": path}
+
+
 def build_phase_summary_captured(phase: str, summary: str) -> dict:
     """Build phase_summary_captured event payload.
 
@@ -310,3 +315,84 @@ def build_steering_delivered(count: int) -> dict:
 
 def build_default_scout_concurrency_changed(value: int) -> dict:
     return {"value": value}
+
+
+# -- Memory curation event builders -------------------------------------------
+
+def build_memory_curation_started(batch: dict) -> dict:
+    """Payload for memory_curation_started. batch is ActiveCurationBatch.to_wire()."""
+    return {"batch": batch}
+
+
+def build_memory_curation_cleared() -> dict:
+    return {}
+
+
+# -- Memory mutation event builders -------------------------------------------
+
+def build_memory_entry_created(entry: dict) -> dict:
+    """Payload for memory_entry_created. entry is MemoryEntrySummary.to_wire()."""
+    return entry
+
+
+def build_memory_entry_updated(entry: dict) -> dict:
+    """Payload for memory_entry_updated. entry is MemoryEntrySummary.to_wire()."""
+    return entry
+
+
+def build_memory_entry_deleted(seq: str) -> dict:
+    return {"seq": seq}
+
+
+def build_memory_summary_updated(summary: str) -> dict:
+    return {"summary": summary}
+
+
+# -- Reflect event builders ---------------------------------------------------
+
+def build_reflect_started(
+    session_id: str,
+    question: str,
+    model: str,
+    started_at_ms: int,
+    max_iterations: int,
+) -> dict:
+    return {
+        "session_id": session_id,
+        "question": question,
+        "model": model,
+        "started_at_ms": started_at_ms,
+        "max_iterations": max_iterations,
+    }
+
+
+def build_reflect_trace(session_id: str, trace: dict) -> dict:
+    return {"session_id": session_id, "trace": trace}
+
+
+def build_reflect_done(
+    session_id: str,
+    answer: str,
+    citations: list[dict],
+    completed_at_ms: int,
+    iterations: int,
+) -> dict:
+    return {
+        "session_id": session_id,
+        "answer": answer,
+        "citations": citations,
+        "completed_at_ms": completed_at_ms,
+        "iterations": iterations,
+    }
+
+
+def build_reflect_cancelled(session_id: str, completed_at_ms: int) -> dict:
+    return {"session_id": session_id, "completed_at_ms": completed_at_ms}
+
+
+def build_reflect_failed(session_id: str, error: str, completed_at_ms: int) -> dict:
+    return {"session_id": session_id, "error": error, "completed_at_ms": completed_at_ms}
+
+
+def build_reflect_cleared() -> dict:
+    return {}

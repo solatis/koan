@@ -21,13 +21,20 @@ async def atomic_write_json(path: str | Path, value: object) -> None:
     async with aiofiles.open(tmp, "w") as f:
         await f.write(json.dumps(value, indent=2))
     os.rename(tmp, p)
+    try:
+        size = p.stat().st_size
+    except OSError:
+        size = -1
+    log.debug("atomic_write_json: path=%s bytes=%d", p, size)
 
 
 async def load_run_state(run_dir: str | Path) -> dict:
     p = Path(run_dir) / "run-state.json"
     try:
         async with aiofiles.open(p, "r") as f:
-            return json.loads(await f.read())
+            data = json.loads(await f.read())
+        log.debug("load_run_state: path=%s", p)
+        return data
     except (FileNotFoundError, json.JSONDecodeError) as exc:
         log.warning("load_run_state failed for %s: %s", p, exc)
         return {}
@@ -41,7 +48,9 @@ async def load_story_state(run_dir: str | Path, story_id: str) -> dict:
     p = Path(run_dir) / "stories" / story_id / "state.json"
     try:
         async with aiofiles.open(p, "r") as f:
-            return json.loads(await f.read())
+            data = json.loads(await f.read())
+        log.debug("load_story_state: path=%s story_id=%s", p, story_id)
+        return data
     except (FileNotFoundError, json.JSONDecodeError) as exc:
         log.warning("load_story_state failed for %s: %s", p, exc)
         return {}

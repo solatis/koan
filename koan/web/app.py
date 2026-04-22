@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
+import os
 import shutil
 import time
 import uuid
@@ -14,7 +14,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-log = logging.getLogger(__name__)
+from ..logger import get_logger, set_log_dir, truncate_payload
+
+log = get_logger("web.app")
 
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -43,7 +45,15 @@ from ..events import (
     build_profile_removed,
     build_default_profile_changed,
     build_default_scout_concurrency_changed,
+    build_reflect_started,
+    build_reflect_trace,
+    build_reflect_done,
+    build_reflect_cancelled,
+    build_reflect_failed,
 )
+from ..memory.timestamps import iso_to_ms as _iso_to_ms
+from ..memory import MEMORY_TYPES
+from ..memory.retrieval.backend import search as memory_search
 
 if TYPE_CHECKING:
     from ..state import AppState
@@ -76,6 +86,27 @@ def _format_size(bytes_val: int) -> str:
     if bytes_val < 1024 * 1024:
         return f"{bytes_val // 1024} KB"
     return f"{bytes_val / (1024 * 1024):.1f} MB"
+
+
+def _render_age(iso_str: str) -> str:
+    """Render an ISO 8601 timestamp as a human-readable age string.
+
+    Returns strings like '2h ago', 'yesterday', '3d ago'. Intended for
+    memory relation lists where exact timestamps would be distracting.
+    """
+    ms = _iso_to_ms(iso_str)
+    if ms == 0:
+        return "unknown"
+    diff_s = int(time.time() - ms / 1000)
+    if diff_s < 60:
+        return "just now"
+    if diff_s < 3600:
+        return f"{diff_s // 60}m ago"
+    if diff_s < 86400:
+        return f"{diff_s // 3600}h ago"
+    if diff_s < 172800:
+        return "yesterday"
+    return f"{diff_s // 86400}d ago"
 
 
 # -- Profile validation -------------------------------------------------------
@@ -121,8 +152,17 @@ async def spa_fallback(request: Request) -> Response:
     # React reads store state (runStarted) to decide which view to render.
     # Note: Starlette's /{path:path} does match the empty path /, so this
     # correctly handles both / and all sub-paths as the SPA fallback.
+    st = _app_state(request)
     index_html = FRONTEND_DIST / "index.html"
     if index_html.is_file():
+        if st.server.debug:
+            html = index_html.read_text()
+            html = html.replace(
+                "<head>",
+                '<head>\n    <meta name="koan-debug" content="1" />',
+                1,
+            )
+            return Response(html, media_type="text/html")
         return FileResponse(str(index_html))
     # Return a minimal placeholder when the frontend hasn't been built yet.
     # This keeps tests passing without requiring a prior `npm run build`.
@@ -174,10 +214,10 @@ def _sse_event(event_type: str, payload: Any) -> str:
 
 def _resolve_profile(st: AppState, name: str) -> Profile | None:
     """Look up a profile by name, including built-in profiles."""
-    builtin = st.builtin_profiles.get(name)
+    builtin = st.runner_config.builtin_profiles.get(name)
     if builtin is not None:
         return builtin
-    for p in st.config.profiles:
+    for p in st.runner_config.config.profiles:
         if p.name == name:
             return p
     return None
@@ -209,7 +249,7 @@ async def api_start_run_preflight(r: Request) -> Response:
     installations_by_type: dict[str, list[dict]] = {}
     for rt in sorted(required_types):
         insts = []
-        for inst in st.config.agent_installations:
+        for inst in st.runner_config.config.agent_installations:
             if inst.runner_type == rt:
                 insts.append({
                     "alias": inst.alias,
@@ -242,10 +282,18 @@ async def api_start_run(r: Request) -> Response:
             status_code=422,
         )
 
+    # Log before any control-flow branches that can return early so the line
+    # always appears when a valid start-run request is received.
+    log.info(
+        "start-run received: task_len=%d workflow=%s profile=%s",
+        len(task), body.get("workflow", "plan"), profile,
+    )
+    log.debug("start-run task payload: %s", truncate_payload(task))
+
     st = _app_state(r)
 
     # Block when no runners available
-    if not any(pr.available for pr in st.probe_results):
+    if not any(pr.available for pr in st.runner_config.probe_results):
         return JSONResponse(
             {"error": "no_runners",
              "message": "No available agent installations. Add and configure at least one in Settings."},
@@ -266,7 +314,7 @@ async def api_start_run(r: Request) -> Response:
         for rt, alias in installations.items():
             found = any(
                 inst.alias == alias and inst.runner_type == rt
-                for inst in st.config.agent_installations
+                for inst in st.runner_config.config.agent_installations
             )
             if not found:
                 return JSONResponse(
@@ -275,7 +323,7 @@ async def api_start_run(r: Request) -> Response:
                     status_code=422,
                 )
         for rt, alias in installations.items():
-            st.run_installations[rt] = alias
+            st.run.run_installations[rt] = alias
 
     # Pre-validate installations for every runner type the profile requires
     from ..runners.registry import RunnerRegistry
@@ -287,7 +335,7 @@ async def api_start_run(r: Request) -> Response:
             continue
         checked_types.add(tier.runner_type)
         try:
-            registry.resolve_installation(tier.runner_type, st.config, st.run_installations)
+            registry.resolve_installation(tier.runner_type, st.runner_config.config, st.run.run_installations)
         except RunnerError as e:
             return JSONResponse(
                 {"error": e.diagnostic.code,
@@ -297,38 +345,42 @@ async def api_start_run(r: Request) -> Response:
             )
 
     # Persist profile + installation selections
-    st.config.active_profile = profile
+    st.runner_config.config.active_profile = profile
     from ..config import save_koan_config
-    await save_koan_config(st.config)
+    await save_koan_config(st.runner_config.config)
     st.projection_store.push_event("default_profile_changed", build_default_profile_changed(profile))
 
     # Apply optional overrides
     scout_concurrency = body.get("scout_concurrency")
     if isinstance(scout_concurrency, int) and scout_concurrency > 0:
-        st.config.scout_concurrency = scout_concurrency
-        await save_koan_config(st.config)
+        st.runner_config.config.scout_concurrency = scout_concurrency
+        await save_koan_config(st.runner_config.config)
         st.projection_store.push_event("default_scout_concurrency_changed", build_default_scout_concurrency_changed(scout_concurrency))
 
     # Emit run_started to create the Run object in the projection
-    _installations_map = dict(st.run_installations)
-    _scout_concurrency = st.config.scout_concurrency
+    _installations_map = dict(st.run.run_installations)
+    _scout_concurrency = st.runner_config.config.scout_concurrency
     st.projection_store.push_event(
         "run_started",
         build_run_started(profile, _installations_map, _scout_concurrency),
     )
 
     # Reset run-scoped state
-    st.user_message_buffer.clear()
-    st.steering_queue.clear()
-    if st.yield_future is not None and not st.yield_future.done():
-        st.yield_future.set_result(False)
-    st.yield_future = None
-    st.workflow_done = False
+    st.interactions.user_message_buffer.clear()
+    st.interactions.steering_queue.clear()
+    if st.interactions.yield_future is not None and not st.interactions.yield_future.done():
+        st.interactions.yield_future.set_result(False)
+    st.interactions.yield_future = None
+    st.run.workflow_done = False
 
     # Create run directory
     run_id = f"{int(time.time())}-{uuid.uuid4().hex[:8]}"
     run_dir = Path.home() / ".koan" / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
+    # Redirect per-run file sink to this run's koan.log. Must happen here so
+    # all subsequent DEBUG/INFO lines (including those from driver_main and
+    # subagent spawn) land in the correct file rather than the prior run's.
+    set_log_dir(str(run_dir))
 
     workflow_name = body.get("workflow", "plan")  # default to "plan"
     try:
@@ -346,15 +398,15 @@ async def api_start_run(r: Request) -> Response:
             "task": task,
             "workflow": workflow_name,
             "created_at": time.time(),
-            "project_dir": st.project_dir,
+            "project_dir": st.run.project_dir,
         },
     )
 
-    st.task_description = task
-    st.run_dir = str(run_dir)
-    st.workflow = workflow_obj
+    st.run.task_description = task
+    st.run.run_dir = str(run_dir)
+    st.run.workflow = workflow_obj
     st.projection_store.push_event("workflow_selected", {"workflow": workflow_name})
-    st.start_event.set()
+    st.run.start_event.set()
 
     return JSONResponse({"ok": True, "run_dir": str(run_dir)})
 
@@ -367,7 +419,7 @@ async def api_chat(r: Request) -> Response:
         return JSONResponse({"error": "empty_message"}, status_code=422)
 
     st = _app_state(r)
-    if st.run_dir is None:
+    if st.run.run_dir is None:
         return JSONResponse({"error": "no_run"}, status_code=409)
 
     ts = int(time.time() * 1000)
@@ -378,22 +430,359 @@ async def api_chat(r: Request) -> Response:
     run = st.projection_store.projection.run
     primary_id = _primary_agent_id(run) if run else None
 
-    if st.yield_future is not None and not st.yield_future.done():
-        st.user_message_buffer.append(msg)
-        # Show inline in the activity feed — this is a direct conversation message
+    # Determine route before branching so the log line reflects actual routing.
+    route = "yield" if (
+        st.interactions.yield_future is not None
+        and not st.interactions.yield_future.done()
+    ) else "steering"
+    log.info("chat message received: route=%s len=%d", route, len(message))
+    log.debug("chat message payload: %s", truncate_payload(message))
+
+    if st.interactions.yield_future is not None and not st.interactions.yield_future.done():
+        st.interactions.user_message_buffer.append(msg)
+        # Show inline in the activity feed -- this is a direct conversation message
         st.projection_store.push_event(
             "user_message",
             {"content": msg.content, "timestamp_ms": msg.timestamp_ms},
             agent_id=primary_id,
         )
-        st.yield_future.set_result(True)
+        st.interactions.yield_future.set_result(True)
     else:
-        st.steering_queue.append(msg)
-        # Show in the steering indicator above chat — not inline
+        st.interactions.steering_queue.append(msg)
+        # Show in the steering indicator above chat -- not inline
         st.projection_store.push_event(
             "steering_queued", build_steering_queued(msg.content),
         )
 
+    return JSONResponse({"ok": True})
+
+
+async def api_artifact_review(r: Request) -> Response:
+    """Accept a review payload; resolve the artifact_review_future."""
+    body = await r.json()
+    path = body.get("path", "")
+    payload = body.get("payload", {}) or {}
+    if not isinstance(path, str) or not path:
+        return JSONResponse(
+            {"error": "missing_path"}, status_code=422,
+        )
+
+    st = _app_state(r)
+    future = st.interactions.artifact_review_future
+    if future is None or future.done():
+        return JSONResponse(
+            {
+                "error": "no_active_review",
+                "message": "No artifact is currently pending review",
+            },
+            status_code=409,
+        )
+
+    from .mcp_endpoint import _render_review_payload
+    rendered = _render_review_payload(path, payload)
+    log.info("artifact review received: path=%s len=%d", path, len(rendered))
+    future.set_result(rendered)
+    return JSONResponse({"ok": True})
+
+
+# -- Memory read endpoints -----------------------------------------------------
+
+async def api_memory_entries(r: Request) -> Response:
+    """Return a summary of all memory entries for the project.
+
+    Optional query params:
+      q     -- non-empty string routes through the hybrid search pipeline
+               (reranked, up to 20 results); absent or empty returns full listing.
+      type  -- filter to a specific memory type; invalid value returns 422.
+    """
+    st = _app_state(r)
+    q = r.query_params.get("q", "").strip()
+    type_str = r.query_params.get("type", "").strip()
+
+    # Validate type before touching the store so the client gets a clean 422.
+    if type_str and type_str not in MEMORY_TYPES:
+        return JSONResponse({"error": "invalid_type"}, status_code=422)
+
+    store = st.memory.memory_store
+    if store is None:
+        return JSONResponse({"entries": []})
+
+    def _wire(e) -> dict | None:
+        if e.file_path is None:
+            return None
+        return {
+            "seq": e.file_path.name[:4],
+            "type": e.type,
+            "title": e.title,
+            "createdMs": _iso_to_ms(e.created),
+            "modifiedMs": _iso_to_ms(e.modified),
+        }
+
+    if not q:
+        # No query: full listing with optional server-side type filter.
+        entries = [
+            w for e in store.list_entries(type=type_str or None)
+            if (w := _wire(e)) is not None
+        ]
+        return JSONResponse({"entries": entries})
+
+    # Non-empty query: route through the hybrid search + rerank pipeline.
+    index = st.memory.retrieval_index
+    if index is None:
+        # Memory search not initialised (retrieval index not built yet).
+        return JSONResponse({"entries": []})
+
+    try:
+        results = await memory_search(index, q, k=20, type_filter=type_str or None)
+    except RuntimeError as exc:
+        log.warning("memory search failed: %s", exc)
+        return JSONResponse({"entries": []})
+
+    # Preserve reranked order -- do not re-sort.
+    entries = [
+        w for r in results
+        if (w := _wire(r.entry)) is not None
+    ]
+    return JSONResponse({"entries": entries})
+
+
+async def api_memory_entry(r: Request) -> Response:
+    """Return body and relations for a single memory entry."""
+    st = _app_state(r)
+    seq = r.path_params.get("seq", "")
+    try:
+        num = int(seq)
+    except ValueError:
+        return JSONResponse({"error": "invalid_seq"}, status_code=422)
+
+    store = st.memory.memory_store
+    if store is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+
+    e = store.get_entry(num)
+    if e is None:
+        return JSONResponse({"error": "not_found"}, status_code=404)
+
+    seq_str = f"{num:04d}"
+    filename = e.file_path.name if e.file_path else f"{seq_str}.md"
+
+    # Build relation lists: outgoing from entry.related, incoming by scanning
+    # all entries for back-references to this file's filename.
+    def make_relation(other) -> dict:
+        other_seq = other.file_path.name[:4] if other.file_path else "????"
+        return {
+            "seq": other_seq,
+            "type": other.type,
+            "title": other.title,
+            "age": _render_age(other.modified),
+        }
+
+    outgoing = []
+    for rel_filename in (e.related or []):
+        # related stores filenames like "0042-some-slug.md"
+        try:
+            rel_num = int(rel_filename[:4])
+        except (ValueError, IndexError):
+            continue
+        other = store.get_entry(rel_num)
+        if other:
+            outgoing.append(make_relation(other))
+
+    incoming = []
+    for other in store.list_entries():
+        if other.file_path is None:
+            continue
+        if filename in (other.related or []):
+            incoming.append(make_relation(other))
+
+    return JSONResponse({
+        "entry": {
+            "seq": seq_str,
+            "type": e.type,
+            "title": e.title,
+            "body": e.body,
+            "createdMs": _iso_to_ms(e.created),
+            "modifiedMs": _iso_to_ms(e.modified),
+            "filename": filename,
+            "related": list(e.related or []),
+        },
+        "relations": {"outgoing": outgoing, "incoming": incoming},
+    })
+
+
+async def api_memory_summary(r: Request) -> Response:
+    """Return the project memory summary."""
+    st = _app_state(r)
+    store = st.memory.memory_store
+    if store is None:
+        return JSONResponse({"summary": ""})
+    return JSONResponse({"summary": store.get_summary() or ""})
+
+
+# -- Memory curation submit ---------------------------------------------------
+
+async def api_memory_curation_submit(r: Request) -> Response:
+    """Resolve the koan_memory_propose future with the user's curation decisions."""
+    body = await r.json()
+    batch_id = body.get("batch_id", "")
+    decisions = body.get("decisions", [])
+
+    st = _app_state(r)
+
+    # Validate active batch exists and batch_id matches.
+    active_run = st.projection_store.projection.run
+    active_batch = active_run.active_curation_batch if active_run else None
+    if active_batch is None or active_batch.batch_id != batch_id:
+        return JSONResponse({"error": "no_active_curation"}, status_code=409)
+
+    future = st.interactions.memory_propose_future
+    if future is None or future.done():
+        return JSONResponse({"error": "no_active_propose"}, status_code=409)
+
+    from .mcp_endpoint import _render_curation_payload
+    rendered = _render_curation_payload(active_batch, decisions)
+    log.info(
+        "memory curation submitted: batch_id=%s decisions=%d",
+        batch_id, len(decisions),
+    )
+    future.set_result(rendered)
+    return JSONResponse({"ok": True})
+
+
+# -- Reflect endpoints --------------------------------------------------------
+
+async def _run_reflect_background(
+    st: Any,
+    session_id: str,
+    question: str,
+    context: str | None,
+    started_at_ms: int,
+) -> None:
+    """Background task: run the reflect agent and emit projection events.
+
+    CancelledError is re-raised so the DELETE handler can await the task and
+    emit reflect_cancelled exactly once. All other exceptions emit reflect_failed.
+    """
+    from ..memory.retrieval.reflect import (
+        run_reflect_agent, IterationCapExceeded,
+    )
+
+    def on_trace(ev) -> None:
+        st.projection_store.push_event(
+            "reflect_trace",
+            build_reflect_trace(session_id, {
+                "iteration": ev.iteration,
+                "tool": ev.tool,
+                "query": ev.args.get("query", ""),
+                "type_filter": ev.args.get("type", ""),
+                "result_count": ev.result_count,
+            }),
+        )
+
+    try:
+        result = await run_reflect_agent(
+            index=st.memory.retrieval_index,
+            question=question,
+            context=context,
+            on_trace=on_trace,
+        )
+        completed_ms = int(time.time() * 1000)
+        st.projection_store.push_event(
+            "reflect_done",
+            build_reflect_done(
+                session_id,
+                result.answer,
+                [{"id": c.id, "title": c.title} for c in result.citations],
+                completed_ms,
+                result.iterations,
+            ),
+        )
+    except IterationCapExceeded as e:
+        completed_ms = int(time.time() * 1000)
+        st.projection_store.push_event(
+            "reflect_failed",
+            build_reflect_failed(session_id, str(e), completed_ms),
+        )
+    except asyncio.CancelledError:
+        # DELETE handler emits reflect_cancelled after awaiting the task;
+        # re-raise so the handler sees CancelledError and can proceed.
+        raise
+    except Exception as e:
+        completed_ms = int(time.time() * 1000)
+        st.projection_store.push_event(
+            "reflect_failed",
+            build_reflect_failed(session_id, repr(e), completed_ms),
+        )
+    finally:
+        # Clear handles only when terminated through a normal (non-cancelled) path.
+        # CancelledError leaves them for the DELETE handler to clear.
+        if (
+            st.interactions.reflect_session_id == session_id
+            and st.interactions.reflect_task is not None
+            and st.interactions.reflect_task.done()
+            and not st.interactions.reflect_task.cancelled()
+        ):
+            st.interactions.reflect_task = None
+            st.interactions.reflect_session_id = None
+
+
+async def api_memory_reflect_start(r: Request) -> Response:
+    """Start a background reflect session."""
+    body = await r.json()
+    question = body.get("question", "").strip()
+    if not question:
+        return JSONResponse({"error": "empty_question"}, status_code=422)
+
+    st = _app_state(r)
+    existing_task = st.interactions.reflect_task
+    if existing_task is not None and not existing_task.done():
+        return JSONResponse(
+            {
+                "error": "reflect_already_active",
+                "session_id": st.interactions.reflect_session_id,
+            },
+            status_code=409,
+        )
+
+    model = os.environ.get("KOAN_REFLECT_MODEL") or "gemini-flash-latest"
+    session_id = uuid.uuid4().hex
+    started_at_ms = int(time.time() * 1000)
+    max_iterations = 10  # matches reflect.MAX_ITERATIONS
+
+    st.projection_store.push_event(
+        "reflect_started",
+        build_reflect_started(session_id, question, model, started_at_ms, max_iterations),
+    )
+
+    task = asyncio.create_task(
+        _run_reflect_background(st, session_id, question, body.get("context"), started_at_ms)
+    )
+    st.interactions.reflect_task = task
+    st.interactions.reflect_session_id = session_id
+
+    return JSONResponse({"ok": True, "session_id": session_id})
+
+
+async def api_memory_reflect_cancel(r: Request) -> Response:
+    """Cancel the active reflect session."""
+    st = _app_state(r)
+    task = st.interactions.reflect_task
+    if task is None or task.done():
+        return JSONResponse({"error": "no_active_reflect"}, status_code=409)
+
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    completed_ms = int(time.time() * 1000)
+    st.projection_store.push_event(
+        "reflect_cancelled",
+        build_reflect_cancelled(st.interactions.reflect_session_id or "", completed_ms),
+    )
+    st.interactions.reflect_task = None
+    st.interactions.reflect_session_id = None
     return JSONResponse({"ok": True})
 
 
@@ -403,11 +792,15 @@ async def api_answer(r: Request) -> Response:
     token = body.get("token", "")
 
     st = _app_state(r)
-    active = st.active_interaction
+    active = st.interactions.active_interaction
     if active is None or active.type != "ask" or active.token != token:
         return _stale_response()
 
     interaction = active
+    log.info("answer received: token=%s answer_count=%d", token, len(answers))
+    for i, a in enumerate(answers):
+        body = a.get("answer", "") if isinstance(a, dict) else str(a)
+        log.debug("answer[%d] payload: %s", i, truncate_payload(body))
     st.projection_store.push_event(
         "questions_answered",
         build_questions_answered(interaction.token, answers, cancelled=False),
@@ -420,10 +813,10 @@ async def api_answer(r: Request) -> Response:
 
 async def api_artifacts_list(r: Request) -> Response:
     st = _app_state(r)
-    if not st.run_dir:
+    if not st.run.run_dir:
         return JSONResponse({"error": "no_run", "message": "No run started"}, status_code=404)
 
-    artifacts = list_artifacts(st.run_dir)
+    artifacts = list_artifacts(st.run.run_dir)
     files = []
     for a in artifacts:
         files.append({
@@ -439,13 +832,13 @@ async def api_artifacts_list(r: Request) -> Response:
 
 async def api_artifact_content(r: Request) -> Response:
     st = _app_state(r)
-    if not st.run_dir:
+    if not st.run.run_dir:
         return JSONResponse({"error": "no_run"}, status_code=404)
 
     req_path = r.path_params.get("path", "")
 
     # Path traversal guard
-    run = Path(st.run_dir).resolve()
+    run = Path(st.run.run_dir).resolve()
     target = (run / req_path).resolve()
     if not str(target).startswith(str(run)):
         return JSONResponse(
@@ -507,8 +900,8 @@ async def _refresh_probe_state(st: AppState, broadcast: bool = True) -> None:
     from ..probe import probe_all_runners
     from ..runners.registry import compute_builtin_profiles
 
-    st.probe_results = await probe_all_runners()
-    st.builtin_profiles = compute_builtin_profiles(st.probe_results)
+    st.runner_config.probe_results = await probe_all_runners()
+    st.runner_config.builtin_profiles = compute_builtin_profiles(st.runner_config.probe_results)
 
     # --yolo: per-runner permission-skipping flags for default installations.
     # Claude is excluded: new default installations receive --permission-mode
@@ -519,32 +912,32 @@ async def _refresh_probe_state(st: AppState, broadcast: bool = True) -> None:
     }
 
     # Auto-create or update default installations from probe results
-    existing_types = {inst.runner_type for inst in st.config.agent_installations}
+    existing_types = {inst.runner_type for inst in st.runner_config.config.agent_installations}
     changed = False
     new_insts: list[AgentInstallation] = []
     modified_insts: list[AgentInstallation] = []
-    for pr in st.probe_results:
+    for pr in st.runner_config.probe_results:
         if pr.available and pr.binary_path:
             if pr.runner_type not in existing_types:
-                extra = _YOLO_ARGS.get(pr.runner_type, []) if st.yolo else []
+                extra = _YOLO_ARGS.get(pr.runner_type, []) if st.server.yolo else []
                 inst = AgentInstallation(
                     alias=f"{pr.runner_type}-default",
                     runner_type=pr.runner_type,
                     binary=pr.binary_path,
                     extra_args=extra,
                 )
-                st.config.agent_installations.append(inst)
+                st.runner_config.config.agent_installations.append(inst)
                 new_insts.append(inst)
                 changed = True
             else:
-                for inst in st.config.agent_installations:
+                for inst in st.runner_config.config.agent_installations:
                     if inst.runner_type == pr.runner_type and inst.alias == f"{pr.runner_type}-default":
                         need_update = False
                         if inst.binary != pr.binary_path:
                             inst.binary = pr.binary_path
                             need_update = True
                         # Sync yolo flags on default installations
-                        yolo_args = _YOLO_ARGS.get(pr.runner_type, []) if st.yolo else []
+                        yolo_args = _YOLO_ARGS.get(pr.runner_type, []) if st.server.yolo else []
                         if yolo_args and not all(a in inst.extra_args for a in yolo_args):
                             inst.extra_args = list({*inst.extra_args, *yolo_args})
                             need_update = True
@@ -553,7 +946,7 @@ async def _refresh_probe_state(st: AppState, broadcast: bool = True) -> None:
                             changed = True
     if changed:
         from ..config import save_koan_config
-        await save_koan_config(st.config)
+        await save_koan_config(st.runner_config.config)
 
     if broadcast:
         # New installations must exist in the projection BEFORE probe_completed
@@ -571,11 +964,11 @@ async def _refresh_probe_state(st: AppState, broadcast: bool = True) -> None:
         # Now set available on all installations (including the ones just created)
         _probe_results_dict = {
             inst.alias: any(pr.runner_type == inst.runner_type and pr.available
-                           for pr in st.probe_results)
-            for inst in st.config.agent_installations
+                           for pr in st.runner_config.probe_results)
+            for inst in st.runner_config.config.agent_installations
         }
         st.projection_store.push_event("probe_completed", build_probe_completed(_probe_results_dict))
-        for bp in st.builtin_profiles.values():
+        for bp in st.runner_config.builtin_profiles.values():
             tiers = _serialize_profile(bp, True)["tiers"]
             st.projection_store.push_event(
                 "profile_modified",
@@ -591,9 +984,9 @@ def _push_initial_config_events(st: AppState) -> None:
     """
     store = st.projection_store
 
-    # Installations FIRST — probe_completed needs them to exist so it can set
+    # Installations FIRST -- probe_completed needs them to exist so it can set
     # the `available` flag on each one.
-    for inst in st.config.agent_installations:
+    for inst in st.runner_config.config.agent_installations:
         store.push_event(
             "installation_created",
             build_installation_created(inst.alias, inst.runner_type, inst.binary, inst.extra_args),
@@ -602,40 +995,40 @@ def _push_initial_config_events(st: AppState) -> None:
     # probe_completed: set available flag on each installation (now they exist)
     _probe_avail = {
         inst.alias: any(pr.runner_type == inst.runner_type and pr.available
-                       for pr in st.probe_results)
-        for inst in st.config.agent_installations
+                       for pr in st.runner_config.probe_results)
+        for inst in st.runner_config.config.agent_installations
     }
     store.push_event("probe_completed", build_probe_completed(_probe_avail))
 
     # Profiles (built-in first, then user-defined)
-    for bp in st.builtin_profiles.values():
+    for bp in st.runner_config.builtin_profiles.values():
         tiers = _serialize_profile(bp, True)["tiers"]
         store.push_event("profile_created", build_profile_created(bp.name, True, tiers))
-    for p in st.config.profiles:
+    for p in st.runner_config.config.profiles:
         sp = _serialize_profile(p, False)
         store.push_event("profile_created", build_profile_created(p.name, False, sp["tiers"]))
 
     # Active profile
-    store.push_event("default_profile_changed", build_default_profile_changed(st.config.active_profile))
+    store.push_event("default_profile_changed", build_default_profile_changed(st.runner_config.config.active_profile))
 
     # Scout concurrency
-    store.push_event("default_scout_concurrency_changed", build_default_scout_concurrency_changed(st.config.scout_concurrency))
+    store.push_event("default_scout_concurrency_changed", build_default_scout_concurrency_changed(st.runner_config.config.scout_concurrency))
 
 
 async def api_probe(r: Request) -> Response:
     st = _app_state(r)
     if r.query_params.get("refresh", "") in ("1", "true"):
         await _refresh_probe_state(st)
-    runners = [_serialize_probe_result(pr) for pr in st.probe_results]
-    balanced = st.builtin_profiles.get("balanced")
+    runners = [_serialize_probe_result(pr) for pr in st.runner_config.probe_results]
+    balanced = st.runner_config.builtin_profiles.get("balanced")
     balanced_json = _serialize_profile(balanced, True) if balanced else None
     return JSONResponse({"runners": runners, "balanced_profile": balanced_json})
 
 
 async def api_profiles_list(r: Request) -> Response:
     st = _app_state(r)
-    profiles = [_serialize_profile(bp, True) for bp in st.builtin_profiles.values()]
-    for p in st.config.profiles:
+    profiles = [_serialize_profile(bp, True) for bp in st.runner_config.builtin_profiles.values()]
+    for p in st.runner_config.config.profiles:
         profiles.append(_serialize_profile(p, False))
     return JSONResponse({"profiles": profiles})
 
@@ -650,12 +1043,12 @@ async def api_profiles_create(r: Request) -> Response:
             {"error": "validation_error", "message": "name is required"},
             status_code=422,
         )
-    if name in _app_state(r).builtin_profiles:
+    if name in _app_state(r).runner_config.builtin_profiles:
         return JSONResponse(
             {"error": "validation_error", "message": f"cannot use reserved name '{name}'"},
             status_code=422,
         )
-    if any(p.name == name for p in _app_state(r).config.profiles):
+    if any(p.name == name for p in _app_state(r).runner_config.config.profiles):
         return JSONResponse(
             {"error": "validation_error", "message": f"profile '{name}' already exists"},
             status_code=422,
@@ -667,7 +1060,7 @@ async def api_profiles_create(r: Request) -> Response:
             {"error": "validation_error", "message": "tiers must be an object"},
             status_code=422,
         )
-    err = _validate_profile_tiers(tiers_raw, st.probe_results)
+    err = _validate_profile_tiers(tiers_raw, st.runner_config.probe_results)
     if err is not None:
         return JSONResponse(
             {"error": "validation_error", "message": err},
@@ -683,9 +1076,9 @@ async def api_profiles_create(r: Request) -> Response:
             )
 
     new_profile = Profile(name=name, tiers=tiers)
-    st.config.profiles.append(new_profile)
+    st.runner_config.config.profiles.append(new_profile)
     from ..config import save_koan_config
-    await save_koan_config(st.config)
+    await save_koan_config(st.runner_config.config)
     sp = _serialize_profile(new_profile, False)
     st.projection_store.push_event("profile_created", build_profile_created(name, False, sp["tiers"]))
     return JSONResponse({"ok": True})
@@ -693,7 +1086,7 @@ async def api_profiles_create(r: Request) -> Response:
 
 async def api_profiles_update(r: Request) -> Response:
     name = r.path_params["name"]
-    if name in _app_state(r).builtin_profiles:
+    if name in _app_state(r).runner_config.builtin_profiles:
         return JSONResponse(
             {"error": "read_only", "message": f"built-in profile '{name}' cannot be edited"},
             status_code=422,
@@ -701,7 +1094,7 @@ async def api_profiles_update(r: Request) -> Response:
 
     st = _app_state(r)
     target = None
-    for p in st.config.profiles:
+    for p in st.runner_config.config.profiles:
         if p.name == name:
             target = p
             break
@@ -715,7 +1108,7 @@ async def api_profiles_update(r: Request) -> Response:
             {"error": "validation_error", "message": "tiers must be an object"},
             status_code=422,
         )
-    err = _validate_profile_tiers(tiers_raw, st.probe_results)
+    err = _validate_profile_tiers(tiers_raw, st.runner_config.probe_results)
     if err is not None:
         return JSONResponse({"error": "validation_error", "message": err}, status_code=422)
 
@@ -729,7 +1122,7 @@ async def api_profiles_update(r: Request) -> Response:
     target.tiers = new_tiers
 
     from ..config import save_koan_config
-    await save_koan_config(st.config)
+    await save_koan_config(st.runner_config.config)
     sp = _serialize_profile(target, False)
     st.projection_store.push_event("profile_modified", build_profile_modified(name, False, sp["tiers"]))
     return JSONResponse({"ok": True})
@@ -737,7 +1130,7 @@ async def api_profiles_update(r: Request) -> Response:
 
 async def api_profiles_delete(r: Request) -> Response:
     name = r.path_params["name"]
-    if name in _app_state(r).builtin_profiles:
+    if name in _app_state(r).runner_config.builtin_profiles:
         return JSONResponse(
             {"error": "read_only", "message": f"built-in profile '{name}' cannot be deleted"},
             status_code=400,
@@ -745,20 +1138,20 @@ async def api_profiles_delete(r: Request) -> Response:
 
     st = _app_state(r)
     idx = None
-    for i, p in enumerate(st.config.profiles):
+    for i, p in enumerate(st.runner_config.config.profiles):
         if p.name == name:
             idx = i
             break
     if idx is None:
         return JSONResponse({"error": "not_found", "message": f"profile '{name}' not found"}, status_code=404)
 
-    st.config.profiles.pop(idx)
-    reset_active = st.config.active_profile == name
+    st.runner_config.config.profiles.pop(idx)
+    reset_active = st.runner_config.config.active_profile == name
     if reset_active:
-        st.config.active_profile = "balanced"
+        st.runner_config.config.active_profile = "balanced"
 
     from ..config import save_koan_config
-    await save_koan_config(st.config)
+    await save_koan_config(st.runner_config.config)
     st.projection_store.push_event("profile_removed", build_profile_removed(name))
     if reset_active:
         st.projection_store.push_event("default_profile_changed", build_default_profile_changed("balanced"))
@@ -776,7 +1169,7 @@ async def api_agents_list(r: Request) -> Response:
             "binary": inst.binary,
             "extra_args": inst.extra_args,
         }
-        for inst in st.config.agent_installations
+        for inst in st.runner_config.config.agent_installations
     ]
     return JSONResponse({"installations": installations})
 
@@ -805,7 +1198,7 @@ async def api_agents_create(r: Request) -> Response:
         )
 
     st = _app_state(r)
-    if any(inst.alias == alias for inst in st.config.agent_installations):
+    if any(inst.alias == alias for inst in st.runner_config.config.agent_installations):
         return JSONResponse(
             {"error": "validation_error", "message": f"alias '{alias}' already exists"},
             status_code=422,
@@ -815,12 +1208,12 @@ async def api_agents_create(r: Request) -> Response:
         extra_args = []
 
     clean_args = [str(a) for a in extra_args]
-    st.config.agent_installations.append(AgentInstallation(
+    st.runner_config.config.agent_installations.append(AgentInstallation(
         alias=alias, runner_type=runner_type, binary=binary,
         extra_args=clean_args,
     ))
     from ..config import save_koan_config
-    await save_koan_config(st.config)
+    await save_koan_config(st.runner_config.config)
     st.projection_store.push_event(
         "installation_created",
         build_installation_created(alias, runner_type, binary, clean_args),
@@ -832,7 +1225,7 @@ async def api_agents_update(r: Request) -> Response:
     alias = r.path_params["alias"]
     st = _app_state(r)
     target = None
-    for inst in st.config.agent_installations:
+    for inst in st.runner_config.config.agent_installations:
         if inst.alias == alias:
             target = inst
             break
@@ -849,7 +1242,7 @@ async def api_agents_update(r: Request) -> Response:
         target.extra_args = [str(a) for a in ea] if isinstance(ea, list) else []
 
     from ..config import save_koan_config
-    await save_koan_config(st.config)
+    await save_koan_config(st.runner_config.config)
     st.projection_store.push_event(
         "installation_modified",
         build_installation_modified(target.alias, target.runner_type, target.binary, target.extra_args),
@@ -861,17 +1254,17 @@ async def api_agents_delete(r: Request) -> Response:
     alias = r.path_params["alias"]
     st = _app_state(r)
     idx = None
-    for i, inst in enumerate(st.config.agent_installations):
+    for i, inst in enumerate(st.runner_config.config.agent_installations):
         if inst.alias == alias:
             idx = i
             break
     if idx is None:
         return JSONResponse({"error": "not_found", "message": f"installation '{alias}' not found"}, status_code=404)
 
-    st.config.agent_installations.pop(idx)
+    st.runner_config.config.agent_installations.pop(idx)
 
     from ..config import save_koan_config
-    await save_koan_config(st.config)
+    await save_koan_config(st.runner_config.config)
     st.projection_store.push_event("installation_removed", build_installation_removed(alias))
     return JSONResponse({"ok": True})
 
@@ -892,12 +1285,12 @@ async def api_agents_detect(r: Request) -> Response:
 async def api_settings_body(r: Request) -> Response:
     st = _app_state(r)
 
-    profiles = [_serialize_profile(bp, True) for bp in st.builtin_profiles.values()]
-    for p in st.config.profiles:
+    profiles = [_serialize_profile(bp, True) for bp in st.runner_config.builtin_profiles.values()]
+    for p in st.runner_config.config.profiles:
         profiles.append(_serialize_profile(p, False))
 
     installations = []
-    for inst in st.config.agent_installations:
+    for inst in st.runner_config.config.agent_installations:
         installations.append({
             "alias": inst.alias,
             "runner_type": inst.runner_type,
@@ -908,7 +1301,7 @@ async def api_settings_body(r: Request) -> Response:
     return JSONResponse({
         "profiles": profiles,
         "installations": installations,
-        "scoutConcurrency": st.config.scout_concurrency,
+        "scoutConcurrency": st.runner_config.config.scout_concurrency,
     })
 
 
@@ -919,12 +1312,12 @@ async def api_settings_profile_form(r: Request) -> Response:
     is_edit = r.query_params.get("edit", "0") == "1"
 
     available_runners = [
-        _serialize_probe_result(pr) for pr in st.probe_results if pr.available
+        _serialize_probe_result(pr) for pr in st.runner_config.probe_results if pr.available
     ]
 
     tiers: dict = {}
     if is_edit and name:
-        for p in st.config.profiles:
+        for p in st.runner_config.config.profiles:
             if p.name == name:
                 sp = _serialize_profile(p, False)
                 tiers = sp.get("tiers", {})
@@ -945,13 +1338,13 @@ async def api_settings_installation_form(r: Request) -> Response:
     is_edit = r.query_params.get("edit", "0") == "1"
 
     # Use ALL runners, not just available ones
-    all_runners = [_serialize_probe_result(pr) for pr in st.probe_results]
+    all_runners = [_serialize_probe_result(pr) for pr in st.runner_config.probe_results]
 
     runner_type = ""
     binary = ""
     extra_args: list = []
     if is_edit and alias:
-        for inst in st.config.agent_installations:
+        for inst in st.runner_config.config.agent_installations:
             if inst.alias == alias:
                 runner_type = inst.runner_type
                 binary = inst.binary
@@ -977,9 +1370,9 @@ async def api_settings_scout_concurrency(r: Request) -> Response:
             status_code=422,
         )
     st = _app_state(r)
-    st.config.scout_concurrency = value
+    st.runner_config.config.scout_concurrency = value
     from ..config import save_koan_config
-    await save_koan_config(st.config)
+    await save_koan_config(st.runner_config.config)
     st.projection_store.push_event("default_scout_concurrency_changed", build_default_scout_concurrency_changed(value))
     return JSONResponse({"ok": True})
 
@@ -988,7 +1381,7 @@ async def api_settings_scout_concurrency(r: Request) -> Response:
 
 async def api_initial_prompt(r: Request) -> Response:
     st = _app_state(r)
-    return JSONResponse({"prompt": st.initial_prompt, "project_dir": st.project_dir})
+    return JSONResponse({"prompt": st.server.initial_prompt, "project_dir": st.run.project_dir})
 
 
 # -- Sessions endpoints -------------------------------------------------------
@@ -1029,7 +1422,7 @@ async def api_sessions_delete(r: Request) -> Response:
             status_code=404,
         )
     st = _app_state(r)
-    if st.run_dir and Path(st.run_dir).resolve() == run_path.resolve():
+    if st.run.run_dir and Path(st.run.run_dir).resolve() == run_path.resolve():
         return JSONResponse(
             {"error": "active_run", "message": "cannot delete the currently active run"},
             status_code=409,
@@ -1062,13 +1455,13 @@ def create_app(app_state: AppState) -> Starlette:
         asyncio.create_task(driver_main(app_state))
 
         # Open browser once after server is listening
-        if app_state.open_browser:
-            app_state.open_browser = False  # one-shot guard
+        if app_state.server.open_browser:
+            app_state.server.open_browser = False  # one-shot guard
 
             async def _open_browser():
                 await asyncio.sleep(0.3)  # let uvicorn bind the socket
                 import webbrowser
-                await asyncio.to_thread(webbrowser.open, f"http://127.0.0.1:{app_state.port}")
+                await asyncio.to_thread(webbrowser.open, f"http://127.0.0.1:{app_state.server.port}")
 
             asyncio.create_task(_open_browser())
 
@@ -1107,6 +1500,13 @@ def create_app(app_state: AppState) -> Starlette:
         Route("/api/start-run/preflight", api_start_run_preflight, methods=["GET"]),
         Route("/api/answer", api_answer, methods=["POST"]),
         Route("/api/chat", api_chat, methods=["POST"]),
+        Route("/api/artifact-review", api_artifact_review, methods=["POST"]),
+        Route("/api/memory/entries", api_memory_entries, methods=["GET"]),
+        Route("/api/memory/entries/{seq}", api_memory_entry, methods=["GET"]),
+        Route("/api/memory/summary", api_memory_summary, methods=["GET"]),
+        Route("/api/memory/reflect", api_memory_reflect_start, methods=["POST"]),
+        Route("/api/memory/reflect", api_memory_reflect_cancel, methods=["DELETE"]),
+        Route("/api/memory/curation", api_memory_curation_submit, methods=["POST"]),
         Route("/api/artifacts", api_artifacts_list),
         Route("/api/artifacts/{path:path}", api_artifact_content),
         Route("/api/probe", api_probe),

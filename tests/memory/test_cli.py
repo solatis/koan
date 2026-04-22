@@ -91,11 +91,6 @@ def test_status_human_readable_output(store_env, tmp_path, capsys):
     assert "Beta entry" in out
 
 
-def test_placeholder_commands_exit(store_env, capsys):
-    """Placeholder subcommands exit with code 1 and print 'not yet implemented'."""
-    for cmd in ("reflect",):
-        with pytest.raises(SystemExit) as exc:
-            cmd_memory(ns(memory_command=cmd))
-        assert exc.value.code == 1
-        err = capsys.readouterr().err
-        assert "not yet implemented" in err
+# The "reflect" placeholder test was removed when koan_reflect was implemented.
+# All memory subcommands are now active. Add new entries here if future
+# placeholder commands are added.

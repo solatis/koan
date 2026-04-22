@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import logging
 import socket
 import subprocess
 import sys
@@ -19,10 +18,11 @@ from pathlib import Path
 import uvicorn
 
 from ..config import load_koan_config
+from ..logger import get_logger
 from ..state import AppState
 from ..web.app import FRONTEND_DIST, create_app
 
-log = logging.getLogger(__name__)
+log = get_logger("cli.run")
 
 # Resolve relative to the *repository root* (one level above the koan package).
 # Only present in a development checkout -- absent in an installed wheel.
@@ -88,18 +88,22 @@ def cmd_run(args: argparse.Namespace) -> None:
         sys.exit(f"koan: project directory does not exist: {project_dir}")
 
     config = asyncio.run(load_koan_config())
-    app_state = AppState(
-        config=config,
-        port=port,
-        open_browser=not args.no_open,
-        initial_prompt=args.prompt,
-        yolo=args.yolo,
-        debug=args.debug,
-        project_dir=str(project_dir),
-    )
+    app_state = AppState()
+    app_state.runner_config.config = config
+    app_state.server.port = port
+    app_state.server.open_browser = not args.no_open
+    app_state.server.initial_prompt = args.prompt
+    app_state.server.yolo = args.yolo
+    app_state.server.debug = args.debug
+    app_state.run.project_dir = str(project_dir)
+    app_state.init_memory_services()
     app = create_app(app_state)
 
     host = "127.0.0.1"
+    log.info(
+        "koan server starting: host=%s port=%d log_level=%s yolo=%s",
+        host, port, log_level, args.yolo,
+    )
     # timeout_graceful_shutdown=0: don't wait for HTTP clients to disconnect.
     # Agent cleanup happens in the lifespan shutdown handler instead.
     uvicorn.run(app, host=host, port=port, log_level=log_level.lower(),

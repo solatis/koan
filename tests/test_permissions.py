@@ -9,6 +9,7 @@ from koan.lib.permissions import (
     STEP_1_BLOCKED_TOOLS,
     WRITE_TOOLS,
     _UNIVERSAL_MEMORY_TOOLS,
+    _UNIVERSAL_READ_TOOLS,
     check_permission,
 )
 
@@ -85,26 +86,44 @@ class TestStep1Blocking:
             )
 
     def test_orchestrator_brief_generation_step_2_allows_write(self):
-        """Orchestrator at brief-generation step 2 allows write/edit."""
+        """Orchestrator write/edit are now denied in ALL phases (including step 2 of
+        brief-generation) because all artifact mutations flow through
+        koan_artifact_propose (artifact-propose task). Assertion updated from
+        'allowed' to 'denied' -- test kept to document the policy change."""
         for tool in ("write", "edit"):
             r = check_permission(
                 "orchestrator", tool,
                 current_step=2,
                 current_phase="brief-generation",
             )
-            assert r["allowed"], (
-                f"orchestrator brief-generation step 2 should allow {tool}"
+            assert not r["allowed"], (
+                f"orchestrator write/edit should be denied in all phases ({tool})"
             )
 
     def test_orchestrator_intake_step_1_allows_all(self):
-        """Orchestrator at intake phase step 1 allows all base tools."""
+        """Orchestrator at intake phase step 1 allows koan tools and bash-equivalent.
+        write/edit are excluded: they are denied for orchestrator in all phases since
+        the artifact-propose task -- artifact mutations flow through koan_artifact_propose."""
         for tool in self.blocked:
-            r = check_permission(
-                "orchestrator", tool,
-                current_step=1,
-                current_phase="intake",
-            )
-            assert r["allowed"], f"orchestrator intake step 1 should allow {tool}"
+            if tool in ("write", "edit"):
+                # write/edit denied for orchestrator in every phase (artifact-propose task)
+                r = check_permission(
+                    "orchestrator", tool,
+                    current_step=1,
+                    current_phase="intake",
+                )
+                assert not r["allowed"], (
+                    f"orchestrator write/edit should be denied at intake step 1 ({tool})"
+                )
+            else:
+                r = check_permission(
+                    "orchestrator", tool,
+                    current_step=1,
+                    current_phase="intake",
+                )
+                assert r["allowed"], (
+                    f"orchestrator intake step 1 should allow {tool}"
+                )
 
 
 # -- Orchestrator phase-aware permissions -------------------------------------
@@ -178,8 +197,9 @@ def _build_matrix():
     for role in ALL_ROLES:
         if role == "orchestrator":
             continue  # orchestrator uses phase-aware checks, tested separately
-        # _UNIVERSAL_MEMORY_TOOLS are allowed for all roles via fast-path.
-        allowed_set = ROLE_PERMISSIONS[role] | READ_TOOLS | _UNIVERSAL_MEMORY_TOOLS
+        # _UNIVERSAL_MEMORY_TOOLS and _UNIVERSAL_READ_TOOLS are allowed for all
+        # roles via fast-paths before any role-specific check runs.
+        allowed_set = ROLE_PERMISSIONS[role] | READ_TOOLS | _UNIVERSAL_MEMORY_TOOLS | _UNIVERSAL_READ_TOOLS
         for tool in sorted(ALL_KOAN_TOOLS):
             expected = tool in allowed_set
             cases.append((role, tool, expected))
@@ -245,6 +265,9 @@ class TestPathScoping:
         assert r["allowed"]
 
     def test_orchestrator_write_inside_run_dir_allowed(self):
+        """Orchestrator write is now denied in all phases (artifact-propose task).
+        Assertion updated from 'allowed' to 'denied' -- test kept to document
+        the policy change. Artifact mutations flow through koan_artifact_propose."""
         r = check_permission(
             "orchestrator", "write",
             run_dir=self.run_dir,
@@ -252,7 +275,7 @@ class TestPathScoping:
             current_phase="brief-generation",
             current_step=2,
         )
-        assert r["allowed"]
+        assert not r["allowed"]
 
     def test_orchestrator_write_outside_run_dir_denied(self):
         r = check_permission(
@@ -263,7 +286,8 @@ class TestPathScoping:
             current_step=2,
         )
         assert not r["allowed"]
-        assert "outside run directory" in r["reason"]
+        # Reason is now generic "not available" rather than path scoping
+        # since write is denied entirely for orchestrator (artifact-propose task)
 
 
 # -- Executor unrestricted write -----------------------------------------------
@@ -302,3 +326,74 @@ class TestNoEpicDirNoPathArg:
             current_step=2,
         )
         assert r["allowed"]
+
+
+# -- _UNIVERSAL_READ_TOOLS fast-path ------------------------------------------
+
+class TestUniversalReadTools:
+    """_UNIVERSAL_READ_TOOLS fast-path: list/view allowed for all roles before
+    role-specific checks, analogous to _UNIVERSAL_MEMORY_TOOLS pattern."""
+
+    def test_frozenset_contains_expected_tools(self):
+        assert "koan_artifact_list" in _UNIVERSAL_READ_TOOLS
+        assert "koan_artifact_view" in _UNIVERSAL_READ_TOOLS
+
+    def test_list_allowed_all_roles(self):
+        for role in list(ROLE_PERMISSIONS.keys()) + ["unknown-role"]:
+            r = check_permission(role, "koan_artifact_list",
+                                 current_phase="intake", current_step=1)
+            assert r["allowed"], f"koan_artifact_list should be allowed for role={role}"
+
+    def test_view_allowed_all_roles(self):
+        for role in list(ROLE_PERMISSIONS.keys()) + ["unknown-role"]:
+            r = check_permission(role, "koan_artifact_view",
+                                 current_phase="intake", current_step=1)
+            assert r["allowed"], f"koan_artifact_view should be allowed for role={role}"
+
+
+# -- koan_artifact_propose orchestrator-only ----------------------------------
+
+class TestArtifactProposeOrchestratorOnly:
+    """koan_artifact_propose: orchestrator allowed in every phase; others denied."""
+
+    def test_orchestrator_allowed_all_phases(self):
+        for phase in ("intake", "plan-spec", "plan-review", "execute", "execution",
+                      "brief-generation", "implementation-validation"):
+            r = check_permission("orchestrator", "koan_artifact_propose",
+                                 current_phase=phase, current_step=2)
+            assert r["allowed"], f"koan_artifact_propose should be allowed in phase={phase}"
+
+    def test_scout_denied(self):
+        r = check_permission("scout", "koan_artifact_propose")
+        assert not r["allowed"]
+
+    def test_executor_denied(self):
+        r = check_permission("executor", "koan_artifact_propose")
+        assert not r["allowed"]
+
+    def test_planner_denied(self):
+        r = check_permission("planner", "koan_artifact_propose")
+        assert not r["allowed"]
+
+    def test_unknown_role_denied(self):
+        r = check_permission("unknown-role", "koan_artifact_propose")
+        assert not r["allowed"]
+
+
+# -- Orchestrator write/edit denied in every phase ----------------------------
+
+class TestOrchestratorWriteEditDenied:
+    """Orchestrator write/edit denied in every phase (artifact-propose task).
+    All artifact mutations flow through koan_artifact_propose."""
+
+    def test_write_denied_every_phase(self):
+        for phase in ("intake", "plan-spec", "plan-review", "execute", "execution",
+                      "brief-generation", "implementation-validation", "curation"):
+            r = check_permission("orchestrator", "write", current_phase=phase, current_step=2)
+            assert not r["allowed"], f"orchestrator write should be denied in phase={phase}"
+
+    def test_edit_denied_every_phase(self):
+        for phase in ("intake", "plan-spec", "plan-review", "execute", "execution",
+                      "brief-generation", "implementation-validation", "curation"):
+            r = check_permission("orchestrator", "edit", current_phase=phase, current_step=2)
+            assert not r["allowed"], f"orchestrator edit should be denied in phase={phase}"
