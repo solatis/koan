@@ -1,0 +1,57 @@
+/*
+ * ArtifactReviewPin -- attention banner while koan_artifact_propose is blocking.
+ *
+ * Single-use hardcoded values are annotated. Values shared with SteeringBar
+ * (e.g. --color-orange, --bg-selected) use existing tokens.
+ * See frontend/AGENTS.md: "hardcode in component CSS with a comment".
+ */
+
+.arp {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: var(--bg-selected);
+  border-left: 3px solid var(--color-orange);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+  margin: 8px 0;
+  cursor: pointer;
+  user-select: none;
+  transition: opacity var(--duration-fast) var(--ease-default);
+}
+
+.arp:hover {
+  /* Subtle hover: slight opacity lift signals interactivity */
+  opacity: 0.85;
+}
+
+.arp:focus-visible {
+  outline: 2px solid var(--color-orange);
+  outline-offset: 2px;
+}
+
+.arp-label {
+  font-family: var(--font-mono);
+  font-size: var(--type-label);
+  color: var(--color-orange);
+  flex-shrink: 0;
+}
+
+.arp-path {
+  font-family: var(--font-mono);
+  font-size: var(--type-breadcrumb);
+  color: var(--text-subtle);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.arp-cta {
+  font-family: var(--font-body);
+  font-size: var(--type-label);
+  color: var(--text-muted);
+  flex-shrink: 0;
+  /* 11px italic -- one-off decorative treatment for the CTA hint */
+  font-style: italic;
+}

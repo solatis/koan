@@ -1,0 +1,14 @@
+.ss {
+  display: flex;
+  align-items: center;
+}
+
+.ss--lg { gap: 32px; }
+.ss--sm { gap: 18px; }
+
+.ss-divider {
+  width: 1px;
+  height: 24px;
+  background: var(--border-divider);
+  flex-shrink: 0;
+}

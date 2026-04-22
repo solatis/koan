@@ -16,6 +16,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useLocation, useNavigate } from 'react-router'
 import { useStore, ConversationEntry, AskQuestion } from './store/index'
 // DEBUG: expose store to window for browser-agent introspection
 ;(window as unknown as { __store: typeof useStore }).__store = useStore
@@ -45,6 +46,7 @@ import { YieldPanel } from './components/molecules/YieldPanel'
 import { StepHeader } from './components/molecules/StepHeader'
 import { CompletionBanner } from './components/molecules/CompletionBanner'
 import { SteeringBar } from './components/molecules/SteeringBar'
+import { ArtifactReviewPin } from './components/molecules/ArtifactReviewPin'
 
 import { Md } from './components/Md'
 import { Notification } from './components/Notification'
@@ -53,6 +55,8 @@ import { Notification } from './components/Notification'
 import { SettingsPage, type Profile as SPProfile, type Installation as SPInstallation } from './components/organisms/SettingsPage'
 import { ReviewPanel, type ReviewSubmitPayload } from './components/organisms/ReviewPanel'
 import { SessionsPage } from './components/organisms/SessionsPage'
+import { MemoryRoutes } from './components/organisms/MemoryRoutes'
+import { CurationTakeover } from './components/organisms/CurationTakeover'
 
 import type { AggregateChild, AggregateReadChild, AggregateGrepChild, AggregateLsChild, ToolAggregateEntry } from './store/index'
 
@@ -149,6 +153,9 @@ const KOAN_TOOL_LABELS: Record<string, string> = {
   koan_complete_story: 'Completing story',
   koan_retry_story: 'Retrying story',
   koan_skip_story: 'Skipping story',
+  koan_artifact_propose: 'Proposing artifact',
+  koan_artifact_list: 'Listing artifacts',
+  koan_artifact_view: 'Viewing artifact',
 }
 
 // ---------------------------------------------------------------------------
@@ -431,6 +438,9 @@ function ContentStream() {
   const conversation = useStore(s => focusAgentId ? s.run?.agents?.[focusAgentId]?.conversation : undefined)
   const run = useStore(s => s.run)
   const focus = useStore(s => s.run?.focus)
+  const reviewingArtifact = useStore(s => s.reviewingArtifact)
+  const activeArtifactReview = useStore(s => s.run?.activeArtifactReview ?? null)
+  const setReviewingArtifact = useStore(s => s.setReviewingArtifact)
   const scrollRef = useRef<HTMLDivElement>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   useAutoScroll(scrollRef)
@@ -463,6 +473,14 @@ function ContentStream() {
         {showFeedback && (
           <>
             <ConnectedSteeringBar />
+            {/* Pin persists even after user closes the ReviewPanel without submitting,
+                so the orchestrator's block is still visible and re-openable. */}
+            {activeArtifactReview && !reviewingArtifact && (
+              <ArtifactReviewPin
+                path={activeArtifactReview.path}
+                onClick={() => setReviewingArtifact(activeArtifactReview.path)}
+              />
+            )}
             <FeedbackInput
               onSend={msg => api.sendChatMessage(msg)}
               disabled={!!run?.completion}
@@ -637,8 +655,17 @@ function CompletionView() {
 const NAV_ITEMS = [
   { label: 'New run', key: 'new-run' },
   { label: 'Sessions', key: 'sessions' },
+  { label: 'Memory', key: 'memory' },
   { label: 'Settings', key: 'settings' },
 ]
+
+// Maps nav keys to URL paths for URL-driven navigation.
+const PATH_BY_KEY: Record<string, string> = {
+  'new-run': '/',
+  sessions: '/sessions',
+  memory: '/memory',
+  settings: '/settings',
+}
 
 // ---------------------------------------------------------------------------
 // Settings page wiring
@@ -776,78 +803,8 @@ function ConnectedSettingsPage() {
 }
 
 // ---------------------------------------------------------------------------
-// Review view — renders ReviewPanel for the currently open artifact
+// Review view -- renders ReviewPanel for the currently open artifact
 // ---------------------------------------------------------------------------
-
-// DESIGN NOTE: the opener below deliberately does NOT ask the LLM to verify
-// its own revision before re-yielding. Intrinsic self-correction is a
-// documented anti-pattern -- the user's next review pass is the verifier,
-// not the model. Do not add "double-check your edits", "validate each
-// change", or any similar self-verification language.
-//
-// The opener also pairs with the REVIEW FEEDBACK LOOP contract documented
-// in the koan_yield tool docstring (koan/web/mcp_endpoint.py). Both sides
-// must stay in sync: the "I've reviewed `<path>`" sentinel is how the LLM
-// recognizes the payload as a review response.
-//
-// Three response types:
-//   1. Approval  -- no comments, no summary -> "approve it as-is"
-//   2. Structured -- inline comments (+ optional summary)
-//   3. Free-form  -- summary only, no inline comments
-function formatReviewMessage(path: string, payload: ReviewSubmitPayload): string {
-  const summary = payload.summary.trim()
-  const hasComments = payload.comments.length > 0
-  const hasSummary = summary.length > 0
-
-  // Approval -- no comments and no summary means the artifact is accepted.
-  if (!hasComments && !hasSummary) {
-    return `I've reviewed \`${path}\` and approve it as-is. No changes requested.`
-  }
-
-  const out: string[] = []
-
-  // Structured feedback -- inline comments (with optional summary).
-  if (hasComments) {
-    out.push(
-      `I've reviewed \`${path}\`. For each inline comment below, edit the cited section of the file to address it. Preserve everything not called out. When all comments are addressed, call \`koan_yield\` again so I can confirm or give another pass.`,
-    )
-
-    // Group comments by blockIndex in document order.
-    const groups = new Map<number, { preview: string; comments: string[] }>()
-    for (const c of payload.comments) {
-      const g = groups.get(c.blockIndex)
-      if (g) g.comments.push(c.text)
-      else groups.set(c.blockIndex, { preview: c.blockPreview, comments: [c.text] })
-    }
-    const sorted = [...groups.entries()].sort(([a], [b]) => a - b)
-
-    for (const [, g] of sorted) {
-      out.push('')
-      out.push('On the section:')
-      for (const line of g.preview.split('\n')) out.push(`> ${line}`)
-      out.push('')
-      for (const text of g.comments) {
-        const parts = text.split('\n')
-        out.push(`- ${parts[0]}`)
-        for (let i = 1; i < parts.length; i++) out.push(`  ${parts[i]}`)
-      }
-    }
-  }
-
-  // Free-form feedback -- summary only, no inline comments.
-  if (!hasComments && hasSummary) {
-    out.push(
-      `I've reviewed \`${path}\`. Apply the feedback below, then call \`koan_yield\` again so I can confirm or give another pass.`,
-    )
-  }
-
-  if (hasSummary) {
-    out.push('')
-    out.push(`**Summary:** ${summary}`)
-  }
-
-  return out.join('\n')
-}
 
 function ReviewView() {
   const path = useStore(s => s.reviewingArtifact)
@@ -868,10 +825,12 @@ function ReviewView() {
 
   if (!path) return null
 
+  // Submit to the dedicated artifact-review endpoint. The backend renders
+  // the review string and resolves the koan_artifact_propose future,
+  // keeping the tool-return contract server-side.
   const handleSubmit = (payload: ReviewSubmitPayload) => {
-    const message = formatReviewMessage(path, payload)
-    console.log('[review] submitting:\n' + message)
-    api.sendChatMessage(message)
+    console.log('[review] submitting to artifact-review endpoint:', payload)
+    api.submitArtifactReview(path, payload)
     setReviewing(null)
   }
 
@@ -899,29 +858,26 @@ export default function App() {
   const run = useStore(s => s.run)
   const connected = useStore(s => s.connected)
   const reviewingArtifact = useStore(s => s.reviewingArtifact)
-  const activeYield = useStore(s => s.run?.activeYield ?? null)
-  const artifactsDict = useStore(s => s.run?.artifacts)
+  const activeArtifactReview = useStore(s => s.run?.activeArtifactReview ?? null)
   const header = useHeaderData()
-  const [page, setPage] = useState<'new-run' | 'sessions' | 'settings'>('new-run')
+  const location = useLocation()
+  const navigate = useNavigate()
 
-  // Review auto-open: yield-triggered, not write-triggered. Fires when the
-  // orchestrator parks in koan_yield -- the synchronous checkpoint where a
-  // review is expected. Picks the newest .md artifact modified since the
-  // previous yield (or since app mount for the first yield). If no .md was
-  // modified in that window, no auto-open (the yield is not about an artifact).
-  // TODO: gate behind settings toggle "Auto-open new or changed artifacts".
-  const lastYieldAtRef = useRef<number>(Date.now())
+  // Derive the active nav key from the current URL path so browser back/forward
+  // updates the nav highlight without local state.
+  const page: 'new-run' | 'sessions' | 'memory' | 'settings' =
+    location.pathname.startsWith('/memory') ? 'memory'
+    : location.pathname === '/sessions' ? 'sessions'
+    : location.pathname === '/settings' ? 'settings'
+    : 'new-run'
+
+  // Auto-open: fires when the server signals a review is needed via
+  // koan_artifact_propose. The server tells us exactly which artifact to review
+  // -- no heuristic needed. Replacing the old yield-triggered / newest-.md logic.
   useEffect(() => {
-    if (activeYield === null) return
-    const cutoff = lastYieldAtRef.current
-    lastYieldAtRef.current = Date.now()
-    const candidates = Object.values(artifactsDict ?? {})
-      .filter(a => a.path.endsWith('.md') && a.modifiedAt > cutoff)
-    if (candidates.length === 0) return
-    const newest = candidates.reduce((a, b) => (a.modifiedAt >= b.modifiedAt ? a : b))
-    useStore.getState().setReviewingArtifact(newest.path)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeYield])
+    if (activeArtifactReview === null) return
+    useStore.getState().setReviewingArtifact(activeArtifactReview.path)
+  }, [activeArtifactReview])
 
   useEffect(() => {
     let es: EventSource | null = null
@@ -940,8 +896,28 @@ export default function App() {
     return () => { es?.close() }
   }, [])
 
-  const goToSettings = () => setPage('settings')
+  const goToSettings = () => navigate('/settings')
   const focus = run?.focus
+
+  // Derive sub-page breadcrumbs from the current URL for memory routes.
+  const memoryCrumbs = useMemo(() => {
+    if (!location.pathname.startsWith('/memory')) return undefined
+    const parts = location.pathname.split('/').filter(Boolean)
+    if (parts.length === 1) return undefined  // /memory itself — no crumbs
+    if (parts[1] === 'reflect') {
+      const q = useStore.getState().reflect?.question ?? ''
+      const snip = q.length > 40 ? q.slice(0, 40) + '...' : q
+      return [
+        { label: 'Memory', href: '/memory' },
+        { label: 'Reflect' },
+        ...(snip ? [{ label: `"${snip}"` }] : []),
+      ]
+    }
+    return [
+      { label: 'Memory', href: '/memory' },
+      { label: `#${parts[1]}` },
+    ]
+  }, [location.pathname])
   const hasInteraction = focus && focus.type !== 'conversation'
   const completion = run?.completion
 
@@ -950,7 +926,27 @@ export default function App() {
     return (
       <div className="app-root">
         <HeaderBar phase="" step="" totalSteps={0} currentStep={0} />
-        <div className="single-column"><div className="loading-center">connecting…</div></div>
+        <div className="single-column"><div className="loading-center">connecting...</div></div>
+      </div>
+    )
+  }
+
+  // --- Curation takeover: supersedes all run-scoped views ---
+  // Placed before hasInteraction/completion/review branches so it takes
+  // priority whenever the orchestrator is blocked in koan_memory_propose.
+  if (run?.activeCurationBatch) {
+    return (
+      <div className="app-root">
+        <HeaderBar
+          phase="" step="" totalSteps={0} currentStep={0}
+          mode="navigation"
+          navItems={NAV_ITEMS}
+          activeNav=""
+          crumbs={[{ label: 'Memory curation' }]}
+          onNavChange={k => navigate(PATH_BY_KEY[k] ?? '/')}
+        />
+        <CurationTakeover />
+        <Notification />
       </div>
     )
   }
@@ -964,7 +960,8 @@ export default function App() {
           mode="navigation"
           navItems={NAV_ITEMS}
           activeNav={page}
-          onNavChange={k => setPage(k as typeof page)}
+          crumbs={memoryCrumbs}
+          onNavChange={k => navigate(PATH_BY_KEY[k] ?? '/')}
         />
         {page === 'new-run' && <div className="single-column"><NewRunForm /></div>}
         {page === 'sessions' && (
@@ -972,6 +969,7 @@ export default function App() {
             <SessionsPage />
           </div>
         )}
+        {page === 'memory' && <div className="single-column"><MemoryRoutes /></div>}
         {page === 'settings' && <ConnectedSettingsPage />}
         <Notification />
       </div>

@@ -1,0 +1,35 @@
+.mfc {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.mfc-chip {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  line-height: 1;
+  padding: 3px 8px;
+  border-radius: var(--radius-pill);
+  border: none;
+  cursor: pointer;
+  transition: background var(--duration-fast), color var(--duration-fast);
+  background: var(--bg-tool-row);
+  color: var(--text-subtle);
+}
+
+.mfc-chip:hover { color: var(--text-body); }
+
+.mfc-chip--active {
+  background: var(--color-navy);
+  color: var(--text-on-dark);
+}
+
+.mfc-chip--active:hover { color: var(--text-on-dark); }
+
+.mfc-chip:focus-visible {
+  outline: 2px solid var(--color-orange);
+  outline-offset: 2px;
+}

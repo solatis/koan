@@ -1,0 +1,92 @@
+.mrp {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 26px 24px 40px;
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: 24px;
+  align-items: start;
+}
+
+/* ======== ReflectPane ======== */
+.rfl {
+  background: var(--bg-card);
+  border: 0.5px solid var(--border-card);
+  border-top: 3px solid var(--color-orange);
+  border-radius: var(--radius-2xl);
+  padding: 28px 34px 26px;
+  min-height: 600px;
+}
+
+.rfl-eyebrow {
+  font-size: var(--type-label);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--color-orange);
+  font-weight: 500;
+  margin-bottom: 10px;
+}
+
+.rfl-question {
+  font-family: var(--font-display);
+  font-weight: 400;
+  color: var(--text-primary);
+  font-size: 24px;
+  line-height: 1.35;
+  letter-spacing: -0.3px;
+  margin: 0 0 18px;
+}
+
+/* ---- Tool stream ---- */
+.rfl-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+/* ---- Done meta strip ---- */
+.rfl-done-meta {
+  margin-top: 10px;
+  margin-bottom: 22px;
+  padding-bottom: 18px;
+  border-bottom: 0.5px solid var(--border-divider-light);
+}
+
+/* ---- Briefing prose ---- */
+.rfl-briefing {
+  font-size: 15px;
+  line-height: 1.75;
+  color: var(--text-body);
+  max-width: 720px;
+}
+
+.rfl-briefing p { margin: 0 0 16px; }
+.rfl-briefing p:last-child { margin-bottom: 0; }
+
+.rfl-briefing code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  background: var(--bg-tool-row);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.rfl-briefing strong { color: var(--text-primary); font-weight: 500; }
+.rfl-briefing em { font-style: italic; color: var(--text-subtle); }
+
+/* ---- Follow-up section ---- */
+.rfl-followup {
+  margin-top: 28px;
+  padding-top: 22px;
+  border-top: 0.5px solid var(--border-divider-light);
+}
+
+.rfl-followup-label {
+  font-size: var(--type-label);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-muted);
+  font-weight: 500;
+  margin-bottom: 8px;
+}

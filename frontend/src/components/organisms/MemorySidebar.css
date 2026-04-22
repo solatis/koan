@@ -1,0 +1,103 @@
+.ms {
+  position: sticky;
+  top: 26px;
+  background: var(--bg-card);
+  border: 0.5px solid var(--border-card);
+  border-radius: var(--radius-2xl);
+  padding: 18px 16px;
+  max-height: calc(100vh - 120px);
+  overflow: auto;
+}
+
+/* ---- Header ---- */
+.ms-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px 12px;
+}
+
+.ms-title {
+  font-size: var(--type-breadcrumb);
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.ms-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* ---- Search ---- */
+.ms-search {
+  margin-bottom: 10px;
+}
+
+/* ---- Filter chips ---- */
+.ms-filter {
+  padding: 0 4px 12px;
+}
+
+/* ---- Entry list ---- */
+.ms-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.ms-divider {
+  height: 0.5px;
+  background: var(--border-divider-light);
+  margin: 6px 4px;
+}
+
+/* ---- Entry wrapper + outline variants ---- */
+.ms-entry {}
+
+.ms-entry--cited,
+.ms-entry--outgoing,
+.ms-entry--incoming {
+  background: var(--bg-selected);
+  border-radius: var(--radius-md);
+}
+
+/* Solid orange outline on icon: cited + outgoing */
+.ms-entry--cited .atom-memory-type-icon,
+.ms-entry--outgoing .atom-memory-type-icon {
+  outline: 2px solid var(--color-orange);
+  outline-offset: 2px;
+}
+
+/* Dashed orange outline on icon: retrieving + incoming */
+.ms-entry--retrieving .atom-memory-type-icon,
+.ms-entry--incoming .atom-memory-type-icon {
+  outline: 2px dashed var(--color-orange);
+  outline-offset: 2px;
+}
+
+/* Pulse animation only for retrieving */
+@keyframes ms-retrieve-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.ms-entry--retrieving .atom-memory-type-icon {
+  animation: ms-retrieve-pulse 1.2s ease-in-out infinite;
+}
+
+/* ---- Empty state ---- */
+.ms-empty {
+  padding: 32px 8px;
+  text-align: center;
+}
+
+.ms-empty-text {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.ms-empty-hint {
+  font-size: 11px;
+  color: var(--text-hint);
+  margin-top: 10px;
+}

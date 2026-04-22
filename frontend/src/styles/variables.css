@@ -114,6 +114,7 @@
   --color-orange:              #d4775a;
   --color-orange-hover:        #c06a4f;
   --color-teal:                #5a9a8a;
+  --color-purple:              #8e7ca0;
 
 
   /* ===== Background Surfaces ===== */
@@ -127,6 +128,10 @@
   --bg-selected:               #fdf8f5;
   --bg-danger:                 #fce8e8;
   --bg-toggle-off:             #d3d1c7;
+  --bg-diff-before:            #fbf6f6;
+  --bg-diff-after:             #e6f2ec;
+  --diff-hl-add-bg:            #c6e6d5;
+  --diff-hl-del-bg:            #f2d0d0;
 
 
   /* ===== Text Colors (light backgrounds) ===== */

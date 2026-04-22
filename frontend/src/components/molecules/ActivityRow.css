@@ -1,0 +1,33 @@
+.ar {
+  display: grid;
+  grid-template-columns: 60px 1fr;
+  gap: 14px;
+  align-items: baseline;
+}
+
+.ar-time {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-hint);
+  white-space: nowrap;
+}
+
+.ar-body {
+  font-size: var(--type-breadcrumb);
+  line-height: 1.5;
+  color: var(--text-body);
+}
+
+.ar-body strong,
+.ar-body b {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.ar-body code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--bg-tool-row);
+  padding: 1px 5px;
+  border-radius: 3px;
+}

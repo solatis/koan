@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { devtools } from 'zustand/middleware'
 
 // -- Wire types — match backend KoanBaseModel.to_wire() output exactly --------
 
@@ -98,6 +99,70 @@ export interface Conversation {
   outputTokens: number
 }
 
+// -- Memory types -- mirrors backend KoanBaseModel.to_wire() camelCase output --
+
+export type MemoryType = 'decision' | 'lesson' | 'context' | 'procedure'
+
+export interface MemoryEntrySummary {
+  seq: string
+  type: MemoryType
+  title: string
+  createdMs: number
+  modifiedMs: number
+}
+
+export interface Proposal {
+  id: string
+  op: 'add' | 'update' | 'deprecate'
+  type: MemoryType
+  seq: string
+  title: string
+  meta: string
+  rationale: string
+  body?: string
+  before?: string
+  after?: string
+}
+
+export interface ActiveCurationBatch {
+  proposals: Proposal[]
+  batchId: string
+  contextNote: string
+}
+
+export interface MemoryState {
+  entries: Record<string, MemoryEntrySummary>
+  summary: string
+}
+
+export interface ReflectCitation {
+  id: number
+  title: string
+}
+
+export interface ReflectTrace {
+  iteration: number
+  tool: 'search' | 'done'
+  query: string
+  typeFilter: string
+  resultCount: number | null
+}
+
+export interface ReflectRun {
+  sessionId: string
+  question: string
+  status: 'in_progress' | 'done' | 'cancelled' | 'failed'
+  startedAtMs: number
+  completedAtMs: number | null
+  iteration: number
+  maxIterations: number
+  model: string
+  traces: ReflectTrace[]
+  answer: string
+  citations: ReflectCitation[]
+  error: string
+}
+
 // -- Agent --------------------------------------------------------------------
 
 export type AgentStatus = 'queued' | 'running' | 'done' | 'failed'
@@ -170,6 +235,10 @@ export interface ActiveYield {
   suggestions: Suggestion[]
 }
 
+export interface ActiveArtifactReview {
+  path: string
+}
+
 export interface PhaseInfo {
   id: string
   description: string
@@ -186,6 +255,8 @@ export interface Run {
   completion: CompletionInfo | null
   steering: SteeringMessage[]
   activeYield: ActiveYield | null  // non-null while orchestrator is blocked in koan_yield
+  activeArtifactReview: ActiveArtifactReview | null  // non-null while orchestrator is blocked in koan_artifact_propose
+  activeCurationBatch: ActiveCurationBatch | null  // non-null while orchestrator is blocked in koan_memory_propose
 }
 
 // -- Store --------------------------------------------------------------------
@@ -199,6 +270,10 @@ interface KoanState {
   settings: Settings
   run: Run | null
   notifications: Notification[]
+  // Project-scoped memory state (not run-scoped; survives workflow boundaries)
+  memory: MemoryState
+  // Project-scoped reflect state
+  reflect: ReflectRun | null
 
   // Local UI state (not from server)
   settingsOpen: boolean
@@ -209,6 +284,21 @@ interface KoanState {
   // Local UI state: currently open artifact review (path or null)
   reviewingArtifact: string | null
 
+  // Store-only curation draft (accept-loss: cleared on memory_curation_cleared).
+  // Keyed by proposal id; seeded by resetMemoryCurationDraft on batch mount.
+  memoryCurationDraft: Record<string, { decision?: 'approved' | 'rejected'; feedback: string }>
+  setMemoryCurationDecision: (id: string, decision: 'approved' | 'rejected' | undefined) => void
+  setMemoryCurationFeedback: (id: string, text: string) => void
+  resetMemoryCurationDraft: (batch: ActiveCurationBatch | null) => void
+
+  // Store-only memory sidebar state (shared across overview/detail/reflect pages)
+  memorySidebar: { search: string; filter: 'all' | MemoryType }
+  setMemorySidebarSearch: (v: string) => void
+  setMemorySidebarFilter: (v: 'all' | MemoryType) => void
+
+  // Merge memory entries from API fetches without replacing server-patched state
+  upsertMemoryEntries: (list: MemoryEntrySummary[]) => void
+
   // Actions
   setConnected: (v: boolean) => void
   setSettingsOpen: (v: boolean) => void
@@ -216,28 +306,94 @@ interface KoanState {
   setReviewingArtifact: (path: string | null) => void
 }
 
-export const useStore = create<KoanState>((set) => ({
-  connected: false,
-  lastVersion: 0,
+export const useStore = create<KoanState>()(
+  devtools(
+    (set) => ({
+      connected: false,
+      lastVersion: 0,
 
-  settings: {
-    installations: {},
-    profiles: {},
-    defaultProfile: 'balanced',
-    defaultScoutConcurrency: 8,
-  },
-  run: null,
-  notifications: [],
+      settings: {
+        installations: {},
+        profiles: {},
+        defaultProfile: 'balanced',
+        defaultScoutConcurrency: 8,
+      },
+      run: null,
+      notifications: [],
+      memory: { entries: {}, summary: '' },
+      reflect: null,
 
-  settingsOpen: false,
-  chatDraft: '',
-  reviewingArtifact: null,
+      settingsOpen: false,
+      chatDraft: '',
+      reviewingArtifact: null,
+      memoryCurationDraft: {},
+      memorySidebar: { search: '', filter: 'all' },
 
-  setConnected: (v) => set({ connected: v }),
-  setSettingsOpen: (v) => set({ settingsOpen: v }),
-  setChatDraft: (text) => set({ chatDraft: text }),
-  setReviewingArtifact: (path) => set({ reviewingArtifact: path }),
-}))
+      setMemoryCurationDecision: (id, decision) =>
+        set(s => ({
+          memoryCurationDraft: {
+            ...s.memoryCurationDraft,
+            [id]: { ...(s.memoryCurationDraft[id] ?? { feedback: '' }), decision },
+          },
+        }), false, 'setMemoryCurationDecision'),
+
+      setMemoryCurationFeedback: (id, text) =>
+        set(s => ({
+          memoryCurationDraft: {
+            ...s.memoryCurationDraft,
+            [id]: { ...(s.memoryCurationDraft[id] ?? {}), feedback: text },
+          },
+        }), false, 'setMemoryCurationFeedback'),
+
+      resetMemoryCurationDraft: (batch) => {
+        if (batch === null) {
+          set({ memoryCurationDraft: {} }, false, 'resetMemoryCurationDraft/clear')
+        } else {
+          const draft: KoanState['memoryCurationDraft'] = {}
+          for (const p of batch.proposals) {
+            draft[p.id] = { feedback: '' }
+          }
+          set({ memoryCurationDraft: draft }, false, 'resetMemoryCurationDraft/seed')
+        }
+      },
+
+      setMemorySidebarSearch: (v) =>
+        set(s => ({ memorySidebar: { ...s.memorySidebar, search: v } }), false, 'setMemorySidebarSearch'),
+
+      setMemorySidebarFilter: (v) =>
+        set(s => ({ memorySidebar: { ...s.memorySidebar, filter: v } }), false, 'setMemorySidebarFilter'),
+
+      upsertMemoryEntries: (list) =>
+        set(s => {
+          const merged = { ...s.memory.entries }
+          for (const e of list) {
+            merged[e.seq] = e
+          }
+          return { memory: { ...s.memory, entries: merged } }
+        }, false, 'upsertMemoryEntries'),
+
+      setConnected: (v) => set({ connected: v }, false, 'setConnected'),
+      setSettingsOpen: (v) => set({ settingsOpen: v }, false, 'setSettingsOpen'),
+      setChatDraft: (text) => set({ chatDraft: text }, false, 'setChatDraft'),
+      setReviewingArtifact: (path) => set({ reviewingArtifact: path }, false, 'setReviewingArtifact'),
+    }),
+    {
+      name: 'koan',
+      // Enabled in Vite dev server (DEV=true) OR when the backend injected
+      // <meta name="koan-debug" content="1"> into index.html (which the
+      // backend does when started with `uv run koan run --debug`). We read
+      // the meta tag inline here rather than via a window flag set from
+      // main.tsx, because ES import evaluation happens before main.tsx's
+      // body runs — by the time this store module evaluates, the DOM head
+      // is already parsed and the meta tag is queryable.
+      enabled:
+        import.meta.env.DEV ||
+        document
+          .querySelector('meta[name="koan-debug"]')
+          ?.getAttribute('content') === '1',
+    },
+  ),
+)
 
 export type KoanStore = typeof useStore
 

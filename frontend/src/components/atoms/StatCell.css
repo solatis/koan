@@ -1,0 +1,33 @@
+.atom-stat-cell {
+  display: flex;
+  align-items: baseline;
+}
+
+.atom-stat-cell--lg { gap: 8px; }
+.atom-stat-cell--sm { gap: 5px; }
+
+.atom-stat-cell--lg .atom-stat-cell__value {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 400;
+  letter-spacing: -0.3px;
+  color: var(--text-primary);
+}
+
+.atom-stat-cell--lg .atom-stat-cell__label {
+  font-size: var(--type-breadcrumb);
+  color: var(--text-muted);
+}
+
+.atom-stat-cell--sm .atom-stat-cell__value {
+  font-family: var(--font-mono);
+  font-size: var(--type-breadcrumb);
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.atom-stat-cell--sm .atom-stat-cell__label {
+  font-family: var(--font-body);
+  font-size: var(--type-breadcrumb);
+  color: var(--text-muted);
+}

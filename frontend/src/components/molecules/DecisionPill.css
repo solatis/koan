@@ -1,0 +1,24 @@
+.dpill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  font-size: var(--type-label);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  font-weight: 500;
+  border: 0.5px solid;
+}
+
+.dpill--approved {
+  background: var(--bg-completion);
+  color: var(--text-completion);
+  border-color: var(--border-teal);
+}
+
+.dpill--rejected {
+  background: var(--bg-danger);
+  color: var(--text-danger);
+  border-color: var(--border-danger);
+}

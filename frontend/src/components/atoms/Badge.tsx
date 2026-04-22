@@ -9,7 +9,10 @@
 import './Badge.css'
 import type { ReactNode } from 'react'
 
-type Variant = 'neutral' | 'success' | 'accent' | 'model' | 'default' | 'error'
+type Variant =
+  | 'neutral' | 'success' | 'accent' | 'model' | 'default' | 'error'
+  | 'decision' | 'lesson' | 'context' | 'procedure'
+  | 'add' | 'update' | 'deprecate'
 
 interface BadgeProps {
   variant: Variant

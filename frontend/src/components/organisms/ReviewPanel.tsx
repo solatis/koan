@@ -14,6 +14,7 @@ import { Button } from '../atoms/Button'
 import { ReviewBlock } from '../molecules/ReviewBlock'
 import { ReviewComment } from '../molecules/ReviewComment'
 import { ReviewCommentInput } from '../molecules/ReviewCommentInput'
+import { OverallFeedback } from '../molecules/OverallFeedback'
 
 import './ReviewPanel.css'
 
@@ -184,11 +185,9 @@ export function ReviewPanel({ path, content, isNew, onSubmit, onClose }: ReviewP
       </div>
 
       <div className="rp-footer">
-        <div className="rp-footer-label">Overall feedback (optional)</div>
-        <textarea
-          className="rp-footer-ta"
+        <OverallFeedback
           value={summary}
-          onChange={e => setSummary(e.target.value)}
+          onChange={setSummary}
           placeholder="Summarize your review -- e.g. 'Looks good, just clarify the channel types and add PagerDuty'"
         />
         <div className="rp-footer-actions">

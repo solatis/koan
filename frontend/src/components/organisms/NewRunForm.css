@@ -208,36 +208,6 @@
   color: var(--text-thinking); /* dark purple — ties to thinking/agent palette */
 }
 
-/* Scout concurrency */
-.nrf-concurrency-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.nrf-concurrency-input {
-  width: 60px;
-  padding: 10px 14px;
-  background: var(--bg-base);
-  border: 1.5px solid var(--border-input);
-  border-radius: var(--radius-lg);
-  font-family: var(--font-mono);
-  font-size: var(--type-body);
-  color: var(--text-primary);
-  text-align: center;
-  outline: none;
-  box-sizing: border-box;
-}
-
-.nrf-concurrency-input:focus {
-  border-color: var(--color-orange);
-}
-
-.nrf-concurrency-hint {
-  font-size: 13px;
-  color: var(--text-muted);
-}
-
 /* ---- Real select dropdown (replaces static display div) ---- */
 .nrf-real-select {
   display: block;

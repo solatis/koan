@@ -40,14 +40,10 @@ export interface StartRunResult {
 export async function startRun(
   task: string,
   profile: string,
-  scoutConcurrency?: number,
   installations?: Record<string, string>,
   workflow?: string,
 ): Promise<StartRunResult> {
   const body: Record<string, unknown> = { task, profile }
-  if (scoutConcurrency !== undefined) {
-    body['scout_concurrency'] = scoutConcurrency
-  }
   if (installations && Object.keys(installations).length > 0) {
     body['installations'] = installations
   }
@@ -67,6 +63,29 @@ export async function submitAnswer(answers: unknown[], token: string) {
 
 export async function sendChatMessage(message: string) {
   return post<{ ok: boolean; error?: string }>('/api/chat', { message })
+}
+
+// -- Artifact review ---------------------------------------------------------
+
+export interface ArtifactReviewComment {
+  blockIndex: number
+  text: string
+  blockPreview: string
+}
+
+export interface ArtifactReviewPayload {
+  summary: string
+  comments: ArtifactReviewComment[]
+}
+
+export async function submitArtifactReview(
+  path: string,
+  payload: ArtifactReviewPayload,
+) {
+  return post<{ ok: boolean; error?: string }>(
+    '/api/artifact-review',
+    { path, payload },
+  )
 }
 
 // -- Probe -------------------------------------------------------------------
@@ -174,4 +193,81 @@ export async function listSessions(): Promise<{ sessions: Session[] }> {
 
 export async function deleteSession(run_id: string): Promise<{ ok: boolean; error?: string; message?: string }> {
   return del(`/api/sessions/${encodeURIComponent(run_id)}`)
+}
+
+// -- Memory ------------------------------------------------------------------
+
+import type { MemoryType } from '../store/index'
+
+export interface MemoryEntryWire {
+  seq: string
+  type: MemoryType
+  title: string
+  createdMs: number
+  modifiedMs: number
+}
+
+export async function listMemoryEntries(
+  params?: { q?: string; type?: string },
+): Promise<{ entries: MemoryEntryWire[] }> {
+  // Build query string only when there are non-empty values to avoid
+  // sending spurious params that change backend behaviour.
+  const parts: string[] = []
+  if (params?.q) parts.push(`q=${encodeURIComponent(params.q)}`)
+  if (params?.type && params.type !== 'all') parts.push(`type=${encodeURIComponent(params.type)}`)
+  const qs = parts.length ? `?${parts.join('&')}` : ''
+  return get(`/api/memory/entries${qs}`)
+}
+
+export interface MemoryRelationWire {
+  seq: string
+  type: MemoryType
+  title: string
+  age: string
+}
+
+export interface MemoryEntryDetailWire {
+  entry: {
+    seq: string
+    type: MemoryType
+    title: string
+    body: string
+    createdMs: number
+    modifiedMs: number
+    filename: string
+    related: string[]
+  }
+  relations: { outgoing: MemoryRelationWire[]; incoming: MemoryRelationWire[] }
+}
+
+export async function getMemoryEntry(seq: string): Promise<MemoryEntryDetailWire> {
+  return get(`/api/memory/entries/${encodeURIComponent(seq)}`)
+}
+
+export async function getMemorySummary(): Promise<{ summary: string }> {
+  return get('/api/memory/summary')
+}
+
+export async function startReflect(question: string, context?: string) {
+  return post<{ ok: boolean; session_id: string; error?: string }>(
+    '/api/memory/reflect',
+    { question, context },
+  )
+}
+
+export async function cancelReflect() {
+  return del<{ ok: boolean; error?: string }>('/api/memory/reflect')
+}
+
+export interface CurationDecision {
+  proposal_id: string
+  decision: 'approved' | 'rejected'
+  feedback: string
+}
+
+export async function submitMemoryCuration(batch_id: string, decisions: CurationDecision[]) {
+  return post<{ ok: boolean; error?: string }>(
+    '/api/memory/curation',
+    { batch_id, decisions },
+  )
 }

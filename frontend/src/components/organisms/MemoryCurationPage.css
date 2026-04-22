@@ -1,0 +1,283 @@
+.mcp-page {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 22px 24px 22px;
+  display: grid;
+  grid-template-columns: 340px 1fr;
+  gap: 20px;
+  align-items: start;
+  height: calc(100vh - var(--header-height));
+  overflow: hidden;
+}
+
+/* ======== CurationQueue ======== */
+.cq {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  height: 100%;
+  min-height: 0;
+}
+
+/* ---- Queue card ---- */
+.cq-card {
+  background: var(--bg-card);
+  border: 0.5px solid var(--border-card);
+  border-top: 3px solid var(--color-orange);
+  border-radius: var(--radius-2xl);
+  overflow: hidden;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.cq-head {
+  padding: 18px 22px 14px;
+}
+
+.cq-eyebrow {
+  font-size: var(--type-label);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--color-orange);
+  font-weight: 500;
+  margin-bottom: 4px;
+}
+
+.cq-title {
+  font-size: var(--type-section-title);
+  font-weight: 500;
+  color: var(--text-primary);
+  letter-spacing: -0.2px;
+  margin: 0 0 4px;
+}
+
+.cq-subtitle {
+  font-size: var(--type-breadcrumb);
+  color: var(--text-muted);
+}
+
+/* ---- Tally row ---- */
+.cq-tally {
+  padding: 10px 22px;
+  background: var(--bg-card-warm);
+  border-top: 0.5px solid var(--border-card);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--type-tool-type);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.cq-tally-n { color: var(--text-primary); font-weight: 500; }
+.cq-tally-sep { color: var(--border-input); }
+
+/* ---- List ---- */
+.cq-list {
+  padding: 6px 0;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* ---- Submit card ---- */
+.cq-submit {
+  background: var(--bg-card);
+  border: 0.5px solid var(--border-card);
+  border-radius: var(--radius-2xl);
+  padding: 16px 22px;
+}
+
+.cq-submit-note {
+  font-size: var(--type-tool-type);
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+
+.cq-submit-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.cq-submit-actions .atom-btn--primary { flex: 1; }
+
+/* ======== QueueItem ======== */
+.qi {
+  display: grid;
+  grid-template-columns: 22px 1fr 18px;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 18px;
+  cursor: pointer;
+  border-left: 3px solid transparent;
+  transition: background var(--duration-fast);
+  background: transparent;
+  border-top: none;
+  border-right: none;
+  border-bottom: none;
+  text-align: left;
+  font: inherit;
+  width: 100%;
+}
+
+.qi:hover { background: var(--bg-selected); }
+
+.qi--active {
+  background: var(--bg-selected);
+  border-left-color: var(--color-orange);
+}
+
+.qi:focus-visible {
+  outline: 2px solid var(--color-orange);
+  outline-offset: 2px;
+}
+
+.qi-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.qi-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 3px;
+}
+
+/* Op mini-badge */
+.qi-op {
+  font-size: 9px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.qi-op--add       { background: var(--bg-completion); color: var(--text-completion); }
+.qi-op--update    { background: #fdf2ee; color: #c06030; }
+.qi-op--deprecate { background: var(--bg-danger); color: var(--text-danger); }
+
+.qi-seq {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-hint);
+}
+
+.qi-title {
+  font-size: var(--type-tool-type);
+  font-weight: 500;
+  color: var(--text-primary);
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.qi-arrow {
+  color: var(--text-hint);
+  font-size: 14px;
+  align-self: center;
+}
+
+.qi--active .qi-arrow { color: var(--color-orange); }
+
+/* ======== ProposalDetailPane ======== */
+.pdp {
+  background: var(--bg-card);
+  border: 0.5px solid var(--border-card);
+  border-radius: var(--radius-2xl);
+  padding: 28px 34px 26px;
+  overflow: auto;
+  max-height: 100%;
+  min-height: 0;
+}
+
+.pdp-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.pdp-position {
+  margin-left: auto;
+  font-size: var(--type-tool-type);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.pdp-head { margin-top: 8px; }
+
+.pdp-meta {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.pdp-rationale { margin-top: 22px; }
+.pdp-body { margin-top: 18px; }
+.pdp-feedback { margin-top: 20px; }
+
+.pdp-actions {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 0.5px solid var(--border-divider-light);
+  display: flex;
+  gap: 10px;
+}
+
+.pdp-spacer { flex: 1; }
+
+/* ---- Add prose ---- */
+.pdp-add-prose {
+  background: var(--bg-selected);
+  border: 0.5px solid var(--border-divider-light);
+  border-left: 3px solid var(--color-teal);
+  border-radius: var(--radius-lg);
+  padding: 16px 20px;
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--text-body);
+}
+
+.pdp-add-prose p { margin: 0 0 10px; }
+.pdp-add-prose p:last-child { margin-bottom: 0; }
+
+.pdp-add-prose code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--bg-tool-row);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+/* ---- Deprecate prose ---- */
+.pdp-deprecate-prose {
+  background: var(--bg-diff-before);
+  border: 0.5px solid var(--border-danger);
+  border-left: 3px solid var(--status-failed);
+  border-radius: var(--radius-lg);
+  padding: 16px 20px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-muted);
+  text-decoration: line-through;
+  text-decoration-color: rgba(196, 68, 68, 0.4);
+}
+
+.pdp-deprecate-prose p { margin: 0 0 10px; }
+.pdp-deprecate-prose p:last-child { margin-bottom: 0; }
+
+.pdp-deprecate-prose code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-decoration: none;
+}

@@ -17,7 +17,6 @@ import './NewRunForm.css'
 export function NewRunForm() {
   const [task, setTask] = useState('')
   const [profile, setProfile] = useState('')
-  const [scoutConcurrency, setScoutConcurrency] = useState(8)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selectedInstallations, setSelectedInstallations] = useState<Record<string, string>>({})
@@ -27,7 +26,6 @@ export function NewRunForm() {
   const profilesDict = useStore(s => s.settings.profiles)
   const installationsDict = useStore(s => s.settings.installations)
   const defaultProfile = useStore(s => s.settings.defaultProfile)
-  const defaultScoutConcurrency = useStore(s => s.settings.defaultScoutConcurrency)
 
   const profiles = useMemo(() => Object.values(profilesDict), [profilesDict])
   const installations = useMemo(() => Object.values(installationsDict), [installationsDict])
@@ -46,8 +44,6 @@ export function NewRunForm() {
       setProfile(def.name)
     }
   }, [profiles, profile, defaultProfile])
-
-  useEffect(() => { setScoutConcurrency(defaultScoutConcurrency) }, [defaultScoutConcurrency])
 
   const preflight = useMemo(() => {
     const sel = profiles.find(p => p.name === profile)
@@ -87,7 +83,7 @@ export function NewRunForm() {
     if (!installationsReady) { setError('Please select an installation for each required runner type'); return }
     setError(null); setLoading(true)
     try {
-      const result = await api.startRun(trimmed, profile, scoutConcurrency, selectedInstallations, workflow)
+      const result = await api.startRun(trimmed, profile, selectedInstallations, workflow)
       if (!result.ok) setError(result.message ?? 'Failed to start run')
     } catch { setError('Network error') }
     finally { setLoading(false) }
@@ -183,14 +179,6 @@ export function NewRunForm() {
             </div>
           )}
 
-          <div className="nrf-field">
-            <div className="nrf-field-label">Scout Concurrency</div>
-            <div className="nrf-concurrency-row">
-              <input className="nrf-concurrency-input" type="number" min={1} max={32}
-                value={scoutConcurrency} onChange={e => setScoutConcurrency(parseInt(e.target.value, 10) || 8)} />
-              <span className="nrf-concurrency-hint">max parallel scout agents</span>
-            </div>
-          </div>
         </div>
       </div>
 
