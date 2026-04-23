@@ -668,15 +668,19 @@ async def _run_reflect_background(
     )
 
     def on_trace(ev) -> None:
+        # Dispatch every kind (search, done, thinking, text) so the frontend
+        # receives a unified arrival-ordered trace without separate event types.
+        trace = {
+            "iteration": ev.iteration,
+            "kind": ev.kind,
+            "query": ev.query,
+            "type_filter": ev.type_filter,
+            "result_count": ev.result_count,
+            "delta": ev.delta,
+        }
         st.projection_store.push_event(
             "reflect_trace",
-            build_reflect_trace(session_id, {
-                "iteration": ev.iteration,
-                "tool": ev.tool,
-                "query": ev.args.get("query", ""),
-                "type_filter": ev.args.get("type", ""),
-                "result_count": ev.result_count,
-            }),
+            build_reflect_trace(session_id, trace),
         )
 
     try:
@@ -692,7 +696,11 @@ async def _run_reflect_background(
             build_reflect_done(
                 session_id,
                 result.answer,
-                [{"id": c.id, "title": c.title} for c in result.citations],
+                [
+                    {"id": c.id, "title": c.title, "type": c.type,
+                     "modifiedMs": c.modified_ms}
+                    for c in result.citations
+                ],
                 completed_ms,
                 result.iterations,
             ),

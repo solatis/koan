@@ -1,23 +1,30 @@
 # LLM-driven reflection loop over project memory.
 #
-# run_reflect_agent runs a single-conversation Gemini tool-calling loop that
-# searches memory as many times as needed, then returns a cited briefing.
-# Intended for broad synthesis questions that cannot be answered by a single
-# koan_search call.
-#
-# The Gemini client is constructed directly inside run_reflect_agent (no
-# injectable parameter). Evaluation is handled through evals/, not unit mocks.
+# run_reflect_agent runs a single-conversation tool-calling loop that searches
+# memory as many times as needed, then returns a cited briefing. Uses
+# pydantic-ai with Gemini as the default provider (configurable via
+# KOAN_REFLECT_MODEL). Evaluation is handled through evals/, not unit mocks.
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Literal
 
-from google import genai
-from google.genai import types
+from pydantic_ai import Agent, RunContext
+from pydantic_ai.exceptions import ModelRetry
+from pydantic_ai.messages import (
+    PartStartEvent,
+    PartDeltaEvent,
+    TextPart,
+    ThinkingPart,
+    TextPartDelta,
+    ThinkingPartDelta,
+)
+from pydantic_ai.output import TextOutput
 
 from ..types import MemoryEntry
+from ..timestamps import iso_to_ms
 from ...logger import get_logger
 from .backend import search as retrieval_search
 from .index import RetrievalIndex
@@ -130,109 +137,6 @@ all, so spend calls on evidence, not deliberation.
 """
 
 # ---------------------------------------------------------------------------
-# Tool declarations
-# ---------------------------------------------------------------------------
-
-_SEARCH_DECL = types.FunctionDeclaration(
-    name="search",
-    description=(
-        "Hybrid semantic + BM25 search over the project memory store. "
-        "Returns an array of entries; each entry has fields: entry_id "
-        "(int, use this in memory_ids), title, type, score, body (full "
-        "markdown content), created, modified. Rank is by score. Call "
-        "this multiple times with decomposed queries to cover different "
-        "facets of the question."
-    ),
-    parameters=types.Schema(
-        type=types.Type.OBJECT,
-        properties={
-            "query": types.Schema(
-                type=types.Type.STRING,
-                description=(
-                    "A single entity or concept -- NOT the user's full "
-                    "question. Good: 'session token storage', 'Auth0 "
-                    "integration', 'PostgreSQL migration'. Bad: 'how "
-                    "does auth work', 'tell me about the database'. "
-                    "Prefer concrete named things ('PostgreSQL 16.2') "
-                    "over abstractions ('the database'). Run 3-5 such "
-                    "queries per question to cover its entities and "
-                    "concepts."
-                ),
-            ),
-            "type": types.Schema(
-                type=types.Type.STRING,
-                description=(
-                    "Optional filter. decision = choices made and "
-                    "alternatives rejected; context = stable project/"
-                    "team/infra facts; lesson = past mistakes and "
-                    "their corrections; procedure = actionable rules "
-                    "or conventions. Set it when the question is "
-                    "clearly scoped to one type; leave unset to scan "
-                    "all types."
-                ),
-                enum=["decision", "context", "lesson", "procedure"],
-            ),
-            "k": types.Schema(
-                type=types.Type.INTEGER,
-                description=(
-                    "Number of entries to return. Default 5 is almost "
-                    "always right. Raise to 10-20 only when you "
-                    "suspect a topic is well covered and you want "
-                    "recall over precision. Hard cap: 20."
-                ),
-            ),
-        },
-        required=["query"],
-    ),
-)
-
-_DONE_DECL = types.FunctionDeclaration(
-    name="done",
-    description=(
-        "Emit the final cited briefing and terminate the loop. Call "
-        "this only when every claim in your drafted answer is backed "
-        "by a specific entry returned by a prior `search` call in "
-        "this conversation."
-    ),
-    parameters=types.Schema(
-        type=types.Type.OBJECT,
-        properties={
-            "answer": types.Schema(
-                type=types.Type.STRING,
-                description=(
-                    "Markdown briefing, 300-500 tokens. Open with the "
-                    "most load-bearing finding. Use concrete entity "
-                    "names and dates from the entries, not vague "
-                    "paraphrases. Close by naming what the memory "
-                    "does NOT cover about the question. Do NOT "
-                    "include entry IDs, filenames, or UUIDs in this "
-                    "text -- citations go in memory_ids, not in the "
-                    "prose."
-                ),
-            ),
-            "memory_ids": types.Schema(
-                type=types.Type.ARRAY,
-                items=types.Schema(type=types.Type.INTEGER),
-                description=(
-                    "Entry IDs that back specific claims in `answer`. "
-                    "Include an id iff removing that entry from your "
-                    "evidence would force you to drop some claim in "
-                    "the answer. Do NOT include entries that appeared "
-                    "in search results but were not relied on -- that "
-                    "mistake (citing seen entries rather than used "
-                    "entries) is the primary failure mode of this "
-                    "tool. Dedupe; order does not matter."
-                ),
-            ),
-        },
-        required=["answer", "memory_ids"],
-    ),
-)
-
-# Single Tool object wrapping both declarations so they appear in one tool_use block.
-_TOOLS = [types.Tool(function_declarations=[_SEARCH_DECL, _DONE_DECL])]
-
-# ---------------------------------------------------------------------------
 # Types
 # ---------------------------------------------------------------------------
 
@@ -240,15 +144,19 @@ _TOOLS = [types.Tool(function_declarations=[_SEARCH_DECL, _DONE_DECL])]
 @dataclass
 class ReflectTraceEvent:
     iteration: int
-    tool: str           # "search" or "done"
-    args: dict          # tool args as emitted by the LLM
-    result_count: int | None = None   # populated for search only, after dispatch
+    kind: Literal["search", "done", "thinking", "text"]
+    query: str = ""
+    type_filter: str = ""
+    result_count: int | None = None   # populated for search after dispatch
+    delta: str = ""                   # populated for thinking/text
 
 
 @dataclass
 class Citation:
     id: int
     title: str
+    type: str
+    modified_ms: int
 
 
 @dataclass
@@ -264,6 +172,12 @@ class IterationCapExceeded(Exception):
             f"reflect loop exceeded {iterations} iterations without calling done"
         )
         self.iterations = iterations
+
+
+@dataclass
+class _DoneResult:
+    answer: str
+    memory_ids: list[int]
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +200,113 @@ def _model() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Dependencies injected into the agent
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _Deps:
+    index: RetrievalIndex
+    retrieved: dict[int, MemoryEntry] = field(default_factory=dict)
+    on_trace: Callable[[ReflectTraceEvent], None] | None = None
+    iteration: int = 0
+    done_result: _DoneResult | None = None
+
+
+# ---------------------------------------------------------------------------
+# Agent construction
+# ---------------------------------------------------------------------------
+
+# Agent is constructed lazily inside run_reflect_agent so model/key
+# env vars are resolved at call time, not at import time.
+
+def _build_agent() -> Agent[_Deps, None]:
+    """Build the reflect agent. Called once per run_reflect_agent invocation."""
+    def _reject_text(text: str) -> str:
+        raise ModelRetry("Do not produce text output. Call the `done` tool instead.")
+
+    agent: Agent[_Deps, str] = Agent(
+        model=f"google-gla:{_model()}",
+        system_prompt=SYSTEM_PROMPT,
+        model_settings={
+            "temperature": 0.0,
+            # Use minimal thinking: enough to plan searches without blowing the
+            # token budget; the 10-call cap is the primary guard.
+            "thinking": "minimal",
+        },
+        output_type=TextOutput(_reject_text),
+    )
+
+    @agent.tool(name="search")
+    async def search_tool(
+        ctx: RunContext[_Deps],
+        query: str,
+        type: str | None = None,
+        k: int = 5,
+    ) -> dict:
+        """Hybrid semantic + BM25 search over the project memory store.
+
+        Returns an array of entries; each entry has fields: entry_id (int,
+        use this in memory_ids), title, type, score, body (full markdown
+        content), created, modified. Rank is by score. Call this multiple
+        times with decomposed queries to cover different facets.
+
+        Args:
+            query: A single entity or concept -- NOT the user's full question.
+                Good: 'session token storage', 'Auth0 integration', 'PostgreSQL
+                migration'. Bad: 'how does auth work', 'tell me about the
+                database'. Run 3-5 such queries per question.
+            type: Optional filter. decision = choices made; context = stable
+                project/team/infra facts; lesson = past mistakes; procedure =
+                actionable rules. Set it when scoped to one type; omit to scan
+                all types.
+            k: Number of entries to return. Default 5 is almost always right.
+                Raise to 10-20 only for broad recall. Hard cap: 20.
+        """
+        args = {"query": query, "type": type, "k": k}
+        payload = await _dispatch_search(ctx.deps.index, args, ctx.deps.retrieved)
+        result_count = len(payload.get("results", []))
+        if ctx.deps.on_trace is not None:
+            ctx.deps.on_trace(ReflectTraceEvent(
+                iteration=ctx.deps.iteration,
+                kind="search",
+                query=query,
+                type_filter=type or "",
+                result_count=result_count,
+            ))
+        return payload
+
+    @agent.tool(name="done")
+    async def done_tool(
+        ctx: RunContext[_Deps],
+        answer: str,
+        memory_ids: list[int],
+    ) -> str:
+        """Emit the final cited briefing and terminate the loop.
+
+        Call this only when every claim in your drafted answer is backed by a
+        specific entry returned by a prior search call in this conversation.
+
+        Args:
+            answer: Markdown briefing, 300-500 tokens. Open with the most
+                load-bearing finding. Use concrete entity names and dates from
+                the entries, not vague paraphrases. Close by naming what the
+                memory does NOT cover about the question. Do NOT include entry
+                IDs, filenames, or UUIDs in this text -- citations go in
+                memory_ids, not in the prose.
+            memory_ids: Entry IDs that back specific claims in answer. Include
+                an id iff removing that entry from your evidence would force you
+                to drop some claim. Do NOT include entries that appeared in
+                search results but were not relied on -- that mistake (citing
+                seen entries rather than used entries) is the primary failure
+                mode. Dedupe; order does not matter.
+        """
+        ctx.deps.done_result = _DoneResult(answer=answer, memory_ids=memory_ids)
+        return "done"
+
+    return agent
+
+
+# ---------------------------------------------------------------------------
 # Pure helpers (unit-testable: take plain data, no LLM involvement)
 # ---------------------------------------------------------------------------
 
@@ -296,7 +317,8 @@ def _resolve_citations(
     """Filter memory_ids by membership in retrieved set, preserve order, dedupe.
 
     Drops any id not present in the retrieved set (hallucination guard) and
-    logs each dropped id at INFO level. Returns Citation(id, title) pairs.
+    logs each dropped id at INFO level. Returns Citation objects with type and
+    modified_ms populated from the retrieved entry.
     """
     seen: set[int] = set()
     out: list[Citation] = []
@@ -308,8 +330,12 @@ def _resolve_citations(
         if entry is None:
             log.info("reflect citation dropped: memory_id %d not in retrieved set", eid)
             continue
-        out.append(Citation(id=eid, title=entry.title))
-
+        out.append(Citation(
+            id=eid,
+            title=entry.title,
+            type=entry.type,
+            modified_ms=iso_to_ms(entry.modified),
+        ))
 
     return out
 
@@ -375,15 +401,19 @@ async def run_reflect_agent(
     on_trace: Callable[[ReflectTraceEvent], None] | None = None,
     max_iterations: int = MAX_ITERATIONS,
 ) -> ReflectResult:
-    """Run the Gemini tool-calling reflection loop and return a cited briefing.
+    """Run the pydantic-ai tool-calling reflection loop and return a cited briefing.
 
     Raises IterationCapExceeded if the model does not call "done" within
-    max_iterations turns. Raises RuntimeError for API-key or client errors.
-    No partial/best-effort answer is synthesized on overflow (fail-fast).
+    max_iterations model-request turns. Raises RuntimeError for API-key or
+    client errors. No partial/best-effort answer is synthesized on overflow.
     """
-    retrieved: dict[int, MemoryEntry] = {}
+    _api_key()  # raise early if key is missing, before touching the network
 
-    # Build initial user message.
+    # Sync the index once before the loop; each retrieval_search call also
+    # calls ensure_synced internally, but front-loading it avoids paying the
+    # sync cost inside the first iteration's latency.
+    await index.ensure_synced()
+
     user_text = f"# Question\n{question}"
     if context:
         user_text += (
@@ -391,114 +421,58 @@ async def run_reflect_agent(
             f"{context}"
         )
 
-    contents: list[types.Content] = [
-        types.Content(role="user", parts=[types.Part(text=user_text)])
-    ]
+    deps = _Deps(index=index, on_trace=on_trace)
+    agent = _build_agent()
+    model_request_count = 0
 
-    client = genai.Client(api_key=_api_key())
-    config = types.GenerateContentConfig(
-        system_instruction=SYSTEM_PROMPT,
-        tools=_TOOLS,
-        temperature=0.0,
-
-        # This is not rocket science, we can use lower thinking
-        thinking_config=types.ThinkingConfig(thinking_level="minimal")
-    )
-
-    # Sync the index once before the loop; each retrieval_search call also
-    # calls ensure_synced internally, but front-loading it avoids paying the
-    # sync cost inside the first iteration's latency.
-    await index.ensure_synced()
-
-    for i in range(max_iterations):
-        response = await client.aio.models.generate_content(
-            model=_model(),
-            contents=contents,
-            config=config,
-        )
-
-        # Append the model turn so the conversation is coherent next iteration.
-        assistant_content = response.candidates[0].content
-        contents.append(assistant_content)
-
-        parts = assistant_content.parts or []
-        function_calls = [p for p in parts if p.function_call is not None]
-
-        if not function_calls:
-            # Model emitted text only -- nudge it back to tool use.
-            log.info("reflect iter %d: no function call emitted, nudging", i + 1)
-            contents.append(types.Content(
-                role="user",
-                parts=[types.Part(text=(
-                    "Your last turn emitted prose but no tool call. This "
-                    "loop only progresses through tool calls -- free "
-                    "text is not shown to the caller and is not stored. "
-                    "If you need more evidence, call `search`. If your "
-                    "draft is complete and every claim is backed by a "
-                    "retrieved entry, call `done`. Do not ask "
-                    "clarifying questions; no one will answer."
-                ))],
-            ))
-            continue
-
-        # Process each function call in this turn. "done" terminates immediately.
-        function_responses: list[types.Part] = []
-        done_args: dict | None = None
-
-        for part in function_calls:
-            fc = part.function_call
-            name = fc.name
-            args = dict(fc.args) if fc.args else {}
-
-            if name == "done":
-                done_args = args
+    async with agent.iter(user_text, deps=deps) as run:
+        async for node in run:
+            if Agent.is_model_request_node(node):
+                model_request_count += 1
+                deps.iteration = model_request_count
+                async with node.stream(run.ctx) as stream:
+                    async for ev in stream:
+                        if on_trace is None:
+                            continue
+                        if isinstance(ev, PartStartEvent):
+                            if isinstance(ev.part, ThinkingPart) and ev.part.content:
+                                on_trace(ReflectTraceEvent(
+                                    iteration=model_request_count,
+                                    kind="thinking",
+                                    delta=ev.part.content,
+                                ))
+                            elif isinstance(ev.part, TextPart) and ev.part.content:
+                                on_trace(ReflectTraceEvent(
+                                    iteration=model_request_count,
+                                    kind="text",
+                                    delta=ev.part.content,
+                                ))
+                        elif isinstance(ev, PartDeltaEvent):
+                            if isinstance(ev.delta, ThinkingPartDelta) and ev.delta.content_delta:
+                                on_trace(ReflectTraceEvent(
+                                    iteration=model_request_count,
+                                    kind="thinking",
+                                    delta=ev.delta.content_delta,
+                                ))
+                            elif isinstance(ev.delta, TextPartDelta) and ev.delta.content_delta:
+                                on_trace(ReflectTraceEvent(
+                                    iteration=model_request_count,
+                                    kind="text",
+                                    delta=ev.delta.content_delta,
+                                ))
+                if model_request_count >= max_iterations:
+                    raise IterationCapExceeded(iterations=max_iterations)
+            if deps.done_result is not None:
                 break
 
-            if name == "search":
-                payload = await _dispatch_search(index, args, retrieved)
-                result_count = len(payload.get("results", []))
-                if on_trace is not None:
-                    on_trace(ReflectTraceEvent(
-                        iteration=i + 1,
-                        tool="search",
-                        args=args,
-                        result_count=result_count,
-                    ))
-                function_responses.append(types.Part(
-                    function_response=types.FunctionResponse(
-                        name="search",
-                        response=payload,
-                    )
-                ))
-            else:
-                log.warning("reflect iter %d: unknown tool %r", i + 1, name)
-                function_responses.append(types.Part(
-                    function_response=types.FunctionResponse(
-                        name=name,
-                        response={"error": f"unknown tool: {name}"},
-                    )
-                ))
+    if deps.done_result is not None:
+        r = deps.done_result
+        memory_ids = [int(x) for x in r.memory_ids]
+        citations = _resolve_citations(memory_ids, deps.retrieved)
+        return ReflectResult(
+            answer=r.answer,
+            citations=citations,
+            iterations=model_request_count,
+        )
 
-        if done_args is not None:
-            if on_trace is not None:
-                on_trace(ReflectTraceEvent(
-                    iteration=i + 1,
-                    tool="done",
-                    args=done_args,
-                ))
-            answer = done_args.get("answer") or ""
-            raw_ids = done_args.get("memory_ids") or []
-            # Coerce to int defensively in case the model emits floats.
-            memory_ids = [int(x) for x in raw_ids]
-            citations = _resolve_citations(memory_ids, retrieved)
-            return ReflectResult(
-                answer=answer,
-                citations=citations,
-                iterations=i + 1,
-            )
-
-        # Append search responses as a single user turn.
-        if function_responses:
-            contents.append(types.Content(role="user", parts=function_responses))
-
-    raise IterationCapExceeded(iterations=max_iterations)
+    raise IterationCapExceeded(iterations=model_request_count)

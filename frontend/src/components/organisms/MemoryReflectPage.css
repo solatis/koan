@@ -75,18 +75,23 @@
 .rfl-briefing strong { color: var(--text-primary); font-weight: 500; }
 .rfl-briefing em { font-style: italic; color: var(--text-subtle); }
 
-/* ---- Follow-up section ---- */
-.rfl-followup {
-  margin-top: 28px;
-  padding-top: 22px;
-  border-top: 0.5px solid var(--border-divider-light);
+/* ---- Trace stream (thinking blocks + text deltas + search rows) ---- */
+.rfl-trace-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 14px;
 }
 
-.rfl-followup-label {
-  font-size: var(--type-label);
-  text-transform: uppercase;
-  letter-spacing: 0.8px;
-  color: var(--text-muted);
-  font-weight: 500;
-  margin-bottom: 8px;
+/* Inline text delta from the model -- plain prose, not a card. */
+.rfl-text-delta {
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--text-body);
+}
+
+/* ---- Citations card ---- */
+.rfl-citations {
+  /* Single-use margin; not a token candidate -- only one element uses it. */
+  margin-top: 28px;
 }

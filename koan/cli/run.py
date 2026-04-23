@@ -19,7 +19,7 @@ import uvicorn
 
 from ..config import load_koan_config
 from ..logger import get_logger
-from ..state import AppState
+from ..state import AppState, hydrate_memory_projection
 from ..web.app import FRONTEND_DIST, create_app
 
 log = get_logger("cli.run")
@@ -99,6 +99,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         app_state.server.directed_phases = args.directed_phases
     app_state.run.project_dir = str(project_dir)
     app_state.init_memory_services()
+    hydrate_memory_projection(app_state)
     app = create_app(app_state)
 
     host = "127.0.0.1"

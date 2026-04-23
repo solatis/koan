@@ -1,12 +1,12 @@
 # Lightweight async LLM client for mechanical text generation.
 # Used for summaries, query decomposition, synthesis -- not coding agents.
+# Uses pydantic-ai with Gemini as the default provider.
 
 from __future__ import annotations
 
 import os
 
-from google import genai
-from google.genai import types
+from pydantic_ai import Agent
 
 from ..logger import get_logger
 
@@ -29,7 +29,7 @@ def _model() -> str:
 
 
 async def generate(prompt: str, system: str = "", max_tokens: int = 1024) -> str:
-    """Call Gemini and return the text response.
+    """Call the LLM and return the text response.
 
     Configuration:
       - Model: via env var KOAN_LLM_MODEL (default "gemini-flash-lite-latest")
@@ -39,18 +39,18 @@ async def generate(prompt: str, system: str = "", max_tokens: int = 1024) -> str
     Raises RuntimeError if the API key is not set or the call fails.
     """
     model = _model()
-    log.info("generate model=%s prompt_len=%d system_len=%d max_tokens=%d", model, len(prompt), len(system), max_tokens)
-    client = genai.Client(api_key=_api_key())
-    config = types.GenerateContentConfig(
-        system_instruction=system or None,
-        temperature=0.0,
-        max_output_tokens=max_tokens,
+    log.info(
+        "generate model=%s prompt_len=%d system_len=%d max_tokens=%d",
+        model, len(prompt), len(system), max_tokens,
     )
-    response = await client.aio.models.generate_content(
-        model=model,
-        contents=prompt,
-        config=config,
+    _api_key()  # raise early with a clear message if key is missing
+    agent: Agent[None, str] = Agent(
+        model=f"google-gla:{model}",
+        system_prompt=system or None,
+        model_settings={"temperature": 0.0, "max_tokens": max_tokens},
+        output_type=str,
     )
-    text = response.text or ""
+    result = await agent.run(prompt)
+    text = result.output or ""
     log.info("generate complete response_len=%d", len(text))
     return text

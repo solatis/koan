@@ -42,6 +42,7 @@ export interface ToolWriteEntry   extends BaseToolEntry { type: 'tool_write';   
 export interface ToolEditEntry    extends BaseToolEntry { type: 'tool_edit';    file: string }
 export interface ToolBashEntry    extends BaseToolEntry { type: 'tool_bash';    command: string }
 export interface ToolGenericEntry extends BaseToolEntry { type: 'tool_generic'; toolName: string; summary: string }
+export interface ToolKoanEntry   extends BaseToolEntry { type: 'tool_koan';    toolName: string; args: Record<string, unknown>; result: Record<string, unknown> | null }
 
 // Aggregate children — exploration tools (read/grep/ls) never appear as
 // top-level ConversationEntry values. They live only inside ToolAggregateEntry.
@@ -87,7 +88,7 @@ export interface YieldEntry { type: 'yield'; prompt: string; suggestions: Sugges
 export type ConversationEntry =
   | ThinkingEntry | TextEntry | StepEntry | UserMessageEntry
   | ToolWriteEntry | ToolEditEntry | ToolBashEntry | ToolGenericEntry
-  | ToolAggregateEntry
+  | ToolKoanEntry | ToolAggregateEntry
   | DebugStepGuidanceEntry | PhaseBoundaryEntry | YieldEntry
 
 export interface Conversation {
@@ -138,14 +139,17 @@ export interface MemoryState {
 export interface ReflectCitation {
   id: number
   title: string
+  type: MemoryType
+  modifiedMs: number
 }
 
 export interface ReflectTrace {
   iteration: number
-  tool: 'search' | 'done'
+  kind: 'search' | 'done' | 'thinking' | 'text'
   query: string
   typeFilter: string
   resultCount: number | null
+  delta: string
 }
 
 export interface ReflectRun {

@@ -39,6 +39,10 @@ def build_agent_spawned(agent: AgentState) -> dict:
     }
 
 
+def build_agents_cleared() -> dict:
+    return {}
+
+
 def build_scout_queued(scout_id: str, label: str, model: str | None = None) -> dict:
     return {
         "scout_id": scout_id,
@@ -377,6 +381,10 @@ def build_reflect_done(
     completed_at_ms: int,
     iterations: int,
 ) -> dict:
+    """Build reflect_done event payload.
+
+    Each citation dict carries id, title, type, and modifiedMs (camelCase on wire).
+    """
     return {
         "session_id": session_id,
         "answer": answer,

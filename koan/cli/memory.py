@@ -198,18 +198,17 @@ def cmd_reflect(args: argparse.Namespace) -> None:
     show_trace = getattr(args, "show_trace", False)
 
     def on_trace(event: ReflectTraceEvent) -> None:
-        if event.tool == "search":
-            q = event.args.get("query", "")
-            tf = event.args.get("type")
+        if event.kind == "search":
+            q = event.query
+            tf = event.type_filter or None
             rc = event.result_count if event.result_count is not None else "?"
             tag = f" type={tf}" if tf else ""
             print(
                 f"[iter {event.iteration}] search({q!r}{tag}) -> {rc} results",
                 file=sys.stderr,
             )
-        elif event.tool == "done":
-            ids = event.args.get("memory_ids") or []
-            print(f"[iter {event.iteration}] done(memory_ids={ids})", file=sys.stderr)
+        elif event.kind == "done":
+            print(f"[iter {event.iteration}] done", file=sys.stderr)
 
     try:
         result = asyncio.run(run_reflect_agent(

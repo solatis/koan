@@ -71,7 +71,8 @@ class TestKoanReflect:
 
         fake_result = ReflectResult(
             answer="The memory system uses VoyageAI embeddings.",
-            citations=[Citation(id=1, title="Memory architecture")],
+            citations=[Citation(id=1, title="Memory architecture",
+                               type="decision", modified_ms=1704067200000)],
             iterations=2,
         )
         monkeypatch.setattr(
@@ -84,7 +85,12 @@ class TestKoanReflect:
         )
         body = json.loads(raw)
         assert body["answer"] == "The memory system uses VoyageAI embeddings."
-        assert body["citations"] == [{"id": 1, "title": "Memory architecture"}]
+        assert body["citations"] == [{
+            "id": 1,
+            "title": "Memory architecture",
+            "type": "decision",
+            "modifiedMs": 1704067200000,
+        }]
         assert body["iterations"] == 2
 
     @pytest.mark.anyio

@@ -91,6 +91,7 @@ class renderings for event types.
 | `text` | ProseCard + Md |
 | `tool_read/write/edit/bash/grep/ls` | ToolCallRow |
 | `tool_generic` | ToolCallRow |
+| `tool_koan` | KoanToolCard |
 | `step` | StepHeader |
 | `debug_step_guidance` | StepGuidancePill + Md |
 | `user_message` | UserBubble + Md |

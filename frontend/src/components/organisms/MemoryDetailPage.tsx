@@ -1,8 +1,9 @@
 import './MemoryDetailPage.css'
 import type { ReactNode } from 'react'
 import MemoryTypeBadge from '../atoms/MemoryTypeBadge'
-import MemoryTypeIcon from '../atoms/MemoryTypeIcon'
 import Button from '../atoms/Button'
+import RelationsCard from '../molecules/RelationsCard'
+import type { RelationEntry } from '../molecules/RelationsCard'
 import MemorySidebar from './MemorySidebar'
 
 type MemoryType = 'decision' | 'lesson' | 'context' | 'procedure'
@@ -36,19 +37,6 @@ interface EntryDetailCardProps {
   onViewRaw?: () => void
 }
 
-interface RelationEntry {
-  seq: string
-  type: MemoryType
-  title: string
-  age: string
-  onClick?: () => void
-}
-
-interface EntryRelationsCardProps {
-  outgoing: RelationEntry[]
-  incoming: RelationEntry[]
-}
-
 interface MemoryDetailPageProps {
   entry: {
     type: MemoryType
@@ -59,7 +47,7 @@ interface MemoryDetailPageProps {
     onCopyLink?: () => void
     onViewRaw?: () => void
   }
-  relations: EntryRelationsCardProps
+  relations: { outgoing: RelationEntry[]; incoming: RelationEntry[] }
   sidebar: {
     count: number
     search: string
@@ -106,65 +94,6 @@ function EntryDetailCard({ type, seq, title, meta, children, onCopyLink, onViewR
   )
 }
 
-function RelationRow({ entry }: { entry: RelationEntry }) {
-  const Tag = entry.onClick ? 'button' : 'div'
-  return (
-    <Tag className="rc-row" type={entry.onClick ? 'button' : undefined} onClick={entry.onClick}>
-      <MemoryTypeIcon type={entry.type} />
-      <div className="rc-row-body">
-        <div className="rc-row-head">
-          <span className="rc-row-seq">{entry.seq}</span>
-          <span className="rc-row-type">{entry.type}</span>
-        </div>
-        <span className="rc-row-title">{entry.title}</span>
-      </div>
-      <span className="rc-row-age">{entry.age}</span>
-    </Tag>
-  )
-}
-
-function RelationGroup({ arrow, label, annotation, entries, emptyText }: {
-  arrow: string
-  label: string
-  annotation: string
-  entries: RelationEntry[]
-  emptyText: string
-}) {
-  return (
-    <div>
-      <div className="rc-group-title">
-        <span className="rc-arrow">{arrow}</span>
-        <span>{label}</span>
-        <span className="rc-annot">{annotation}</span>
-      </div>
-      {entries.length === 0 ? (
-        <div className="rc-empty">{emptyText}</div>
-      ) : (
-        <div className="rc-list">
-          {entries.map(e => <RelationRow key={e.seq} entry={e} />)}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function EntryRelationsCard({ outgoing, incoming }: EntryRelationsCardProps) {
-  return (
-    <div className="rc">
-      <div className="rc-head">
-        <span className="rc-eyebrow">Relations</span>
-        <span className="rc-counts">
-          <span><span className="rc-count-n">{outgoing.length}</span> outgoing</span>
-          <span><span className="rc-count-n">{incoming.length}</span> incoming</span>
-        </span>
-      </div>
-      <div className="rc-split">
-        <RelationGroup arrow={'\u2192'} label="References" annotation="this entry points to" entries={outgoing} emptyText="None" />
-        <RelationGroup arrow={'\u2190'} label="Referenced by" annotation="entries pointing here" entries={incoming} emptyText="Not yet referenced by any entry" />
-      </div>
-    </div>
-  )
-}
 
 export function MemoryDetailPage({ entry, relations, sidebar }: MemoryDetailPageProps) {
   return (
@@ -180,7 +109,7 @@ export function MemoryDetailPage({ entry, relations, sidebar }: MemoryDetailPage
         >
           {entry.body}
         </EntryDetailCard>
-        <EntryRelationsCard outgoing={relations.outgoing} incoming={relations.incoming} />
+        <RelationsCard outgoing={relations.outgoing} incoming={relations.incoming} />
       </main>
       <MemorySidebar {...sidebar} />
     </div>

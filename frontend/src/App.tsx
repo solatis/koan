@@ -6,6 +6,7 @@
  * tool_read/write/edit → ToolCallRow
  * tool_bash/grep/ls    → ToolCallRow
  * tool_generic         → ToolCallRow (koan_* orchestration tools suppressed)
+ * tool_koan            → KoanToolCard (dispatches by toolName)
  * step                 → StepHeader
  * debug_step_guidance  → StepGuidancePill + Md
  * user_message         → UserBubble + Md
@@ -47,6 +48,7 @@ import { StepHeader } from './components/molecules/StepHeader'
 import { CompletionBanner } from './components/molecules/CompletionBanner'
 import { SteeringBar } from './components/molecules/SteeringBar'
 import { ArtifactReviewPin } from './components/molecules/ArtifactReviewPin'
+import { KoanToolCard } from './components/molecules/KoanToolCard'
 
 import { Md } from './components/Md'
 import { Notification } from './components/Notification'
@@ -402,6 +404,16 @@ function renderEntry(entry: ConversationEntry, i: number) {
       const cmd = entry.toolName in KOAN_TOOL_LABELS ? '' : entry.summary
       return <ToolCallRow key={i} tool={label} command={cmd} status={entry.inFlight ? 'running' : 'done'} />
     }
+    case 'tool_koan':
+      return (
+        <KoanToolCard
+          key={i}
+          toolName={entry.toolName}
+          args={entry.args}
+          result={entry.result}
+          inFlight={entry.inFlight}
+        />
+      )
     case 'step':
       return <StepHeader key={i} stepNumber={entry.step} totalSteps={entry.totalSteps ?? 0} stepName={entry.stepName} />
     case 'debug_step_guidance':

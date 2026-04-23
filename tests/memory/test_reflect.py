@@ -24,8 +24,8 @@ def _make_entry(n: int = 1, etype: str = "context", title: str | None = None) ->
         title=title or f"Entry {n}",
         type=etype,
         body=f"Body of entry {n}.",
-        created="2024-01-01",
-        modified="2024-01-01",
+        created="2024-01-01T00:00:00Z",
+        modified="2024-01-01T00:00:00Z",
     )
 
 
@@ -37,11 +37,19 @@ def _make_result(n: int = 1, etype: str = "context") -> SearchResult:
 # _resolve_citations
 # ---------------------------------------------------------------------------
 
+_EXPECTED_MODIFIED_MS = 1704067200000  # 2024-01-01T00:00:00Z in ms
+
 class TestResolveCitations:
     def test_all_ids_present(self):
         retrieved = {1: _make_entry(1, title="Alpha"), 2: _make_entry(2, title="Beta")}
         result = _resolve_citations([1, 2], retrieved)
-        assert result == [Citation(id=1, title="Alpha"), Citation(id=2, title="Beta")]
+        assert len(result) == 2
+        assert result[0].id == 1
+        assert result[0].title == "Alpha"
+        assert result[0].type == "context"
+        assert result[0].modified_ms == _EXPECTED_MODIFIED_MS
+        assert result[1].id == 2
+        assert result[1].title == "Beta"
 
     def test_unknown_ids_dropped(self):
         retrieved = {1: _make_entry(1, title="Alpha")}
@@ -56,6 +64,14 @@ class TestResolveCitations:
     def test_empty_input(self):
         result = _resolve_citations([], {1: _make_entry(1)})
         assert result == []
+
+    def test_type_and_modified_ms_populated(self):
+        """Citation carries entry type and modified_ms from the retrieved entry."""
+        entry = _make_entry(1, etype="decision", title="A decision")
+        result = _resolve_citations([1], {1: entry})
+        assert len(result) == 1
+        assert result[0].type == "decision"
+        assert result[0].modified_ms == _EXPECTED_MODIFIED_MS
 
 
 # ---------------------------------------------------------------------------

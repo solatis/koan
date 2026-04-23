@@ -1,0 +1,159 @@
+/* ======== RelationsCard ======== */
+/* Promoted from MemoryDetailPage.css. rc-* prefix kept stable so existing
+   page-level styles continue to match without renaming. */
+
+.rc {
+  background: var(--bg-card);
+  border: 0.5px solid var(--border-card);
+  border-radius: var(--radius-2xl);
+  padding: 22px 30px 26px;
+}
+
+.rc-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.rc-eyebrow {
+  font-size: var(--type-label);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--color-teal);
+  font-weight: 500;
+}
+
+.rc-counts {
+  display: flex;
+  gap: 16px;
+  margin-left: auto;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+.rc-count-n { color: var(--text-body); font-weight: 500; }
+
+/* ---- Split layout (two columns: outgoing + incoming) ---- */
+.rc-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 28px;
+}
+
+/* ---- Single layout (full-width outgoing only, e.g. citations) ---- */
+.rc-single {
+  width: 100%;
+}
+
+/* ---- Group title ---- */
+.rc-group-title {
+  font-size: var(--type-breadcrumb);
+  font-weight: 500;
+  color: var(--text-primary);
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 0.5px solid var(--border-divider-light);
+}
+
+.rc-arrow {
+  color: var(--color-orange);
+  font-family: var(--font-mono);
+  font-size: var(--type-body);
+}
+
+.rc-annot {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 400;
+  margin-left: auto;
+}
+
+/* ---- Relation list ---- */
+.rc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rc-row {
+  display: grid;
+  grid-template-columns: 28px 1fr auto;
+  gap: 10px;
+  padding: 10px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  align-items: center;
+  border: none;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  width: 100%;
+}
+
+.rc-row:hover { background: var(--bg-selected); }
+
+.rc-row:focus-visible {
+  outline: 2px solid var(--color-orange);
+  outline-offset: 2px;
+}
+
+/* Row body */
+.rc-row-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.rc-row-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.rc-row-seq {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-hint);
+}
+
+.rc-row-type {
+  font-size: 9px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-subtle);
+}
+
+.rc-row-title {
+  font-size: 12px;
+  color: var(--text-primary);
+  line-height: 1.35;
+  font-weight: 500;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.rc-row-age {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-hint);
+  white-space: nowrap;
+}
+
+/* ---- Empty state ---- */
+.rc-empty {
+  font-size: 12px;
+  color: var(--text-hint);
+  font-style: italic;
+  padding: 12px 8px;
+}

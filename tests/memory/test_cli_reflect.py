@@ -41,8 +41,8 @@ def _fake_reflect_result() -> ReflectResult:
     return ReflectResult(
         answer="The system uses LanceDB for vector storage.",
         citations=[
-            Citation(id=1, title="DB choice"),
-            Citation(id=2, title="Indexing strategy"),
+            Citation(id=1, title="DB choice", type="decision", modified_ms=1704067200000),
+            Citation(id=2, title="Indexing strategy", type="context", modified_ms=1704067200000),
         ],
         iterations=3,
     )
@@ -98,7 +98,7 @@ class TestCmdReflect:
         import koan.cli.memory as cli_memory
 
         trace_event = ReflectTraceEvent(
-            iteration=1, tool="search", args={"query": "vector storage"}, result_count=3
+            iteration=1, kind="search", query="vector storage", result_count=3
         )
 
         # Custom fake that invokes the on_trace callback before returning.

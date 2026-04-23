@@ -235,7 +235,7 @@ def _render_review_payload(path: str, payload: dict) -> str:
         out.append(
             f"I've reviewed `{path}`. For each inline comment below, edit the cited"
             " section of the file to address it. Preserve everything not called out."
-            " When all comments are addressed, call `koan_yield` again so I can"
+            " When all comments are addressed, call `koan_artifact_propose` again so I can"
             " confirm or give another pass."
         )
 
@@ -267,7 +267,7 @@ def _render_review_payload(path: str, payload: dict) -> str:
     # Free-form feedback -- summary only, no inline comments.
     if not has_comments and has_summary:
         out.append(
-            f"I've reviewed `{path}`. Apply the feedback below, then call `koan_yield`"
+            f"I've reviewed `{path}`. Apply the feedback below, then call `koan_artifact_propose`"
             " again so I can confirm or give another pass."
         )
 
@@ -1196,8 +1196,9 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
 
                     return result.final_response or None
 
-            # Emit queued events for all scouts before concurrency-limited execution
-            from ..events import build_scout_queued
+            # Clear stale non-primary agents before queuing the new batch
+            from ..events import build_agents_cleared, build_scout_queued
+            app_state.projection_store.push_event("agents_cleared", build_agents_cleared())
             for st in scout_tasks:
                 app_state.projection_store.push_event(
                     "scout_queued",
@@ -1331,6 +1332,9 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
             run_dir = _resolve_run_dir(agent)
             if not run_dir:
                 raise ToolError(json.dumps({"error": "no_run_dir", "message": "No run directory available"}))
+
+            from ..events import build_agents_cleared
+            app_state.projection_store.push_event("agents_cleared", build_agents_cleared())
 
             ts_suffix = int(time.time() * 1000)
             subagent_dir = await ensure_subagent_directory(
@@ -1712,7 +1716,10 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
             )
             out = {
                 "answer": result.answer,
-                "citations": [{"id": c.id, "title": c.title} for c in result.citations],
+                "citations": [
+                    {"id": c.id, "title": c.title, "type": c.type, "modifiedMs": c.modified_ms}
+                    for c in result.citations
+                ],
                 "iterations": result.iterations,
             }
             result_str = json.dumps(out)

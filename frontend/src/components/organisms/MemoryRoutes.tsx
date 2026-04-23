@@ -361,14 +361,33 @@ function ConnectedMemoryReflect() {
     )
   }
 
-  // Tools list: one entry per search trace.
-  const tools = reflect.traces
-    .filter(t => t.tool === 'search')
-    .map(t => ({
-      query: t.query,
-      status: 'done' as const,
-      resultCount: t.resultCount ?? undefined,
-    }))
+  // Build a unified arrival-ordered trace-render list covering all trace kinds.
+  // "done" traces are projection-internal bookkeeping; exclude them from the
+  // rendered stream because the done state is already signalled by the page status.
+  const traceEntries = reflect.traces
+    .filter(t => t.kind !== 'done')
+    .map(t => {
+      if (t.kind === 'thinking') return { kind: 'thinking' as const, delta: t.delta }
+      if (t.kind === 'text') return { kind: 'text' as const, delta: t.delta }
+      // kind === 'search'
+      return {
+        kind: 'search' as const,
+        query: t.query,
+        status: 'done' as const,
+        resultCount: t.resultCount ?? undefined,
+      }
+    })
+
+  const searchCount = reflect.traces.filter(t => t.kind === 'search').length
+
+  // Build citations from reflect.citations for the done-state RelationsCard.
+  const citations = reflect.citations.map(c => ({
+    seq: String(c.id).padStart(4, '0'),
+    type: c.type,
+    title: c.title,
+    age: renderAge(c.modifiedMs),
+    onClick: () => navigate(`/memory/${String(c.id).padStart(4, '0')}`),
+  }))
 
   const isDone = reflect.status === 'done' || reflect.status === 'cancelled' || reflect.status === 'failed'
   const elapsedMs = isDone && reflect.completedAtMs
@@ -383,13 +402,12 @@ function ConnectedMemoryReflect() {
     ? {
         status: 'done' as const,
         iterations: reflect.iteration,
-        searches: tools.length,
+        searches: searchCount,
         elapsed,
         citedCount: reflect.citations.length,
         briefing: <Md>{reflect.answer || reflect.error || '(no answer)'}</Md> as ReactNode,
-        onFollowUpSend: async (q: string) => {
-          await api.startReflect(q).catch(() => {})
-        },
+        citations,
+        entries: traceEntries,
       }
     : {
         status: 'in-progress' as const,
@@ -398,8 +416,7 @@ function ConnectedMemoryReflect() {
         elapsed,
         model: reflect.model || 'gemini',
         onCancel: () => api.cancelReflect().catch(() => {}),
-        thinking: '',
-        tools,
+        entries: traceEntries,
       }
 
   return (

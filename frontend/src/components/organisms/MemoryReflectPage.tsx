@@ -1,10 +1,13 @@
 import './MemoryReflectPage.css'
 import type { ReactNode } from 'react'
+import { useNavigate } from 'react-router'
 import ProgressStrip from '../molecules/ProgressStrip'
 import ThinkingBlock from '../molecules/ThinkingBlock'
 import ToolCallRow from '../molecules/ToolCallRow'
 import StatStrip from '../molecules/StatStrip'
-import FeedbackInput from '../molecules/FeedbackInput'
+import RelationsCard from '../molecules/RelationsCard'
+import type { RelationEntry } from '../molecules/RelationsCard'
+import Button from '../atoms/Button'
 import MemorySidebar from './MemorySidebar'
 
 type MemoryType = 'decision' | 'lesson' | 'context' | 'procedure'
@@ -20,11 +23,12 @@ interface SidebarEntry {
   onClick?: () => void
 }
 
-type ReflectToolCall = {
-  query: string
-  status: 'done' | 'running'
-  resultCount?: number
-}
+// Unified arrival-ordered trace entries for both in-progress and done states.
+// Replaces the prior tools: ReflectToolCall[] field.
+type ReflectTraceRender =
+  | { kind: 'thinking'; delta: string }
+  | { kind: 'text'; delta: string }
+  | { kind: 'search'; query: string; status: 'done' | 'running'; resultCount?: number }
 
 type InProgressProps = {
   status: 'in-progress'
@@ -33,8 +37,7 @@ type InProgressProps = {
   elapsed: string
   model: string
   onCancel: () => void
-  thinking?: string
-  tools: ReflectToolCall[]
+  entries: ReflectTraceRender[]
 }
 
 type DoneProps = {
@@ -44,7 +47,8 @@ type DoneProps = {
   elapsed: string
   citedCount: number
   briefing: ReactNode
-  onFollowUpSend: (v: string) => void
+  citations: RelationEntry[]
+  entries: ReflectTraceRender[]
 }
 
 type ReflectState = InProgressProps | DoneProps
@@ -63,11 +67,63 @@ interface MemoryReflectPageProps {
   }
 }
 
+function BackLink() {
+  const navigate = useNavigate()
+  return (
+    // Back-link rendered in both states so the user can abort a slow run
+    // without hunting for nav. Hardcoded margin -- single-use per design-system
+    // convention; value (0 0 12px) matches the eyebrow spacing below.
+    <div style={{ marginBottom: 12 }}>
+      <Button
+        variant="text"
+        size="sm"
+        onClick={() => navigate('/memory')}
+      >
+        Back to Memory
+      </Button>
+    </div>
+  )
+}
+
+function TraceStream({ entries }: { entries: ReflectTraceRender[] }) {
+  if (entries.length === 0) return null
+  return (
+    <div className="rfl-trace-stream">
+      {entries.map((e, i) => {
+        if (e.kind === 'thinking') {
+          return (
+            <div key={i} style={{ marginBottom: 8 }}>
+              <ThinkingBlock>{e.delta}</ThinkingBlock>
+            </div>
+          )
+        }
+        if (e.kind === 'text') {
+          // Prose text deltas rendered inline; no heavy wrapper needed.
+          return (
+            <div key={i} className="rfl-text-delta">{e.delta}</div>
+          )
+        }
+        // kind === 'search'
+        return (
+          <ToolCallRow
+            key={i}
+            tool="search"
+            command={e.query}
+            status={e.status}
+            metric={e.status === 'done' ? `${e.resultCount} results` : 'retrieving\u2026'}
+          />
+        )
+      })}
+    </div>
+  )
+}
+
 function ReflectPane({ question, state }: { question: string; state: ReflectState }) {
   return (
     <div className="rfl">
+      <BackLink />
       <div className="rfl-eyebrow">
-        {state.status === 'in-progress' ? 'Reflection \u00b7 in progress' : 'Briefing'}
+        {state.status === 'in-progress' ? 'Reflection \u00b7 in progress' : 'Reflection'}
       </div>
       <h1 className="rfl-question">{question}</h1>
 
@@ -80,24 +136,7 @@ function ReflectPane({ question, state }: { question: string; state: ReflectStat
             model={state.model}
             onCancel={state.onCancel}
           />
-          {state.thinking && (
-            <div style={{ marginTop: 14 }}>
-              <ThinkingBlock>{state.thinking}</ThinkingBlock>
-            </div>
-          )}
-          {state.tools.length > 0 && (
-            <div className="rfl-tools">
-              {state.tools.map((t, i) => (
-                <ToolCallRow
-                  key={i}
-                  tool="search"
-                  command={t.query}
-                  status={t.status}
-                  metric={t.status === 'done' ? `${t.resultCount} results` : 'retrieving\u2026'}
-                />
-              ))}
-            </div>
-          )}
+          <TraceStream entries={state.entries} />
         </>
       )}
 
@@ -114,14 +153,18 @@ function ReflectPane({ question, state }: { question: string; state: ReflectStat
               ]}
             />
           </div>
+          <TraceStream entries={state.entries} />
           <div className="rfl-briefing">{state.briefing}</div>
-          <div className="rfl-followup">
-            <div className="rfl-followup-label">Follow up</div>
-            <FeedbackInput
-              placeholder="Ask a follow-up question about this briefing, or explore a related angle\u2026"
-              onSend={state.onFollowUpSend}
-            />
-          </div>
+          {state.citations.length > 0 && (
+            <div className="rfl-citations">
+              <RelationsCard
+                eyebrow="Citations"
+                layout="single"
+                outgoing={state.citations}
+                incoming={[]}
+              />
+            </div>
+          )}
         </>
       )}
     </div>

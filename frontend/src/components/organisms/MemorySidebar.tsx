@@ -51,7 +51,7 @@ export function MemorySidebar({
         <TextInput
           value={search}
           onChange={onSearchChange}
-          placeholder="Search memories\u2026"
+          placeholder={'Search memories\u2026'}
         />
       </div>
 

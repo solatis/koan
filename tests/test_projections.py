@@ -30,6 +30,7 @@ from koan.projections import (
     ToolBashEntry,
     ToolEditEntry,
     ToolGenericEntry,
+    ToolKoanEntry,
     ToolWriteEntry,
     VersionedEvent,
     fold,
@@ -203,6 +204,24 @@ class TestFoldAgentLifecycle:
         assert "s1" in r.run.agents
         assert r.run.agents["s1"].status == "queued"
         assert r.run.agents["s1"].label == "eng"
+
+    def test_agents_cleared_removes_non_primary(self):
+        p = _proj_with_primary("a1")
+        p = fold(p, _e("scout_queued", {"scout_id": "s1", "label": "eng", "model": "haiku"}))
+        p = fold(p, _e("agent_spawned", {
+            "agent_id": "s1", "role": "scout", "label": "eng",
+            "model": "haiku", "is_primary": False, "started_at_ms": 2000,
+        }, agent_id="s1"))
+        assert len(p.run.agents) == 2
+        r = fold(p, _e("agents_cleared", {}))
+        assert "a1" in r.run.agents
+        assert "s1" not in r.run.agents
+        assert len(r.run.agents) == 1
+
+    def test_agents_cleared_on_empty_run(self):
+        p = _proj_with_run()
+        r = fold(p, _e("agents_cleared", {}))
+        assert r.run.agents == {}
 
     def test_agent_exited_sets_done_status(self):
         p = _proj_with_primary("a1")
@@ -461,6 +480,42 @@ class TestFoldTools:
     def test_tool_called_mcp_koan_prefix_skipped(self):
         p = _proj_with_primary("a1")
         r = fold(p, _e("tool_called", {"call_id": "c1", "tool": "mcp__koan__step", "args": {}}, agent_id="a1"))
+        assert r.run.agents["a1"].conversation.entries == []
+
+    def test_tool_called_renderable_koan_creates_koan_entry(self):
+        p = _proj_with_primary("a1")
+        r = fold(p, _e("tool_called", {
+            "call_id": "c1", "tool": "koan_reflect",
+            "args": {"question": "How does X work?", "context": "subsystem Y"},
+            "summary": "question='How does X work?'",
+        }, agent_id="a1"))
+        entry = r.run.agents["a1"].conversation.entries[0]
+        assert isinstance(entry, ToolKoanEntry)
+        assert entry.tool_name == "koan_reflect"
+        assert entry.args == {"question": "How does X work?", "context": "subsystem Y"}
+        assert entry.in_flight is True
+        assert entry.result is None
+
+    def test_tool_completed_koan_entry_parses_result(self):
+        p = _proj_with_primary("a1")
+        p = fold(p, _e("tool_called", {
+            "call_id": "c1", "tool": "koan_reflect",
+            "args": {"question": "Q"},
+        }, agent_id="a1"))
+        result_json = '{"answer": "A", "citations": [{"id": "1", "title": "T"}], "iterations": 3}'
+        r = fold(p, _e("tool_completed", {
+            "call_id": "c1", "tool": "koan_reflect", "result": result_json,
+        }, agent_id="a1"))
+        entry = r.run.agents["a1"].conversation.entries[0]
+        assert isinstance(entry, ToolKoanEntry)
+        assert entry.in_flight is False
+        assert entry.result == {"answer": "A", "citations": [{"id": "1", "title": "T"}], "iterations": 3}
+
+    def test_tool_called_non_renderable_koan_still_skipped(self):
+        p = _proj_with_primary("a1")
+        r = fold(p, _e("tool_called", {
+            "call_id": "c1", "tool": "koan_memorize", "args": {},
+        }, agent_id="a1"))
         assert r.run.agents["a1"].conversation.entries == []
 
     def test_tool_completed_marks_aggregate_child_done(self):

@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 
@@ -41,6 +42,7 @@ EventType = Literal[
     "workflow_completed",
     "workflow_selected",
     "scout_queued",
+    "agents_cleared",
     # Activity
     "tool_started",
     "tool_stopped",
@@ -189,6 +191,13 @@ class ToolGenericEntry(BaseToolEntry):
     tool_name: str                         # original tool name from the LLM
     summary: str = ""                      # human-readable one-liner from the runner parser
 
+class ToolKoanEntry(BaseToolEntry):
+    """Koan MCP tool with structured args and result for rich frontend rendering."""
+    type: Literal["tool_koan"] = "tool_koan"
+    tool_name: str
+    args: dict = {}
+    result: dict | None = None
+
 # ---------------------------------------------------------------------------
 # Aggregate children — exploration tools (read, grep, ls) never appear as
 # top-level ConversationEntry values. They live only inside a ToolAggregateEntry.
@@ -278,7 +287,7 @@ class ActiveArtifactReview(KoanBaseModel):
 ConversationEntry = Annotated[
     ThinkingEntry | TextEntry | StepEntry | UserMessageEntry |
     ToolWriteEntry | ToolEditEntry | ToolBashEntry | ToolGenericEntry |
-    ToolAggregateEntry |
+    ToolKoanEntry | ToolAggregateEntry |
     DebugStepGuidanceEntry | PhaseBoundaryEntry | YieldEntry,
     Field(discriminator="type"),
 ]
@@ -420,13 +429,21 @@ class MemoryState(KoanBaseModel):
 class ReflectCitation(KoanBaseModel):
     id: int
     title: str
+    type: Literal["decision", "context", "lesson", "procedure"]
+    modified_ms: int
 
 class ReflectTrace(KoanBaseModel):
     iteration: int
-    tool: Literal["search", "done"]
+    # Discriminator: "search"/"done" are tool calls; "thinking"/"text" are
+    # streaming model output deltas. All ride in the same "reflect_trace" event
+    # so the frontend receives one ordered list without separate event types.
+    kind: Literal["search", "done", "thinking", "text"]
+    # search-only fields
     query: str = ""
     type_filter: str = ""
     result_count: int | None = None
+    # thinking / text delta
+    delta: str = ""
 
 class ReflectRun(KoanBaseModel):
     session_id: str
@@ -612,6 +629,11 @@ def _update_agent_conversation(run: Run, agent_id: str, new_conv: Conversation, 
     return run.model_copy(update={"agents": new_agents})
 
 
+# Koan tools that produce rich conversation entries (ToolKoanEntry) instead
+# of being silently dropped. Tools not in this set are still suppressed.
+RENDERABLE_KOAN_TOOLS: frozenset[str] = frozenset({"koan_reflect"})
+
+
 # ---------------------------------------------------------------------------
 # Fold
 # ---------------------------------------------------------------------------
@@ -688,6 +710,13 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 return projection.model_copy(update={"run": new_run})
 
             # ── Agent lifecycle ────────────────────────────────────────────
+
+            case "agents_cleared":
+                if projection.run is None:
+                    return projection
+                new_agents = {k: v for k, v in projection.run.agents.items() if v.is_primary}
+                new_run = projection.run.model_copy(update={"agents": new_agents})
+                return projection.model_copy(update={"run": new_run})
 
             case "scout_queued":
                 if projection.run is None:
@@ -933,7 +962,30 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 if agent is None:
                     return projection
                 tool_name = payload.get("tool", "")
-                # Skip koan MCP tools — they are infrastructure, not user-visible activity
+                if tool_name in RENDERABLE_KOAN_TOOLS:
+                    call_id = payload.get("call_id", "")
+                    raw_args = payload.get("args", {})
+                    if isinstance(raw_args, str):
+                        try:
+                            raw_args = json.loads(raw_args)
+                        except (json.JSONDecodeError, TypeError):
+                            raw_args = {"raw": raw_args}
+                    summary = payload.get("summary", "")
+                    last_tool = f"{tool_name} {summary}".strip() if summary else tool_name
+                    new_conv = _flush_conversation(agent.conversation)
+                    new_entry = ToolKoanEntry(
+                        call_id=call_id,
+                        in_flight=True,
+                        tool_name=tool_name,
+                        args=raw_args,
+                    )
+                    new_conv = new_conv.model_copy(update={
+                        "entries": [*new_conv.entries, new_entry],
+                    })
+                    return projection.model_copy(update={
+                        "run": _update_agent_conversation(projection.run, agent_id, new_conv,
+                                                          last_tool=last_tool),
+                    })
                 if tool_name.startswith("koan_") or tool_name.startswith("mcp__koan"):
                     return projection
                 call_id = payload.get("call_id", "")
@@ -1099,7 +1151,17 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                         and entry.call_id == call_id
                         and not isinstance(entry, ToolAggregateEntry)
                     ):
-                        new_entries.append(entry.model_copy(update={"in_flight": False}))
+                        update: dict = {"in_flight": False}
+                        if isinstance(entry, ToolKoanEntry):
+                            raw_result = payload.get("result")
+                            if raw_result and isinstance(raw_result, str):
+                                try:
+                                    update["result"] = json.loads(raw_result)
+                                except (json.JSONDecodeError, TypeError):
+                                    update["result"] = {"raw": raw_result}
+                            elif isinstance(raw_result, dict):
+                                update["result"] = raw_result
+                        new_entries.append(entry.model_copy(update=update))
                         found = True
                     elif isinstance(entry, ToolAggregateEntry):
                         new_children = []

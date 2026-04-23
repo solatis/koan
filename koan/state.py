@@ -149,6 +149,48 @@ class AppState:
         )
 
 
+def hydrate_memory_projection(app_state: AppState) -> None:
+    """Push all on-disk memory entries into the projection store at server boot.
+
+    Called before any SSE subscribers exist, so ProjectionStore.push_event folds
+    + updates prev_state without broadcasting.  The first SSE connect snapshot
+    therefore includes all entries without a separate fetch.
+    """
+    # Local imports keep state.py free of ML-model / web-layer import costs.
+    from .projections import MemoryEntrySummary
+    from .events import build_memory_entry_created, build_memory_summary_updated
+    from .memory.timestamps import iso_to_ms
+
+    store = app_state.memory.memory_store
+    if store is None:
+        return
+
+    entries = store.list_entries()
+    for entry in entries:
+        if entry.file_path is None:
+            continue
+        # Derive NNNN seq from filename like "0042-some-title.md".
+        seq = entry.file_path.name[:4]
+        eid = int(seq)
+        summary = MemoryEntrySummary(
+            seq=seq,
+            type=entry.type,
+            title=entry.title,
+            created_ms=iso_to_ms(entry.created),
+            modified_ms=iso_to_ms(entry.modified),
+        )
+        app_state.projection_store.push_event(
+            "memory_entry_created",
+            build_memory_entry_created(summary.to_wire()),
+        )
+
+    current_summary = store.get_summary() or ""
+    app_state.projection_store.push_event(
+        "memory_summary_updated",
+        build_memory_summary_updated(current_summary),
+    )
+
+
 def drain_user_messages(app_state: AppState) -> list[ChatMessage]:
     """Atomically drain the user message buffer. Returns all buffered messages."""
     messages = list(app_state.interactions.user_message_buffer)

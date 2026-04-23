@@ -1,0 +1,108 @@
+.ktc {
+  background: var(--bg-card);
+  border: 0.5px solid var(--border-card);
+  border-left: 3px solid var(--color-purple);
+  border-radius: var(--radius-xl);
+  padding: var(--padding-card);
+}
+
+/* ---- Header row ---- */
+.ktc-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ktc-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  flex-shrink: 0;
+}
+
+.ktc-check {
+  width: 13px;
+  height: 13px;
+}
+
+.ktc-running-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-circle);
+  background: var(--status-running);
+  animation: ktc-pulse 1.5s ease-in-out infinite;
+}
+
+.ktc-label {
+  font-size: var(--type-tool-type);
+  font-weight: 600;
+  color: var(--color-purple);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.ktc-meta {
+  font-family: var(--font-mono);
+  font-size: var(--type-tool-path);
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+/* ---- Question ---- */
+.ktc-question {
+  margin-top: 8px;
+  font-size: var(--type-prose);
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+/* ---- Context (optional) ---- */
+.ktc-context {
+  margin-top: 4px;
+  font-size: var(--type-breadcrumb);
+  color: var(--text-muted);
+}
+
+/* ---- Answer (after completion) ---- */
+.ktc-answer {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 0.5px solid var(--border-card);
+  font-size: var(--type-body);
+  color: var(--text-body);
+}
+
+.ktc-answer .markdown {
+  line-height: 1.6;
+}
+
+/* ---- Citations ---- */
+.ktc-citations {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.ktc-cite {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--bg-selected);
+  border: 0.5px solid rgba(142, 124, 160, 0.3); /* purple-derived chip border */
+  font-family: var(--font-mono);
+  font-size: var(--type-label);
+  color: var(--color-purple);
+  white-space: nowrap;
+}
+
+/* ---- In-flight state ---- */
+.ktc-running-dot + .ktc-label {
+  opacity: 0.8;
+}
+
+@keyframes ktc-pulse {
+  0%, 100% { opacity: 0.3; }
+  50%      { opacity: 1; }
+}

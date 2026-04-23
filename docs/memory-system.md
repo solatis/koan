@@ -442,12 +442,20 @@ Summary regeneration (inside `koan_memory_status`) uses a
 existing entries into a prose overview.
 
 The `koan_reflect` tool uses a **mid-tier model** (Gemini Flash,
-configurable via `KOAN_REFLECT_MODEL`). Reflect runs a multi-turn
-tool-calling loop in which a single LLM conversation plans queries,
-interprets results, judges sufficiency, and synthesizes the briefing.
+configurable via `KOAN_REFLECT_MODEL`) via **pydantic-ai** with the
+`google-gla` provider. Summary regeneration uses the same pydantic-ai
+path with the cheap-tier model (configurable via `KOAN_LLM_MODEL`,
+default `gemini-flash-lite-latest`). Both subsystems read `GEMINI_API_KEY`
+or `GOOGLE_API_KEY` from the environment.
+
+Reflect runs a multi-turn tool-calling loop in which a single LLM
+conversation plans queries, interprets results, judges sufficiency, and
+synthesizes the briefing. Thinking and text deltas are streamed as
+`reflect_trace` events (with `kind: "thinking"` or `kind: "text"`) so
+the frontend receives interleaved reasoning alongside search rows.
 These tasks sit squarely in the regime that modern mid-tier models
-handle well — planning a handful of decomposed searches, reading
-structured results, writing a bounded briefing — and a Pro-class
+handle well -- planning a handful of decomposed searches, reading
+structured results, writing a bounded briefing -- and a Pro-class
 model is overkill for the latency cost. Cheap-tier models (flash-lite
 and below) degrade sharply here: they echo the user's question as a
 single query, produce malformed tool calls, and give up early.

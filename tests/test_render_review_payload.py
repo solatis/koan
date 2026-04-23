@@ -45,7 +45,7 @@ def test_structured_one_comment():
     expected = (
         "I've reviewed `plan.md`. For each inline comment below, edit the cited"
         " section of the file to address it. Preserve everything not called out."
-        " When all comments are addressed, call `koan_yield` again so I can"
+        " When all comments are addressed, call `koan_artifact_propose` again so I can"
         " confirm or give another pass."
         "\n"
         "\nOn the section:"
@@ -123,7 +123,7 @@ def test_free_form_summary_only():
     }
     result = _render_review_payload("plan.md", payload)
     expected = (
-        "I've reviewed `plan.md`. Apply the feedback below, then call `koan_yield`"
+        "I've reviewed `plan.md`. Apply the feedback below, then call `koan_artifact_propose`"
         " again so I can confirm or give another pass."
         "\n"
         "\n**Summary:** Please restructure section 2"
