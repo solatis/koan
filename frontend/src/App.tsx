@@ -18,7 +18,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
-import { useStore, ConversationEntry, AskQuestion } from './store/index'
+import { useStore, ConversationEntry, AskQuestion, CompletionInfo } from './store/index'
 // DEBUG: expose store to window for browser-agent introspection
 ;(window as unknown as { __store: typeof useStore }).__store = useStore
 import { connectSSE } from './sse/connect'
@@ -27,6 +27,7 @@ import { useAutoScroll } from './hooks/useAutoScroll'
 import { normalizeOptions } from './utils'
 import * as api from './api/client'
 
+import { Button } from './components/atoms/Button'
 import { HeaderBar } from './components/organisms/HeaderBar'
 import { ArtifactsSidebar as ArtifactsSidebarOrg } from './components/organisms/ArtifactsSidebar'
 import { ScoutBar } from './components/organisms/ScoutBar'
@@ -631,7 +632,7 @@ function ElicitationView() {
 // Completion
 // ---------------------------------------------------------------------------
 
-function CompletionView() {
+function CompletionView(props: { onBackToOverview?: () => void }) {
   const completion = useStore(s => s.run?.completion)
   const artifacts = useStore(s => s.run?.artifacts ?? {})
   if (!completion) return null
@@ -649,7 +650,15 @@ function CompletionView() {
             )}
           </>
         ) : (
-          <CompletionBanner variant="error">{completion.error || 'An error occurred.'}</CompletionBanner>
+          <>
+            <CompletionBanner variant="error">{completion.error || 'An error occurred.'}</CompletionBanner>
+            {props.onBackToOverview && (
+              <div className="completion-actions">
+                {/* Button visible only on failure; success auto-navigates on a timer. */}
+                <Button variant="secondary" onClick={props.onBackToOverview}>Back to overview</Button>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
@@ -890,6 +899,30 @@ export default function App() {
     if (activeArtifactReview === null) return
     useStore.getState().setReviewingArtifact(activeArtifactReview.path)
   }, [activeArtifactReview])
+
+  // Snapshot run.completion into lastCompletion on the null->non-null rising
+  // edge only. The ref guards against re-snapshotting on every re-render or
+  // on future events that re-emit the same completion object.
+  const prevCompletionRef = useRef<CompletionInfo | null>(null)
+  useEffect(() => {
+    const current = run?.completion ?? null
+    if (prevCompletionRef.current === null && current !== null) {
+      useStore.getState().setLastCompletion(current)
+    }
+    prevCompletionRef.current = current
+  }, [run?.completion])
+
+  // Success: auto-clear + navigate after 3 seconds so the user can read the
+  // completion banner before the overview appears. The timer is cancelled if
+  // the component unmounts or if completion changes (e.g. SSE reconnect).
+  useEffect(() => {
+    if (!completion || !completion.success) return
+    const timer = setTimeout(async () => {
+      await api.clearRun()
+      navigate('/')
+    }, 3000)
+    return () => clearTimeout(timer)
+  }, [completion, navigate])
 
   useEffect(() => {
     let es: EventSource | null = null

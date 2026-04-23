@@ -135,6 +135,18 @@ class TestFoldRunLifecycle:
         r = fold(p, _e("workflow_selected", {"workflow": "plan"}))
         assert r.run is None
 
+    def test_run_cleared_resets_run_to_none(self):
+        p = _proj_with_run()
+        r = fold(p, _e("workflow_completed", {"success": True, "summary": "done"}))
+        assert r.run is not None
+        r2 = fold(r, _e("run_cleared", {}))
+        assert r2.run is None
+
+    def test_run_cleared_without_run_is_noop(self):
+        p = Projection()
+        r = fold(p, _e("run_cleared", {}))
+        assert r.run is None
+
 
 # ---------------------------------------------------------------------------
 # fold: agent lifecycle
@@ -1026,6 +1038,17 @@ class TestJSONPatchPaths:
         ops = msg["patch"]
         all_paths = " ".join(op["path"] for op in ops)
         assert "defaultProfile" in all_paths
+
+    def test_run_cleared_produces_run_replace_patch(self):
+        # run_cleared must emit at least one patch op touching /run.
+        # jsonpatch emits a "replace" op (value: null) when an object becomes None.
+        store = ProjectionStore()
+        store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+        q = store.subscribe()
+        store.push_event("run_cleared", {})
+        msg = q.get_nowait()
+        ops = msg["patch"]
+        assert any(op.get("path") == "/run" for op in ops)
 
 
 # ---------------------------------------------------------------------------

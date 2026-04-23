@@ -53,6 +53,10 @@ export async function startRun(
   return post('/api/start-run', body)
 }
 
+export async function clearRun(): Promise<{ ok: boolean }> {
+  return post('/api/run/clear', {})
+}
+
 // -- Interactions ------------------------------------------------------------
 
 export async function submitAnswer(answers: unknown[], token: string) {

@@ -282,6 +282,12 @@ interface KoanState {
   // Local UI state (not from server)
   settingsOpen: boolean
 
+  // Ephemeral snapshot of the last run's completion — populated on the null->non-null
+  // rising edge of run.completion and cleared by the user (dismiss button) or a new run.
+  // Not persisted; not mirrored in the projection. UI-only.
+  lastCompletion: CompletionInfo | null
+  setLastCompletion: (c: CompletionInfo | null) => void
+
   // Local draft for chat input — set by YieldPanel row selections
   chatDraft: string
 
@@ -328,6 +334,7 @@ export const useStore = create<KoanState>()(
       reflect: null,
 
       settingsOpen: false,
+      lastCompletion: null,
       chatDraft: '',
       reviewingArtifact: null,
       memoryCurationDraft: {},
@@ -378,6 +385,7 @@ export const useStore = create<KoanState>()(
 
       setConnected: (v) => set({ connected: v }, false, 'setConnected'),
       setSettingsOpen: (v) => set({ settingsOpen: v }, false, 'setSettingsOpen'),
+      setLastCompletion: (c) => set({ lastCompletion: c }, false, 'setLastCompletion'),
       setChatDraft: (text) => set({ chatDraft: text }, false, 'setChatDraft'),
       setReviewingArtifact: (path) => set({ reviewingArtifact: path }, false, 'setReviewingArtifact'),
     }),
