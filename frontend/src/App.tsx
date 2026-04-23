@@ -880,6 +880,7 @@ export default function App() {
   const connected = useStore(s => s.connected)
   const reviewingArtifact = useStore(s => s.reviewingArtifact)
   const activeArtifactReview = useStore(s => s.run?.activeArtifactReview ?? null)
+  const completion = run?.completion ?? null
   const header = useHeaderData()
   const location = useLocation()
   const navigate = useNavigate()
@@ -964,7 +965,6 @@ export default function App() {
     ]
   }, [location.pathname])
   const hasInteraction = focus && focus.type !== 'conversation'
-  const completion = run?.completion
 
   // --- Loading ---
   if (!connected) {
