@@ -35,6 +35,8 @@ export function NewRunForm() {
   const profilesDict = useStore(s => s.settings.profiles)
   const installationsDict = useStore(s => s.settings.installations)
   const defaultProfile = useStore(s => s.settings.defaultProfile)
+  const lastCompletion = useStore(s => s.lastCompletion)
+  const setLastCompletion = useStore(s => s.setLastCompletion)
 
   const profiles = useMemo(() => Object.values(profilesDict), [profilesDict])
   const installations = useMemo(() => Object.values(installationsDict), [installationsDict])
@@ -100,6 +102,25 @@ export function NewRunForm() {
 
   return (
     <div className="nrf">
+      {/* Last-completion banner: shown after navigating away from a completed run.
+          success=true -> teal accent; success=false -> red accent. Dismissed by user. */}
+      {lastCompletion && (
+        <div className={`nrf-last-completion nrf-last-completion--${lastCompletion.success ? 'success' : 'error'}`}>
+          <span className="nrf-last-completion-msg">
+            {lastCompletion.success
+              ? (lastCompletion.summary || 'Previous run completed.')
+              : `Previous run failed: ${lastCompletion.error || 'unknown error'}`}
+          </span>
+          <button
+            type="button"
+            className="nrf-last-completion-dismiss"
+            aria-label="Dismiss"
+            onClick={() => setLastCompletion(null)}
+          >
+            {'x'}
+          </button>
+        </div>
+      )}
       <div className="nrf-header">
         <h1 className="nrf-title">New Run</h1>
         <div className="nrf-project">{projectDir || '—'}</div>
