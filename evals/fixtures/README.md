@@ -6,7 +6,7 @@ and a set of rubrics. One fixture may host multiple tasks.
 ## Directory layout
 
     <fixture>/
-        snapshot.tar.gz             -- git archive of the target project at a specific commit
+        repo/                       -- git submodule pinned to a specific commit of the target project
         rubrics/
             <phase>/
                 summary.md          -- grades the phase summary
@@ -44,17 +44,12 @@ Frontmatter schema:
     ---
 
 The body below the closing `---` is the cross-cutting rubric used by the
-`workflow_overall` scorer. It must end with:
+`test_workflow_overall` test. It must end with:
 `Respond with PASS or FAIL on the last line.`
 
-Phase-scoring semantics: a per-phase scorer grades only if the phase appears
-in the case's `directed_phases`. Phases absent from the list return `None`
-(Inspect skips them) even when a rubric file exists on disk.
-
-Every case file auto-generates an Inspect `@task` named
-`koan_<fixture>_<task>_<case>` with hyphens converted to underscores.
-For example, `fixtures/koan-1/tasks/yolo-flag/cases/intake-plan-spec.md`
-produces the task `koan_koan_1_yolo_flag_intake_plan_spec`.
+Phase-scoring semantics: a per-phase test grades only if the phase appears
+in the case's `directed_phases`. Tests for phases absent from the list are
+skipped even when a rubric file exists on disk.
 
 ## Rubric layering
 
@@ -84,19 +79,20 @@ them. This is acceptable for the initial scope (intake + plan-spec) because:
   rather than subjective judgments ("the plan is good").
 - End every rubric with exactly: `Respond with PASS or FAIL on the last line.`
 
-## Hydrating snapshots
+## Hydrating fixtures
 
-`snapshot.tar.gz` is stored via git-lfs. Run:
+Each fixture's `repo/` directory is a git submodule. After cloning, run:
 
-    git lfs install
-    git lfs pull
+    git submodule update --init --recursive
 
-to hydrate the tarballs before running evals. Without this the solver fails
-with a "not a gzip file" error because the checkout contains LFS pointer files.
+to hydrate all submodules. Without this the runner sees an empty directory
+and starts koan against an empty project, producing no artifacts.
 
-The snapshot is a `git archive` of the project, so `.koan/memory/*.md` rides
-along inside it. No separate memory copy is needed.
+## Bumping a fixture snapshot
 
-To capture a new snapshot from the koan project:
+To advance a fixture to a newer commit, check out the desired SHA inside
+the submodule and stage the updated pointer:
 
-    git archive HEAD --format=tar.gz -o evals/fixtures/<name>/snapshot.tar.gz
+    git -C evals/fixtures/<name>/repo checkout <sha>
+    git add evals/fixtures/<name>/repo
+    git commit -m "chore: bump <name> fixture to <sha>"

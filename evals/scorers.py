@@ -1,51 +1,51 @@
 # evals/scorers.py
-# Rubric-driven scorers for koan eval tasks.
+# DeepEval metric factories and harvest payload helpers for koan evals.
 #
-# Each scorer loads a fixture-level rubric (required) plus an optional
-# task-level addendum for a (phase, section) pair, selects the matching
-# payload slice from state.metadata["harvest"], and asks a judge model for
-# PASS or FAIL. Missing rubric -> scorer returns None -> inspect_ai skips it.
+# Public API:
+#   JUDGE_MODEL          -- shared GeminiModel instance (gemini-3-pro)
+#   make_rubric_metric   -- GEval for a (phase, section) pair
+#   make_workflow_metric -- GEval for the cross-cutting workflow rubric
+#   build_test_case      -- LLMTestCase from a harvest dict + payload str
+#   _payload_summary     -- extract phase summary text from harvest
+#   _payload_questions   -- extract koan_ask_question calls from harvest
+#   _payload_artifacts   -- extract artifact content from harvest
+#   _payload_overall     -- combined phase payload
+#   _payload_workflow    -- combined cross-phase payload
 #
-# Section enum per phase: summary | questions | artifacts | overall.
-# Workflow-level cross-cutter: rubric body from the case file (overall_rubric in metadata).
-#
-# Scorers are independent `@scorer` functions (not a composite dict-valued
-# score) so each shows as its own span in the transcript, its own row in
-# the scoring table, and can be re-run individually via `inspect eval
-# --scorer <name>`. Inspect dispatches them sequentially within a sample;
-# parallelism across samples is controlled via `max_samples`.
+# The payload helpers are framework-agnostic; they were present under the
+# Inspect harness and are unchanged in body here.
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Callable
 
-from inspect_ai.model import get_model
-from inspect_ai.scorer import (
-    CORRECT,
-    INCORRECT,
-    Score,
-    Scorer,
-    accuracy,
-    mean,
-    scorer,
-    stderr,
-    value_to_float,
-)
-from inspect_ai.solver import TaskState
+from deepeval.metrics import GEval
+from deepeval.models import GeminiModel
+from deepeval.test_case import LLMTestCase, LLMTestCaseParams
+
+from evals.cases import Case
 
 
-JUDGE_MODEL = "google/gemini-3.1-pro-preview"
+# Instantiated once at module load and shared across all GEval instances in a
+# session. gemini-3-pro is the post-plan-review corrected target; the original
+# task description referenced google/gemini-3.1-pro-preview which does not
+# exist in either DeepEval's GEMINI_MODELS_DATA catalog or Google's lineup.
+JUDGE_MODEL = GeminiModel(model="gemini-3-pro")
 
 
 # -- Rubric loading ------------------------------------------------------------
 
-def _load_rubric(state: TaskState, phase: str, section: str) -> str | None:
-    fixture_dir = Path(state.metadata["fixture_dir"])
-    task_dir = Path(state.metadata["task_dir"])
-    # Rubric directories use Python-style underscores regardless of how koan
-    # names the phase internally (e.g. phase "plan-spec" -> dir "plan_spec").
+def _load_rubric(fixture_dir: Path, task_dir: Path, phase: str, section: str) -> str | None:
+    """Load and concatenate rubric text for a (phase, section) pair.
+
+    Returns fixture-level rubric text, optionally with a task-level addendum
+    appended. Returns None when no rubric files exist for this combination,
+    which causes callers to skip the test rather than fail.
+
+    Rubric directories use underscores regardless of how koan names the phase
+    internally (e.g. phase "plan-spec" -> dir "plan_spec").
+    """
     phase_dir = phase.replace("-", "_")
     fixture_rubric = fixture_dir / "rubrics" / phase_dir / f"{section}.md"
     task_rubric = task_dir / "rubrics" / phase_dir / f"{section}.md"
@@ -58,15 +58,6 @@ def _load_rubric(state: TaskState, phase: str, section: str) -> str | None:
             + task_rubric.read_text(encoding="utf-8")
         )
     return "\n\n".join(parts) if parts else None
-
-
-def _load_case_rubric(state: TaskState) -> str | None:
-    # The overall rubric is now embedded in the case file body and injected
-    # into Sample metadata by load_dataset. Reading from metadata avoids a
-    # second file read at score time and keeps the scorer independent of the
-    # fixtures directory layout.
-    rubric = state.metadata.get("overall_rubric")
-    return rubric if rubric else None
 
 
 # -- Payload selection ---------------------------------------------------------
@@ -140,130 +131,59 @@ def _payload_workflow(harvest: dict) -> str:
     return "\n\n---\n\n".join(blocks)
 
 
-# -- Judge invocation ----------------------------------------------------------
+# -- DeepEval metric factories -------------------------------------------------
 
-_JUDGE_PROMPT = """You are grading an AI orchestrator against a rubric.
+def make_rubric_metric(case: Case, phase: str, section: str) -> GEval | None:
+    """Build a GEval metric for a (phase, section) rubric pair.
 
-## Rubric
+    Returns None when no rubric file exists for this (phase, section) on
+    disk; the test function skips rather than fails in that case.
 
-{rubric}
-
-## Data
-
-{payload}
-
-Respond with a brief rationale, then on the last line exactly one of:
-PASS
-FAIL
-"""
-
-
-async def _grade(rubric: str, payload: str) -> Score:
-    model = get_model(JUDGE_MODEL)
-    out = await model.generate(_JUDGE_PROMPT.format(rubric=rubric, payload=payload))
-    text = out.completion.strip()
-    last_line = text.splitlines()[-1].strip().upper() if text else "FAIL"
-    passing = last_line == "PASS"
-    # CORRECT / INCORRECT are inspect_ai's canonical binary values ("C"/"I").
-    # Default value_to_float recognises them, so default accuracy()/stderr()
-    # work without any custom converter, and `inspect view` renders them with
-    # built-in styling rather than bare numerics.
-    return Score(
-        value=CORRECT if passing else INCORRECT,
-        answer="PASS" if passing else "FAIL",
-        explanation=text,
+    strict_mode=True ensures the judge returns a binary PASS/FAIL verdict
+    rather than a partial score, matching the rubric contract
+    ("Respond with PASS or FAIL on the last line.").
+    async_mode=True lets DeepEval parallelize judgment calls within a session.
+    """
+    rubric = _load_rubric(case.fixture_dir, case.task_dir, phase, section)
+    if rubric is None:
+        return None
+    return GEval(
+        name=f"{phase}/{section}",
+        criteria=rubric,
+        evaluation_params=[LLMTestCaseParams.ACTUAL_OUTPUT],
+        strict_mode=True,
+        model=JUDGE_MODEL,
+        async_mode=True,
     )
 
 
-# -- Scorer factories ----------------------------------------------------------
+def make_workflow_metric(case: Case) -> GEval | None:
+    """Build a GEval metric for the cross-cutting workflow rubric.
 
-def _scorer_name(phase: str, section: str) -> str:
-    # Normalize phase names like "plan-spec" to underscores so log columns
-    # render cleanly and match the Python factory variable names.
-    return f"{phase.replace('-', '_')}_{section}"
-
-
-def _rubric_scorer(phase: str, section: str, payload_fn: Callable):
-    # Returns a scorer factory (call with () to get a Scorer). The inner
-    # _build function is decorated with @scorer so inspect_ai picks it up;
-    # name= is set explicitly because all eight factories share the same
-    # inner function name (_build) and need distinct registry keys.
-    @scorer(metrics=[accuracy(), stderr()], name=_scorer_name(phase, section))
-    def _build() -> Scorer:
-        async def score(state: TaskState, target) -> Score | None:
-            # Gate: skip phases that did not run under this case's directed
-            # sequence. Empty scored_phases (no directed_phases in metadata)
-            # falls through so Samples without the field are still scored.
-            directed = state.metadata.get("directed_phases") or []
-            scored_phases = [p for p in directed if p != "done"]
-            if scored_phases and phase not in scored_phases:
-                return None
-            rubric = _load_rubric(state, phase, section)
-            if rubric is None:
-                # No rubric for this (phase, section) -> skip gracefully.
-                # Inspect treats this as "unscored" rather than FAIL.
-                return None
-            harvest = state.metadata.get("harvest", {})
-            payload = payload_fn(harvest, phase)
-            return await _grade(rubric, payload)
-        return score
-    return _build
+    Returns None when the case has no rubric body (empty or whitespace-only),
+    which causes the test to skip rather than fail.
+    """
+    if not case.rubric_body.strip():
+        return None
+    return GEval(
+        name="workflow/overall",
+        criteria=case.rubric_body,
+        evaluation_params=[LLMTestCaseParams.ACTUAL_OUTPUT],
+        strict_mode=True,
+        model=JUDGE_MODEL,
+        async_mode=True,
+    )
 
 
-intake_summary    = _rubric_scorer("intake",    "summary",   _payload_summary)
-intake_questions  = _rubric_scorer("intake",    "questions", _payload_questions)
-intake_artifacts  = _rubric_scorer("intake",    "artifacts", _payload_artifacts)
-intake_overall    = _rubric_scorer("intake",    "overall",   _payload_overall)
+def build_test_case(harvest: dict, payload: str) -> LLMTestCase:
+    """Wrap a harvest payload in an LLMTestCase for DeepEval assertion.
 
-plan_spec_summary   = _rubric_scorer("plan-spec", "summary",   _payload_summary)
-plan_spec_questions = _rubric_scorer("plan-spec", "questions", _payload_questions)
-plan_spec_artifacts = _rubric_scorer("plan-spec", "artifacts", _payload_artifacts)
-plan_spec_overall   = _rubric_scorer("plan-spec", "overall",   _payload_overall)
-
-
-@scorer(metrics=[accuracy(), stderr()], name="workflow_overall")
-def workflow_overall() -> Scorer:
-    async def score(state: TaskState, target) -> Score | None:
-        rubric = _load_case_rubric(state)
-        if rubric is None:
-            return None
-        harvest = state.metadata.get("harvest", {})
-        return await _grade(rubric, _payload_workflow(harvest))
-    return score
-
-
-# -- Aggregate scorer ---------------------------------------------------------
-# `overall_pass_rate` reads state.scores populated by the prior scorers in the
-# list (inspect_ai's task runner writes state.scores[name] after each scorer
-# returns, so any scorer that runs LATER can observe earlier results). It
-# returns the fraction of rubric scorers that PASSed for this sample.
-#
-# Placed LAST in the scorer list so it sees the full picture. The per-sample
-# Score value is a float in [0, 1]; the metric `mean()` aggregates across
-# samples. This gives a real headline number (e.g. 0.67 = 6/9 PASS) instead
-# of the first-scorer-only view that made 6/9 runs show up as "Score 0.0".
-
-_to_float = value_to_float()
-
-
-@scorer(metrics=[mean(), stderr()], name="overall_pass_rate")
-def overall_pass_rate() -> Scorer:
-    async def score(state: TaskState, target) -> Score | None:
-        # Exclude this scorer's own future entry; state.scores already has
-        # every prior scorer keyed by name. Ignore any score already named
-        # overall_pass_rate to stay safe under re-scoring.
-        prior = {k: v for k, v in state.scores.items() if k != "overall_pass_rate"}
-        if not prior:
-            return None
-        passed = sum(1 for v in prior.values() if _to_float(v.value) >= 1.0)
-        total = len(prior)
-        ratio = passed / total
-        breakdown = ", ".join(
-            f"{k}={v.answer or v.value}" for k, v in sorted(prior.items())
-        )
-        return Score(
-            value=ratio,
-            answer=f"{passed}/{total} passed",
-            explanation=breakdown,
-        )
-    return score
+    The `input` field is required by LLMTestCase but not included in
+    evaluation_params, so a terse placeholder suffices -- the judge never
+    sees it as a grading criterion.
+    """
+    return LLMTestCase(
+        input="(koan eval harvest)",
+        actual_output=payload,
+        additional_metadata={"harvest": harvest},
+    )

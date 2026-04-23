@@ -9,17 +9,17 @@ dependencies = [
     "aiofiles",
     "jsonpatch",
     "pyyaml",
-    "google-genai>=1.0",
     "json-repair>=0.59.4",
     "voyageai>=0.3",
     "lancedb>=0.20",
+    "pydantic-ai-slim[google]>=1.85.1",
 ]
 
 [project.scripts]
 koan = "koan.__main__:main"
 
 [dependency-groups]
-dev = ["pytest>=8.0", "anyio>=4.0", "inspect-ai", "httpx"]
+dev = ["pytest>=8.0", "anyio>=4.0", "httpx", "deepeval>=3.9.7"]
 
 [build-system]
 requires = ["hatchling"]

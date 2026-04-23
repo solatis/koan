@@ -46,7 +46,7 @@ def _log_harvest(h: dict[str, Any]) -> None:
 
     One block per phase: a one-line summary of counts, followed by the
     phase summary text (truncated), each koan_ask_question, and each
-    artifact path + size. Useful for debugging without inspect_ai.
+    artifact path + size. Useful for debugging without a frontend.
     """
     phase_order = h["phase_order"]
     log.info("harvest complete: phases=%s", phase_order or "(none)")

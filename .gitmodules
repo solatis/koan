@@ -1,0 +1,3 @@
+[submodule "evals/fixtures/koan-1/repo"]
+	path = evals/fixtures/koan-1/repo
+	url = git@github.com:solatis/koan.git
