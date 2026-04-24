@@ -11,7 +11,6 @@ import { useFileAttachment } from '../../hooks/useFileAttachment'
 import * as api from '../../api/client'
 import { SectionLabel } from '../atoms/SectionLabel'
 import { Button } from '../atoms/Button'
-import { Badge } from '../atoms/Badge'
 import { StatusDot } from '../atoms/StatusDot'
 import { FileChip } from '../atoms/FileChip'
 import './NewRunForm.css'
@@ -140,10 +139,13 @@ export function NewRunForm() {
               <span className="nrf-wf-desc">Plan an approach, review it, then execute</span>
             </span>
           </button>
-          <button className="nrf-wf-option nrf-wf-option--disabled" disabled>
-            <span className="nrf-wf-radio" />
+          <button className={`nrf-wf-option${workflow === 'milestones' ? ' nrf-wf-option--selected' : ''}`}
+            onClick={() => setWorkflow('milestones')}>
+            <span className={`nrf-wf-radio${workflow === 'milestones' ? ' nrf-wf-radio--selected' : ''}`}>
+              {workflow === 'milestones' && <span className="nrf-wf-radio-inner" />}
+            </span>
             <span className="nrf-wf-info">
-              <span className="nrf-wf-name">Milestones <Badge variant="neutral">coming soon</Badge></span>
+              <span className="nrf-wf-name">Milestones</span>
               <span className="nrf-wf-desc">Break work into milestones with phased delivery</span>
             </span>
           </button>
