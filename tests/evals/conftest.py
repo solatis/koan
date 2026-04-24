@@ -20,15 +20,19 @@ from pathlib import Path
 
 import pytest
 
-from evals.cases import Case, discover_cases
+from evals.cases import Case, CASES as _ALL_CASES, FIXTURES_DIR
 from evals.runner import run_koan
 
 
 log = logging.getLogger("koan.evals.conftest")
 
-FIXTURES_DIR = Path(__file__).resolve().parents[2] / "evals" / "fixtures"
-
-CASES: list[Case] = discover_cases(FIXTURES_DIR)
+# Apply KOAN_EVAL_TASK filter -- env var makes test runs scope to a single
+# task for iteration speed while keeping the full matrix available by default.
+_EVAL_TASK_FILTER = os.environ.get("KOAN_EVAL_TASK")
+CASES: list[Case] = (
+    _ALL_CASES if not _EVAL_TASK_FILTER
+    else [c for c in _ALL_CASES if _EVAL_TASK_FILTER in c.task_id]
+)
 
 
 def _case_id(case: Case) -> str:
@@ -110,10 +114,9 @@ _JUDGE_MODEL = "gemini-3-pro-preview"
 _KOAN_GIT_SHA = _detect_koan_git_sha()
 
 
-# Module-level dict passed to deepeval.evaluate(hyperparameters=...) at call
-# time. This wires reliably through the evaluate() path; @log_hyperparameters
-# fires at import time against a stale run object, producing "No hyperparameters
-# logged" warnings under the evaluate() invocation path.
+# Module-level dict consumed by @deepeval.log_hyperparameters in test_koan.py.
+# Under `deepeval test run`, the shared test_run is already created at
+# pytest_sessionstart, so the decorator attaches correctly at module import time.
 HYPERPARAMETERS: dict[str, str] = {
     "orchestrator_model": _ORCH_MODEL,
     "judge_model":        _JUDGE_MODEL,

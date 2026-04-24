@@ -1,46 +1,50 @@
 # tests/evals/test_koan.py
-# Single test function that calls deepeval.evaluate() over all discovered cases
-# and rubric sections in one shot.
-#
-# test_workflow_suite() builds:
-#   - rubric test cases: one per (case, phase, section) triple that has a rubric
-#     file on disk. RubricComplianceMetric applies; others skip.
-#   - run test cases: one per case. Duration/TokenCost/ToolCallCount/CrossPhaseCoherence
-#     apply; RubricCompliance skips.
-#
-# All ~21 test cases are passed to evaluate() at once so DeepEval's async engine
-# parallelizes up to max_concurrent=100 (case, metric) pairs simultaneously.
-# Row-level granularity on the Confident AI dashboard is keyed by LLMTestCase.name
-# rather than by pytest test IDs (there is now exactly one pytest test ID).
+# Parametrized pytest tests per rubric row and per run row.
+# INVOKE VIA: deepeval test run tests/evals/test_koan.py
+# (Plain `pytest` works for collection but does NOT upload to Confident AI
+# and does NOT attach hyperparameters; see plan.md / memory 75 for rationale.)
 
 from __future__ import annotations
 
 import logging
+import os
+from dataclasses import dataclass
 
-from deepeval import evaluate
-from deepeval.evaluate.configs import AsyncConfig, DisplayConfig
+# Per-task timeout for criteria-sequential DAG eval must be set before deepeval
+# runtime reads it. 600s accommodates rubrics with many criteria at ~15s/call.
+os.environ.setdefault("DEEPEVAL_PER_TASK_TIMEOUT_SECONDS_OVERRIDE", "600")
+
+import deepeval
+import pytest
+from deepeval import assert_test
+from deepeval.metrics import BaseMetric
 from deepeval.test_case import LLMTestCase
 
 from evals.cases import Case
+from evals.rubrics import (
+    FIXTURE_RUBRICS,
+    TASK_RUBRIC_ADDENDUMS,
+    get_cross_phase_rubric,
+    get_rubric_criteria,
+)
 from evals.scorers import (
-    CROSS_PHASE_COHERENCE_METRIC,
     DURATION_METRIC,
-    RUBRIC_COMPLIANCE_METRIC,
     TOKEN_COST_METRIC,
     TOOL_CALL_COUNT_METRIC,
-    load_rubric_criteria,
     _payload_artifacts,
     _payload_overall,
     _payload_questions,
     _payload_summary,
     _payload_workflow,
+    build_criterion_metric,
+    build_cross_phase_metric,
 )
 from tests.evals.conftest import CASES, HYPERPARAMETERS, _get_harvest
+
 
 log = logging.getLogger("koan.evals.test_koan")
 
 SECTIONS = ("summary", "questions", "artifacts", "overall")
-
 _PAYLOAD_FNS = {
     "summary":   _payload_summary,
     "questions": _payload_questions,
@@ -48,113 +52,179 @@ _PAYLOAD_FNS = {
     "overall":   _payload_overall,
 }
 
-# All five metrics as a shared list. Metrics are construction-parameterless
-# singletons; per-row inputs travel via LLMTestCase.additional_metadata.
-# Metrics skip (self.skipped=True) for rows where their required key is absent.
-ALL_METRICS = [
-    RUBRIC_COMPLIANCE_METRIC,
-    CROSS_PHASE_COHERENCE_METRIC,
-    DURATION_METRIC,
-    TOKEN_COST_METRIC,
-    TOOL_CALL_COUNT_METRIC,
-]
+
+# -- Hyperparameters -----------------------------------------------------------
+
+# Fires at module import. Under `deepeval test run`, pytest_sessionstart has
+# already created the shared test_run, so this attaches correctly. Under plain
+# pytest this still runs but attaches to an ephemeral test_run (see memory 75).
+@deepeval.log_hyperparameters
+def _hyperparameters() -> dict[str, str]:
+    return HYPERPARAMETERS
+
+
+# -- Row builders --------------------------------------------------------------
+
+@dataclass(frozen=True)
+class RubricRow:
+    case: Case
+    phase: str
+    section: str
+    name: str  # LLMTestCase.name
+
+
+@dataclass(frozen=True)
+class RunRow:
+    case: Case
+    name: str
 
 
 def _active_phases(case: Case) -> list[str]:
     return [p for p in case.directed_phases if p != "done"]
 
 
-def _build_rubric_test_cases(harvest_cache: dict) -> list[LLMTestCase]:
-    """One LLMTestCase per (case, phase, section) triple that has a rubric on disk."""
-    tcs = []
+def _build_rubric_rows() -> list[RubricRow]:
+    rows: list[RubricRow] = []
     for case in CASES:
-        h = _get_harvest(case, harvest_cache)
-        # Use the task description as input so the judge has meaningful context.
-        task_md = (case.task_dir / "task.md").read_text(encoding="utf-8").strip()
         for phase in _active_phases(case):
             for section in SECTIONS:
-                criteria = load_rubric_criteria(
-                    case.fixture_dir, case.task_dir, phase, section,
-                )
-                if criteria is None:
+                if get_rubric_criteria(
+                    case.fixture_id, case.task_id, phase, section,
+                ) is None:
                     continue
-                payload = _PAYLOAD_FNS[section](h, phase)
-                tcs.append(LLMTestCase(
-                    name=f"{case.fixture_id}/{case.task_id}/{case.case_id}/{phase}/{section}",
-                    input=task_md,
-                    actual_output=payload,
-                    additional_metadata={
-                        "fixture_id":      case.fixture_id,
-                        "task_id":         case.task_id,
-                        "case_id":         case.case_id,
-                        "phase":           phase,
-                        "section":         section,
-                        "rubric_criteria": criteria,
-                    },
+                rows.append(RubricRow(
+                    case=case, phase=phase, section=section,
+                    name=(
+                        f"{case.fixture_id}/{case.task_id}/{case.case_id}"
+                        f"/{phase}/{section}"
+                    ),
                 ))
-    return tcs
+    return rows
 
 
-def _build_run_test_cases(harvest_cache: dict) -> list[LLMTestCase]:
-    """One LLMTestCase per case for programmatic and cross-phase metrics."""
-    tcs = []
-    for case in CASES:
-        h = _get_harvest(case, harvest_cache)
-        task_md = (case.task_dir / "task.md").read_text(encoding="utf-8").strip()
-        tok = h.get("token_cost", {}) or {}
-        total_tokens = int(tok.get("input_tokens", 0)) + int(tok.get("output_tokens", 0))
-        tcs.append(LLMTestCase(
+def _build_run_rows() -> list[RunRow]:
+    return [
+        RunRow(
+            case=case,
             name=f"{case.fixture_id}/{case.task_id}/{case.case_id}/workflow",
-            input=task_md,
-            actual_output=_payload_workflow(h),
-            # First-class fields for native DeepEval dashboard visualization.
-            token_cost=float(total_tokens),
-            completion_time=float(h.get("duration_s", 0.0)),
-            additional_metadata={
-                "fixture_id":      case.fixture_id,
-                "task_id":         case.task_id,
-                "case_id":         case.case_id,
-                "workflow":        case.workflow,
-                "directed_phases": case.directed_phases,
-                # duration_s and token_cost in metadata for Duration/TokenCost
-                # metrics (richer structure than the first-class scalar fields).
-                "duration_s":      h.get("duration_s", 0.0),
-                "token_cost":      tok,
-                "tool_call_count": h.get("tool_call_count", {}),
-                # None when rubric_body is empty so CrossPhaseCoherenceMetric skips.
-                "rubric_body":     case.rubric_body if case.rubric_body.strip() else None,
-            },
-        ))
-    return tcs
-
-
-def test_workflow_suite(harvest_cache):
-    test_cases = _build_rubric_test_cases(harvest_cache) + _build_run_test_cases(harvest_cache)
-
-    # Guard against the deduplication bug: identical names collapse all rows
-    # into one on the Confident AI dashboard. Fail fast at collection time.
-    names = [tc.name for tc in test_cases]
-    assert len(set(names)) == len(names), "duplicate LLMTestCase.name values"
-
-    log.info(
-        "running evaluate() over %d test cases x %d metrics",
-        len(test_cases), len(ALL_METRICS),
-    )
-    result = evaluate(
-        test_cases=test_cases,
-        metrics=ALL_METRICS,
-        hyperparameters=HYPERPARAMETERS,
-        # max_concurrent=100: fan out all (case, metric) pairs simultaneously.
-        # Default is 20; the suite has ~21 cases x 5 metrics = ~105 pairs.
-        async_config=AsyncConfig(run_async=True, throttle_value=0, max_concurrent=100),
-        display_config=DisplayConfig(show_indicator=True, print_results=True),
-    )
-
-    # Surface all failing rows in a single assertion so pytest reports which rows
-    # failed. Individual row names are enough to locate the rubric + payload.
-    failed = [r for r in result.test_results if not r.success]
-    if failed:
-        names = [r.name for r in failed]
-        raise AssertionError(
-            f"{len(failed)} of {len(test_cases)} test rows failed: {names}"
         )
+        for case in CASES
+    ]
+
+
+# -- Metric name helpers -------------------------------------------------------
+
+def _norm(s: str) -> str:
+    return s.replace("-", "_")
+
+
+def _fixture_criterion_name(phase: str, section: str, idx: int) -> str:
+    return f"Fixture_{_norm(phase)}_{section}_{idx:02d}"
+
+
+def _task_criterion_name(task_id: str, phase: str, section: str, idx: int) -> str:
+    return f"Task_{_norm(task_id)}_{_norm(phase)}_{section}_{idx:02d}"
+
+
+def _cross_phase_name(task_id: str, case_id: str) -> str:
+    return f"CrossPhaseCoherence_{_norm(task_id)}_{_norm(case_id)}"
+
+
+# -- LLMTestCase + metric list builders ----------------------------------------
+
+def _rubric_test_case(row: RubricRow, harvest: dict) -> LLMTestCase:
+    task_md = (row.case.task_dir / "task.md").read_text(encoding="utf-8").strip()
+    payload = _PAYLOAD_FNS[row.section](harvest, row.phase)
+    return LLMTestCase(
+        name=row.name,
+        input=task_md,
+        actual_output=payload,
+        additional_metadata={
+            "fixture_id": row.case.fixture_id,
+            "task_id":    row.case.task_id,
+            "case_id":    row.case.case_id,
+            "phase":      row.phase,
+            "section":    row.section,
+        },
+    )
+
+
+def _run_test_case(row: RunRow, harvest: dict) -> LLMTestCase:
+    task_md = (row.case.task_dir / "task.md").read_text(encoding="utf-8").strip()
+    tok = harvest.get("token_cost", {}) or {}
+    total_tokens = int(tok.get("input_tokens", 0)) + int(tok.get("output_tokens", 0))
+    return LLMTestCase(
+        name=row.name,
+        input=task_md,
+        actual_output=_payload_workflow(harvest),
+        token_cost=float(total_tokens),
+        completion_time=float(harvest.get("duration_s", 0.0)),
+        additional_metadata={
+            "fixture_id":      row.case.fixture_id,
+            "task_id":         row.case.task_id,
+            "case_id":         row.case.case_id,
+            "workflow":        row.case.workflow,
+            "directed_phases": row.case.directed_phases,
+            "duration_s":      harvest.get("duration_s", 0.0),
+            "token_cost":      tok,
+            "tool_call_count": harvest.get("tool_call_count", {}),
+        },
+    )
+
+
+def _rubric_metrics(row: RubricRow) -> list[BaseMetric]:
+    fixture_crits = FIXTURE_RUBRICS.get(
+        (row.case.fixture_id, row.phase, row.section), [],
+    )
+    task_crits = TASK_RUBRIC_ADDENDUMS.get(
+        (row.case.fixture_id, row.case.task_id, row.phase, row.section), [],
+    )
+    metrics: list[BaseMetric] = []
+    for i, c in enumerate(fixture_crits, start=1):
+        metrics.append(build_criterion_metric(
+            c, _fixture_criterion_name(row.phase, row.section, i),
+        ))
+    for i, c in enumerate(task_crits, start=1):
+        metrics.append(build_criterion_metric(
+            c, _task_criterion_name(row.case.task_id, row.phase, row.section, i),
+        ))
+    return metrics
+
+
+def _run_metrics(row: RunRow) -> list[BaseMetric]:
+    # Programmatic metrics apply to every run row; raise ValueError on
+    # missing metadata so builder bugs surface immediately rather than silently.
+    metrics: list[BaseMetric] = [
+        DURATION_METRIC, TOKEN_COST_METRIC, TOOL_CALL_COUNT_METRIC,
+    ]
+    cross_phase_body = get_cross_phase_rubric(
+        row.case.fixture_id, row.case.task_id, row.case.case_id,
+    )
+    if cross_phase_body is not None:
+        metrics.append(build_cross_phase_metric(
+            cross_phase_body,
+            name=_cross_phase_name(row.case.task_id, row.case.case_id),
+        ))
+    return metrics
+
+
+# -- Parametrized tests --------------------------------------------------------
+
+_RUBRIC_ROWS = _build_rubric_rows()
+_RUN_ROWS = _build_run_rows()
+
+
+@pytest.mark.parametrize(
+    "row", _RUBRIC_ROWS, ids=[r.name for r in _RUBRIC_ROWS],
+)
+def test_rubric(row: RubricRow, harvest_cache):
+    harvest = _get_harvest(row.case, harvest_cache)
+    assert_test(_rubric_test_case(row, harvest), _rubric_metrics(row))
+
+
+@pytest.mark.parametrize(
+    "row", _RUN_ROWS, ids=[r.name for r in _RUN_ROWS],
+)
+def test_run(row: RunRow, harvest_cache):
+    harvest = _get_harvest(row.case, harvest_cache)
+    assert_test(_run_test_case(row, harvest), _run_metrics(row))
