@@ -1,10 +1,10 @@
 ---
-title: 'Three active workflows: plan, milestones (stub), curation'
+title: 'Three active workflows: plan, milestones (full pipeline), curation'
 type: context
 created: '2026-04-16T08:37:42Z'
-modified: '2026-04-16T08:37:42Z'
+modified: '2026-04-23T13:25:54Z'
 related:
 - 0001-persistent-orchestrator-over-per-phase-cli.md
 ---
 
-The koan workflow registry (`koan/lib/workflows.py`) defined three workflows as of 2026-04-16: `plan` (the primary active pipeline), `milestones` (a stub), and `curation` (standalone memory maintenance). Leon added the `curation` workflow when implementing the koan memory system, giving it its own `Workflow` dataclass in the `WORKFLOWS` dict in `koan/lib/workflows.py`. The `plan` workflow runs: intake -> plan-spec -> plan-review -> execute -> curation (postmortem). The `milestones` workflow ran intake only and was a stub as of 2026-04-16, intended for broad multi-subsystem initiatives but not yet implemented beyond the intake phase. The `curation` workflow runs a single curation phase using the `_STANDALONE_DIRECTIVE` string defined in `koan/lib/workflows.py` and is invoked when the user wants to maintain project memory outside of a development workflow run. Note: an earlier Claude Code project memory entry (written approximately 2026-04-08) listed only two workflows (plan and milestones); the curation workflow was added after that entry was written.
+The koan workflow registry (`koan/lib/workflows.py`) was updated on 2026-04-23 when Leon implemented the milestones workflow, replacing the stub definition that had existed since 2026-04-16. The `milestones` workflow was previously a 1-phase stub that ran intake only and yielded with no further phases. As of 2026-04-23, the milestones workflow is a full 8-phase delivery pipeline: intake -> milestone-spec -> milestone-review -> plan-spec -> plan-review -> execute -> exec-review -> curation. The orchestrator loops through milestones by reading `milestones.md` at each phase entry: milestone-spec decomposes or updates, plan-spec writes `plan-milestone-N.md` for the current `[in-progress]` milestone, execute hands off to an executor subagent, exec-review verifies the result, then milestone-spec updates `milestones.md` (marks milestone `[done]`, adjusts remaining milestones). The loop continues until all milestones are `[done]` or `[skipped]`, then transitions to curation. The `plan` workflow was also updated: exec-review was added as a phase after execute and before curation.
