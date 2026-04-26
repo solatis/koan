@@ -1,0 +1,10 @@
+---
+title: Review-phase rewrite-or-loop-back semantics replace advisory-only doctrine
+type: decision
+created: '2026-04-26T09:32:48Z'
+modified: '2026-04-26T09:32:48Z'
+related:
+- 0005-phase-trust-model.md
+---
+
+The koan review-phase doctrine (`koan/phases/{plan_review,milestone_review,exec_review}.py`, `docs/phase-trust.md`) shifted from "advisory only" to "rewrite-or-loop-back" on 2026-04-26 during M4 of the unified-artifact-flow initiative. Leon endorsed the design through plan-spec / execute for M4 (clean execution, 736 tests passed; user skipped explicit exec-review). The change: review phases (`plan-review`, `milestone-review`, `exec-review`) classify each finding in their step 2 as either INTERNAL (the producer could have caught it given files it already loaded -- producer artifact body + `brief.md`) or NEW-FILES-NEEDED (catching it would have required loading additional files). For internal findings, the review phase issues `koan_artifact_write` against the producer's artifact in step 2, fixing the issue in place; for new-files findings, the review phase yields with the producer phase recommended in the `koan_yield` suggestions list (loop-back). Mixed findings produce both behaviours -- the rewrite is applied AND the yield recommends loop-back. The classification is LLM judgement, not a heuristic or explicit producer-loaded manifest -- intake settled the alternatives (heuristic-from-references, explicit-manifest, always-rewrite-unless-new-file-cited all rejected). Permission-fence design: role-level grant (the M1 `koan_artifact_write` grant on the orchestrator role suffices) plus prompt discipline; per-filename allowlist scoping was rejected as over-engineering and remains a future enhancement noted in `docs/phase-trust.md` (rewritten to 221 lines). Step 2 prompts grew substantially during M4 (`plan_review.py` +72 LOC, `milestone_review.py` +154 LOC, `exec_review.py` +99 LOC) -- worth monitoring for prompt-attention dilution. Rewrite + loop-back logic sits BEFORE the M3 `terminal_invoke` directive in step 2; the yield directive renders unchanged. The doctrine supersedes memory entry 5's "advisory only" framing.

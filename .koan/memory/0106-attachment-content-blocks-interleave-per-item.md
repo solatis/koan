@@ -1,0 +1,9 @@
+---
+title: Attachment content blocks interleave per-item adjacent to the text they were
+  uploaded with, not aggregated
+type: decision
+created: '2026-04-24T16:39:30Z'
+modified: '2026-04-24T16:39:30Z'
+---
+
+This entry documents the attachment-interleaving rule for MCP tool returns in koan (`koan/web/mcp_endpoint.py`, `koan/phases/format_step.py`). On 2026-04-24, during intake for the file-attachment initiative, Leon decided that when a tool result carries both text and attachment content blocks, each attachment block immediately follows the text block representing the item it was uploaded with. Leon's stated rationale: per-item attachments throughout -- attachments as close as possible to where they were uploaded -- because this is crucial for LLM attention and ensures its attention doesn't have to span back and forward. The rule applies per-surface: per-answer in `koan_ask_question` (each `Q:/A:` text block followed by that answer's File blocks), per-comment plus top-level summary in `koan_artifact_propose` (per-comment-group text block followed by that group's File blocks, summary text block followed by summary attachments), per-decision in `koan_memory_propose` (the outer JSON blob stays as block 0 to preserve the orchestrator's `json.loads(result[0].text)` parse, then `TextContent("-- Attachments for proposal <pid> --")` labels precede each decision's File blocks), and per-message in `koan_yield` and `_drain_and_append_steering` (each drained `ChatMessage`'s envelope text block followed by its attachments). Alternative rejected: aggregate all attachments at the end of the tool result with a single top-level `attachments` list on the payload; Leon rejected this because an attachment attached to decision N sitting after all the text of decisions 1..M forces the LLM to reconstruct the association, degrading attention locality.
