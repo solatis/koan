@@ -75,20 +75,19 @@ Key properties:
 
 ### Step 3: Summarize
 
-The Summarize step synthesizes findings into a concise summary covering: task
-scope, key codebase findings, decisions made, constraints, and open items.
-This summary lives in the LLM's context -- downstream phases (plan-spec,
-plan-review) trust it as their starting point. See
+The Summarize step synthesizes findings into a seven-section `brief.md`
+artifact covering: Initiative, Scope (in-scope and out-of-scope), Affected
+subsystems, Decisions, Constraints, Assumptions, and Open questions. It is
+written via `koan_artifact_write(filename="brief.md", status="Final")`.
+Downstream phases (plan-spec, milestone-spec, exec-review, curation) read
+`brief.md` as the authoritative initiative context. See
 [phase-trust.md](./phase-trust.md) for the trust model.
 
 The Summarize step exists as a distinct step (rather than being folded into the
-end of Deepen) for a structural reason: the RAG injection pipeline captures the
-orchestrator's last prose turn before `koan_yield` at each phase boundary as
-that phase's summary. Embedding the synthesis inside Deepen means subsequent
-`koan_complete_step` calls could follow the synthesis text, displacing it as the
-final captured turn and degrading the RAG anchor for the next phase. A dedicated
-step ensures the synthesis is the last cognitive act before the phase boundary,
-making the captured summary clean and unambiguous.
+end of Deepen) so the synthesis work is focused and complete before advancing.
+After `brief.md` is written, the phase advances automatically toward the next
+workflow phase (plan-spec or milestone-spec) via the `next_phase` binding
+established in M3.
 
 ---
 
@@ -121,9 +120,9 @@ steps. Each step does real work across multiple activities rather than
 artificially separating them into sequential tool calls. Gather combines
 reading, orientation, and scout dispatch in a single step. Deepen combines
 scout result processing, direct file verification, and iterative dialogue.
-Summarize is a distinct step rather than being folded into Deepen because
-it serves a structural role in the RAG injection pipeline (see
-[Step 3: Summarize](#step-3-summarize) above).
+Summarize is a distinct step rather than being folded into Deepen so the
+synthesis work is focused and the `brief.md` artifact write is the terminal
+act of the phase (see [Step 3: Summarize](#step-3-summarize) above).
 
 ### Iterative deepening through dialogue
 

@@ -157,11 +157,16 @@ def build_tool_completed(
     call_id: str,
     tool: str,
     result: str | None = None,
+    attachments: list[dict] | None = None,
     ts_ms: int = 0,
 ) -> dict:
     payload: dict = {"call_id": call_id, "tool": tool, "ts_ms": ts_ms}
     if result is not None:
         payload["result"] = result
+    # Omit attachments when absent so the wire shape stays identical for M2
+    # (no attachment blocks are produced yet). M3 populates this field.
+    if attachments:
+        payload["attachments"] = attachments
     return payload
 
 
@@ -246,20 +251,6 @@ def build_yield_started(suggestions: list[dict]) -> dict:
                      options the orchestrator presents at a yield point.
     """
     return {"suggestions": suggestions}
-
-
-def build_artifact_review_started(path: str) -> dict:
-    """Build artifact_review_started event payload."""
-    return {"path": path}
-
-
-def build_phase_summary_captured(phase: str, summary: str) -> dict:
-    """Build phase_summary_captured event payload.
-
-    Carries only phase + summary. agent_id is passed separately at push_event
-    time for audit; the fold reads only phase and summary (run-scoped state).
-    """
-    return {"phase": phase, "summary": summary}
 
 
 # -- Configuration event builders ---------------------------------------------

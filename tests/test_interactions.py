@@ -102,9 +102,9 @@ class TestStaleSubmit:
         assert resp.json()["error"] == "stale_interaction"
 
     @pytest.mark.anyio
-    async def test_artifact_review_route_exists_and_validates(self):
-        """POST /api/artifact-review route now exists (artifact-propose task).
-        Returns 422 when the path field is missing, 409 when no review is pending."""
+    async def test_artifact_comment_route_exists_and_validates(self):
+        """POST /api/artifact-comment route exists (M5 replacement for /api/artifact-review).
+        Returns 422 when path or comment is missing."""
         from starlette.testclient import TestClient
 
         from koan.state import AppState
@@ -113,17 +113,14 @@ class TestStaleSubmit:
         app_state = AppState()
         app = create_app(app_state)
         client = TestClient(app, raise_server_exceptions=False)
-        # Missing 'path' field -> 422
-        resp = client.post("/api/artifact-review", json={"response": "Accept"})
+        # Missing path -> 422
+        resp = client.post("/api/artifact-comment", json={"comment": "hello"})
         assert resp.status_code == 422
         assert resp.json()["error"] == "missing_path"
-        # With path but no pending review -> 409
-        resp2 = client.post("/api/artifact-review", json={
-            "path": "plan.md",
-            "payload": {"summary": "", "comments": []},
-        })
-        assert resp2.status_code == 409
-        assert resp2.json()["error"] == "no_active_review"
+        # Missing comment -> 422
+        resp2 = client.post("/api/artifact-comment", json={"path": "plan.md"})
+        assert resp2.status_code == 422
+        assert resp2.json()["error"] == "missing_comment"
 
 
 # -- TestFIFOActivation -------------------------------------------------------

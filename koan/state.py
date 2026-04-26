@@ -8,6 +8,7 @@ import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 
@@ -24,6 +25,14 @@ from .types import WorkflowPhase, Profile, SubagentRole
 class ChatMessage:
     content: str
     timestamp_ms: int
+    # Upload IDs that were attached to this message at submission time.
+    # IDs are resolved to paths via UploadState; files are committed to run_dir
+    # before the message is buffered so handlers can always find them.
+    attachments: list[str] = field(default_factory=list)
+    # When set, the message is anchored to a specific run-dir artifact. Rendered
+    # as an [artifact: {path}] prefix in the steering envelope so the
+    # orchestrator knows which artifact the comment refers to.
+    artifact_path: str | None = None
 
 
 @dataclass
@@ -52,6 +61,10 @@ class AgentState:
     token_count: dict = field(default_factory=lambda: {"sent": 0, "received": 0})
     final_response: str = ""
     is_primary: bool = True
+    # "claude", "codex", "gemini", or "" (default -- treated as non-Claude).
+    # Populated at every spawn site from runner.name. Used by upload_ids_to_blocks
+    # to decide whether to emit File/Image blocks or a text-notice fallback.
+    runner_type: str = ""
     started_at: datetime = field(default_factory=_utcnow)
 
 
@@ -67,6 +80,10 @@ class RunState:
     project_dir: str = ""
     start_event: asyncio.Event = field(default_factory=asyncio.Event)
     run_installations: dict[str, str] = field(default_factory=dict)
+    # Upload IDs attached at start-run time, consumed exactly once by the
+    # orchestrator's first koan_complete_step and then cleared. Not persisted
+    # to run-state.json; task.json carries the IDs as a debug breadcrumb.
+    start_attachments: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -76,15 +93,31 @@ class InteractionState:
     interaction_queue_max: int = 8
     user_message_buffer: list[ChatMessage] = field(default_factory=list)
     yield_future: asyncio.Future | None = None
-    # Separate future for koan_artifact_propose -- parallel to yield_future,
-    # not unified, so each blocking interaction keeps its own invariants.
-    artifact_review_future: asyncio.Future | None = None
-    # Separate future for koan_memory_propose -- same isolation rationale.
+    # Separate future for koan_memory_propose -- same isolation rationale as
+    # the removed artifact_review_future (koan_artifact_propose is gone in M5).
     memory_propose_future: asyncio.Future | None = None
     # Background reflect task and its session id for the cancel path.
     reflect_task: asyncio.Task | None = None
     reflect_session_id: str | None = None
     steering_queue: list[ChatMessage] = field(default_factory=list)
+
+
+@dataclass
+class UploadRecord:
+    id: str
+    filename: str
+    size: int
+    content_type: str
+    path: Path          # absolute path to file on disk
+    committed: bool     # False while in tempdir, True after commit_to_run
+
+
+@dataclass
+class UploadState:
+    # tempdir is typed Any to avoid importing tempfile at module load --
+    # state.py is import-sensitive and tempfile is only needed in uploads.py.
+    tempdir: Any = None
+    entries: dict[str, UploadRecord] = field(default_factory=dict)
 
 
 @dataclass
@@ -123,6 +156,7 @@ class AppState:
     interactions: InteractionState = field(default_factory=InteractionState)
     runner_config: RunnerConfigState = field(default_factory=RunnerConfigState)
     memory: MemoryServices = field(default_factory=MemoryServices)
+    uploads: UploadState = field(default_factory=UploadState)
     server: ServerConfig = field(default_factory=ServerConfig)
     projection_store: ProjectionStore = field(default_factory=ProjectionStore)
     agents: dict[str, AgentState] = field(default_factory=dict)

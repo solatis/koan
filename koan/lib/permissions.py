@@ -56,7 +56,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
         # Documentation of the tools the orchestrator may use;
         # actual allow/deny lives in _check_orchestrator_permission.
         # write/edit are intentionally absent -- all artifact mutations
-        # flow through koan_artifact_propose per this task's design.
+        # flow through koan_artifact_write per this task's design.
         "koan_complete_step",
         "koan_set_phase",
         "koan_yield",
@@ -72,7 +72,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
         "koan_memory_status",
         "koan_search",
         "koan_reflect",
-        "koan_artifact_propose",
+        "koan_artifact_write",
         "koan_memory_propose",
         "bash",
     }),
@@ -274,18 +274,17 @@ def _check_orchestrator_permission(
         )
         return {"allowed": False, "reason": reason}
 
-    # koan_artifact_propose -- orchestrator-only, available in every phase.
-    # write/edit are intentionally absent: all artifact mutations flow through
-    # this tool so the review handshake cannot be bypassed.
-    if tool_name == "koan_artifact_propose":
+    # koan_artifact_write -- non-blocking artifact write tool. All artifact
+    # mutations flow through this tool; write/edit are blocked for orchestrator.
+    if tool_name == "koan_artifact_write":
         log.debug(
-            "permission allow: role=orchestrator tool=koan_artifact_propose phase=%s step=%s",
+            "permission allow: role=orchestrator tool=koan_artifact_write phase=%s step=%s",
             phase, current_step,
         )
         return {"allowed": True, "reason": None}
 
     # koan_memory_propose -- orchestrator-only, available in every phase.
-    # Parallels koan_artifact_propose: memory mutations flow through this tool
+    # Parallels koan_artifact_write: memory mutations flow through this tool
     # so the review handshake cannot be bypassed.
     if tool_name == "koan_memory_propose":
         log.debug(

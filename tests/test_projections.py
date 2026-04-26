@@ -523,6 +523,42 @@ class TestFoldTools:
         assert entry.in_flight is False
         assert entry.result == {"answer": "A", "citations": [{"id": "1", "title": "T"}], "iterations": 3}
 
+    def test_tool_completed_sets_attachments(self):
+        """Attachment manifest from tool_completed event attaches to the entry."""
+        p = _proj_with_primary("a1")
+        p = fold(p, _e("tool_called", {
+            "call_id": "c1", "tool": "koan_reflect",
+            "args": {"question": "Q"},
+        }, agent_id="a1"))
+        manifest = [
+            {"upload_id": "u1", "filename": "spec.pdf", "size": 1024,
+             "content_type": "application/pdf", "path": "/run/uploads/u1/spec.pdf"},
+        ]
+        result_json = '{"answer": "A"}'
+        r = fold(p, _e("tool_completed", {
+            "call_id": "c1", "tool": "koan_reflect", "result": result_json,
+            "attachments": manifest,
+        }, agent_id="a1"))
+        entry = r.run.agents["a1"].conversation.entries[0]
+        assert isinstance(entry, ToolKoanEntry)
+        assert entry.in_flight is False
+        assert entry.attachments is not None
+        assert len(entry.attachments) == 1
+        a = entry.attachments[0]
+        assert a.upload_id == "u1"
+        assert a.filename == "spec.pdf"
+        assert a.size == 1024
+        assert a.content_type == "application/pdf"
+
+    def test_tool_completed_no_attachments_leaves_field_none(self):
+        """When tool_completed has no attachments, entry.attachments stays None."""
+        p = _proj_with_primary("a1")
+        p = fold(p, _e("tool_bash", {"call_id": "c1", "command": "ls"}, agent_id="a1"))
+        r = fold(p, _e("tool_completed", {"call_id": "c1", "tool": "bash"}, agent_id="a1"))
+        entry = r.run.agents["a1"].conversation.entries[0]
+        assert entry.in_flight is False
+        assert entry.attachments is None
+
     def test_tool_called_non_renderable_koan_still_skipped(self):
         p = _proj_with_primary("a1")
         r = fold(p, _e("tool_called", {
@@ -798,46 +834,25 @@ class TestFoldArtifacts:
 
 
 # ---------------------------------------------------------------------------
-# fold: artifact review
+# fold: artifact review -- removed in M5
 # ---------------------------------------------------------------------------
 
-class TestFoldArtifactReview:
+class TestFoldArtifactReviewRemoved:
+    """M5 deleted the inline-review apparatus. artifact_review_started and
+    artifact_review_cleared are no longer known event types; the fold treats
+    them as unknown and returns the projection unchanged."""
 
-    def test_artifact_review_started_sets_path(self):
+    def test_artifact_review_started_unknown_noop(self):
         p = _proj_with_run()
         r = fold(p, _e("artifact_review_started", {"path": "plan.md"}))
-        assert r.run.active_artifact_review is not None
-        assert r.run.active_artifact_review.path == "plan.md"
+        # Unknown event: projection unchanged, no active_artifact_review field
+        assert r == p
+        assert not hasattr(r.run, "active_artifact_review")
 
-    def test_artifact_review_cleared_nulls_field(self):
+    def test_artifact_review_cleared_unknown_noop(self):
         p = _proj_with_run()
-        p = fold(p, _e("artifact_review_started", {"path": "plan.md"}))
         r = fold(p, _e("artifact_review_cleared", {}))
-        assert r.run.active_artifact_review is None
-
-    def test_phase_started_clears_active_artifact_review(self):
-        p = _proj_with_run()
-        p = fold(p, _e("artifact_review_started", {"path": "plan.md"}))
-        assert p.run.active_artifact_review is not None
-        r = fold(p, _e("phase_started", {"phase": "plan-review"}))
-        assert r.run.active_artifact_review is None
-
-    def test_workflow_completed_clears_active_artifact_review(self):
-        p = _proj_with_run()
-        p = fold(p, _e("artifact_review_started", {"path": "plan.md"}))
-        assert p.run.active_artifact_review is not None
-        r = fold(p, _e("workflow_completed", {"success": True, "summary": "done"}))
-        assert r.run.active_artifact_review is None
-
-    def test_artifact_review_started_without_run_noop(self):
-        p = Projection()
-        r = fold(p, _e("artifact_review_started", {"path": "plan.md"}))
-        assert r.run is None
-
-    def test_artifact_review_cleared_without_run_noop(self):
-        p = Projection()
-        r = fold(p, _e("artifact_review_cleared", {}))
-        assert r.run is None
+        assert r == p
 
 
 # ---------------------------------------------------------------------------

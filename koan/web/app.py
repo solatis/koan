@@ -283,11 +283,20 @@ async def api_start_run(r: Request) -> Response:
             status_code=422,
         )
 
+    attachments_raw = body.get("attachments") or []
+    if not isinstance(attachments_raw, list):
+        return JSONResponse(
+            {"error": "validation_error",
+             "message": "attachments must be a list of upload IDs"},
+            status_code=422,
+        )
+    attachments = [a for a in attachments_raw if isinstance(a, str) and a]
+
     # Log before any control-flow branches that can return early so the line
     # always appears when a valid start-run request is received.
     log.info(
-        "start-run received: task_len=%d workflow=%s profile=%s",
-        len(task), body.get("workflow", "plan"), profile,
+        "start-run received: task_len=%d workflow=%s profile=%s attachments=%d",
+        len(task), body.get("workflow", "plan"), profile, len(attachments),
     )
     log.debug("start-run task payload: %s", truncate_payload(task))
 
@@ -373,6 +382,8 @@ async def api_start_run(r: Request) -> Response:
         st.interactions.yield_future.set_result(False)
     st.interactions.yield_future = None
     st.run.workflow_done = False
+    # Clear any stale start_attachments from a prior run before assigning new ones.
+    st.run.start_attachments = []
 
     # Create run directory
     run_id = f"{int(time.time())}-{uuid.uuid4().hex[:8]}"
@@ -382,6 +393,13 @@ async def api_start_run(r: Request) -> Response:
     # all subsequent DEBUG/INFO lines (including those from driver_main and
     # subagent spawn) land in the correct file rather than the prior run's.
     set_log_dir(str(run_dir))
+
+    # Commit start-run attachments into the new run dir after set_log_dir so
+    # any WARN logs about unknown IDs land in this run's koan.log.
+    # Use the committed subset for start_attachments so unknown IDs are filtered.
+    from .uploads import commit_to_run
+    committed = commit_to_run(st.uploads, attachments, run_dir) if attachments else {}
+    st.run.start_attachments = list(committed.keys())
 
     workflow_name = body.get("workflow", "plan")  # default to "plan"
     try:
@@ -400,6 +418,9 @@ async def api_start_run(r: Request) -> Response:
             "workflow": workflow_name,
             "created_at": time.time(),
             "project_dir": st.run.project_dir,
+            # Debug breadcrumb: the IDs passed on start-run. Not the delivery path;
+            # delivery uses RunState.start_attachments in koan_complete_step.
+            "attachments": attachments,
         },
     )
 
@@ -436,13 +457,20 @@ async def api_run_clear(r: Request) -> Response:
         st.interactions.yield_future.set_result(False)
     st.interactions.yield_future = None
     st.run.workflow_done = False
+    # Guard: clear start_attachments so a race between run_clear and a stale
+    # orchestrator cannot leak boot-time attachments into the next run.
+    st.run.start_attachments = []
 
     st.projection_store.push_event("run_cleared", build_run_cleared())
     return JSONResponse({"ok": True})
 
 
 async def api_chat(r: Request) -> Response:
-    """Accept a user chat message, buffer it, and unblock any waiting koan_yield."""
+    """Accept a user chat message, buffer it, and unblock any waiting koan_yield.
+
+    Commits any attachment uploads before buffering so koan_yield can find
+    the files in the run_dir when it drains the message buffer.
+    """
     body = await r.json()
     message = body.get("message", "")
     if not isinstance(message, str) or not message.strip():
@@ -452,8 +480,16 @@ async def api_chat(r: Request) -> Response:
     if st.run.run_dir is None:
         return JSONResponse({"error": "no_run"}, status_code=409)
 
+    attachments: list[str] = [
+        a for a in (body.get("attachments") or [])
+        if isinstance(a, str)
+    ]
+    if attachments:
+        from .uploads import commit_to_run
+        commit_to_run(st.uploads, attachments, st.run.run_dir)
+
     ts = int(time.time() * 1000)
-    msg = ChatMessage(content=message.strip(), timestamp_ms=ts)
+    msg = ChatMessage(content=message.strip(), timestamp_ms=ts, attachments=attachments)
     # Route to one buffer based on context to prevent double-delivery.
     # During phase-boundary blocking: message is the transition directive.
     # Otherwise: message is steering feedback delivered on next tool response.
@@ -487,32 +523,137 @@ async def api_chat(r: Request) -> Response:
     return JSONResponse({"ok": True})
 
 
-async def api_artifact_review(r: Request) -> Response:
-    """Accept a review payload; resolve the artifact_review_future."""
+async def api_artifact_comment(r: Request) -> Response:
+    """Accept an artifact-anchored comment; route as steering input.
+
+    Body schema: {path: str, comment: str, attachments: list[str]}
+
+    The comment is delivered to the orchestrator as a steering message tagged
+    with the artifact path. If a yield is currently active for the orchestrator,
+    the comment resolves the yield future (surfacing as the user's reply).
+    Otherwise it is enqueued to the steering queue; the next step boundary
+    drains it and includes [artifact: {path}] in the steering envelope.
+
+    Mirrors api_chat routing logic; the only differences are the required path
+    field and the artifact_path tag on the ChatMessage.
+    """
     body = await r.json()
     path = body.get("path", "")
-    payload = body.get("payload", {}) or {}
+    comment = body.get("comment", "")
+    attachments = body.get("attachments") or []
+
     if not isinstance(path, str) or not path:
-        return JSONResponse(
-            {"error": "missing_path"}, status_code=422,
-        )
+        return JSONResponse({"error": "missing_path"}, status_code=422)
+    if not isinstance(comment, str) or not comment.strip():
+        return JSONResponse({"error": "missing_comment"}, status_code=422)
 
     st = _app_state(r)
-    future = st.interactions.artifact_review_future
-    if future is None or future.done():
-        return JSONResponse(
+
+    if attachments:
+        if st.run.run_dir is None:
+            return JSONResponse({"error": "no_run"}, status_code=409)
+        from .uploads import commit_to_run
+        commit_to_run(st.uploads, attachments, st.run.run_dir)
+
+    ts = int(time.time() * 1000)
+    msg = ChatMessage(
+        content=comment,
+        timestamp_ms=ts,
+        attachments=attachments,
+        artifact_path=path,
+    )
+
+    run = st.projection_store.projection.run
+    primary_id = _primary_agent_id(run) if run else None
+
+    if (
+        st.interactions.yield_future is not None
+        and not st.interactions.yield_future.done()
+    ):
+        # Resolve the yield with the artifact comment so the orchestrator
+        # receives it as its yield reply rather than queued steering input.
+        st.projection_store.push_event(
+            "user_message",
             {
-                "error": "no_active_review",
-                "message": "No artifact is currently pending review",
+                "content": msg.content,
+                "timestamp_ms": msg.timestamp_ms,
+                "artifact_path": msg.artifact_path,
             },
-            status_code=409,
+            agent_id=primary_id,
+        )
+        st.interactions.user_message_buffer.append(msg)
+        st.interactions.yield_future.set_result(True)
+    else:
+        st.interactions.steering_queue.append(msg)
+        st.projection_store.push_event(
+            "steering_queued", build_steering_queued(msg.content),
         )
 
-    from .mcp_endpoint import _render_review_payload
-    rendered = _render_review_payload(path, payload)
-    log.info("artifact review received: path=%s len=%d", path, len(rendered))
-    future.set_result(rendered)
     return JSONResponse({"ok": True})
+
+
+# -- Upload endpoint -----------------------------------------------------------
+
+async def api_upload(r: Request) -> Response:
+    """Accept a single multipart file upload, store it in the server-lifetime
+    tempdir, return id + metadata.
+
+    Returns 422 for non-multipart bodies or missing 'file' field so the client
+    gets a structured error instead of an unhandled framework 500.
+    """
+    st = _app_state(r)
+
+    # Starlette's r.form() does not raise on non-multipart bodies -- it silently
+    # returns an empty FormData.  Check the Content-Type header first so the
+    # client receives the more specific "invalid_multipart" error.
+    content_type = r.headers.get("content-type", "")
+    if not (
+        content_type.startswith("multipart/form-data")
+        or content_type.startswith("application/x-www-form-urlencoded")
+    ):
+        return JSONResponse(
+            {"error": "invalid_multipart",
+             "message": "request body must be multipart/form-data"},
+            status_code=422,
+        )
+
+    try:
+        form = await r.form()
+    except Exception:
+        return JSONResponse(
+            {"error": "invalid_multipart",
+             "message": "request body must be multipart/form-data"},
+            status_code=422,
+        )
+
+    upload_file = form.get("file")
+    if upload_file is None or isinstance(upload_file, str):
+        return JSONResponse(
+            {"error": "missing_file",
+             "message": "form field 'file' is required and must be a file"},
+            status_code=422,
+        )
+
+    from .uploads import register_upload
+    try:
+        record = await register_upload(st.uploads, upload_file)
+    except ValueError as e:
+        return JSONResponse(
+            {"error": "invalid_filename", "message": str(e)},
+            status_code=422,
+        )
+
+    log.info(
+        "upload received: id=%s filename=%s size=%d content_type=%s",
+        record.id, record.filename, record.size, record.content_type,
+    )
+
+    return JSONResponse({
+        "id": record.id,
+        "filename": record.filename,
+        "size": record.size,
+        "content_type": record.content_type,
+    })
 
 
 # -- Memory read endpoints -----------------------------------------------------
@@ -652,7 +793,13 @@ async def api_memory_summary(r: Request) -> Response:
 # -- Memory curation submit ---------------------------------------------------
 
 async def api_memory_curation_submit(r: Request) -> Response:
-    """Resolve the koan_memory_propose future with the user's curation decisions."""
+    """Resolve the koan_memory_propose future with the user's curation decisions.
+
+    Commits per-decision attachment uploads before resolving so the tool handler
+    can find files in run_dir when it calls _render_curation_payload.
+    Sets the raw decisions list on the future (rendering happens inside
+    koan_memory_propose where agent.runner_type and app_state.uploads are in scope).
+    """
     body = await r.json()
     batch_id = body.get("batch_id", "")
     decisions = body.get("decisions", [])
@@ -669,13 +816,24 @@ async def api_memory_curation_submit(r: Request) -> Response:
     if future is None or future.done():
         return JSONResponse({"error": "no_active_propose"}, status_code=409)
 
-    from .mcp_endpoint import _render_curation_payload
-    rendered = _render_curation_payload(active_batch, decisions)
+    # Collect all attachment IDs from all decisions and commit them upfront.
+    all_ids: list[str] = []
+    for d in decisions:
+        if isinstance(d, dict):
+            all_ids.extend(d.get("attachments") or [])
+
+    if all_ids:
+        if st.run.run_dir is None:
+            return JSONResponse({"error": "no_run"}, status_code=409)
+        from .uploads import commit_to_run
+        commit_to_run(st.uploads, all_ids, st.run.run_dir)
+
     log.info(
         "memory curation submitted: batch_id=%s decisions=%d",
         batch_id, len(decisions),
     )
-    future.set_result(rendered)
+    # Pass raw decisions list; koan_memory_propose renders with uploads context.
+    future.set_result(decisions)
     return JSONResponse({"ok": True})
 
 
@@ -825,6 +983,11 @@ async def api_memory_reflect_cancel(r: Request) -> Response:
 
 
 async def api_answer(r: Request) -> Response:
+    """Resolve an active koan_ask_question interaction with user answers.
+
+    Commits per-answer attachment uploads before resolving so the tool handler
+    can find files in run_dir when it interleaves File/Image blocks.
+    """
     body = await r.json()
     answers = body.get("answers", [])
     token = body.get("token", "")
@@ -835,10 +998,23 @@ async def api_answer(r: Request) -> Response:
         return _stale_response()
 
     interaction = active
+
+    # Collect all attachment IDs across all answers and commit them upfront.
+    all_ids: list[str] = []
+    for a in answers:
+        if isinstance(a, dict):
+            all_ids.extend(a.get("attachments") or [])
+
+    if all_ids:
+        if st.run.run_dir is None:
+            return JSONResponse({"error": "no_run"}, status_code=409)
+        from .uploads import commit_to_run
+        commit_to_run(st.uploads, all_ids, st.run.run_dir)
+
     log.info("answer received: token=%s answer_count=%d", token, len(answers))
     for i, a in enumerate(answers):
-        body = a.get("answer", "") if isinstance(a, dict) else str(a)
-        log.debug("answer[%d] payload: %s", i, truncate_payload(body))
+        body_text = a.get("answer", "") if isinstance(a, dict) else str(a)
+        log.debug("answer[%d] payload: %s", i, truncate_payload(body_text))
     st.projection_store.push_event(
         "questions_answered",
         build_questions_answered(interaction.token, answers, cancelled=False),
@@ -1509,6 +1685,10 @@ def create_app(app_state: AppState) -> Starlette:
     @asynccontextmanager
     async def lifespan(app):
         from ..driver import driver_main
+        from .uploads import init_upload_state, shutdown_upload_state
+        # init_upload_state creates the server-lifetime tempdir before any
+        # request can arrive, so register_upload never sees a None tempdir.
+        init_upload_state(app_state.uploads)
         await _refresh_probe_state(app_state, broadcast=False)
         _push_initial_config_events(app_state)
 
@@ -1554,6 +1734,10 @@ def create_app(app_state: AppState) -> Starlette:
             await asyncio.gather(*[_wait_proc(a, p) for a, p in procs.items()])
             log.info("shutdown: all agents stopped")
 
+        # Clean up the upload tempdir after all agents have stopped so any
+        # in-flight request that still holds a record path has time to finish.
+        shutdown_upload_state(app_state.uploads)
+
     routes = [
         Mount("/mcp", app=mcp_app),
         Route("/api/start-run", api_start_run, methods=["POST"]),
@@ -1561,7 +1745,8 @@ def create_app(app_state: AppState) -> Starlette:
         Route("/api/start-run/preflight", api_start_run_preflight, methods=["GET"]),
         Route("/api/answer", api_answer, methods=["POST"]),
         Route("/api/chat", api_chat, methods=["POST"]),
-        Route("/api/artifact-review", api_artifact_review, methods=["POST"]),
+        Route("/api/artifact-comment", api_artifact_comment, methods=["POST"]),
+        Route("/api/upload", api_upload, methods=["POST"]),
         Route("/api/memory/entries", api_memory_entries, methods=["GET"]),
         Route("/api/memory/entries/{seq}", api_memory_entry, methods=["GET"]),
         Route("/api/memory/summary", api_memory_summary, methods=["GET"]),

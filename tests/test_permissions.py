@@ -351,17 +351,15 @@ class TestUniversalReadTools:
             assert r["allowed"], f"koan_artifact_view should be allowed for role={role}"
 
 
-# -- koan_artifact_propose orchestrator-only ----------------------------------
+# -- koan_artifact_propose removed (M5) ---------------------------------------
 
-class TestArtifactProposeOrchestratorOnly:
-    """koan_artifact_propose: orchestrator allowed in every phase; others denied."""
+class TestArtifactProposeRemoved:
+    """koan_artifact_propose was deleted in M5; all roles must be denied."""
 
-    def test_orchestrator_allowed_all_phases(self):
-        for phase in ("intake", "plan-spec", "plan-review", "execute", "execution",
-                      "brief-generation", "implementation-validation"):
-            r = check_permission("orchestrator", "koan_artifact_propose",
-                                 current_phase=phase, current_step=2)
-            assert r["allowed"], f"koan_artifact_propose should be allowed in phase={phase}"
+    def test_orchestrator_denied(self):
+        r = check_permission("orchestrator", "koan_artifact_propose",
+                             current_phase="plan-spec", current_step=2)
+        assert not r["allowed"], "koan_artifact_propose should be denied for orchestrator after M5"
 
     def test_scout_denied(self):
         r = check_permission("scout", "koan_artifact_propose")
@@ -371,20 +369,12 @@ class TestArtifactProposeOrchestratorOnly:
         r = check_permission("executor", "koan_artifact_propose")
         assert not r["allowed"]
 
-    def test_planner_denied(self):
-        r = check_permission("planner", "koan_artifact_propose")
-        assert not r["allowed"]
-
-    def test_unknown_role_denied(self):
-        r = check_permission("unknown-role", "koan_artifact_propose")
-        assert not r["allowed"]
-
 
 # -- Orchestrator write/edit denied in every phase ----------------------------
 
 class TestOrchestratorWriteEditDenied:
-    """Orchestrator write/edit denied in every phase (artifact-propose task).
-    All artifact mutations flow through koan_artifact_propose."""
+    """Orchestrator write/edit denied in every phase.
+    All artifact mutations flow through koan_artifact_write."""
 
     def test_write_denied_every_phase(self):
         for phase in ("intake", "plan-spec", "plan-review", "execute", "execution",

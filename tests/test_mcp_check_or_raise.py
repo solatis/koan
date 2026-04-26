@@ -141,15 +141,15 @@ class TestMiddlewareWiring:
 
         # koan_complete_step at step 1 should validate and advance
         result = await handlers.koan_complete_step(FakeContext(), thoughts="")
-        assert isinstance(result, str)
-        assert len(result) > 0
+        assert isinstance(result, list)
+        assert len(result[0].text) > 0
 
 
-# -- Orchestrator write/edit denied (all phases) -- updated by artifact-propose task --
+# -- Orchestrator write/edit denied (all phases) --
 
 class TestOrchestratorWriteEditDenied:
     """Orchestrator write/edit are denied in all phases since all artifact mutations
-    now flow through koan_artifact_propose (artifact-propose task)."""
+    flow through koan_artifact_write."""
 
     def test_write_denied_intake(self):
         agent = _make_agent(role="orchestrator")
@@ -180,21 +180,17 @@ class TestOrchestratorWriteEditDenied:
             _check_or_raise(agent, app, "write", {"path": "/tmp/run/plan.md"})
 
 
-# -- koan_artifact_propose orchestrator-only -----------------------------------
+# -- koan_artifact_propose removed (M5) -- denied for all roles ----------------
 
-class TestArtifactProposePermission:
-    def test_orchestrator_allowed_intake(self):
-        agent = _make_agent(role="orchestrator")
-        app = _app()
-        app.run.phase = "intake"
-        # Should not raise
-        _check_or_raise(agent, app, "koan_artifact_propose", {"filename": "plan.md"})
+class TestArtifactProposeRemoved:
+    """koan_artifact_propose was deleted in M5; the permission fence denies all roles."""
 
-    def test_orchestrator_allowed_plan_spec(self):
+    def test_orchestrator_denied(self):
         agent = _make_agent(role="orchestrator")
         app = _app()
         app.run.phase = "plan-spec"
-        _check_or_raise(agent, app, "koan_artifact_propose", {"filename": "plan.md"})
+        with pytest.raises(ToolError, match="permission_denied"):
+            _check_or_raise(agent, app, "koan_artifact_propose", {"filename": "plan.md"})
 
     def test_scout_denied(self):
         agent = _make_agent(role="scout")
@@ -203,11 +199,6 @@ class TestArtifactProposePermission:
 
     def test_executor_denied(self):
         agent = _make_agent(role="executor")
-        with pytest.raises(ToolError, match="permission_denied"):
-            _check_or_raise(agent, _app(), "koan_artifact_propose", {"filename": "plan.md"})
-
-    def test_planner_denied(self):
-        agent = _make_agent(role="planner")
         with pytest.raises(ToolError, match="permission_denied"):
             _check_or_raise(agent, _app(), "koan_artifact_propose", {"filename": "plan.md"})
 

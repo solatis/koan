@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from typing import Annotated, Literal
 
 import jsonpatch
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 from .lib.workflows import WORKFLOWS
@@ -66,10 +66,6 @@ EventType = Literal[
     # Yield — orchestrator hands control back to the user
     "yield_started",
     "yield_cleared",
-    "phase_summary_captured",
-    # Artifact review — orchestrator blocked in koan_artifact_propose
-    "artifact_review_started",
-    "artifact_review_cleared",
     # Steering
     "steering_queued",
     "steering_delivered",
@@ -169,10 +165,26 @@ class UserMessageEntry(KoanBaseModel):
     content: str
     timestamp_ms: int
 
+class AttachmentEntry(KoanBaseModel):
+    """Wire shape for a committed upload attached to a tool call.
+
+    Pydantic's to_camel alias yields uploadId/contentType on the wire,
+    matching what the frontend AttachmentEntry interface declares.
+    """
+    upload_id: str
+    filename: str
+    size: int
+    content_type: str
+    path: str
+
+
 class BaseToolEntry(KoanBaseModel):
     """Shared fields for all tool entries and aggregate children."""
     call_id: str                           # unique per tool invocation
     in_flight: bool                        # True until tool_completed
+    # Populated by tool_completed when the backend committed uploads were
+    # attached to this tool call (via build_tool_completed attachments arg).
+    attachments: list[AttachmentEntry] | None = None
 
 class ToolWriteEntry(BaseToolEntry):
     type: Literal["tool_write"] = "tool_write"
@@ -276,14 +288,6 @@ class ActiveYield(KoanBaseModel):
     a phase starts, the workflow completes, or a new yield supersedes it.
     """
     suggestions: list[Suggestion] = []
-
-class ActiveArtifactReview(KoanBaseModel):
-    """Run-level state while the orchestrator is blocked in koan_artifact_propose.
-
-    Non-None while the review_future is pending. Cleared on review submit,
-    phase_started, and workflow_completed.
-    """
-    path: str
 
 ConversationEntry = Annotated[
     ThinkingEntry | TextEntry | StepEntry | UserMessageEntry |
@@ -395,13 +399,20 @@ class RunConfig(KoanBaseModel):
 # Flat optional strings rather than a discriminated union so the wire shape
 # maps directly to MemoryCurationPage.tsx proposal types without a discriminator.
 
+def _coerce_str(v: object) -> str:
+    if isinstance(v, str):
+        return v
+    if isinstance(v, dict):
+        return json.dumps(v)
+    return str(v)
+
 class Proposal(KoanBaseModel):
     id: str
     op: Literal["add", "update", "deprecate"]
     type: Literal["decision", "context", "lesson", "procedure"]
-    seq: str
+    seq: Annotated[str, BeforeValidator(_coerce_str)] = ""
     title: str
-    meta: str
+    meta: Annotated[str, BeforeValidator(_coerce_str)] = ""
     rationale: str
     body: str = ""       # used by add and deprecate
     before: str = ""     # used by update
@@ -501,12 +512,7 @@ class Run(KoanBaseModel):
     completion: CompletionInfo | None = None
     steering: list[SteeringMessage] = []   # pending steering messages shown above chat
     active_yield: ActiveYield | None = None  # non-None while orchestrator is in koan_yield
-    active_artifact_review: ActiveArtifactReview | None = None  # non-None while orchestrator is in koan_artifact_propose
     active_curation_batch: ActiveCurationBatch | None = None  # non-None while orchestrator is in koan_memory_propose
-    # Keyed by phase name. Populated on the first koan_yield of each phase
-    # from the orchestrator's last assistant text. Used as context anchor for
-    # the next phase's mechanical RAG injection. Wire-visible; frontend ignores.
-    phase_summaries: dict[str, str] = {}
 
 class Projection(KoanBaseModel):
     settings: Settings = Field(default_factory=Settings)
@@ -688,7 +694,6 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 new_run = projection.run.model_copy(update={
                     "phase": payload.get("phase", ""),
                     "active_yield": None,          # clear yield when a new phase starts
-                    "active_artifact_review": None, # clear any pending review on phase transition
                     "active_curation_batch": None,  # clear any pending curation on phase transition
                 })
                 return projection.model_copy(update={"run": new_run})
@@ -705,7 +710,6 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 new_run = projection.run.model_copy(update={
                     "completion": completion,
                     "active_yield": None,          # clear yield on completion
-                    "active_artifact_review": None, # clear any pending review on completion
                     "active_curation_batch": None,  # clear any pending curation on completion
                 })
                 return projection.model_copy(update={"run": new_run})
@@ -1153,6 +1157,15 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 # event may target either — the runner does not know which.
                 new_entries = []
                 found = False
+                # Parse attachment manifest from the event once; applied to the
+                # matched entry regardless of type (koan, bash, write, etc.).
+                raw_attachments = payload.get("attachments")
+                parsed_attachments: list[AttachmentEntry] | None = None
+                if raw_attachments and isinstance(raw_attachments, list):
+                    try:
+                        parsed_attachments = [AttachmentEntry(**a) for a in raw_attachments]
+                    except Exception:
+                        pass  # malformed manifest; degrade silently
                 for entry in agent.conversation.entries:
                     if (
                         isinstance(entry, BaseToolEntry)
@@ -1169,6 +1182,8 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                                     update["result"] = {"raw": raw_result}
                             elif isinstance(raw_result, dict):
                                 update["result"] = raw_result
+                        if parsed_attachments:
+                            update["attachments"] = parsed_attachments
                         new_entries.append(entry.model_copy(update=update))
                         found = True
                     elif isinstance(entry, ToolAggregateEntry):
@@ -1577,36 +1592,6 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 if projection.run is None:
                     return projection
                 new_run = projection.run.model_copy(update={"active_yield": None})
-                return projection.model_copy(update={"run": new_run})
-
-            case "artifact_review_started":
-                if projection.run is None:
-                    return projection
-                path = payload.get("path", "")
-                new_run = projection.run.model_copy(update={
-                    "active_artifact_review": ActiveArtifactReview(path=path),
-                })
-                return projection.model_copy(update={"run": new_run})
-
-            case "artifact_review_cleared":
-                if projection.run is None:
-                    return projection
-                new_run = projection.run.model_copy(update={
-                    "active_artifact_review": None,
-                })
-                return projection.model_copy(update={"run": new_run})
-
-            case "phase_summary_captured":
-                # agent_id is carried for audit only; phase_summaries is run-scoped.
-                if projection.run is None:
-                    return projection
-                phase = payload.get("phase", "")
-                summary = payload.get("summary", "")
-                if not phase:
-                    return projection
-                new_summaries = dict(projection.run.phase_summaries)
-                new_summaries[phase] = summary
-                new_run = projection.run.model_copy(update={"phase_summaries": new_summaries})
                 return projection.model_copy(update={"run": new_run})
 
             # ── Memory curation ────────────────────────────────────────────

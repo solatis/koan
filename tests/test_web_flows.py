@@ -266,190 +266,110 @@ def test_profiles_delete_balanced_rejected(client, app_state):
     assert resp.json()["error"] == "read_only"
 
 
-# -- api_artifact_review endpoint ---------------------------------------------
+# -- api_artifact_comment endpoint -------------------------------------------
 
-def test_artifact_review_no_active_review(client, app_state):
-    """POST /api/artifact-review returns 409 when no koan_artifact_propose is pending."""
-    resp = client.post("/api/artifact-review", json={
-        "path": "plan.md",
-        "payload": {"summary": "", "comments": []},
-    })
-    assert resp.status_code == 409
-    assert resp.json()["error"] == "no_active_review"
-
-
-def test_artifact_review_missing_path(client, app_state):
-    """POST /api/artifact-review returns 422 when path is absent."""
-    resp = client.post("/api/artifact-review", json={
-        "payload": {"summary": "", "comments": []},
-    })
+def test_api_artifact_comment_validates_path_and_comment(client, app_state):
+    """POST /api/artifact-comment returns 422 on missing path or empty comment."""
+    # Missing path
+    resp = client.post("/api/artifact-comment", json={"comment": "hello"})
     assert resp.status_code == 422
     assert resp.json()["error"] == "missing_path"
 
+    # Missing comment
+    resp = client.post("/api/artifact-comment", json={"path": "plan.md"})
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "missing_comment"
 
-@pytest.mark.anyio
-async def test_artifact_propose_yolo(tmp_path):
-    """koan_artifact_propose in yolo mode: writes file, emits events, auto-approves."""
-    from unittest.mock import AsyncMock, patch
-    from koan.state import AgentState, AppState
-    from koan.phases import PhaseContext
-    from koan.web.mcp_endpoint import build_mcp_server
+    # Empty comment string
+    resp = client.post("/api/artifact-comment", json={"path": "plan.md", "comment": "  "})
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "missing_comment"
 
-    app_state = AppState()
-    app_state.server.yolo = True
-    app_state.run.phase = "plan-spec"
+
+def test_api_artifact_comment_enqueues_steering(client, app_state, tmp_path):
+    """When no yield is active, the comment lands in steering_queue with artifact_path set."""
     app_state.run.run_dir = str(tmp_path)
+    resp = client.post("/api/artifact-comment", json={
+        "path": "plan.md",
+        "comment": "Add a section on error handling",
+    })
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
 
-    agent = AgentState(
-        agent_id="test-propose-yolo",
-        role="orchestrator",
-        subagent_dir=str(tmp_path),
-        run_dir=str(tmp_path),
-        step=2,
-        is_primary=True,
-        phase_ctx=PhaseContext(run_dir=str(tmp_path), subagent_dir=str(tmp_path)),
-        event_log=AsyncMock(),
-    )
-    app_state.agents[agent.agent_id] = agent
-
-    _, handlers = build_mcp_server(app_state)
-
-    class FakeContext:
-        async def get_state(self, key):
-            if key == "agent":
-                return agent
-            return None
-
-    result = await handlers.koan_artifact_propose(FakeContext(), "plan.md", "# Plan\n")
-
-    # File must exist on disk
-    assert (tmp_path / "plan.md").exists()
-    assert (tmp_path / "plan.md").read_text() == "# Plan\n"
-
-    # Yolo response is the canonical approval string
-    assert "I've reviewed" in result
-    assert "approve it as-is" in result
-
-    # Projection events emitted: artifact_review_started and artifact_review_cleared
-    event_types = [e.event_type for e in app_state.projection_store.events]
-    assert "artifact_review_started" in event_types
-    assert "artifact_review_cleared" in event_types
-
-    # active_artifact_review was cleared by the cleared event
-    run = app_state.projection_store.projection.run
-    # Run may be None (no run_started emitted in this test); check events only
-    started_events = [e for e in app_state.projection_store.events
-                      if e.event_type == "artifact_review_started"]
-    assert len(started_events) == 1
-    assert started_events[0].payload["path"] == "plan.md"
+    # Message enqueued with artifact_path tagged
+    queue = app_state.interactions.steering_queue
+    assert len(queue) == 1
+    assert queue[0].artifact_path == "plan.md"
+    assert "error handling" in queue[0].content
 
 
 @pytest.mark.anyio
-async def test_artifact_propose_invalid_filename(tmp_path):
-    """koan_artifact_propose raises ToolError for invalid filenames."""
-    from fastmcp.exceptions import ToolError
-    from unittest.mock import AsyncMock
-    from koan.state import AgentState, AppState
-    from koan.phases import PhaseContext
-    from koan.web.mcp_endpoint import build_mcp_server
-
-    app_state = AppState()
-    app_state.server.yolo = True
-    app_state.run.phase = "plan-spec"
-    app_state.run.run_dir = str(tmp_path)
-
-    agent = AgentState(
-        agent_id="test-propose-invalid",
-        role="orchestrator",
-        subagent_dir=str(tmp_path),
-        run_dir=str(tmp_path),
-        step=2,
-        event_log=AsyncMock(),
-        phase_ctx=PhaseContext(run_dir=str(tmp_path), subagent_dir=str(tmp_path)),
-    )
-    app_state.agents[agent.agent_id] = agent
-
-    _, handlers = build_mcp_server(app_state)
-
-    class FakeContext:
-        async def get_state(self, key):
-            if key == "agent":
-                return agent
-            return None
-
-    import json
-    with pytest.raises(ToolError) as exc_info:
-        await handlers.koan_artifact_propose(FakeContext(), "../evil.md", "bad")
-    body = json.loads(str(exc_info.value))
-    assert body["error"] == "invalid_filename"
-
-
-@pytest.mark.anyio
-async def test_artifact_review_resolves_future(tmp_path):
-    """POST /api/artifact-review resolves the koan_artifact_propose future."""
+async def test_api_artifact_comment_resolves_active_yield(tmp_path):
+    """When a yield is active, the comment resolves the yield future."""
     import asyncio
-    from unittest.mock import AsyncMock, patch
-    from koan.state import AgentState, AppState
-    from koan.phases import PhaseContext
-    from koan.web.mcp_endpoint import build_mcp_server
+    from unittest.mock import patch, AsyncMock
     from koan.web.app import create_app
+    from koan.state import AppState, AgentState
+    from koan.phases import PhaseContext
 
     app_state = AppState()
-    app_state.run.phase = "plan-spec"
     app_state.run.run_dir = str(tmp_path)
 
     agent = AgentState(
-        agent_id="test-propose-interactive",
+        agent_id="test-artifact-comment-yield",
         role="orchestrator",
         subagent_dir=str(tmp_path),
         run_dir=str(tmp_path),
         step=2,
         is_primary=True,
-        event_log=AsyncMock(),
         phase_ctx=PhaseContext(run_dir=str(tmp_path), subagent_dir=str(tmp_path)),
+        event_log=AsyncMock(),
     )
     app_state.agents[agent.agent_id] = agent
 
-    _, handlers = build_mcp_server(app_state)
+    # Set an active yield future
+    loop = asyncio.get_event_loop()
+    future = loop.create_future()
+    app_state.interactions.yield_future = future
 
-    class FakeContext:
-        async def get_state(self, key):
-            if key == "agent":
-                return agent
-            return None
-
-    # Schedule the propose call in the background (it will block on the future)
-    propose_task = asyncio.create_task(
-        handlers.koan_artifact_propose(FakeContext(), "plan.md", "# Plan\n")
-    )
-
-    # Give the task a moment to reach the await point
-    await asyncio.sleep(0.01)
-
-    # The future should now be set
-    assert app_state.interactions.artifact_review_future is not None
-
-    # Resolve via the endpoint
     with patch("koan.driver.driver_main", new_callable=AsyncMock):
         from starlette.testclient import TestClient
-        app = create_app(app_state)
-        with TestClient(app) as client:
-            resp = client.post("/api/artifact-review", json={
-                "path": "plan.md",
-                "payload": {"summary": "", "comments": []},
+        starlette_app = create_app(app_state)
+        with TestClient(starlette_app) as client:
+            resp = client.post("/api/artifact-comment", json={
+                "path": "brief.md",
+                "comment": "Add more detail to the decisions section",
             })
             assert resp.status_code == 200
             assert resp.json()["ok"] is True
 
-    # Wait for the propose task to complete
-    result = await asyncio.wait_for(propose_task, timeout=2.0)
+    # The future must have been resolved (not still pending)
+    assert future.done()
+    # The comment lands in the user message buffer with artifact_path set
+    assert any(
+        m.artifact_path == "brief.md"
+        for m in app_state.interactions.user_message_buffer
+    )
 
-    # Result is the approval string
-    assert "I've reviewed" in result
-    assert "approve it as-is" in result
 
-    # File exists
-    assert (tmp_path / "plan.md").exists()
+def test_api_artifact_comment_commits_attachments(client, app_state, tmp_path):
+    """Attachments are committed before the comment is enqueued."""
+    from unittest.mock import patch
+    app_state.run.run_dir = str(tmp_path)
+
+    # commit_to_run is imported inline in the handler from koan.web.uploads;
+    # patch at the source module rather than the caller's namespace.
+    with patch("koan.web.uploads.commit_to_run") as mock_commit:
+        resp = client.post("/api/artifact-comment", json={
+            "path": "plan.md",
+            "comment": "see screenshot",
+            "attachments": ["upload-abc123"],
+        })
+        assert resp.status_code == 200
+        mock_commit.assert_called_once()
+        call_args = mock_commit.call_args
+        # Second positional arg is the attachment IDs list
+        assert call_args[0][1] == ["upload-abc123"]
 
 
 def test_profiles_create_non_dict_tiers(client, app_state):
@@ -760,3 +680,186 @@ def test_sse_always_snapshot_on_version_mismatch(app_state):
     snap2 = store.get_snapshot()
     assert snap2["version"] == 1
     assert snap2["state"]["run"] is not None
+
+
+# -- koan_artifact_write -------------------------------------------------------
+
+def _make_orchestrator_agent(tmp_path, agent_id="test-write"):
+    """Build a minimal orchestrator AgentState for handler tests."""
+    from unittest.mock import AsyncMock
+    from koan.state import AgentState, AppState
+    from koan.phases import PhaseContext
+
+    app_state = AppState()
+    app_state.server.yolo = True
+    app_state.run.phase = "plan-spec"
+    app_state.run.run_dir = str(tmp_path)
+
+    agent = AgentState(
+        agent_id=agent_id,
+        role="orchestrator",
+        subagent_dir=str(tmp_path),
+        run_dir=str(tmp_path),
+        step=2,
+        is_primary=True,
+        phase_ctx=PhaseContext(run_dir=str(tmp_path), subagent_dir=str(tmp_path)),
+        event_log=AsyncMock(),
+    )
+    app_state.agents[agent.agent_id] = agent
+    return app_state, agent
+
+
+class _FakeCtx:
+    """Minimal fastmcp Context stub that returns a fixed agent."""
+    def __init__(self, agent):
+        self._agent = agent
+
+    async def get_state(self, key):
+        if key == "agent":
+            return self._agent
+        return None
+
+
+@pytest.mark.anyio
+async def test_artifact_write_atomic_writes_with_frontmatter(tmp_path):
+    """koan_artifact_write creates the file with driver-managed frontmatter."""
+    from koan.web.mcp_endpoint import build_mcp_server
+    from koan.artifacts import split_frontmatter
+
+    app_state, agent = _make_orchestrator_agent(tmp_path, "test-write-fm")
+    _, handlers = build_mcp_server(app_state)
+
+    result = await handlers.koan_artifact_write(_FakeCtx(agent), "smoke.md", "hello")
+
+    assert (tmp_path / "smoke.md").exists()
+    text = (tmp_path / "smoke.md").read_text()
+    assert text.startswith("---\n")
+    meta, body = split_frontmatter(text)
+    assert meta is not None
+    assert meta["status"] == "In-Progress"
+    assert body == "hello"
+
+    # Return value is ok=True JSON
+    import json
+    payload = json.loads(result[0].text)
+    assert payload["ok"] is True
+    assert payload["filename"] == "smoke.md"
+    assert payload["status"] == "In-Progress"
+
+
+@pytest.mark.anyio
+async def test_artifact_write_emits_diff_events(tmp_path):
+    """koan_artifact_write triggers artifact_diff so the sidebar refreshes."""
+    from koan.web.mcp_endpoint import build_mcp_server
+
+    app_state, agent = _make_orchestrator_agent(tmp_path, "test-write-diff")
+    _, handlers = build_mcp_server(app_state)
+
+    await handlers.koan_artifact_write(_FakeCtx(agent), "smoke.md", "hello")
+
+    event_types = [e.event_type for e in app_state.projection_store.events]
+    # _push_artifact_diff emits artifact_created or artifact_modified depending
+    # on whether the file existed before the call
+    assert any(t in event_types for t in ("artifact_created", "artifact_modified", "artifact_diff"))
+
+
+@pytest.mark.anyio
+async def test_artifact_write_does_not_emit_review_events(tmp_path):
+    """koan_artifact_write must not emit review_started or review_cleared."""
+    from koan.web.mcp_endpoint import build_mcp_server
+
+    app_state, agent = _make_orchestrator_agent(tmp_path, "test-write-noreview")
+    _, handlers = build_mcp_server(app_state)
+
+    await handlers.koan_artifact_write(_FakeCtx(agent), "smoke.md", "hello")
+
+    event_types = [e.event_type for e in app_state.projection_store.events]
+    assert "artifact_review_started" not in event_types
+    assert "artifact_review_cleared" not in event_types
+
+
+@pytest.mark.anyio
+async def test_artifact_write_does_not_block(tmp_path):
+    """koan_artifact_write returns immediately (non-blocking)."""
+    from koan.web.mcp_endpoint import build_mcp_server
+
+    app_state, agent = _make_orchestrator_agent(tmp_path, "test-write-noblock")
+    _, handlers = build_mcp_server(app_state)
+
+    # If this awaits without blocking, the test passes implicitly.
+    result = await handlers.koan_artifact_write(_FakeCtx(agent), "smoke.md", "hello")
+    assert result is not None
+
+
+@pytest.mark.anyio
+async def test_artifact_write_explicit_status_final(tmp_path):
+    """Passing status='Final' is stored on disk."""
+    from koan.web.mcp_endpoint import build_mcp_server
+    from koan.artifacts import split_frontmatter
+
+    app_state, agent = _make_orchestrator_agent(tmp_path, "test-write-final")
+    _, handlers = build_mcp_server(app_state)
+
+    await handlers.koan_artifact_write(_FakeCtx(agent), "smoke.md", "done", status="Final")
+
+    text = (tmp_path / "smoke.md").read_text()
+    meta, _ = split_frontmatter(text)
+    assert meta["status"] == "Final"
+
+
+@pytest.mark.anyio
+async def test_artifact_write_invalid_status_raises_tool_error(tmp_path):
+    """An unrecognised status raises ToolError(error=invalid_status)."""
+    import json
+    from fastmcp.exceptions import ToolError
+    from koan.web.mcp_endpoint import build_mcp_server
+
+    app_state, agent = _make_orchestrator_agent(tmp_path, "test-write-badstatus")
+    _, handlers = build_mcp_server(app_state)
+
+    with pytest.raises(ToolError) as exc_info:
+        await handlers.koan_artifact_write(_FakeCtx(agent), "smoke.md", "body", status="bogus")
+    body = json.loads(str(exc_info.value))
+    assert body["error"] == "invalid_status"
+
+
+@pytest.mark.anyio
+async def test_artifact_view_strips_frontmatter(tmp_path):
+    """koan_artifact_view returns body only -- no YAML preamble visible to LLM."""
+    from koan.web.mcp_endpoint import build_mcp_server
+    from koan.artifacts import write_artifact_atomic
+
+    app_state, agent = _make_orchestrator_agent(tmp_path, "test-view-strip")
+    _, handlers = build_mcp_server(app_state)
+
+    target = tmp_path / "doc.md"
+    write_artifact_atomic(target, "# Hello\nbody text\n", status=None)
+
+    result = await handlers.koan_artifact_view(_FakeCtx(agent), "doc.md")
+    returned_text = result[0].text
+    assert "---" not in returned_text
+    assert "# Hello\nbody text\n" == returned_text
+
+
+@pytest.mark.anyio
+async def test_artifact_list_includes_status(tmp_path):
+    """koan_artifact_list JSON contains a status field per artifact."""
+    import json
+    from koan.web.mcp_endpoint import build_mcp_server
+    from koan.artifacts import write_artifact_atomic
+
+    app_state, agent = _make_orchestrator_agent(tmp_path, "test-list-status")
+    _, handlers = build_mcp_server(app_state)
+
+    write_artifact_atomic(tmp_path / "with-fm.md", "body", status="Final")
+    (tmp_path / "plain.md").write_text("# No frontmatter\n")
+
+    result = await handlers.koan_artifact_list(_FakeCtx(agent))
+    payload = json.loads(result[0].text)
+    by_path = {a["path"]: a for a in payload["artifacts"]}
+
+    assert "status" in by_path["with-fm.md"]
+    assert by_path["with-fm.md"]["status"] == "Final"
+
+    assert "status" in by_path["plain.md"]
+    assert by_path["plain.md"]["status"] is None
