@@ -12,6 +12,11 @@ from koan.memory.types import MemoryEntry
 from koan.state import AgentState, AppState
 
 
+def _json(blocks):
+    """Unwrap the first TextContent block and JSON-decode it."""
+    return json.loads(blocks[0].text)
+
+
 # ---------------------------------------------------------------------------
 # Shared fake context
 # ---------------------------------------------------------------------------
@@ -117,7 +122,7 @@ class TestKoanSearch:
     @pytest.mark.anyio
     async def test_search_returns_json_with_results(self, search_env):
         raw = await search_env["handlers"].koan_search(search_env["ctx"], query="test")
-        result = json.loads(raw)
+        result = _json(raw)
         assert "results" in result
         assert len(result["results"]) == 2
         assert result["results"][0]["entry_id"] == 1

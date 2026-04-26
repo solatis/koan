@@ -287,6 +287,9 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
         event_log=event_log,
         model=model,
         is_primary=(role == "orchestrator"),
+        # Populate from runner so upload_ids_to_blocks can gate on "claude"
+        # regardless of whether this agent is the orchestrator, scout, or executor.
+        runner_type=runner.name if runner is not None else "",
     )
     app_state.agents[agent_id] = agent
 

@@ -13,6 +13,11 @@ from koan.memory.retrieval.reflect import Citation, IterationCapExceeded, Reflec
 from koan.state import AgentState, AppState
 
 
+def _json(blocks):
+    """Unwrap the first TextContent block and JSON-decode it."""
+    return json.loads(blocks[0].text)
+
+
 # ---------------------------------------------------------------------------
 # Shared fake context (same pattern as test_mcp_search.py)
 # ---------------------------------------------------------------------------
@@ -83,7 +88,7 @@ class TestKoanReflect:
         raw = await mem_env["handlers"].koan_reflect(
             mem_env["ctx"], question="How does memory work?"
         )
-        body = json.loads(raw)
+        body = _json(raw)
         assert body["answer"] == "The memory system uses VoyageAI embeddings."
         assert body["citations"] == [{
             "id": 1,

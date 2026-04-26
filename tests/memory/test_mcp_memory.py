@@ -16,6 +16,11 @@ from fastmcp.exceptions import ToolError
 from koan.state import AgentState, AppState
 
 
+def _json(blocks):
+    """Unwrap the first TextContent block and JSON-decode it."""
+    return json.loads(blocks[0].text)
+
+
 # ---------------------------------------------------------------------------
 # Shared fake context
 # ---------------------------------------------------------------------------
@@ -78,13 +83,12 @@ def mem_env(tmp_path):
 class TestMemorize:
     @pytest.mark.anyio
     async def test_create_writes_to_flat_directory(self, mem_env):
-        result_str = await mem_env["handlers"].koan_memorize(
+        result = _json(await mem_env["handlers"].koan_memorize(
             mem_env["ctx"],
             type="decision",
             title="Use PostgreSQL",
             body="Documents the DB choice. Chose PostgreSQL 16.2 over SQLite.",
-        )
-        result = json.loads(result_str)
+        ))
         assert result["op"] == "created"
         assert result["type"] == "decision"
         assert result["entry_id"] == 1
@@ -98,9 +102,9 @@ class TestMemorize:
     @pytest.mark.anyio
     async def test_global_sequence_across_types(self, mem_env):
         h, ctx = mem_env["handlers"], mem_env["ctx"]
-        r1 = json.loads(await h.koan_memorize(ctx, type="decision", title="D1", body="Body."))
-        r2 = json.loads(await h.koan_memorize(ctx, type="lesson", title="L1", body="Body."))
-        r3 = json.loads(await h.koan_memorize(ctx, type="context", title="C1", body="Body."))
+        r1 = _json(await h.koan_memorize(ctx, type="decision", title="D1", body="Body."))
+        r2 = _json(await h.koan_memorize(ctx, type="lesson", title="L1", body="Body."))
+        r3 = _json(await h.koan_memorize(ctx, type="context", title="C1", body="Body."))
         assert r1["entry_id"] == 1
         assert r2["entry_id"] == 2
         assert r3["entry_id"] == 3
@@ -113,7 +117,7 @@ class TestMemorize:
     @pytest.mark.anyio
     async def test_update_preserves_created(self, mem_env):
         h, ctx = mem_env["handlers"], mem_env["ctx"]
-        create_result = json.loads(await h.koan_memorize(
+        create_result = _json(await h.koan_memorize(
             ctx,
             type="decision",
             title="First",
@@ -121,7 +125,7 @@ class TestMemorize:
         ))
         original_created = create_result["created"]
 
-        update_result = json.loads(await h.koan_memorize(
+        update_result = _json(await h.koan_memorize(
             ctx,
             type="decision",
             title="First Updated",
@@ -180,7 +184,7 @@ class TestForget:
         h, ctx = mem_env["handlers"], mem_env["ctx"]
         await h.koan_memorize(ctx, type="decision", title="D1", body="Body.")
 
-        result = json.loads(await h.koan_forget(ctx, entry_id=1))
+        result = _json(await h.koan_forget(ctx, entry_id=1))
         assert result["op"] == "forgotten"
         assert result["entry_id"] == 1
         assert result["type"] == "decision"
@@ -193,7 +197,7 @@ class TestForget:
     async def test_deletes_with_matching_type(self, mem_env):
         h, ctx = mem_env["handlers"], mem_env["ctx"]
         await h.koan_memorize(ctx, type="decision", title="D1", body="Body.")
-        result = json.loads(await h.koan_forget(ctx, entry_id=1, type="decision"))
+        result = _json(await h.koan_forget(ctx, entry_id=1, type="decision"))
         assert result["op"] == "forgotten"
         assert result["entry_id"] == 1
 
@@ -237,7 +241,7 @@ class TestMemoryStatus:
 
         with patch("koan.memory.summarize.generate", side_effect=fake_generate):
             raw = await h.koan_memory_status(ctx)
-        result = json.loads(raw)
+        result = _json(raw)
 
         assert "summary" in result
         assert "entries" in result
@@ -265,7 +269,7 @@ class TestMemoryStatus:
 
         with patch("koan.memory.summarize.generate", side_effect=fake_generate):
             raw = await h.koan_memory_status(ctx, type="decision")
-        result = json.loads(raw)
+        result = _json(raw)
         titles = [e["title"] for e in result["entries"]]
         assert titles == ["D1"]
         # Summary is project-wide regardless of filter
@@ -280,19 +284,19 @@ class TestMemoryStatus:
 
         # First call: no entries, no summary -> not stale, not regenerated
         with patch("koan.memory.summarize.generate", side_effect=fake_generate):
-            first = json.loads(await h.koan_memory_status(ctx))
+            first = _json(await h.koan_memory_status(ctx))
         assert first["regenerated"] is False
         assert first["entries"] == []
 
         # Add an entry -> stale -> regenerate
         await h.koan_memorize(ctx, type="decision", title="D1", body="First.")
         with patch("koan.memory.summarize.generate", side_effect=fake_generate):
-            second = json.loads(await h.koan_memory_status(ctx))
+            second = _json(await h.koan_memory_status(ctx))
         assert second["regenerated"] is True
 
         # Third call without changes -> summary is fresh -> no regeneration
         with patch("koan.memory.summarize.generate", side_effect=fake_generate):
-            third = json.loads(await h.koan_memory_status(ctx))
+            third = _json(await h.koan_memory_status(ctx))
         assert third["regenerated"] is False
 
         # Give filesystem mtime a chance to advance past the summary mtime
@@ -301,7 +305,7 @@ class TestMemoryStatus:
         # Add another entry -> stale -> regenerate
         await h.koan_memorize(ctx, type="decision", title="D2", body="Second.")
         with patch("koan.memory.summarize.generate", side_effect=fake_generate):
-            fourth = json.loads(await h.koan_memory_status(ctx))
+            fourth = _json(await h.koan_memory_status(ctx))
         assert fourth["regenerated"] is True
 
     @pytest.mark.anyio
@@ -309,7 +313,7 @@ class TestMemoryStatus:
         # Empty memory should return an empty entries list without calling
         # the LLM, so no patch is needed.
         raw = await mem_env["handlers"].koan_memory_status(mem_env["ctx"])
-        result = json.loads(raw)
+        result = _json(raw)
         assert result["entries"] == []
         assert result["regenerated"] is False
         assert result["summary"] == ""

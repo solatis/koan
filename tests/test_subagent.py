@@ -174,7 +174,7 @@ class TestCompleteStep:
 
         result = await handlers.koan_complete_step(ctx, thoughts="")
 
-        assert "Extract" in result
+        assert "Extract" in result[0].text
         assert agent.step == 1
         event_log.emit_step_transition.assert_called_once()
 
@@ -415,12 +415,12 @@ class TestRequestScouts:
                 {"id": "c", "prompt": "Q3"},
             ])
 
-        assert "Finding A" in result
-        assert "Finding B" in result
-        assert "Finding C" in result
+        assert "Finding A" in result[0].text
+        assert "Finding B" in result[0].text
+        assert "Finding C" in result[0].text
         # Verify ordering: A before B before C
-        assert result.index("Finding A") < result.index("Finding B")
-        assert result.index("Finding B") < result.index("Finding C")
+        assert result[0].text.index("Finding A") < result[0].text.index("Finding B")
+        assert result[0].text.index("Finding B") < result[0].text.index("Finding C")
 
     @pytest.mark.anyio
     async def test_semaphore_bounds_concurrency(self, tmp_path):
@@ -505,7 +505,7 @@ class TestRequestScouts:
                 {"id": "q", "prompt": "Q1"},
             ])
 
-        assert result == "No findings returned."
+        assert result[0].text == "No findings returned."
 
 
 # -- Diagnostic fan-out tests -------------------------------------------------
