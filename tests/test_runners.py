@@ -30,10 +30,18 @@ class TestClaudeRunnerParseStreamEvent:
         evts = self.runner.parse_stream_event(line)
         assert evts == [StreamEvent(type="token_delta", content="hello"), StreamEvent(type="assistant_text", content="hello")]
 
-    def test_tool_call(self):
+    def test_tool_call_fallback_emits_three_events(self):
+        # Non-streaming fallback: assistant message with tool_use block emits
+        # tool_start + tool_input_delta (no tool_result -- that arrives later
+        # via the user message parsed by _parse_user).
         line = self._msg([{"type": "tool_use", "name": "bash", "input": {"cmd": "ls"}}])
         evts = self.runner.parse_stream_event(line)
-        assert evts == [StreamEvent(type="tool_call", tool_name="bash", tool_args={"cmd": "ls"}, summary="")]
+        assert len(evts) == 2
+        assert evts[0].type == "tool_start"
+        assert evts[0].tool_name == "bash"
+        assert evts[1].type == "tool_input_delta"
+        assert evts[1].tool_name == "bash"
+        assert evts[1].tool_args == {"cmd": "ls"}
 
     def test_thinking_block(self):
         line = self._msg([{"type": "thinking", "text": "hmm"}])
@@ -97,15 +105,20 @@ class TestClaudeRunnerParseStreamEvent:
         assert self.runner.parse_stream_event("not json{") == []
 
     def test_multi_block_text_and_tool(self):
+        # Fallback path: text + tool_use in same assistant message.
+        # Emits token_delta, then tool_start + tool_input_delta, then assistant_text.
         line = self._msg([
             {"type": "text", "text": "calling tool"},
             {"type": "tool_use", "name": "read", "input": {"path": "/a"}},
         ])
         evts = self.runner.parse_stream_event(line)
-        assert len(evts) == 3
-        assert evts[0] == StreamEvent(type="token_delta", content="calling tool")
-        assert evts[1] == StreamEvent(type="tool_call", tool_name="read", tool_args={"path": "/a"}, summary="")
-        assert evts[2] == StreamEvent(type="assistant_text", content="calling tool")
+        assert len(evts) == 4
+        assert evts[0].type == "token_delta"
+        assert evts[1].type == "tool_start"
+        assert evts[1].tool_name == "read"
+        assert evts[2].type == "tool_input_delta"
+        assert evts[2].tool_args == {"path": "/a"}
+        assert evts[3].type == "assistant_text"
 
     def test_multi_block_thinking_and_text(self):
         line = self._msg([
@@ -125,10 +138,12 @@ class TestClaudeRunnerParseStreamEvent:
             {"type": "tool_use", "name": "bash", "input": {}},
         ])
         evts = self.runner.parse_stream_event(line)
-        assert len(evts) == 3
+        # token_delta + tool_start + tool_input_delta + assistant_text
+        assert len(evts) == 4
         assert evts[0].type == "token_delta"
-        assert evts[1].type == "tool_call"
-        assert evts[2].type == "assistant_text"
+        assert evts[1].type == "tool_start"
+        assert evts[2].type == "tool_input_delta"
+        assert evts[3].type == "assistant_text"
 
     def test_multi_block_non_dict_block_skipped(self):
         line = self._msg([
@@ -323,7 +338,12 @@ class TestGeminiRunnerParseStreamEvent:
     def test_tool_use(self):
         line = json.dumps({"type": "tool_use", "name": "read", "input": {"path": "/a"}})
         evts = self.runner.parse_stream_event(line)
-        assert evts == [StreamEvent(type="tool_call", tool_name="read", tool_args={"path": "/a"}, summary="/a")]
+        assert len(evts) == 3
+        assert evts[0].type == "tool_start"
+        assert evts[0].tool_name == "read"
+        assert evts[1].type == "tool_input_delta"
+        assert evts[1].tool_args == {"path": "/a"}
+        assert evts[2].type == "tool_result"
 
     def test_result_event(self):
         line = json.dumps({"type": "result"})
@@ -718,7 +738,14 @@ class TestGeminiRunnerExtraArgs:
 
 # -- Summary extraction --------------------------------------------------------
 
-class TestClaudeSummaryExtraction:
+class TestClaudeFallbackToolArgs:
+    """Non-streaming fallback path: assistant message with tool_use block.
+
+    Under the new vocabulary, the fallback emits tool_start + tool_input_delta
+    (no tool_result -- that arrives later via _parse_user). Summary derivation
+    moves to the fold's tool_input_delta case; these tests verify the args are
+    correctly forwarded in tool_args on the delta event.
+    """
     def setup_method(self):
         self.runner = ClaudeRunner(subagent_dir="/tmp/test-claude")
 
@@ -726,43 +753,55 @@ class TestClaudeSummaryExtraction:
         import json
         return json.dumps({"type": "assistant", "message": {"content": content}})
 
-    def test_read_summary(self):
+    def _delta_args(self, evts) -> dict:
+        """Return tool_args from the tool_input_delta event."""
+        for ev in evts:
+            if ev.type == "tool_input_delta":
+                return ev.tool_args or {}
+        raise AssertionError("no tool_input_delta event")
+
+    def test_read_args(self):
         line = self._msg([{"type": "tool_use", "name": "Read", "input": {"file_path": "/src/foo.ts"}}])
         evts = self.runner.parse_stream_event(line)
-        assert evts[0].summary == "/src/foo.ts"
+        assert self._delta_args(evts)["file_path"] == "/src/foo.ts"
 
-    def test_read_summary_with_offset_limit(self):
-        line = self._msg([{"type": "tool_use", "name": "Read", "input": {"file_path": "/src/foo.ts", "offset": 10, "limit": 50}}])
+    def test_read_args_with_offset_limit(self):
+        line = self._msg([{"type": "tool_use", "name": "Read",
+                           "input": {"file_path": "/src/foo.ts", "offset": 10, "limit": 50}}])
         evts = self.runner.parse_stream_event(line)
-        assert evts[0].summary == "/src/foo.ts:10-60"
+        a = self._delta_args(evts)
+        assert a["file_path"] == "/src/foo.ts"
+        assert a["offset"] == 10
+        assert a["limit"] == 50
 
-    def test_bash_summary(self):
+    def test_bash_args(self):
         line = self._msg([{"type": "tool_use", "name": "Bash", "input": {"command": "ls -la"}}])
         evts = self.runner.parse_stream_event(line)
-        assert evts[0].summary == "ls -la"
+        assert self._delta_args(evts)["command"] == "ls -la"
 
-    def test_write_summary(self):
+    def test_write_args(self):
         line = self._msg([{"type": "tool_use", "name": "Write", "input": {"file_path": "/src/new.ts"}}])
         evts = self.runner.parse_stream_event(line)
-        assert evts[0].summary == "/src/new.ts"
+        assert self._delta_args(evts)["file_path"] == "/src/new.ts"
 
-    def test_grep_summary(self):
+    def test_grep_args(self):
         line = self._msg([{"type": "tool_use", "name": "Grep", "input": {"pattern": "def foo"}}])
         evts = self.runner.parse_stream_event(line)
-        assert evts[0].summary == "def foo"
+        assert self._delta_args(evts)["pattern"] == "def foo"
 
-    def test_ls_summary(self):
+    def test_ls_args(self):
         line = self._msg([{"type": "tool_use", "name": "LS", "input": {"path": "/src"}}])
         evts = self.runner.parse_stream_event(line)
-        assert evts[0].summary == "/src"
+        assert self._delta_args(evts)["path"] == "/src"
 
-    def test_unknown_tool_empty_summary(self):
+    def test_unknown_tool_empty_args(self):
         line = self._msg([{"type": "tool_use", "name": "WebFetch", "input": {"url": "http://example.com"}}])
         evts = self.runner.parse_stream_event(line)
-        assert evts[0].summary == ""
+        assert self._delta_args(evts)["url"] == "http://example.com"
 
 
-class TestCodexSummaryExtraction:
+class TestCodexToolArgs:
+    """Codex runner synthesizes three-event sequence; args arrive on tool_input_delta."""
     def setup_method(self):
         self.runner = CodexRunner()
 
@@ -772,23 +811,35 @@ class TestCodexSummaryExtraction:
             "type": "function_call", "name": name, "arguments": json.dumps(args_dict)
         }})
 
-    def test_read_summary(self):
+    def _delta_args(self, evts) -> dict:
+        for ev in evts:
+            if ev.type == "tool_input_delta":
+                return ev.tool_args or {}
+        raise AssertionError("no tool_input_delta event")
+
+    def test_read_args(self):
         line = self._item("read_file", {"path": "/src/foo.ts"})
         evts = self.runner.parse_stream_event(line)
-        assert evts[0].summary == "/src/foo.ts"
+        assert self._delta_args(evts)["path"] == "/src/foo.ts"
 
-    def test_bash_summary(self):
+    def test_bash_args(self):
         line = self._item("shell", {"command": "npm test"})
         evts = self.runner.parse_stream_event(line)
-        assert evts[0].summary == "npm test"
+        assert self._delta_args(evts)["command"] == "npm test"
 
-    def test_write_summary(self):
+    def test_write_args(self):
         line = self._item("write_file", {"path": "/out/result.ts"})
         evts = self.runner.parse_stream_event(line)
-        assert evts[0].summary == "/out/result.ts"
+        assert self._delta_args(evts)["path"] == "/out/result.ts"
+
+    def test_three_events_emitted(self):
+        line = self._item("shell", {"command": "ls"})
+        evts = self.runner.parse_stream_event(line)
+        types = [e.type for e in evts]
+        assert types == ["tool_start", "tool_input_delta", "tool_result"]
 
     def test_no_function_call_output_event(self):
-        """function_call_output should no longer produce a tool_call event."""
+        """function_call_output should not produce any events."""
         import json
         line = json.dumps({"type": "item.completed", "item": {
             "type": "function_call_output", "output": "some result"
@@ -797,7 +848,8 @@ class TestCodexSummaryExtraction:
         assert evts == []
 
 
-class TestGeminiSummaryExtraction:
+class TestGeminiToolArgs:
+    """Gemini runner synthesizes three-event sequence; args arrive on tool_input_delta."""
     def setup_method(self):
         self.runner = GeminiRunner(subagent_dir="/tmp/test-gemini")
 
@@ -805,17 +857,29 @@ class TestGeminiSummaryExtraction:
         import json
         return json.dumps({"type": "tool_use", "name": name, "input": input_dict})
 
-    def test_read_summary(self):
+    def _delta_args(self, evts) -> dict:
+        for ev in evts:
+            if ev.type == "tool_input_delta":
+                return ev.tool_args or {}
+        raise AssertionError("no tool_input_delta event")
+
+    def test_read_args(self):
         line = self._tool("read_file", {"file_path": "/src/bar.go"})
         evts = self.runner.parse_stream_event(line)
-        assert evts[0].summary == "/src/bar.go"
+        assert self._delta_args(evts)["file_path"] == "/src/bar.go"
 
-    def test_bash_summary(self):
+    def test_bash_args(self):
         line = self._tool("run_bash_command", {"command": "go build"})
         evts = self.runner.parse_stream_event(line)
-        assert evts[0].summary == "go build"
+        assert self._delta_args(evts)["command"] == "go build"
 
-    def test_ls_summary(self):
+    def test_ls_args(self):
         line = self._tool("list_directory", {"path": "/src"})
         evts = self.runner.parse_stream_event(line)
-        assert evts[0].summary == "/src"
+        assert self._delta_args(evts)["path"] == "/src"
+
+    def test_three_events_emitted(self):
+        line = self._tool("run_bash_command", {"command": "ls"})
+        evts = self.runner.parse_stream_event(line)
+        types = [e.type for e in evts]
+        assert types == ["tool_start", "tool_input_delta", "tool_result"]

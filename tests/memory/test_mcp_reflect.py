@@ -146,3 +146,85 @@ class TestKoanReflect:
             await mem_env["handlers"].koan_reflect(no_agent_ctx, question="x")
         body = json.loads(str(exc.value))
         assert body["error"] == "permission_denied"
+
+    @pytest.mark.anyio
+    async def test_on_trace_text_emits_reflect_delta(self, mem_env, monkeypatch):
+        """koan_reflect passes _on_trace to run_reflect_agent; text deltas produce
+        reflect_delta projection events targeted at the agent. Other kinds do not.
+        """
+        from koan.web import mcp_endpoint
+        from koan.memory.retrieval.reflect import ReflectTraceEvent
+
+        captured_on_trace = []
+
+        async def _fake_run_reflect(index, question, context=None, *, on_trace=None, max_iterations=10):
+            # Capture the callback so we can call it in the test
+            captured_on_trace.append(on_trace)
+            return ReflectResult(
+                answer="The answer.",
+                citations=[],
+                iterations=1,
+            )
+
+        monkeypatch.setattr(mcp_endpoint, "run_reflect_agent", _fake_run_reflect)
+
+        agent = mem_env["agent"]
+        app_state = mem_env["app_state"]
+
+        # Prime the projection with agent_spawned so fold can find the agent
+        from koan.events import build_agent_spawned
+        from koan.state import AgentState
+        app_state.projection_store.push_event(
+            "run_started",
+            {"profile": "balanced", "installations": {}, "scout_concurrency": 8},
+        )
+        app_state.projection_store.push_event(
+            "agent_spawned",
+            {
+                "agent_id": agent.agent_id,
+                "role": agent.role,
+                "label": "",
+                "model": None,
+                "is_primary": True,
+                "started_at_ms": 0,
+            },
+            agent_id=agent.agent_id,
+        )
+        # Push a tool_request so there is an in-flight ToolKoanEntry for the agent
+        app_state.projection_store.push_event(
+            "tool_request",
+            {"call_id": "test-call-1", "tool": "koan_reflect"},
+            agent_id=agent.agent_id,
+        )
+
+        await mem_env["handlers"].koan_reflect(mem_env["ctx"], question="test?")
+
+        # The fake captured the on_trace callback
+        assert len(captured_on_trace) == 1
+        on_trace = captured_on_trace[0]
+        assert on_trace is not None
+
+        # Count reflect_delta events before calling on_trace
+        events_before = [e for e in app_state.projection_store.events if e.event_type == "reflect_delta"]
+
+        # Call with kind="text" -- should produce reflect_delta
+        on_trace(ReflectTraceEvent(iteration=1, kind="text", delta="Hello "))
+        events_text = [e for e in app_state.projection_store.events if e.event_type == "reflect_delta"]
+        assert len(events_text) == len(events_before) + 1
+        assert events_text[-1].payload == {"delta": "Hello "}
+        assert events_text[-1].agent_id == agent.agent_id
+
+        # Call with kind="search" -- should NOT produce reflect_delta
+        on_trace(ReflectTraceEvent(iteration=1, kind="search", query="memory"))
+        events_search = [e for e in app_state.projection_store.events if e.event_type == "reflect_delta"]
+        assert len(events_search) == len(events_text), "search kind must not produce reflect_delta"
+
+        # Call with kind="thinking" -- should NOT produce reflect_delta
+        on_trace(ReflectTraceEvent(iteration=1, kind="thinking", delta="thinking..."))
+        events_thinking = [e for e in app_state.projection_store.events if e.event_type == "reflect_delta"]
+        assert len(events_thinking) == len(events_search), "thinking kind must not produce reflect_delta"
+
+        # Call with empty delta text -- should NOT produce reflect_delta
+        on_trace(ReflectTraceEvent(iteration=1, kind="text", delta=""))
+        events_empty = [e for e in app_state.projection_store.events if e.event_type == "reflect_delta"]
+        assert len(events_empty) == len(events_thinking), "empty text delta must not produce reflect_delta"

@@ -127,10 +127,35 @@ class CodexRunner:
                 if canonical in KOAN_MCP_TOOLS:
                     return []
                 args_str = item.get("arguments", "")
-                return [StreamEvent(
-                    type="tool_call",
-                    tool_name=canonical,
-                    content=args_str,
-                    summary=_extract_tool_summary(canonical or "", args_str),
-                )]
+                # Parse args once; fall back to {"raw": ...} on decode failure.
+                args_dict: dict = {}
+                if args_str:
+                    try:
+                        args_dict = json.loads(args_str)
+                    except (json.JSONDecodeError, TypeError):
+                        args_dict = {"raw": args_str}
+                # Codex has no call_id scoped per tool_use; use the item's
+                # call_id field if present for cross-event correlation.
+                tool_use_id = item.get("call_id") or ""
+                # Synthesize the three-event streaming sequence in batch so
+                # the subagent loop sees a uniform vocabulary regardless of runner.
+                return [
+                    StreamEvent(
+                        type="tool_start",
+                        tool_name=canonical,
+                        tool_use_id=tool_use_id,
+                    ),
+                    StreamEvent(
+                        type="tool_input_delta",
+                        tool_name=canonical,
+                        tool_args=args_dict,
+                        content=args_str,
+                        tool_use_id=tool_use_id,
+                    ),
+                    StreamEvent(
+                        type="tool_result",
+                        tool_name=canonical,
+                        tool_use_id=tool_use_id,
+                    ),
+                ]
         return []

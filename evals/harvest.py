@@ -156,40 +156,45 @@ def _phase_order(events: list) -> list[str]:
     return seen
 
 
-def _normalize_tool_event(ev) -> dict | None:
-    """Normalize any tool event into {tool, args, ts}. Returns None if not a tool event."""
-    p = ev.payload
-    et = ev.event_type
-    if et == "tool_called":
-        tool = p.get("tool", "")
-        return {"tool": tool, "args": p.get("args", {}), "ts": ev.timestamp} if tool else None
-    if et == "tool_read":
-        return {"tool": "read", "args": {"file": p.get("file", ""), "lines": p.get("lines", "")}, "ts": ev.timestamp}
-    if et == "tool_bash":
-        return {"tool": "bash", "args": {"command": p.get("command", "")}, "ts": ev.timestamp}
-    if et == "tool_grep":
-        return {"tool": "grep", "args": {"pattern": p.get("pattern", "")}, "ts": ev.timestamp}
-    if et == "tool_ls":
-        return {"tool": "ls", "args": {"path": p.get("path", "")}, "ts": ev.timestamp}
-    if et == "tool_write":
-        return {"tool": "write", "args": {"file": p.get("file", "")}, "ts": ev.timestamp}
-    if et == "tool_edit":
-        return {"tool": "edit", "args": {"file": p.get("file", "")}, "ts": ev.timestamp}
-    return None
-
-
 def _bucket_tool_calls(events: list) -> dict[str, list[dict]]:
-    """Walk events; group all tool calls (koan MCP + built-in) by active phase."""
+    """Walk events; group all tool calls (koan MCP + built-in) by active phase.
+
+    Uses a stateful walk over tool_request / tool_input_delta / tool_result
+    events (M1 vocabulary). Phase is recorded at tool_request time so that
+    long-blocking tools (e.g. koan_yield spanning a phase boundary) bucket
+    into the phase that initiated them, not the phase when they returned.
+    """
     buckets: dict[str, list[dict]] = {}
     current_phase = ""
+    # call_id -> {tool, args, phase, ts}: accumulates until tool_result
+    in_flight: dict[str, dict] = {}
     for ev in events:
         if ev.event_type == "phase_started":
             current_phase = ev.payload.get("phase", current_phase)
             buckets.setdefault(current_phase, [])
             continue
-        entry = _normalize_tool_event(ev)
-        if entry is not None:
-            buckets.setdefault(current_phase, []).append(entry)
+        cid = ev.payload.get("call_id", "")
+        if not cid:
+            continue
+        if ev.event_type == "tool_request":
+            tool = ev.payload.get("tool", "")
+            if tool:
+                in_flight[cid] = {
+                    "tool": tool,
+                    "args": {},
+                    "phase": current_phase,
+                    "ts": ev.timestamp,
+                }
+        elif ev.event_type == "tool_input_delta":
+            if cid in in_flight:
+                ti = ev.payload.get("tool_input")
+                if isinstance(ti, dict):
+                    in_flight[cid]["args"] = ti
+        elif ev.event_type == "tool_result":
+            rec = in_flight.pop(cid, None)
+            if rec is not None:
+                phase = rec.pop("phase", current_phase)
+                buckets.setdefault(phase, []).append(rec)
     return buckets
 
 

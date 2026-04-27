@@ -93,80 +93,65 @@ def build_step_advanced(
     return result
 
 
-def build_tool_called(
-    call_id: str,
-    tool: str,
-    args: dict | str,
-    summary: str = "",
-) -> dict:
-    return {
-        "call_id": call_id,
-        "tool": tool,
-        "args": args,
-        "summary": summary,
-    }
+# Legacy tool event builders removed in M1: the streaming stdout path is
+# the single source of truth for tool lifecycle events. All callers were
+# switched to build_tool_request / build_tool_input_delta / build_tool_result
+# before these builders were deleted.
 
 
-def build_tool_started(call_id: str, tool: str) -> dict:
-    return {"call_id": call_id, "tool": tool}
+def build_tool_request(call_id: str, tool: str, tool_use_id: str = "") -> dict:
+    """Build a tool_request event payload.
 
-
-def build_tool_stopped(call_id: str, tool: str, summary: str = "") -> dict:
+    Emitted when the streaming path first sees a tool invocation. tool_use_id is
+    the LLM-assigned identifier used later to correlate with tool_result events.
+    """
     payload: dict = {"call_id": call_id, "tool": tool}
-    if summary:
-        payload["summary"] = summary
+    if tool_use_id:
+        payload["tool_use_id"] = tool_use_id
     return payload
 
 
-# -- Typed tool event builders (recognized tools with extracted metadata) -----
+def build_tool_input_delta(
+    call_id: str,
+    tool: str,
+    tool_input: dict | None,
+    delta: dict | str | None,
+) -> dict:
+    """Build a tool_input_delta event payload.
 
-def build_tool_read(call_id: str, file: str, lines: str = "", ts_ms: int = 0) -> dict:
-    return {
-        "call_id": call_id, "tool": "read", "file": file, "lines": lines,
-        "ts_ms": ts_ms,
-    }
-
-
-def build_tool_write(call_id: str, file: str) -> dict:
-    return {"call_id": call_id, "tool": "write", "file": file}
-
-
-def build_tool_edit(call_id: str, file: str) -> dict:
-    return {"call_id": call_id, "tool": "edit", "file": file}
-
-
-def build_tool_bash(call_id: str, command: str) -> dict:
-    return {"call_id": call_id, "tool": "bash", "command": command}
-
-
-def build_tool_grep(call_id: str, pattern: str, ts_ms: int = 0) -> dict:
-    return {
-        "call_id": call_id, "tool": "grep", "pattern": pattern,
-        "ts_ms": ts_ms,
-    }
+    tool_input is the latest aggregate of all received deltas (server-side
+    running parse). delta is the just-arrived chunk; both are kept so consumers
+    can choose between the complete-so-far view and the incremental view.
+    """
+    payload: dict = {"call_id": call_id, "tool": tool}
+    if tool_input is not None:
+        payload["tool_input"] = tool_input
+    if delta is not None:
+        payload["delta"] = delta
+    return payload
 
 
-def build_tool_ls(call_id: str, path: str, ts_ms: int = 0) -> dict:
-    return {
-        "call_id": call_id, "tool": "ls", "path": path,
-        "ts_ms": ts_ms,
-    }
-
-
-def build_tool_completed(
+def build_tool_result(
     call_id: str,
     tool: str,
     result: str | None = None,
     attachments: list[dict] | None = None,
+    metrics: dict | None = None,
     ts_ms: int = 0,
 ) -> dict:
+    """Build a tool_result event payload.
+
+    The result event closes the lifecycle for one tool invocation. It carries the
+    text result (for koan tools), an optional attachment manifest (extracted from
+    stream content blocks), and optional metrics (for exploration tools).
+    """
     payload: dict = {"call_id": call_id, "tool": tool, "ts_ms": ts_ms}
     if result is not None:
         payload["result"] = result
-    # Omit attachments when absent so the wire shape stays identical for M2
-    # (no attachment blocks are produced yet). M3 populates this field.
     if attachments:
         payload["attachments"] = attachments
+    if metrics is not None:
+        payload["metrics"] = metrics
     return payload
 
 
@@ -401,3 +386,28 @@ def build_reflect_failed(session_id: str, error: str, completed_at_ms: int) -> d
 
 def build_reflect_cleared() -> dict:
     return {}
+
+
+# -- Domain event builders (agent-conversation channel) -----------------------
+
+def build_reflect_delta(delta: str) -> dict:
+    """Build reflect_delta event payload.
+
+    Carries a single text fragment from the pydantic-ai reflection loop's
+    text-output stream. The fold appends it to the in-flight ToolKoanEntry's
+    result.answer for the agent. Correlated by agent_id only -- koan MCP tools
+    block, so at most one in-flight koan entry per agent.
+    """
+    return {"delta": delta}
+
+
+def build_tool_attachments(manifest: list[dict]) -> dict:
+    """Build tool_attachments event payload.
+
+    Carries a koan-side attachment manifest (upload_id, filename, size,
+    content_type, path per AttachmentEntry) emitted by an MCP handler when
+    uploads are committed for the active agent. The fold overwrites the
+    in-flight tool entry's attachments field. Richer than the runner-extracted
+    partial manifest on tool_result content blocks, which lacks koan-side fields.
+    """
+    return {"attachments": manifest}

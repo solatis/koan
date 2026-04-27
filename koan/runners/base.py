@@ -12,7 +12,7 @@ from ..types import AgentInstallation, ModelInfo, ThinkingMode
 @dataclass(kw_only=True)
 class StreamEvent:
     type: Literal[
-        "token_delta", "turn_complete", "tool_call", "thinking", "assistant_text",
+        "token_delta", "turn_complete", "thinking", "assistant_text",
         "tool_start", "tool_input_delta", "tool_stop", "tool_result",
     ]
     content: str | None = None
@@ -27,6 +27,10 @@ class StreamEvent:
     # not interpret the result; the consumer treats this as "no metrics" and
     # leaves projection state unchanged for that call_id.
     metrics: dict | None = None
+    # Populated for tool_result events: attachment metadata extracted from
+    # EmbeddedResource/ImageContent blocks in the tool_result content. None
+    # when no attachment blocks are present or the runner cannot extract them.
+    attachments: list[dict] | None = None
 
 
 @dataclass(kw_only=True)
@@ -63,13 +67,12 @@ class Runner(Protocol):
     def parse_stream_event(self, line: str) -> list[StreamEvent]: ...
 
 
-# Tool names registered in koan's MCP server. Runners filter stdout tool events
-# whose names appear here to prevent duplicate tool_called/tool_completed events
-# (the MCP endpoint is the authoritative source for koan MCP calls).
+# Tool names registered in koan's MCP server. The fold uses this set to select
+# ToolKoanEntry for any koan MCP tool invocation.
 #
-# MAINTENANCE: this set must stay in sync with the @mcp.tool() registrations in
-# koan/web/mcp_endpoint.py. It lives in base.py (not mcp_endpoint.py) to avoid a
-# circular import (mcp_endpoint imports from subagent which imports from runners).
+# MAINTENANCE: this set must stay in sync with the 19 @mcp.tool() registrations
+# in koan/web/mcp_endpoint.py. It lives in base.py (not mcp_endpoint.py) to avoid
+# a circular import (mcp_endpoint imports from subagent which imports from runners).
 # When adding a new koan MCP tool to mcp_endpoint.py, update this set too.
 KOAN_MCP_TOOLS: frozenset[str] = frozenset({
     "koan_complete_step",
@@ -87,4 +90,8 @@ KOAN_MCP_TOOLS: frozenset[str] = frozenset({
     "koan_memory_status",
     "koan_search",
     "koan_reflect",
+    "koan_artifact_write",
+    "koan_memory_propose",
+    "koan_artifact_list",
+    "koan_artifact_view",
 })

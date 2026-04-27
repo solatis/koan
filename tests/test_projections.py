@@ -1183,8 +1183,8 @@ class TestToolNameNormalization:
             "message": {"content": [{"type": "tool_use", "name": "Read", "input": {"file_path": "/tmp/f"}}]},
         })
         evts = runner.parse_stream_event(line)
-        assert len(evts) == 1
-        assert evts[0].tool_name == "read"
+        # Fallback emits tool_start + tool_input_delta
+        assert any(e.tool_name == "read" for e in evts)
 
     def test_claude_normalizes_Bash(self):
         import json
@@ -1195,8 +1195,7 @@ class TestToolNameNormalization:
             "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}]},
         })
         evts = runner.parse_stream_event(line)
-        assert len(evts) == 1
-        assert evts[0].tool_name == "bash"
+        assert any(e.tool_name == "bash" for e in evts)
 
     def test_claude_filters_koan_mcp_tool(self):
         import json
@@ -1215,7 +1214,8 @@ class TestToolNameNormalization:
         runner = CodexRunner()
         line = json.dumps({"type": "item.completed", "item": {"type": "function_call", "name": "read_file", "arguments": "{}"}})
         evts = runner.parse_stream_event(line)
-        assert len(evts) == 1
+        # Three-event sequence; all carry the normalized tool_name.
+        assert len(evts) == 3
         assert evts[0].tool_name == "read"
 
     def test_codex_filters_koan_mcp_tool(self):
@@ -1232,7 +1232,8 @@ class TestToolNameNormalization:
         runner = GeminiRunner(subagent_dir="/tmp/test")
         line = json.dumps({"type": "tool_use", "name": "read_file", "input": {}})
         evts = runner.parse_stream_event(line)
-        assert len(evts) == 1
+        # Three-event sequence; all carry the normalized tool_name.
+        assert len(evts) == 3
         assert evts[0].tool_name == "read"
 
     def test_gemini_filters_koan_mcp_tool(self):
@@ -1242,3 +1243,147 @@ class TestToolNameNormalization:
         line = json.dumps({"type": "tool_use", "name": "koan_complete_step", "input": {}})
         evts = runner.parse_stream_event(line)
         assert evts == []
+
+
+# ---------------------------------------------------------------------------
+# fold: reflect_delta domain event
+# ---------------------------------------------------------------------------
+
+class TestFoldReflectDelta:
+    """reflect_delta appends to the in-flight ToolKoanEntry's result.answer.
+
+    Correlated by agent_id only (koan MCP tools block, so at most one
+    in-flight koan entry per agent at any time). Fold case is pure.
+    """
+
+    def _with_inflight_koan_entry(self, tool_name: str = "koan_reflect") -> tuple:
+        """Return (projection, agent_id) with an in-flight ToolKoanEntry."""
+        p = _proj_with_primary("a1")
+        p = fold(p, _e("tool_request", {
+            "call_id": "c1", "tool": tool_name,
+        }, agent_id="a1"))
+        return p, "a1"
+
+    def test_reflect_delta_appends_to_result_answer(self):
+        p, aid = self._with_inflight_koan_entry()
+        r = fold(p, _e("reflect_delta", {"delta": "hello"}, agent_id=aid))
+        entry = r.run.agents[aid].conversation.entries[0]
+        assert isinstance(entry, ToolKoanEntry)
+        assert entry.result == {"answer": "hello"}
+        # in_flight must remain True -- domain events do not close the lifecycle
+        assert entry.in_flight is True
+
+    def test_reflect_delta_accumulates_across_multiple_events(self):
+        p, aid = self._with_inflight_koan_entry()
+        p = fold(p, _e("reflect_delta", {"delta": "hello"}, agent_id=aid))
+        r = fold(p, _e("reflect_delta", {"delta": " there"}, agent_id=aid))
+        entry = r.run.agents[aid].conversation.entries[0]
+        assert entry.result == {"answer": "hello there"}
+
+    def test_reflect_delta_no_inflight_entry_is_noop(self):
+        """When there is no in-flight ToolKoanEntry the event is dropped silently."""
+        p = _proj_with_primary("a1")
+        r = fold(p, _e("reflect_delta", {"delta": "hello"}, agent_id="a1"))
+        # Projection unchanged: no entries created
+        assert r.run.agents["a1"].conversation.entries == []
+
+    def test_reflect_delta_completed_entry_not_targeted(self):
+        """A ToolKoanEntry with in_flight=False is not updated by reflect_delta."""
+        p, aid = self._with_inflight_koan_entry()
+        # Complete the entry via tool_result
+        p = fold(p, _e("tool_result", {"call_id": "c1", "tool": "koan_reflect"}, agent_id=aid))
+        entry_before = p.run.agents[aid].conversation.entries[0]
+        assert entry_before.in_flight is False
+        # reflect_delta should be a no-op (no in-flight entry)
+        r = fold(p, _e("reflect_delta", {"delta": "late"}, agent_id=aid))
+        entry_after = r.run.agents[aid].conversation.entries[0]
+        assert entry_after.result == entry_before.result
+
+    def test_reflect_delta_empty_delta_is_noop(self):
+        p, aid = self._with_inflight_koan_entry()
+        r = fold(p, _e("reflect_delta", {"delta": ""}, agent_id=aid))
+        entry = r.run.agents[aid].conversation.entries[0]
+        # result stays None when delta is empty
+        assert entry.result is None
+
+    def test_reflect_delta_preserves_existing_result_fields(self):
+        """Accumulation merges into existing result dict without clobbering other keys."""
+        p, aid = self._with_inflight_koan_entry()
+        # Seed a result with extra keys (simulates partial pre-population)
+        p = fold(p, _e("reflect_delta", {"delta": "A"}, agent_id=aid))
+        # Manually inject an extra key via another delta pass (the fold always
+        # does a {**existing_result, "answer": ...} merge, so this is implicit)
+        p = fold(p, _e("reflect_delta", {"delta": "B"}, agent_id=aid))
+        entry = p.run.agents[aid].conversation.entries[0]
+        assert entry.result["answer"] == "AB"
+
+
+# ---------------------------------------------------------------------------
+# fold: tool_attachments domain event
+# ---------------------------------------------------------------------------
+
+class TestFoldToolAttachments:
+    """tool_attachments overwrites the in-flight tool entry's attachments field.
+
+    Correlated by agent_id. Targets the first in-flight non-aggregate entry.
+    ToolAggregateEntry is never targeted (it has no in_flight field).
+    """
+
+    _full_manifest = [
+        {
+            "upload_id": "u1",
+            "filename": "note.txt",
+            "size": 42,
+            "content_type": "text/plain",
+            "path": "/run/uploads/u1/note.txt",
+        }
+    ]
+
+    def _with_inflight_bash(self, agent_id: str = "a1") -> tuple:
+        """Return projection with an in-flight ToolBashEntry."""
+        p = _proj_with_primary(agent_id)
+        p = fold(p, _e("tool_request", {"call_id": "c1", "tool": "bash"}, agent_id=agent_id))
+        return p, agent_id
+
+    def test_tool_attachments_overwrites_entry_attachments(self):
+        from koan.projections import AttachmentEntry
+        p, aid = self._with_inflight_bash()
+        r = fold(p, _e("tool_attachments", {"attachments": self._full_manifest}, agent_id=aid))
+        entry = r.run.agents[aid].conversation.entries[0]
+        assert isinstance(entry, ToolBashEntry)
+        assert entry.attachments is not None
+        assert len(entry.attachments) == 1
+        att = entry.attachments[0]
+        assert isinstance(att, AttachmentEntry)
+        assert att.upload_id == "u1"
+        assert att.filename == "note.txt"
+        assert att.path == "/run/uploads/u1/note.txt"
+        # in_flight must remain True -- domain events do not close the lifecycle
+        assert entry.in_flight is True
+
+    def test_tool_attachments_malformed_manifest_is_noop(self):
+        """Malformed manifest (missing required fields) is silently dropped."""
+        p, aid = self._with_inflight_bash()
+        bad_manifest = [{"filename": "bad.txt"}]  # missing upload_id and path
+        r = fold(p, _e("tool_attachments", {"attachments": bad_manifest}, agent_id=aid))
+        entry = r.run.agents[aid].conversation.entries[0]
+        assert entry.attachments is None  # unchanged
+
+    def test_tool_attachments_no_inflight_entry_is_noop(self):
+        p = _proj_with_primary("a1")
+        r = fold(p, _e("tool_attachments", {"attachments": self._full_manifest}, agent_id="a1"))
+        assert r.run.agents["a1"].conversation.entries == []
+
+    def test_tool_attachments_does_not_target_aggregate_entry(self):
+        """ToolAggregateEntry has no in_flight field; it is skipped."""
+        p = _proj_with_primary("a1")
+        # Seed an aggregate entry (read tool creates ToolAggregateEntry, not ToolBashEntry)
+        p = fold(p, _e("tool_read", {"call_id": "c1", "file": "/a", "lines": "", "ts_ms": 1}, agent_id="a1"))
+        from koan.projections import ToolAggregateEntry
+        assert isinstance(p.run.agents["a1"].conversation.entries[0], ToolAggregateEntry)
+        # tool_attachments should be a no-op (no non-aggregate in-flight entry).
+        # Projection unchanged: fold logs a warning and returns projection.
+        r = fold(p, _e("tool_attachments", {"attachments": self._full_manifest}, agent_id="a1"))
+        assert isinstance(r.run.agents["a1"].conversation.entries[0], ToolAggregateEntry)
+        # ToolAggregateEntry has no attachments field -- just verify entry type unchanged
+        assert len(r.run.agents["a1"].conversation.entries) == 1

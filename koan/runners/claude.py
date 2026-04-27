@@ -102,11 +102,11 @@ class ClaudeRunner:
         self.subagent_dir = subagent_dir
         self._saw_stream_events = False
         self._tool_accumulators: dict[int, _ToolUseAccumulator] = {}
-        # Map tool_use_id -> canonical tool_name for exploration tools (read,
-        # grep, ls). Populated when a tool_use block is emitted; drained when
-        # the matching tool_result block arrives. Only these three tools are
-        # tracked because only they have result parsers in this scope.
-        self._exploration_tool_by_id: dict[str, str] = {}
+        # Map tool_use_id -> canonical tool_name for ALL tools (not just
+        # exploration). Populated when a tool_use block is emitted; drained when
+        # the matching tool_result block arrives. The broader scope enables
+        # tool_result events for bash/write/edit and koan MCP tools.
+        self._tool_by_id: dict[str, str] = {}
 
     def list_models(self, binary: str) -> list[ModelInfo]:
         return [
@@ -228,8 +228,11 @@ class ClaudeRunner:
                     raw_name=raw_name,
                     tool_use_id=tool_use_id,
                 )
-                if tool_use_id and canonical in ("read", "grep", "ls"):
-                    self._exploration_tool_by_id[tool_use_id] = canonical
+                # Track every tool, not just exploration tools. This allows
+                # _parse_user to emit tool_result events for bash/write/edit/koan
+                # tools in addition to read/grep/ls.
+                if tool_use_id:
+                    self._tool_by_id[tool_use_id] = canonical or raw_name
                 self._saw_stream_events = True
                 return [StreamEvent(
                     type="tool_start",
@@ -308,16 +311,31 @@ class ClaudeRunner:
                 if canonical in KOAN_MCP_TOOLS:
                     continue
                 args = block.get("input") or {}
-                tool_use_id = block.get("id") or None
-                if tool_use_id and canonical in ("read", "grep", "ls"):
-                    self._exploration_tool_by_id[tool_use_id] = canonical
-                events.append(StreamEvent(
-                    type="tool_call",
-                    tool_name=canonical,
-                    tool_args=args,
-                    summary=_extract_tool_summary(canonical or "", args),
-                    tool_use_id=tool_use_id,
-                ))
+                tool_use_id = block.get("id") or ""
+                # Track all tools so _parse_user can emit tool_result events.
+                if tool_use_id:
+                    self._tool_by_id[tool_use_id] = canonical or ""
+                # Fallback path: assistant message arrived without preceding
+                # stream_events. Emit the same three-event sequence so the
+                # subagent loop sees a uniform vocabulary (no tool_call type).
+                args_str = json.dumps(args) if args else ""
+                events.extend([
+                    StreamEvent(
+                        type="tool_start",
+                        tool_name=canonical,
+                        tool_use_id=tool_use_id or None,
+                    ),
+                    StreamEvent(
+                        type="tool_input_delta",
+                        tool_name=canonical,
+                        tool_args=args,
+                        content=args_str,
+                        tool_use_id=tool_use_id or None,
+                    ),
+                    # tool_result will arrive in the user message parsed by
+                    # _parse_user; we do not synthesize it here because the
+                    # actual result content is only available later.
+                ])
             # text and thinking blocks are streamed incrementally via
             # stream_event deltas (--include-partial-messages). Only
             # emit them from assistant messages as a fallback when no
@@ -347,9 +365,9 @@ class ClaudeRunner:
         """Extract tool_result blocks from a user message.
 
         Emits one StreamEvent(type='tool_result', ...) per tool_result block
-        whose originating tool was a tracked exploration tool (read/grep/ls).
-        Non-exploration tool_results are ignored — the existing tool_completed
-        event flow is enough for them, and we have no metrics parser.
+        whose originating tool was tracked in _tool_by_id. All tools are now
+        tracked (not just exploration), so bash/write/edit/koan tools emit
+        tool_result events with metrics=None.
         """
         msg = data.get("message")
         if isinstance(msg, dict):
@@ -366,10 +384,11 @@ class ClaudeRunner:
             if block.get("type") != "tool_result":
                 continue
             tool_use_id = block.get("tool_use_id") or ""
-            tool_name = self._exploration_tool_by_id.pop(tool_use_id, None)
+            tool_name = self._tool_by_id.pop(tool_use_id, None)
             if tool_name is None:
                 continue
-            text = _tool_result_text(block.get("content"))
+            content = block.get("content")
+            text = _tool_result_text(content)
             metrics: dict | None
             if tool_name == "read":
                 metrics = _parse_read_result(text)
@@ -379,11 +398,18 @@ class ClaudeRunner:
                 metrics = _parse_ls_result(text)
             else:
                 metrics = None
+            # Extract attachment metadata from structured content blocks.
+            # EmbeddedResource/ImageContent blocks carry filename and media_type;
+            # TextContent blocks (text result) are excluded. M1 surfaces whatever
+            # fields are present; upload_id and path are not available in the stream.
+            attachments: list[dict] | None = _extract_attachments(content)
             events.append(StreamEvent(
                 type="tool_result",
                 tool_name=tool_name,
                 tool_use_id=tool_use_id,
                 metrics=metrics,
+                content=text,
+                attachments=attachments,
             ))
         return events
 
@@ -391,6 +417,49 @@ class ClaudeRunner:
 # ---------------------------------------------------------------------------
 # Tool-result parsers
 # ---------------------------------------------------------------------------
+
+def _extract_attachments(content: object) -> list[dict] | None:
+    """Extract attachment metadata from a tool_result content field.
+
+    Returns a list of dicts for any EmbeddedResource/ImageContent/file blocks
+    found in the content list. Text blocks are excluded. Returns None when there
+    are no attachment blocks (not an empty list, so callers can distinguish
+    "no attachments" from "zero attachment blocks after filtering").
+
+    M1 limitation: upload_id and koan-side path are not present in the stream;
+    only filename and content_type are surfaced here. M3 revisits.
+    """
+    if not isinstance(content, list):
+        return None
+    result: list[dict] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type", "")
+        if item_type not in ("image", "resource", "file"):
+            continue
+        a: dict = {}
+        # EmbeddedResource shape: {"type":"resource","resource":{"uri":...,"mimeType":...,"text":...}}
+        resource = item.get("resource") or {}
+        if isinstance(resource, dict):
+            if "mimeType" in resource:
+                a["content_type"] = resource["mimeType"]
+            uri = resource.get("uri", "")
+            if uri:
+                a["uri"] = uri
+        # ImageContent shape: {"type":"image","source":{"type":"base64","media_type":...}}
+        source = item.get("source") or {}
+        if isinstance(source, dict):
+            if "media_type" in source and "content_type" not in a:
+                a["content_type"] = source["media_type"]
+        # Filename may appear directly on the block or inside the resource
+        name = item.get("filename") or item.get("name") or resource.get("name", "")
+        if name:
+            a["filename"] = name
+        if a:
+            result.append(a)
+    return result if result else None
+
 
 def _tool_result_text(content: object) -> str:
     """Extract text payload from a tool_result block's `content` field.

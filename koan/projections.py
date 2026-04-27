@@ -24,6 +24,7 @@ from pydantic.alias_generators import to_camel
 
 from .lib.workflows import WORKFLOWS
 from .logger import get_logger
+from .runners.base import KOAN_MCP_TOOLS
 
 log = get_logger("projections")
 
@@ -55,7 +56,15 @@ EventType = Literal[
     "tool_bash",
     "tool_grep",
     "tool_ls",
+    "tool_request",
+    "tool_input_delta",
+    "tool_result",
     "tool_result_captured",
+    # Domain events correlated by agent_id (not call_id): target the in-flight
+    # tool entry for the agent. reflect_delta streams internal-LLM text output;
+    # tool_attachments carries koan-side upload manifests from MCP handlers.
+    "reflect_delta",
+    "tool_attachments",
     "thinking",
     "stream_delta",
     "stream_cleared",
@@ -170,21 +179,35 @@ class AttachmentEntry(KoanBaseModel):
 
     Pydantic's to_camel alias yields uploadId/contentType on the wire,
     matching what the frontend AttachmentEntry interface declares.
+
+    upload_id and path are required again post-M3: the tool_attachments domain
+    event from MCP handlers carries full manifests with both fields. Runner-
+    extracted partial manifests in tool_result content blocks (which lack
+    koan-side fields) are silently dropped via the AttachmentEntry(**a)
+    try/except guard in the tool_result and tool_completed fold cases (M1).
     """
     upload_id: str
-    filename: str
-    size: int
-    content_type: str
+    filename: str = Field(default="")
+    size: int = Field(default=0)
+    content_type: str = Field(default="")
     path: str
 
 
 class BaseToolEntry(KoanBaseModel):
     """Shared fields for all tool entries and aggregate children."""
     call_id: str                           # unique per tool invocation
-    in_flight: bool                        # True until tool_completed
+    in_flight: bool                        # True until tool_result
     # Populated by tool_completed when the backend committed uploads were
     # attached to this tool call (via build_tool_completed attachments arg).
     attachments: list[AttachmentEntry] | None = None
+    # Streaming input accumulation: tool_input is the server-side aggregate of
+    # all received deltas (most-complete known input); tool_input_delta is the
+    # last raw chunk received (a partial JSON string from the Anthropic API).
+    # The type is str | None rather than dict | None because the Anthropic
+    # streaming API delivers input_json_delta as a string fragment, not a
+    # parsed dict. tool_input (the aggregate) is always a dict when present.
+    tool_input: dict | None = None
+    tool_input_delta: str | None = None
 
 class ToolWriteEntry(BaseToolEntry):
     type: Literal["tool_write"] = "tool_write"
@@ -636,9 +659,10 @@ def _update_agent_conversation(run: Run, agent_id: str, new_conv: Conversation, 
     return run.model_copy(update={"agents": new_agents})
 
 
-# Koan tools that produce rich conversation entries (ToolKoanEntry) instead
-# of being silently dropped. Tools not in this set are still suppressed.
-RENDERABLE_KOAN_TOOLS: frozenset[str] = frozenset({"koan_reflect"})
+# RENDERABLE_KOAN_TOOLS removed in M1: every koan MCP tool now follows the
+# same lifecycle (tool_request -> tool_input_delta -> tool_result) and
+# produces ToolKoanEntry. Selection happens in the fold's tool_request case
+# by membership in KOAN_MCP_TOOLS (imported from koan.runners.base).
 
 
 # ---------------------------------------------------------------------------
@@ -974,7 +998,10 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 if agent is None:
                     return projection
                 tool_name = payload.get("tool", "")
-                if tool_name in RENDERABLE_KOAN_TOOLS:
+                # Legacy tool_called fold case retains the historical gate so
+                # existing test fixtures and replay logs are not broken. New
+                # code emits tool_request (handled below) not tool_called.
+                if tool_name == "koan_reflect":
                     call_id = payload.get("call_id", "")
                     raw_args = payload.get("args", {})
                     if isinstance(raw_args, str):
@@ -1273,6 +1300,347 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                         call_id, agent_id,
                     )
                     return projection
+                new_conv = agent.conversation.model_copy(update={"entries": new_entries})
+                return projection.model_copy(update={
+                    "run": _update_agent_conversation(projection.run, agent_id, new_conv),
+                })
+
+            case "tool_request":
+                # Single entry-creation event for all tool types. Replaces
+                # tool_started / tool_called / tool_read / tool_bash / etc.
+                # Branch on tool_name once here; all subsequent events use
+                # call_id for correlation without tool-name branching.
+                if projection.run is None or not agent_id:
+                    return projection
+                agent = projection.run.agents.get(agent_id)
+                if agent is None:
+                    return projection
+                tool_name = payload.get("tool", "")
+                call_id = payload.get("call_id", "")
+                if tool_name in KOAN_MCP_TOOLS:
+                    new_conv = _flush_conversation(agent.conversation)
+                    new_entry = ToolKoanEntry(
+                        call_id=call_id, in_flight=True,
+                        tool_name=tool_name, args={}, result=None,
+                    )
+                    new_conv = new_conv.model_copy(update={
+                        "entries": [*new_conv.entries, new_entry],
+                    })
+                    return projection.model_copy(update={
+                        "run": _update_agent_conversation(
+                            projection.run, agent_id, new_conv,
+                            last_tool=tool_name,
+                        ),
+                    })
+                if tool_name == "write":
+                    new_conv = _flush_conversation(agent.conversation)
+                    new_entry = ToolWriteEntry(call_id=call_id, in_flight=True, file="")
+                    new_conv = new_conv.model_copy(update={
+                        "entries": [*new_conv.entries, new_entry],
+                    })
+                    return projection.model_copy(update={
+                        "run": _update_agent_conversation(
+                            projection.run, agent_id, new_conv, last_tool="write",
+                        ),
+                    })
+                if tool_name == "edit":
+                    new_conv = _flush_conversation(agent.conversation)
+                    new_entry = ToolEditEntry(call_id=call_id, in_flight=True, file="")
+                    new_conv = new_conv.model_copy(update={
+                        "entries": [*new_conv.entries, new_entry],
+                    })
+                    return projection.model_copy(update={
+                        "run": _update_agent_conversation(
+                            projection.run, agent_id, new_conv, last_tool="edit",
+                        ),
+                    })
+                if tool_name == "bash":
+                    new_conv = _flush_conversation(agent.conversation)
+                    new_entry = ToolBashEntry(call_id=call_id, in_flight=True, command="")
+                    new_conv = new_conv.model_copy(update={
+                        "entries": [*new_conv.entries, new_entry],
+                    })
+                    return projection.model_copy(update={
+                        "run": _update_agent_conversation(
+                            projection.run, agent_id, new_conv, last_tool="bash",
+                        ),
+                    })
+                if tool_name in ("read", "grep", "ls"):
+                    # Exploration tools aggregate into ToolAggregateEntry.
+                    # Typed fields start empty; tool_input_delta fills them in.
+                    ts_ms = 0
+                    if tool_name == "read":
+                        child: AggregateChild = AggregateReadChild(
+                            call_id=call_id, in_flight=True,
+                            file="", lines="", started_at_ms=ts_ms,
+                        )
+                    elif tool_name == "grep":
+                        child = AggregateGrepChild(
+                            call_id=call_id, in_flight=True,
+                            pattern="", started_at_ms=ts_ms,
+                        )
+                    else:  # ls
+                        child = AggregateLsChild(
+                            call_id=call_id, in_flight=True,
+                            path="", started_at_ms=ts_ms,
+                        )
+                    new_conv = _append_exploration_child(agent.conversation, child, ts_ms)
+                    return projection.model_copy(update={
+                        "run": _update_agent_conversation(
+                            projection.run, agent_id, new_conv, last_tool=tool_name,
+                        ),
+                    })
+                # Unrecognised tool: generic fallback.
+                new_conv = _flush_conversation(agent.conversation)
+                new_entry_g = ToolGenericEntry(
+                    call_id=call_id, in_flight=True, tool_name=tool_name, summary="",
+                )
+                new_conv = new_conv.model_copy(update={
+                    "entries": [*new_conv.entries, new_entry_g],
+                })
+                return projection.model_copy(update={
+                    "run": _update_agent_conversation(
+                        projection.run, agent_id, new_conv, last_tool=tool_name,
+                    ),
+                })
+
+            case "tool_input_delta":
+                # Update the in-flight entry with the latest aggregate input dict
+                # and the just-arrived raw chunk. Also derive typed convenience
+                # fields (file, command, pattern, path, args) so the frontend
+                # renders live partial data without waiting for tool_result.
+                if projection.run is None or not agent_id:
+                    return projection
+                agent = projection.run.agents.get(agent_id)
+                if agent is None:
+                    return projection
+                call_id = payload.get("call_id", "")
+                new_tool_input: dict | None = payload.get("tool_input")
+                new_delta = payload.get("delta")
+                new_entries = []
+                found = False
+                for entry in agent.conversation.entries:
+                    if isinstance(entry, ToolAggregateEntry):
+                        new_children = []
+                        child_found = False
+                        for child in entry.children:
+                            if child.call_id == call_id:
+                                ti = new_tool_input if new_tool_input is not None else (child.tool_input or {})
+                                upd: dict = {
+                                    "tool_input": ti,
+                                    "tool_input_delta": new_delta,
+                                }
+                                if isinstance(child, AggregateReadChild):
+                                    upd["file"] = ti.get("file_path", "") or ti.get("path", "")
+                                elif isinstance(child, AggregateGrepChild):
+                                    upd["pattern"] = ti.get("pattern", "") or ti.get("query", "")
+                                elif isinstance(child, AggregateLsChild):
+                                    upd["path"] = ti.get("path", "") or ti.get("directory", "")
+                                new_children.append(child.model_copy(update=upd))
+                                child_found = True
+                            else:
+                                new_children.append(child)
+                        if child_found:
+                            found = True
+                            new_entries.append(entry.model_copy(update={"children": new_children}))
+                        else:
+                            new_entries.append(entry)
+                    elif isinstance(entry, BaseToolEntry) and entry.call_id == call_id:
+                        ti = new_tool_input if new_tool_input is not None else (entry.tool_input or {})
+                        upd = {"tool_input": ti, "tool_input_delta": new_delta}
+                        if isinstance(entry, (ToolWriteEntry, ToolEditEntry)):
+                            upd["file"] = ti.get("file_path", "") or ti.get("path", "")
+                        elif isinstance(entry, ToolBashEntry):
+                            upd["command"] = ti.get("command", "")
+                        elif isinstance(entry, ToolKoanEntry):
+                            # args is the canonical "latest known input" for koan tools
+                            upd["args"] = ti
+                        new_entries.append(entry.model_copy(update=upd))
+                        found = True
+                    else:
+                        new_entries.append(entry)
+                if not found:
+                    log.warning(
+                        "fold: tool_input_delta for unknown call_id=%r agent=%r",
+                        call_id, agent_id,
+                    )
+                    return projection
+                new_conv = agent.conversation.model_copy(update={"entries": new_entries})
+                return projection.model_copy(update={
+                    "run": _update_agent_conversation(projection.run, agent_id, new_conv),
+                })
+
+            case "tool_result":
+                # Mirrors tool_completed semantics: set in_flight=False, attach
+                # result/attachments. For exploration aggregate children also sets
+                # completed_at_ms and applies metrics when present (same metrics
+                # that tool_result_captured carries; whichever arrives first wins).
+                if projection.run is None or not agent_id:
+                    return projection
+                agent = projection.run.agents.get(agent_id)
+                if agent is None:
+                    return projection
+                call_id = payload.get("call_id", "")
+                ts_ms = payload.get("ts_ms", 0)
+                metrics = payload.get("metrics")
+                raw_attachments = payload.get("attachments")
+                parsed_attachments: list[AttachmentEntry] | None = None
+                if raw_attachments and isinstance(raw_attachments, list):
+                    try:
+                        parsed_attachments = [AttachmentEntry(**a) for a in raw_attachments]
+                    except Exception:
+                        pass  # malformed manifest; degrade silently
+                new_entries = []
+                found = False
+                for entry in agent.conversation.entries:
+                    if (
+                        isinstance(entry, BaseToolEntry)
+                        and entry.call_id == call_id
+                        and not isinstance(entry, ToolAggregateEntry)
+                    ):
+                        upd = {"in_flight": False}
+                        if isinstance(entry, ToolKoanEntry):
+                            raw_result = payload.get("result")
+                            if raw_result and isinstance(raw_result, str):
+                                try:
+                                    upd["result"] = json.loads(raw_result)
+                                except (json.JSONDecodeError, TypeError):
+                                    upd["result"] = {"raw": raw_result}
+                            elif isinstance(raw_result, dict):
+                                upd["result"] = raw_result
+                        if parsed_attachments:
+                            upd["attachments"] = parsed_attachments
+                        new_entries.append(entry.model_copy(update=upd))
+                        found = True
+                    elif isinstance(entry, ToolAggregateEntry):
+                        new_children = []
+                        child_found = False
+                        for child in entry.children:
+                            if child.call_id == call_id:
+                                child_upd: dict = {
+                                    "in_flight": False,
+                                    "completed_at_ms": ts_ms or None,
+                                }
+                                # Apply metrics when present so exploration children
+                                # are complete after a single tool_result event;
+                                # tool_result_captured may still arrive and is no-op.
+                                if metrics and isinstance(metrics, dict):
+                                    if isinstance(child, AggregateReadChild):
+                                        if "lines_read" in metrics:
+                                            child_upd["lines_read"] = metrics["lines_read"]
+                                        if "bytes_read" in metrics:
+                                            child_upd["bytes_read"] = metrics["bytes_read"]
+                                    elif isinstance(child, AggregateGrepChild):
+                                        if "matches" in metrics:
+                                            child_upd["matches"] = metrics["matches"]
+                                        if "files_matched" in metrics:
+                                            child_upd["files_matched"] = metrics["files_matched"]
+                                    elif isinstance(child, AggregateLsChild):
+                                        if "entries" in metrics:
+                                            child_upd["entries"] = metrics["entries"]
+                                        if "directories" in metrics:
+                                            child_upd["directories"] = metrics["directories"]
+                                new_children.append(child.model_copy(update=child_upd))
+                                child_found = True
+                            else:
+                                new_children.append(child)
+                        if child_found:
+                            found = True
+                            new_entries.append(entry.model_copy(update={"children": new_children}))
+                        else:
+                            new_entries.append(entry)
+                    else:
+                        new_entries.append(entry)
+                if not found:
+                    log.warning(
+                        "fold: tool_result for unknown call_id=%r agent=%r",
+                        call_id, agent_id,
+                    )
+                    return projection
+                new_conv = agent.conversation.model_copy(update={"entries": new_entries})
+                return projection.model_copy(update={
+                    "run": _update_agent_conversation(projection.run, agent_id, new_conv),
+                })
+
+            case "reflect_delta":
+                # Domain event: forward internal-LLM text fragments to the in-flight
+                # ToolKoanEntry for this agent. Correlated by agent_id only per
+                # intake decision 4 -- koan MCP tools block, so at most one in-flight
+                # koan entry per agent. Other ReflectTraceEvent kinds (search, done,
+                # thinking) stay on the project-scoped reflect projection; they do not
+                # flow into the agent's conversation (M3 decision 3).
+                if projection.run is None or not agent_id:
+                    return projection
+                agent = projection.run.agents.get(agent_id)
+                if agent is None:
+                    return projection
+                delta = payload.get("delta", "")
+                if not delta:
+                    return projection
+                new_entries = list(agent.conversation.entries)
+                target_idx: int | None = None
+                for i, entry in enumerate(new_entries):
+                    if isinstance(entry, ToolKoanEntry) and entry.in_flight:
+                        target_idx = i
+                        break
+                if target_idx is None:
+                    log.warning(
+                        "fold reflect_delta: no in-flight ToolKoanEntry for agent=%r",
+                        agent_id,
+                    )
+                    return projection
+                target = new_entries[target_idx]
+                existing_result = target.result or {}
+                existing_answer = existing_result.get("answer", "") or ""
+                new_result = {**existing_result, "answer": existing_answer + delta}
+                new_entries[target_idx] = target.model_copy(update={"result": new_result})
+                new_conv = agent.conversation.model_copy(update={"entries": new_entries})
+                return projection.model_copy(update={
+                    "run": _update_agent_conversation(projection.run, agent_id, new_conv),
+                })
+
+            case "tool_attachments":
+                # Domain event: overwrite the in-flight tool entry's attachments with
+                # a koan-side manifest carrying full upload_id and path fields. Emitted
+                # by MCP handlers that have committed uploads. Correlated by agent_id
+                # only -- same uniqueness invariant as reflect_delta.
+                if projection.run is None or not agent_id:
+                    return projection
+                agent = projection.run.agents.get(agent_id)
+                if agent is None:
+                    return projection
+                raw_attachments = payload.get("attachments")
+                if not raw_attachments or not isinstance(raw_attachments, list):
+                    return projection
+                try:
+                    parsed = [AttachmentEntry(**a) for a in raw_attachments]
+                except Exception:
+                    log.warning(
+                        "fold tool_attachments: malformed manifest for agent=%r",
+                        agent_id,
+                    )
+                    return projection
+                # Find the unique in-flight non-aggregate tool entry.
+                # ToolAggregateEntry has no in_flight field; only its children do.
+                new_entries = list(agent.conversation.entries)
+                target_idx = None
+                for i, entry in enumerate(new_entries):
+                    if (
+                        isinstance(entry, BaseToolEntry)
+                        and not isinstance(entry, ToolAggregateEntry)
+                        and entry.in_flight
+                    ):
+                        target_idx = i
+                        break
+                if target_idx is None:
+                    log.warning(
+                        "fold tool_attachments: no in-flight tool entry for agent=%r",
+                        agent_id,
+                    )
+                    return projection
+                new_entries[target_idx] = new_entries[target_idx].model_copy(
+                    update={"attachments": parsed}
+                )
                 new_conv = agent.conversation.model_copy(update={"entries": new_entries})
                 return projection.model_copy(update={
                     "run": _update_agent_conversation(projection.run, agent_id, new_conv),

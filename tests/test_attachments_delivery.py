@@ -117,18 +117,16 @@ async def test_chat_attachment_reaches_koan_yield_as_embedded_resource(tmp_path)
     # Second block: EmbeddedResource for note.txt
     assert isinstance(result[1], EmbeddedResource)
 
-    # Audit: the tool_completed event must carry the attachment manifest.
-    completed_events = [
-        e for e in app_state.projection_store.events
-        if e.event_type == "tool_completed"
-    ]
-    assert len(completed_events) == 1
-    payload = completed_events[0].payload
-    assert "attachments" in payload
-    attach_list = payload["attachments"]
-    assert len(attach_list) == 1
-    assert attach_list[0]["filename"] == "note.txt"
-    assert attach_list[0]["upload_id"] == uid
+    # M3: verify tool_attachments projection event carries full koan-side fields.
+    events = app_state.projection_store.events
+    attach_events = [e for e in events if e.event_type == "tool_attachments"]
+    assert len(attach_events) >= 1, "expected at least one tool_attachments event"
+    manifest = attach_events[-1].payload.get("attachments", [])
+    assert len(manifest) == 1
+    att = manifest[0]
+    assert att["upload_id"] == uid
+    assert att["filename"] == "note.txt"
+    assert att["path"] != ""  # koan-side path populated
 
 
 # -- Scenario 2: Non-Claude runner collapses blocks to text notice -------------
@@ -178,15 +176,16 @@ async def test_non_claude_runner_gets_text_notice_not_file_block(tmp_path):
     assert "data.csv" in result[1].text
     assert not any(isinstance(b, EmbeddedResource) for b in result)
 
-    # Manifest still populated in tool_completed
-    completed_events = [
-        e for e in app_state.projection_store.events
-        if e.event_type == "tool_completed"
-    ]
-    assert len(completed_events) == 1
-    attach_list = completed_events[0].payload.get("attachments", [])
-    assert len(attach_list) == 1
-    assert attach_list[0]["filename"] == "data.csv"
+    # M3: even for non-Claude runners the tool_attachments event must fire with
+    # full koan-side fields (manifest is always populated regardless of runner).
+    events = app_state.projection_store.events
+    attach_events = [e for e in events if e.event_type == "tool_attachments"]
+    assert len(attach_events) >= 1
+    manifest = attach_events[-1].payload.get("attachments", [])
+    assert len(manifest) == 1
+    assert manifest[0]["upload_id"] == record.id
+    assert manifest[0]["filename"] == "data.csv"
+    assert manifest[0]["path"] != ""
 
 
 # -- Scenario 3: Per-decision attachments in koan_memory_propose ---------------
@@ -355,16 +354,15 @@ async def test_start_run_attachment_delivered_on_first_complete_step(tmp_path):
     # start_attachments must be cleared so re-entry does not re-emit.
     assert app_state.run.start_attachments == []
 
-    # tool_completed event carries the attachment manifest with one entry.
-    completed_events = [
-        e for e in app_state.projection_store.events
-        if e.event_type == "tool_completed"
-    ]
-    assert len(completed_events) == 1
-    attach_list = completed_events[0].payload.get("attachments", [])
-    assert len(attach_list) == 1
-    assert attach_list[0]["filename"] == "brief.txt"
-    assert attach_list[0]["upload_id"] == uid
+    # M3: tool_attachments event should carry the full koan-side manifest.
+    events = app_state.projection_store.events
+    attach_events = [e for e in events if e.event_type == "tool_attachments"]
+    assert len(attach_events) >= 1
+    manifest = attach_events[-1].payload.get("attachments", [])
+    assert len(manifest) == 1
+    assert manifest[0]["upload_id"] == uid
+    assert manifest[0]["filename"] == "brief.txt"
+    assert manifest[0]["path"] != ""
 
     # Second call (agent.step is now 1): no File block emitted because
     # start_attachments was cleared and this path is normal within-phase.
@@ -411,13 +409,12 @@ async def test_start_run_attachment_non_claude_gets_text_notice(tmp_path):
     assert "spec.md" in result[1].text
     assert not any(isinstance(b, EmbeddedResource) for b in result)
 
-    # Manifest is still fully populated regardless of runner type.
-    completed_events = [
-        e for e in app_state.projection_store.events
-        if e.event_type == "tool_completed"
-    ]
-    assert len(completed_events) == 1
-    attach_list = completed_events[0].payload.get("attachments", [])
-    assert len(attach_list) == 1
-    assert attach_list[0]["filename"] == "spec.md"
-    assert attach_list[0]["upload_id"] == uid
+    # M3: tool_attachments event fires with full koan-side fields even for non-Claude.
+    events = app_state.projection_store.events
+    attach_events = [e for e in events if e.event_type == "tool_attachments"]
+    assert len(attach_events) >= 1
+    manifest = attach_events[-1].payload.get("attachments", [])
+    assert len(manifest) == 1
+    assert manifest[0]["upload_id"] == uid
+    assert manifest[0]["filename"] == "spec.md"
+    assert manifest[0]["path"] != ""

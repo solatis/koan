@@ -323,6 +323,7 @@ from ..memory.retrieval import RetrievalIndex, search as retrieval_search
 from ..memory.retrieval import (
     IterationCapExceeded,
     ReflectResult,
+    ReflectTraceEvent,
     run_reflect_agent,
 )
 
@@ -443,15 +444,14 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
         args: dict | str,
         summary: str = "",
     ) -> str:
-        """Log and emit tool_called event. Returns call_id."""
+        """Log the start of a tool call. Returns call_id for audit correlation.
+
+        # tool_called/tool_completed projection emission removed in M1: the
+        # streaming stdout path is the single source of truth for tool lifecycle
+        # events. begin_tool_call/end_tool_call retain audit-logging duties only.
+        """
         call_id = str(uuid.uuid4())
         _log_tool_call(agent, tool, summary)
-        from ..events import build_tool_called
-        app_state.projection_store.push_event(
-            "tool_called",
-            build_tool_called(call_id, tool, args, summary),
-            agent_id=agent.agent_id,
-        )
         return call_id
 
     def end_tool_call(
@@ -461,16 +461,12 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
         result: list[ContentBlock] | None = None,
         attachments: list[dict] | None = None,
     ) -> None:
-        """Emit tool_completed event.
+        """Log the end of a tool call (audit only -- no projection event emitted).
 
-        Extracts the text portion (concatenated text of every TextContent block
-        separated by double newlines) for the audit log. The attachment manifest
-        is now passed in directly from upload_ids_to_blocks rather than derived
-        by inspecting block types post-hoc -- block wrappers (EmbeddedResource,
-        ImageContent) do not carry filename/content_type on them so deriving the
-        manifest from blocks is unreliable.
+        # tool_called/tool_completed projection emission removed in M1: the
+        # streaming stdout path is the single source of truth for tool lifecycle
+        # events. The call_id returned by begin_tool_call is a logging tag only.
         """
-        from ..events import build_tool_completed
         text_portion: str | None = None
         if result is not None:
             text_parts: list[str] = [
@@ -479,9 +475,24 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
                 if isinstance(block, TextContent)
             ]
             text_portion = "\n\n".join(text_parts) if text_parts else ""
+        if text_portion:
+            log.debug("tool %s call_id=%s result_len=%d", tool, call_id, len(text_portion))
+
+    def _push_tool_attachments(manifest: list[dict], agent: AgentState) -> None:
+        """Push tool_attachments domain event if manifest is non-empty.
+
+        M3 tool_attachments: koan-side full manifests (with upload_id and path)
+        flow to the projection through this dedicated domain event, separate from
+        the runner-extracted partial manifest on tool_result content blocks. Fold
+        targets the in-flight tool entry by agent_id. See plan-milestone-3.md
+        decision 4.
+        """
+        if not manifest:
+            return
+        from ..events import build_tool_attachments
         app_state.projection_store.push_event(
-            "tool_completed",
-            build_tool_completed(call_id, tool, text_portion, attachments or None),
+            "tool_attachments",
+            build_tool_attachments(manifest),
             agent_id=agent.agent_id,
         )
 
@@ -731,6 +742,7 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
 
                 result_blocks, drain_manifest = _drain_and_append_steering(result_blocks, agent)
                 steer_manifest.extend(drain_manifest)
+                _push_tool_attachments(steer_manifest, agent)
                 return result_blocks
 
             phase_module = agent.phase_module
@@ -770,11 +782,13 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
                     " koan_yield -- follow that directive now."
                 )]
                 result_blocks, steer_manifest = _drain_and_append_steering(result_blocks, agent)
+                _push_tool_attachments(steer_manifest, agent)
                 return result_blocks
 
             # Normal within-phase advancement
             result_blocks = [_text_block(await _step_within_phase(agent, phase_module, ctx_phase, next_step))]
             result_blocks, steer_manifest = _drain_and_append_steering(result_blocks, agent)
+            _push_tool_attachments(steer_manifest, agent)
             return result_blocks
 
         finally:
@@ -887,6 +901,7 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
                 log.debug("koan_yield reply payload: %s", truncate_payload(reply_text))
 
             result_blocks, steer_manifest = _drain_and_append_steering(result_blocks, agent)
+            _push_tool_attachments(reply_manifest + steer_manifest, agent)
 
             return result_blocks
         finally:
@@ -930,6 +945,7 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
                 })
                 result_blocks = [_text_block("Workflow complete. Call koan_complete_step to finish.")]
                 result_blocks, steer_manifest = _drain_and_append_steering(result_blocks, agent)
+                _push_tool_attachments(steer_manifest, agent)
                 return result_blocks
 
             # Validate transition using workflow membership check
@@ -1003,6 +1019,7 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
 
             result_blocks = [_text_block(f"Phase set to '{phase}'. Call koan_complete_step to begin.")]
             result_blocks, steer_manifest = _drain_and_append_steering(result_blocks, agent)
+            _push_tool_attachments(steer_manifest, agent)
             return result_blocks
         finally:
             end_tool_call(agent, call_id, "koan_set_phase", result_blocks, steer_manifest or None)
@@ -1021,6 +1038,7 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
             if not questions:
                 result_blocks = [_text_block("No scouts requested.")]
                 result_blocks, steer_manifest = _drain_and_append_steering(result_blocks, agent)
+                _push_tool_attachments(steer_manifest, agent)
                 return result_blocks
 
             semaphore = asyncio.Semaphore(app_state.runner_config.config.scout_concurrency)
@@ -1070,10 +1088,12 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
             if not findings:
                 result_blocks = [_text_block("No findings returned.")]
                 result_blocks, steer_manifest = _drain_and_append_steering(result_blocks, agent)
+                _push_tool_attachments(steer_manifest, agent)
                 return result_blocks
 
             result_blocks = [_text_block("\n\n---\n\n".join(findings))]
             result_blocks, steer_manifest = _drain_and_append_steering(result_blocks, agent)
+            _push_tool_attachments(steer_manifest, agent)
             return result_blocks
         finally:
             end_tool_call(agent, call_id, "koan_request_scouts", result_blocks, steer_manifest or None)
@@ -1168,6 +1188,7 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
             if not result_blocks:
                 result_blocks = [_text_block("No answers provided.")]
             result_blocks, steer_manifest = _drain_and_append_steering(result_blocks, agent)
+            _push_tool_attachments(answer_manifest + steer_manifest, agent)
             return result_blocks
         finally:
             total_manifest = answer_manifest + steer_manifest
@@ -1230,6 +1251,7 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
             status = "succeeded" if result.exit_code == 0 else f"failed (exit {result.exit_code})"
             result_blocks = [_text_block(f"Executor {status}.")]
             result_blocks, steer_manifest = _drain_and_append_steering(result_blocks, agent)
+            _push_tool_attachments(steer_manifest, agent)
             return result_blocks
         finally:
             end_tool_call(agent, call_id, "koan_request_executor", result_blocks, steer_manifest or None)
@@ -1254,6 +1276,7 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
             })
             result_blocks = [_text_block(f"Story '{story_id}' selected for execution.")]
             result_blocks, steer_manifest = _drain_and_append_steering(result_blocks, agent)
+            _push_tool_attachments(steer_manifest, agent)
             return result_blocks
         finally:
             end_tool_call(agent, call_id, "koan_select_story", result_blocks, steer_manifest or None)
@@ -1278,6 +1301,7 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
             })
             result_blocks = [_text_block(f"Story '{story_id}' marked as done.")]
             result_blocks, steer_manifest = _drain_and_append_steering(result_blocks, agent)
+            _push_tool_attachments(steer_manifest, agent)
             return result_blocks
         finally:
             end_tool_call(agent, call_id, "koan_complete_story", result_blocks, steer_manifest or None)
@@ -1307,6 +1331,7 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
             })
             result_blocks = [_text_block(f"Story '{story_id}' queued for retry (attempt {retry_count}).")]
             result_blocks, steer_manifest = _drain_and_append_steering(result_blocks, agent)
+            _push_tool_attachments(steer_manifest, agent)
             return result_blocks
         finally:
             end_tool_call(agent, call_id, "koan_retry_story", result_blocks, steer_manifest or None)
@@ -1335,6 +1360,7 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
             await save_story_state(run_dir, story_id, state)
             result_blocks = [_text_block(f"Story '{story_id}' skipped.")]
             result_blocks, steer_manifest = _drain_and_append_steering(result_blocks, agent)
+            _push_tool_attachments(steer_manifest, agent)
             return result_blocks
         finally:
             end_tool_call(agent, call_id, "koan_skip_story", result_blocks, steer_manifest or None)
@@ -1414,6 +1440,7 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
 
             result_blocks = [_text_block(json.dumps(result))]
             result_blocks, steer_manifest = _drain_and_append_steering(result_blocks, agent)
+            _push_tool_attachments(steer_manifest, agent)
             return result_blocks
         except EntryNotFoundError as e:
             raise ToolError(json.dumps({"error": "entry_not_found", "message": str(e)}))
@@ -1458,6 +1485,7 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
 
             result_blocks = [_text_block(json.dumps(result))]
             result_blocks, steer_manifest = _drain_and_append_steering(result_blocks, agent)
+            _push_tool_attachments(steer_manifest, agent)
             return result_blocks
         except EntryNotFoundError as e:
             raise ToolError(json.dumps({"error": "entry_not_found", "message": str(e)}))
@@ -1501,6 +1529,7 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
 
             result_blocks = [_text_block(json.dumps(result))]
             result_blocks, steer_manifest = _drain_and_append_steering(result_blocks, agent)
+            _push_tool_attachments(steer_manifest, agent)
             return result_blocks
         except ValueError as e:
             raise ToolError(json.dumps({
@@ -1556,6 +1585,7 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
             }
             result_blocks = [_text_block(json.dumps(out))]
             result_blocks, steer_manifest = _drain_and_append_steering(result_blocks, agent)
+            _push_tool_attachments(steer_manifest, agent)
             return result_blocks
         except ValueError as e:
             raise ToolError(json.dumps({"error": "invalid_type", "message": str(e)}))
@@ -1591,11 +1621,28 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
         )
         result_blocks: list[ContentBlock] | None = None
         steer_manifest: list[dict] = []
+
+        # _on_trace defined before try so it is in scope for run_reflect_agent.
+        # Only kind="text" deltas flow into the agent's conversation feed (M3
+        # decision 3). Other kinds (search, done, thinking) stay on the
+        # project-scoped reflect projection handled by /api/memory/reflect.
+        from ..events import build_reflect_delta
+
+        def _on_trace(ev: ReflectTraceEvent) -> None:
+            if ev.kind != "text":
+                return
+            if not ev.delta:
+                return
+            app_state.projection_store.push_event(
+                "reflect_delta",
+                build_reflect_delta(ev.delta),
+                agent_id=agent.agent_id,
+            )
+
         try:
             index = app_state.memory.retrieval_index
-            # on_trace is None in the MCP path; streaming trace is CLI-only.
             result: ReflectResult = await run_reflect_agent(
-                index, question, context=context,
+                index, question, context=context, on_trace=_on_trace,
             )
             out = {
                 "answer": result.answer,
@@ -1607,6 +1654,7 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
             }
             result_blocks = [_text_block(json.dumps(out))]
             result_blocks, steer_manifest = _drain_and_append_steering(result_blocks, agent)
+            _push_tool_attachments(steer_manifest, agent)
             return result_blocks
         except IterationCapExceeded as e:
             raise ToolError(json.dumps({
@@ -1682,6 +1730,7 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
                 "status": meta.get("status"),
             }))]
             result_blocks, steer_manifest = _drain_and_append_steering(result_blocks, agent)
+            _push_tool_attachments(steer_manifest, agent)
             return result_blocks
         finally:
             end_tool_call(agent, call_id, "koan_artifact_write", result_blocks, steer_manifest or None)
@@ -1785,6 +1834,7 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
             )
 
             result_blocks, steer_manifest = _drain_and_append_steering(result_blocks, agent)
+            _push_tool_attachments(curation_manifest + steer_manifest, agent)
             return result_blocks
         finally:
             total_manifest = curation_manifest + steer_manifest
@@ -1802,11 +1852,13 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
             if not run_dir:
                 result_blocks = [_text_block(json.dumps({"artifacts": []}))]
                 result_blocks, steer_manifest = _drain_and_append_steering(result_blocks, agent)
+                _push_tool_attachments(steer_manifest, agent)
                 return result_blocks
             from ..artifacts import list_artifacts
             artifacts = list_artifacts(run_dir)
             result_blocks = [_text_block(json.dumps({"artifacts": artifacts}))]
             result_blocks, steer_manifest = _drain_and_append_steering(result_blocks, agent)
+            _push_tool_attachments(steer_manifest, agent)
             return result_blocks
         finally:
             end_tool_call(agent, call_id, "koan_artifact_list", result_blocks, steer_manifest or None)
@@ -1850,6 +1902,7 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
             _, body = split_frontmatter(raw)
             result_blocks = [_text_block(body)]
             result_blocks, steer_manifest = _drain_and_append_steering(result_blocks, agent)
+            _push_tool_attachments(steer_manifest, agent)
             return result_blocks
         finally:
             end_tool_call(agent, call_id, "koan_artifact_view", result_blocks, steer_manifest or None)

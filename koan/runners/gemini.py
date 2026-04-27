@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 
 from ..types import AgentInstallation, ModelInfo, ThinkingMode
@@ -115,12 +116,30 @@ class GeminiRunner:
             if canonical in KOAN_MCP_TOOLS:
                 return []
             args = data.get("input") or {}
-            return [StreamEvent(
-                type="tool_call",
-                tool_name=canonical,
-                tool_args=args,
-                summary=_extract_tool_summary(canonical or "", args),
-            )]
+            # Gemini's tool_use event has no explicit call_id; synthesize a
+            # locally-unique id so tool_start -> tool_result correlation works.
+            tool_use_id = f"gemini_{uuid.uuid4().hex[:8]}"
+            args_str = json.dumps(args) if args else ""
+            # Synthesize the three-event streaming sequence in batch.
+            return [
+                StreamEvent(
+                    type="tool_start",
+                    tool_name=canonical,
+                    tool_use_id=tool_use_id,
+                ),
+                StreamEvent(
+                    type="tool_input_delta",
+                    tool_name=canonical,
+                    tool_args=args,
+                    content=args_str,
+                    tool_use_id=tool_use_id,
+                ),
+                StreamEvent(
+                    type="tool_result",
+                    tool_name=canonical,
+                    tool_use_id=tool_use_id,
+                ),
+            ]
         if evt_type == "result":
             return [StreamEvent(type="turn_complete")]
         return []

@@ -155,7 +155,7 @@ class TestParseStreamEventUser:
     def test_user_message_with_read_tool_result_emits_event(self):
         r = self._runner()
         # Prime the tracker as if a Read tool_use block had been seen earlier.
-        r._exploration_tool_by_id["toolu_123"] = "read"
+        r._tool_by_id["toolu_123"] = "read"
         payload = {
             "type": "user",
             "message": {
@@ -176,7 +176,7 @@ class TestParseStreamEventUser:
         assert ev.tool_use_id == "toolu_123"
         assert ev.metrics == {"lines_read": 2, "bytes_read": len(b"alphabeta")}
         # Tracker drained.
-        assert "toolu_123" not in r._exploration_tool_by_id
+        assert "toolu_123" not in r._tool_by_id
 
     def test_user_message_with_untracked_tool_result_is_ignored(self):
         r = self._runner()
@@ -196,7 +196,7 @@ class TestParseStreamEventUser:
 
     def test_user_message_with_list_content_handled(self):
         r = self._runner()
-        r._exploration_tool_by_id["toolu_456"] = "grep"
+        r._tool_by_id["toolu_456"] = "grep"
         payload = {
             "type": "user",
             "message": {
@@ -218,7 +218,7 @@ class TestParseStreamEventUser:
 
     def test_user_message_with_unparseable_content_emits_none_metrics(self):
         r = self._runner()
-        r._exploration_tool_by_id["toolu_789"] = "read"
+        r._tool_by_id["toolu_789"] = "read"
         payload = {
             "type": "user",
             "message": {
