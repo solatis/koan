@@ -21,6 +21,14 @@ export default defineConfig({
     minify: false,
   },
 
+  // Scope dep-scanning to the main app entry. Without this, Vite walks the
+  // whole frontend/ tree and tries to scan review/index.html, whose entry
+  // has a dynamic glob import that can't be statically resolved. The review
+  // tool has its own config (vite.review.config.ts, run via `npm run review`).
+  optimizeDeps: {
+    entries: ['index.html'],
+  },
+
   server: {
     proxy: {
       // Proxy all backend traffic through Vite's dev server.
