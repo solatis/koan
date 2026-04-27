@@ -97,6 +97,14 @@ export function CurationTakeover() {
     setSubmitting(false)
   }
 
+  // Advance to the next proposal after Approve / Reject so the user can
+  // work through a batch without manually clicking each row. Capped at the
+  // last index so it never wraps or goes out of bounds. Functional updater
+  // avoids stale-closure bugs when React batches clicks during a render.
+  const advanceSelection = () => {
+    setSelectedIndex(i => Math.min(i + 1, proposals.length - 1))
+  }
+
   const handleCancel = async () => {
     if (submitting) return
     setSubmitting(true)
@@ -115,8 +123,8 @@ export function CurationTakeover() {
       proposals={proposals}
       selectedIndex={selectedIndex}
       onSelectIndex={setSelectedIndex}
-      onApprove={id => setDecision(id, 'approved')}
-      onReject={id => setDecision(id, 'rejected')}
+      onApprove={id => { setDecision(id, 'approved'); advanceSelection() }}
+      onReject={id => { setDecision(id, 'rejected'); advanceSelection() }}
       onChangeDecision={id => setDecision(id, undefined)}
       onFeedbackChange={(id, v) => setFeedback(id, v)}
       onProposalFileIdsChange={(id, ids) => setDecisionFileIds(prev => ({ ...prev, [id]: ids }))}
