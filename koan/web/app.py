@@ -1701,7 +1701,7 @@ def create_app(app_state: AppState) -> Starlette:
             async def _open_browser():
                 await asyncio.sleep(0.3)  # let uvicorn bind the socket
                 import webbrowser
-                await asyncio.to_thread(webbrowser.open, f"http://127.0.0.1:{app_state.server.port}")
+                await asyncio.to_thread(webbrowser.open, app_state.server.connect_back_url())
 
             asyncio.create_task(_open_browser())
 

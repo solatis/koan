@@ -26,6 +26,9 @@ def main() -> None:
                                  parents=[_common])
     run_parser.add_argument("--port", type=int, default=None,
                             help="Port to listen on (default: random free port)")
+    run_parser.add_argument("--address", type=str, default="127.0.0.1",
+                            help="Address to bind to (default: 127.0.0.1; "
+                                 "use 0.0.0.0 to bind all IPv4 interfaces)")
     run_parser.add_argument("--log-level", type=str, default="INFO")
     run_parser.add_argument("--no-open", action="store_true",
                             help="Don't open browser on startup")

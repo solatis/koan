@@ -239,7 +239,7 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
         thinking_mode = None
 
     # Write task.json
-    mcp_url = f"http://127.0.0.1:{app_state.server.port}/mcp/?agent_id={agent_id}"
+    mcp_url = app_state.server.connect_back_url(f"/mcp/?agent_id={agent_id}")
     task_on_disk = {**task, "mcp_url": mcp_url}
     await write_task_json(subagent_dir, task_on_disk)
     log.debug(

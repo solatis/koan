@@ -67,10 +67,16 @@ def _rebuild_frontend() -> None:
         sys.exit(1)
 
 
-def _find_free_port() -> int:
-    """Bind to port 0 and let the OS assign a free ephemeral port."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
+def _find_free_port(address: str) -> int:
+    """Bind to port 0 on the given address; let the OS assign a free ephemeral port.
+
+    Probes the actual bind address rather than loopback so that the port
+    chosen is definitely free on the interface uvicorn will bind to.
+    AF_INET6 is used iff the address is an IPv6 literal (contains ':').
+    """
+    family = socket.AF_INET6 if ":" in address else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as s:
+        s.bind((address, 0))
         return s.getsockname()[1]
 
 
@@ -81,7 +87,8 @@ def cmd_run(args: argparse.Namespace) -> None:
     if not args.skip_build and _frontend_needs_rebuild():
         _rebuild_frontend()
 
-    port = args.port if args.port is not None else _find_free_port()
+    address = args.address
+    port = args.port if args.port is not None else _find_free_port(address)
 
     project_dir = Path.cwd()
     if not project_dir.is_dir():
@@ -91,6 +98,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     app_state = AppState()
     app_state.runner_config.config = config
     app_state.server.port = port
+    app_state.server.address = address
     app_state.server.open_browser = not args.no_open
     app_state.server.initial_prompt = args.prompt
     app_state.server.yolo = args.yolo
@@ -102,7 +110,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     hydrate_memory_projection(app_state)
     app = create_app(app_state)
 
-    host = "127.0.0.1"
+    host = address
     log.info(
         "koan server starting: host=%s port=%d log_level=%s yolo=%s",
         host, port, log_level, args.yolo,

@@ -139,6 +139,9 @@ class MemoryServices:
 @dataclass
 class ServerConfig:
     port: int = 8000
+    # Default to loopback so programmatic constructors (e.g. eval harness)
+    # that bypass argparse still produce safe, working connect-back URLs.
+    address: str = "127.0.0.1"
     open_browser: bool = True
     yolo: bool = False
     debug: bool = False
@@ -146,6 +149,25 @@ class ServerConfig:
     # Non-None when running in directed mode (e.g. from eval harness).
     # Stores the ordered phase sequence; koan_yield steers toward the next entry.
     directed_phases: list[str] | None = None
+
+    def connect_back_url(self, path: str = "") -> str:
+        """URL a local client (browser, subagent) uses to reach this server.
+
+        Substitutes loopback for wildcard binds (0.0.0.0 -> 127.0.0.1,
+        :: -> ::1) and brackets IPv6 literals so the URL is well-formed.
+        Callers never need to branch on address shape themselves.
+        """
+        addr = self.address
+        if addr == "0.0.0.0":
+            host = "127.0.0.1"
+        elif addr == "::":
+            host = "[::1]"
+        elif ":" in addr:
+            # Specific IPv6 literal -- bracket it for URL use.
+            host = f"[{addr}]"
+        else:
+            host = addr
+        return f"http://{host}:{self.port}{path}"
 
 
 # -- AppState: composition root -----------------------------------------------
