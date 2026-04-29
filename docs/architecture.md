@@ -10,6 +10,8 @@ principles, and pitfalls that govern the codebase.
   workflow, phase dispatch, permissions, model tiers
 - [IPC](./ipc.md) -- HTTP MCP inter-process communication, blocking tool calls,
   scout spawning, koan_yield blocking, chat message delivery
+- [Initiative](./initiative.md) -- initiative workflow contract, band hierarchy,
+  architectural acceptance pattern
 - [Token Streaming](./token-streaming.md) -- runner stdout parsing, SSE delta path
 - [State & Driver](./state.md) -- the driver/LLM boundary, JSON vs markdown
   ownership, run state, orchestrator state
@@ -18,6 +20,8 @@ principles, and pitfalls that govern the codebase.
 - [Intake Loop](./intake-loop.md) -- two-step intake design, prompt engineering principles
 - [Memory System](./memory-system.md) -- project memory, curation, and the RAG injection wired into phase transitions
 - [Milestones](./milestones.md) -- milestone soundness criteria, sizing heuristics, grounding requirements, cross-milestone learning
+- [Workflow Phases](./workflow-phases.md) -- phase taxonomy across all workflows,
+  producer-validator pairing, re-entry shapes
 
 ---
 
