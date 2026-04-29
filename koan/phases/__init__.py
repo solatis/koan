@@ -22,6 +22,8 @@ class PhaseContext:
     run_dir: str
     subagent_dir: str
     project_dir: str = ""
+    # Additional roots passed via --add-dir at koan run startup; primary root remains project_dir.
+    additional_dirs: list[str] = field(default_factory=list)
     task_description: str = ""
     workflow_name: str = ""              # populated from task["workflow_history"][-1]["name"]
     phase_instructions: str | None = None

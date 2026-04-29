@@ -79,8 +79,10 @@ PHASE_ROLE_CONTEXT = (
 # -- Step guidance -------------------------------------------------------------
 
 def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
+    """Build the StepGuidance object for the given step number, drawing on PhaseContext fields (project_dir, additional_dirs, task_description, workflow_name, phase_instructions, memory_injection)."""
     if step == 1:
         project_dir = ctx.project_dir or ""
+        additional_dirs = ctx.additional_dirs or []
         lines = []
 
         # Workflow scope framing (phase_instructions) appears at the top of step 1
@@ -124,8 +126,14 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
             "## 2. Quick orientation -- open obvious files",
             "",
         ])
-        if project_dir:
+        if project_dir and not additional_dirs:
             lines.append(f"Project root: `{project_dir}`")
+            lines.append("")
+        elif project_dir and additional_dirs:
+            lines.append("Project roots:")
+            lines.append(f"- `{project_dir}` (primary)")
+            for d in additional_dirs:
+                lines.append(f"- `{d}`")
             lines.append("")
         lines.extend([
             "Open up to **5 files** that any investigation would start from:",

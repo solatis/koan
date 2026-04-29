@@ -84,6 +84,7 @@ async def driver_main(app_state: AppState) -> None:
         "run_dir": run_dir,
         "subagent_dir": subagent_dir,
         "project_dir": app_state.run.project_dir,
+        "additional_dirs": app_state.run.additional_dirs,
         "task_description": app_state.run.task_description,
         # workflow_history replaces the old single "workflow" string field.
         # koan_set_workflow appends entries on each switch.

@@ -78,6 +78,8 @@ class RunState:
     run_dir: str | None = None
     task_description: str = ""
     project_dir: str = ""
+    # Additional working directories beyond project_dir, populated from --add-dir flags.
+    additional_dirs: list[str] = field(default_factory=list)
     run_installations: dict[str, str] = field(default_factory=dict)
     # Upload IDs attached at start-run time, consumed exactly once by the
     # orchestrator's first koan_complete_step and then cleared. Not persisted

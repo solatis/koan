@@ -40,6 +40,17 @@ def main() -> None:
                             help="Skip all agent permission prompts (dangerous)")
     run_parser.add_argument("--directed-phases", nargs="+", default=None,
                             help="Fixed phase sequence for eval runs (e.g. intake plan-spec done)")
+    # default=None rather than default=[] because argparse action="append" mutates
+    # the default in place; a shared [] would accumulate across parse calls.
+    run_parser.add_argument(
+        "--add-dir",
+        action="append",
+        default=None,
+        dest="additional_dirs",
+        metavar="PATH",
+        help="Additional working directory accessible to all spawned agents "
+             "(repeatable: --add-dir A --add-dir B). Each PATH must exist and be a directory.",
+    )
 
     # koan memory
     mem_parser = subs.add_parser("memory", help="Manage project memory",

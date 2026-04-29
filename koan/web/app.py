@@ -448,6 +448,9 @@ async def api_start_run(r: Request) -> Response:
             ),
             "created_at": time.time(),
             "project_dir": st.run.project_dir,
+            # Included for sessions UI future-proofing; the orchestrator reads
+            # additional_dirs from app_state.run directly via driver_main, not here.
+            "additional_dirs": st.run.additional_dirs,
             # Debug breadcrumb: the IDs passed on start-run. Not the delivery path;
             # delivery uses RunState.start_attachments in koan_complete_step.
             "attachments": attachments,

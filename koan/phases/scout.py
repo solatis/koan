@@ -28,11 +28,13 @@ PHASE_ROLE_CONTEXT = ""
 # -- Step guidance -------------------------------------------------------------
 
 def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
+    """Build the StepGuidance object for the given step number, drawing on PhaseContext fields (project_dir, additional_dirs, scout_question, scout_investigator_role)."""
     question = ctx.scout_question or ""
     investigator_role = ctx.scout_investigator_role or ""
 
     if step == 1:
         project_dir = ctx.project_dir or ""
+        additional_dirs = ctx.additional_dirs or []
         lines = [
             "Find and read the relevant code to answer the question.",
             "",
@@ -43,7 +45,7 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
             lines.append(f"**Question:** {question}")
         if investigator_role:
             lines.append(f"**Your investigator role:** {investigator_role}")
-        if project_dir:
+        if project_dir and not additional_dirs:
             lines.extend([
                 "",
                 "## Project Directory",
@@ -53,6 +55,22 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "All investigation MUST be scoped to this directory.",
                 "Do NOT search outside this path -- no `find /`, no `find ~`, no `/tmp`.",
                 "Always `cd` into the project directory or use absolute paths within it.",
+            ])
+        elif project_dir and additional_dirs:
+            lines.extend([
+                "",
+                "## Project Roots",
+                "",
+                "Investigation may span the following roots:",
+                f"- `{project_dir}` (primary)",
+            ])
+            for d in additional_dirs:
+                lines.append(f"- `{d}`")
+            lines.extend([
+                "",
+                "All investigation MUST be scoped to these directories.",
+                "Do NOT search outside these paths -- no `find /`, no `find ~`, no `/tmp`.",
+                "Use absolute paths anchored at one of the listed roots.",
             ])
         lines.extend([
             "",

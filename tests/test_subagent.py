@@ -680,7 +680,7 @@ class TestClaudePostBuildArgs:
 
     def test_orchestrator_full_args(self):
         from koan.subagent import _claude_post_build_args, CLAUDE_TOOL_WHITELISTS
-        args = _claude_post_build_args("orchestrator", "/run", "/proj")
+        args = _claude_post_build_args("orchestrator", "/run", "/proj", [])
         assert "--tools" in args
         tools_idx = args.index("--tools")
         assert args[tools_idx + 1] == CLAUDE_TOOL_WHITELISTS["orchestrator"]
@@ -698,24 +698,24 @@ class TestClaudePostBuildArgs:
 
     def test_executor_gets_executor_whitelist(self):
         from koan.subagent import _claude_post_build_args, CLAUDE_TOOL_WHITELISTS
-        args = _claude_post_build_args("executor", "/run", "/proj")
+        args = _claude_post_build_args("executor", "/run", "/proj", [])
         tools_idx = args.index("--tools")
         assert args[tools_idx + 1] == CLAUDE_TOOL_WHITELISTS["executor"]
 
     def test_scout_gets_scout_whitelist(self):
         from koan.subagent import _claude_post_build_args, CLAUDE_TOOL_WHITELISTS
-        args = _claude_post_build_args("scout", "/run", "/proj")
+        args = _claude_post_build_args("scout", "/run", "/proj", [])
         tools_idx = args.index("--tools")
         assert args[tools_idx + 1] == CLAUDE_TOOL_WHITELISTS["scout"]
 
     def test_unknown_role_omits_tools_flag(self):
         from koan.subagent import _claude_post_build_args
-        args = _claude_post_build_args("bogus", "/run", "/proj")
+        args = _claude_post_build_args("bogus", "/run", "/proj", [])
         assert "--tools" not in args
 
     def test_empty_run_dir_skipped(self):
         from koan.subagent import _claude_post_build_args
-        args = _claude_post_build_args("orchestrator", "", "/proj")
+        args = _claude_post_build_args("orchestrator", "", "/proj", [])
         add_dir_indices = [i for i, a in enumerate(args) if a == "--add-dir"]
         add_dirs = [args[i + 1] for i in add_dir_indices]
         assert "/proj" in add_dirs
@@ -723,7 +723,7 @@ class TestClaudePostBuildArgs:
 
     def test_empty_project_dir_skipped(self):
         from koan.subagent import _claude_post_build_args
-        args = _claude_post_build_args("orchestrator", "/run", "")
+        args = _claude_post_build_args("orchestrator", "/run", "", [])
         add_dir_indices = [i for i, a in enumerate(args) if a == "--add-dir"]
         add_dirs = [args[i + 1] for i in add_dir_indices]
         assert "/run" in add_dirs
@@ -731,13 +731,13 @@ class TestClaudePostBuildArgs:
 
     def test_both_dirs_empty(self):
         from koan.subagent import _claude_post_build_args
-        args = _claude_post_build_args("orchestrator", "", "")
+        args = _claude_post_build_args("orchestrator", "", "", [])
         assert "--add-dir" not in args
 
     def test_permission_mode_always_present(self):
         from koan.subagent import _claude_post_build_args
         # Even with empty dirs and unknown role, permission mode is always set.
-        args = _claude_post_build_args("bogus", "", "")
+        args = _claude_post_build_args("bogus", "", "", [])
         assert "--permission-mode" in args
         pm_idx = args.index("--permission-mode")
         assert args[pm_idx + 1] == "acceptEdits"
@@ -747,8 +747,76 @@ class TestClaudePostBuildArgs:
         # Every role must have koan MCP calls pre-approved so the CLI does not
         # prompt for permission on koan_* tools.
         for role in ("orchestrator", "executor", "scout", "bogus"):
-            args = _claude_post_build_args(role, "/run", "/proj")
+            args = _claude_post_build_args(role, "/run", "/proj", [])
             assert "--allowedTools" in args, role
             at_idx = args.index("--allowedTools")
             assert args[at_idx + 1] == "mcp__koan__*,Bash", role
 
+
+    def test_additional_dirs_emitted_after_run_dir(self):
+        from koan.subagent import _claude_post_build_args
+        args = _claude_post_build_args(
+            "orchestrator", "/run", "/proj", ["/extra1", "/extra2"]
+        )
+        add_dir_indices = [i for i, a in enumerate(args) if a == "--add-dir"]
+        add_dirs = [args[i + 1] for i in add_dir_indices]
+        assert add_dirs == ["/proj", "/run", "/extra1", "/extra2"]
+
+    def test_additional_dirs_empty_strings_skipped(self):
+        from koan.subagent import _claude_post_build_args
+        args = _claude_post_build_args(
+            "orchestrator", "/run", "/proj", ["", "/real", ""]
+        )
+        add_dir_indices = [i for i, a in enumerate(args) if a == "--add-dir"]
+        add_dirs = [args[i + 1] for i in add_dir_indices]
+        assert add_dirs == ["/proj", "/run", "/real"]
+        assert "" not in add_dirs
+
+    def test_additional_dirs_default_empty(self):
+        from koan.subagent import _claude_post_build_args
+        # Existing behavior preserved: empty list adds nothing beyond proj/run.
+        args = _claude_post_build_args("orchestrator", "/run", "/proj", [])
+        add_dir_indices = [i for i, a in enumerate(args) if a == "--add-dir"]
+        add_dirs = [args[i + 1] for i in add_dir_indices]
+        assert add_dirs == ["/proj", "/run"]
+
+
+class TestCodexPostBuildArgs:
+    """Unit tests for the pure _codex_post_build_args helper."""
+
+    def test_emits_add_dir_for_project_run_and_extras(self):
+        from koan.subagent import _codex_post_build_args
+        args = _codex_post_build_args("/run", "/proj", ["/a", "/b"])
+        add_dir_indices = [i for i, x in enumerate(args) if x == "--add-dir"]
+        assert [args[i + 1] for i in add_dir_indices] == ["/proj", "/run", "/a", "/b"]
+
+    def test_empty_inputs_emit_nothing(self):
+        from koan.subagent import _codex_post_build_args
+        assert _codex_post_build_args("", "", []) == []
+
+    def test_empty_strings_skipped(self):
+        from koan.subagent import _codex_post_build_args
+        args = _codex_post_build_args("", "/proj", ["", "/x"])
+        add_dir_indices = [i for i, x in enumerate(args) if x == "--add-dir"]
+        assert [args[i + 1] for i in add_dir_indices] == ["/proj", "/x"]
+
+
+class TestGeminiPostBuildArgs:
+    """Unit tests for the pure _gemini_post_build_args helper."""
+
+    def test_emits_include_directories_for_project_run_and_extras(self):
+        from koan.subagent import _gemini_post_build_args
+        args = _gemini_post_build_args("/run", "/proj", ["/a", "/b"])
+        inc_indices = [i for i, x in enumerate(args) if x == "--include-directories"]
+        assert [args[i + 1] for i in inc_indices] == ["/proj", "/run", "/a", "/b"]
+        assert "--add-dir" not in args  # gemini uses a different flag name
+
+    def test_empty_inputs_emit_nothing(self):
+        from koan.subagent import _gemini_post_build_args
+        assert _gemini_post_build_args("", "", []) == []
+
+    def test_empty_strings_skipped(self):
+        from koan.subagent import _gemini_post_build_args
+        args = _gemini_post_build_args("", "/proj", ["", "/x"])
+        inc_indices = [i for i, x in enumerate(args) if x == "--include-directories"]
+        assert [args[i + 1] for i in inc_indices] == ["/proj", "/x"]

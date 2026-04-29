@@ -67,6 +67,7 @@ def _claude_post_build_args(
     role: str,
     run_dir: str,
     project_dir: str,
+    additional_dirs: list[str],
 ) -> list[str]:
     """Compose claude-only post-build args: tool whitelist, slash-command disable,
     strict MCP config, additional directories, and permission mode.
@@ -75,7 +76,9 @@ def _claude_post_build_args(
     no I/O, no globals beyond the CLAUDE_TOOL_WHITELISTS module constant.
 
     project_dir is listed before run_dir so the project is searched first.
-    Empty dir strings are skipped to avoid passing --add-dir "" to the CLI.
+    additional_dirs (each --add-dir <PATH> at koan run startup) are emitted
+    after run_dir, in the order the user specified them. Empty strings
+    anywhere in the input are skipped to avoid passing --add-dir "".
     """
     args: list[str] = []
     whitelist = CLAUDE_TOOL_WHITELISTS.get(role)
@@ -89,11 +92,56 @@ def _claude_post_build_args(
         args.extend(["--add-dir", project_dir])
     if run_dir:
         args.extend(["--add-dir", run_dir])
+    for extra in additional_dirs:
+        if extra:
+            args.extend(["--add-dir", extra])
     # acceptEdits is safe for all roles: the CLAUDE_TOOL_WHITELISTS already
     # restrict which roles receive Write/Edit in their tool vocabulary, so
     # scouts cannot write even though the permission mode is permissive.
     args.extend(["--permission-mode", "acceptEdits"])
     args.extend(["--allowedTools", "mcp__koan__*,Bash"])
+    return args
+
+
+def _codex_post_build_args(
+    run_dir: str,
+    project_dir: str,
+    additional_dirs: list[str],
+) -> list[str]:
+    """Compose codex-only post-build args: --add-dir for project, run, and extras.
+
+    Each directory becomes a separate --add-dir <DIR> flag, matching codex
+    exec's CLI shape ("Additional directories that should be writable
+    alongside the primary workspace"). Empty strings are skipped.
+
+    project_dir comes first so codex treats it as the primary workspace
+    conceptually, even though the actual primary is established by the
+    subprocess cwd in spawn_subagent.
+    """
+    args: list[str] = []
+    for d in (project_dir, run_dir, *additional_dirs):
+        if d:
+            args.extend(["--add-dir", d])
+    return args
+
+
+def _gemini_post_build_args(
+    run_dir: str,
+    project_dir: str,
+    additional_dirs: list[str],
+) -> list[str]:
+    """Compose gemini-only post-build args: --include-directories for project,
+    run, and extras.
+
+    Each directory becomes a separate --include-directories <DIR> flag.
+    Gemini also accepts comma-separated values, but the repeatable form
+    avoids escaping concerns when paths contain commas. Empty strings
+    are skipped.
+    """
+    args: list[str] = []
+    for d in (project_dir, run_dir, *additional_dirs):
+        if d:
+            args.extend(["--include-directories", d])
     return args
 
 
@@ -131,12 +179,15 @@ def _build_phase_ctx(task: dict, subagent_dir: str) -> PhaseContext:
 
     Resolves workflow_name from workflow_history for the orchestrator and
     defaults to empty string for executor/scout subagents whose task.json
-    does not carry the field.
+    does not carry the field. project_dir and additional_dirs are read
+    from task.json verbatim and stored on the context so phase modules
+    can render them in step prompts.
     """
     return PhaseContext(
         run_dir=task.get("run_dir", ""),
         subagent_dir=subagent_dir,
         project_dir=task.get("project_dir", ""),
+        additional_dirs=task.get("additional_dirs", []),
         task_description=task.get("task_description", ""),
         # current_workflow reads workflow_history[-1]["name"]; returns "" when
         # absent so executor/scout task.json files behave identically to before.
@@ -161,6 +212,10 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
     For the orchestrator role, the workflow lookup reads task["workflow_history"]
     via current_workflow(), falling back to "plan" when the history is missing or
     empty. Executor and scout roles look up their phase module from PHASE_MODULE_MAP.
+    Per-runner directory-scoping flags (claude --add-dir, codex --add-dir,
+    gemini --include-directories) are appended to cmd after build_command
+    returns, sourced from task["project_dir"], task["run_dir"], and
+    task["additional_dirs"].
     """
     role = task["role"]
     agent_id = str(uuid.uuid4())
@@ -288,13 +343,29 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
         del app_state.agents[agent_id]
         return SubagentResult(exit_code=1)
 
-    # Claude-specific post-build: tool whitelist, slash-command disable,
-    # strict MCP config, additional working directories, and permission mode.
+    # Per-runner post-build: directory-scoping flags and (claude-only) tool whitelist
+    # and permission mode. Each helper sources project_dir, run_dir, and
+    # additional_dirs from task so the spawn site does not need to know about
+    # runner-specific flag names. Unknown runners silently get no directory flags,
+    # preserving today's behavior for any future runners.
     if runner.name == "claude":
         cmd.extend(_claude_post_build_args(
             role=role,
             run_dir=task.get("run_dir", ""),
             project_dir=task.get("project_dir", ""),
+            additional_dirs=task.get("additional_dirs", []),
+        ))
+    elif runner.name == "codex":
+        cmd.extend(_codex_post_build_args(
+            run_dir=task.get("run_dir", ""),
+            project_dir=task.get("project_dir", ""),
+            additional_dirs=task.get("additional_dirs", []),
+        ))
+    elif runner.name == "gemini":
+        cmd.extend(_gemini_post_build_args(
+            run_dir=task.get("run_dir", ""),
+            project_dir=task.get("project_dir", ""),
+            additional_dirs=task.get("additional_dirs", []),
         ))
 
     log.debug(

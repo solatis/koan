@@ -81,7 +81,12 @@ def _find_free_port(address: str) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> None:
-    """Start the koan web server. Expects args from the `koan run` subparser."""
+    """Start the koan web server. Expects args from the `koan run` subparser.
+
+    Resolves --add-dir paths into absolute strings stored on
+    app_state.run.additional_dirs. Each path is validated as an existing
+    directory; failures cause the process to exit with a clear message.
+    """
     log_level = args.log_level
 
     if not args.skip_build and _frontend_needs_rebuild():
@@ -93,6 +98,14 @@ def cmd_run(args: argparse.Namespace) -> None:
     project_dir = Path.cwd()
     if not project_dir.is_dir():
         sys.exit(f"koan: project directory does not exist: {project_dir}")
+
+    raw_extras = args.additional_dirs or []
+    resolved_extras: list[str] = []
+    for raw in raw_extras:
+        p = Path(raw).expanduser().resolve()
+        if not p.is_dir():
+            sys.exit(f"koan: --add-dir path does not exist or is not a directory: {raw}")
+        resolved_extras.append(str(p))
 
     config = asyncio.run(load_koan_config())
     app_state = AppState()
@@ -106,6 +119,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     if args.directed_phases:
         app_state.server.directed_phases = args.directed_phases
     app_state.run.project_dir = str(project_dir)
+    app_state.run.additional_dirs = resolved_extras
     app_state.init_memory_services()
     hydrate_memory_projection(app_state)
     app = create_app(app_state)

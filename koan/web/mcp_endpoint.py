@@ -1011,6 +1011,7 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
                 run_dir=run_dir or "",
                 subagent_dir=agent.subagent_dir,
                 project_dir=app_state.run.project_dir,
+                additional_dirs=app_state.run.additional_dirs,
                 task_description=app_state.run.task_description,
                 workflow_name=workflow.name if workflow else "",
                 phase_instructions=phase_guidance,   # scope framing from workflow
@@ -1056,6 +1057,7 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
                     "run_dir": run_dir,
                     "subagent_dir": subagent_dir,
                     "project_dir": app_state.run.project_dir,
+                    "additional_dirs": app_state.run.additional_dirs,
                     "question": q.get("prompt", ""),
                     "investigator_role": q.get("role", "investigator"),
                 })
@@ -1241,6 +1243,7 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
                 "run_dir": run_dir,
                 "subagent_dir": subagent_dir,
                 "project_dir": app_state.run.project_dir,
+                "additional_dirs": app_state.run.additional_dirs,
                 "artifacts": artifacts or [],
                 "instructions": instructions,
             }
