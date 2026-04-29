@@ -509,10 +509,10 @@ MILESTONES_WORKFLOW = Workflow(
                 "Architectural decisions and constraints relevant to milestone scope"
                 " and ordering. Entries about subsystem boundaries and delivery sequencing."
             ),
-            # CREATE-mode default: advance to plan-spec after decomposition.
-            # Orchestrator may yield to milestone-review instead when a fresh
-            # decomposition benefits from human review before planning begins.
-            next_phase="plan-spec",
+            # Auto-advance to milestone-review after decomposition, mirroring
+            # plan-spec -> plan-review and execute -> exec-review. milestone-review
+            # then yields to the user to pick plan-spec or loop back.
+            next_phase="milestone-review",
         ),
         "milestone-review": PhaseBinding(
             module=milestone_review,

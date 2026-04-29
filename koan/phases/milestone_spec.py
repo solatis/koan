@@ -245,8 +245,8 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "",
             ],
             # terminal_invoke replaces the "After artifact is approved" block.
-            # next_phase="plan-spec" is the CREATE-mode default bound in the workflow;
-            # the orchestrator may yield to curation if all milestones are done.
+            # next_phase="milestone-review" is bound in the workflow, mirroring
+            # plan-spec -> plan-review and execute -> exec-review.
             invoke_after=terminal_invoke(ctx.next_phase, ctx.suggested_phases),
         )
 

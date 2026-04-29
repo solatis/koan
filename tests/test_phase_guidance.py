@@ -173,7 +173,7 @@ def test_milestones_workflow_next_phase_defaults():
     from koan.lib.workflows import MILESTONES_WORKFLOW
     expected = {
         "intake":           "milestone-spec",
-        "milestone-spec":   "plan-spec",
+        "milestone-spec":   "milestone-review",
         "milestone-review": None,
         "plan-spec":        "plan-review",
         "plan-review":      None,
