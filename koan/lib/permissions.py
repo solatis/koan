@@ -126,8 +126,16 @@ _UNIVERSAL_READ_TOOLS: frozenset[str] = frozenset({
 # -- Orchestrator phase-specific constants ------------------------------------
 
 _ORCHESTRATOR_SCOUT_PHASES: frozenset[str] = frozenset({
-    "intake", "core-flows", "tech-plan", "ticket-breakdown",
-    "cross-artifact-validation",
+    "intake", "core-flows",
+    # Initiative workflow architectural-band phases.
+    # "tech-plan-spec" and "tech-plan-review" replace the legacy bare "tech-plan"
+    # entry. tech-plan-review is explicitly authorized for codebase verification of
+    # integration claims (unlike plan-review, which defers mechanical accuracy to
+    # the executor). frame is intentionally absent: scout dispatch in frame is
+    # denied at the fence layer because the phase's purpose is exploration of
+    # intent, not codebase investigation.
+    "tech-plan-spec", "tech-plan-review",
+    "ticket-breakdown", "cross-artifact-validation",
     "plan-spec", "plan-review",           # plan workflow phases
     "milestone-spec", "milestone-review", # milestones workflow phases
     # Curation: standalone directive may need scouts to gather source

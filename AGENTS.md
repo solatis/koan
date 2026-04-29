@@ -32,7 +32,7 @@ Spoke documents:
 - [docs/token-streaming.md](docs/token-streaming.md) -- runner stdout parsing, SSE delta path
 - [docs/milestones.md](docs/milestones.md) -- milestone soundness criteria, sizing heuristics, grounding requirements
 
-**Workflow types:** `plan` (intake -> plan-spec -> plan-review -> execute -> exec-review -> curation) . `milestones` (intake -> milestone-spec -> [milestone-review] -> plan-spec -> [plan-review] -> execute -> exec-review -> milestone-spec loop -> curation)
+**Workflow types:** `plan` (intake -> plan-spec -> plan-review -> execute -> exec-review -> curation) . `milestones` (intake -> milestone-spec -> [milestone-review] -> plan-spec -> [plan-review] -> execute -> exec-review -> milestone-spec loop -> curation) . `initiative` (intake -> core-flows -> tech-plan-spec -> tech-plan-review -> milestone-spec -> [milestone-review] -> plan-spec -> [plan-review] -> execute -> exec-review -> milestone-spec loop -> curation) . `discovery` (frame; single-phase exploration)
 
 ---
 
@@ -136,7 +136,7 @@ during brief-generation step 1 (the read step).
 | `koan_set_workflow`                                                               | All phases (matches `koan_set_phase`); accepts any registered workflow name; always lands at the new workflow's `initial_phase`                        |
 | `koan_yield`                                                                      | All phases                                                                                                                                             |
 | `koan_ask_question`                                                               | All phases                                                                                                                                             |
-| `koan_request_scouts`                                                             | `intake`, `core-flows`, `tech-plan`, `ticket-breakdown`, `cross-artifact-validation`, `plan-spec`, `plan-review`, `milestone-spec`, `milestone-review` |
+| `koan_request_scouts`                                                             | `intake`, `core-flows`, `tech-plan-spec`, `tech-plan-review`, `ticket-breakdown`, `cross-artifact-validation`, `plan-spec`, `plan-review`, `milestone-spec`, `milestone-review` |
 | `koan_request_executor`                                                           | `execution`, `execute`                                                                                                                                 |
 | `koan_select_story`, `koan_complete_story`, `koan_retry_story`, `koan_skip_story` | `execution` only                                                                                                                                       |
 | `bash`                                                                            | `execution`, `implementation-validation`, `exec-review`                                                                                                |
