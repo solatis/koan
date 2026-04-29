@@ -177,7 +177,6 @@ def test_artifact_listing(client, app_state):
         run_dir = Path(tmp)
         (run_dir / "landscape.md").write_text("# Landscape\n", "utf-8")
         app_state.run.run_dir = str(run_dir)
-        app_state.run.start_event.set()
 
         resp = client.get("/api/artifacts")
         assert resp.status_code == 200
@@ -191,7 +190,6 @@ def test_artifact_content(client, app_state):
         run_dir = Path(tmp)
         (run_dir / "landscape.md").write_text("# Hello\n", "utf-8")
         app_state.run.run_dir = str(run_dir)
-        app_state.run.start_event.set()
 
         resp = client.get("/api/artifacts/landscape.md")
         assert resp.status_code == 200
@@ -205,7 +203,6 @@ def test_path_traversal_blocked(client, app_state):
         run_dir = Path(tmp)
         run_dir.mkdir(exist_ok=True)
         app_state.run.run_dir = str(run_dir)
-        app_state.run.start_event.set()
 
         # URL-normalized traversal (../) is resolved before routing and hits the SPA fallback.
         # Use URL-encoded slashes (%2F) to test path traversal within the artifact handler.
@@ -462,7 +459,6 @@ def test_sse_replay(app_state):
 def test_live_page_when_running(client, app_state):
     # After SPA migration, GET / always returns the SPA entry point.
     # The React app reads store state client-side to render the live view.
-    app_state.run.start_event.set()
     app_state.run.run_dir = "/tmp/fake-run"
     app_state.run.phase = "intake"
 
@@ -863,3 +859,4 @@ async def test_artifact_list_includes_status(tmp_path):
 
     assert "status" in by_path["plain.md"]
     assert by_path["plain.md"]["status"] is None
+

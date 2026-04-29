@@ -78,12 +78,15 @@ class RunState:
     run_dir: str | None = None
     task_description: str = ""
     project_dir: str = ""
-    start_event: asyncio.Event = field(default_factory=asyncio.Event)
     run_installations: dict[str, str] = field(default_factory=dict)
     # Upload IDs attached at start-run time, consumed exactly once by the
     # orchestrator's first koan_complete_step and then cleared. Not persisted
     # to run-state.json; task.json carries the IDs as a debug breadcrumb.
     start_attachments: list[str] = field(default_factory=list)
+    # Handle for the per-run driver coroutine task. Authoritative source of
+    # truth for the "is a run active?" guard in api_start_run; done() means
+    # the previous run has finished and a new start is permitted.
+    driver_task: asyncio.Task | None = None
 
 
 @dataclass

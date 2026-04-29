@@ -47,9 +47,12 @@ def _push_artifact_diff(app_state: AppState) -> None:
 # -- Main driver loop ---------------------------------------------------------
 
 async def driver_main(app_state: AppState) -> None:
-    """Wait for start event, then spawn the persistent orchestrator for the entire run."""
-    log.info("Driver waiting for start event...")
-    await app_state.run.start_event.wait()
+    """Spawn the persistent orchestrator for one workflow run.
+
+    Called per-run by api_start_run after all run-scoped state is committed,
+    so run_dir and related fields are guaranteed to be populated on entry.
+    """
+    log.info("driver_main starting for run_dir=%s", app_state.run.run_dir)
 
     run_dir = app_state.run.run_dir
     if run_dir is None:

@@ -268,6 +268,13 @@ async def api_start_run_preflight(r: Request) -> Response:
 
 
 async def api_start_run(r: Request) -> Response:
+    """Handle POST /api/start-run.
+
+    Validates the request body, applies installation selections, writes
+    task.json to a fresh run directory, and creates a per-run driver task.
+    Returns 409 if a driver task for the current run is still alive (concurrent
+    starts are rejected; the frontend should not reach this path organically).
+    """
     body = await r.json()
     task = body.get("task", "")
     if not isinstance(task, str) or not task.strip():
@@ -292,6 +299,24 @@ async def api_start_run(r: Request) -> Response:
         )
     attachments = [a for a in attachments_raw if isinstance(a, str) and a]
 
+    # Hoist st here so both the 409 guard below and all subsequent handler
+    # code share the same binding without a duplicate _app_state(r) call.
+    st = _app_state(r)
+
+    # Reject concurrent starts. driver_task.done() treats a completed task as
+    # absent so the next run is naturally permitted without an explicit reset.
+    if (
+        st.run.driver_task is not None
+        and not st.run.driver_task.done()
+    ):
+        return JSONResponse(
+            {
+                "error": "run_active",
+                "message": "A workflow run is already active. Wait for it to complete or clear it first.",
+            },
+            status_code=409,
+        )
+
     # Log before any control-flow branches that can return early so the line
     # always appears when a valid start-run request is received.
     log.info(
@@ -299,8 +324,6 @@ async def api_start_run(r: Request) -> Response:
         len(task), body.get("workflow", "plan"), profile, len(attachments),
     )
     log.debug("start-run task payload: %s", truncate_payload(task))
-
-    st = _app_state(r)
 
     # Block when no runners available
     if not any(pr.available for pr in st.runner_config.probe_results):
@@ -428,7 +451,11 @@ async def api_start_run(r: Request) -> Response:
     st.run.run_dir = str(run_dir)
     st.run.workflow = workflow_obj
     st.projection_store.push_event("workflow_selected", {"workflow": workflow_name})
-    st.run.start_event.set()
+
+    # Local import so the patch("koan.driver.driver_main") fixture in tests
+    # continues to intercept this call from its new spawn site.
+    from ..driver import driver_main
+    st.run.driver_task = asyncio.create_task(driver_main(st))
 
     return JSONResponse({"ok": True, "run_dir": str(run_dir)})
 
@@ -1684,15 +1711,21 @@ def create_app(app_state: AppState) -> Starlette:
 
     @asynccontextmanager
     async def lifespan(app):
-        from ..driver import driver_main
+        """Manage server-lifetime resources for the Starlette application.
+
+        Startup: initialise upload state, refresh probes, push initial config
+        events, optionally open the browser, then enter the MCP sub-app
+        lifespan so the StreamableHTTPSessionManager task-group is running.
+        Shutdown: terminate active agent processes and release the upload
+        tempdir.  Driver tasks are NOT created here; they are spawned
+        per-run by api_start_run.
+        """
         from .uploads import init_upload_state, shutdown_upload_state
         # init_upload_state creates the server-lifetime tempdir before any
         # request can arrive, so register_upload never sees a None tempdir.
         init_upload_state(app_state.uploads)
         await _refresh_probe_state(app_state, broadcast=False)
         _push_initial_config_events(app_state)
-
-        asyncio.create_task(driver_main(app_state))
 
         # Open browser once after server is listening
         if app_state.server.open_browser:
