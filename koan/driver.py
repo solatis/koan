@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from .artifacts import list_artifacts
 from .run_state import ensure_subagent_directory
 from .events import build_artifact_diff
+from .lib.task_json import make_initial_workflow_history
 from .logger import get_logger
 from .subagent import spawn_subagent
 
@@ -51,6 +52,9 @@ async def driver_main(app_state: AppState) -> None:
 
     Called per-run by api_start_run after all run-scoped state is committed,
     so run_dir and related fields are guaranteed to be populated on entry.
+    The orchestrator's task.json carries workflow_history (an append-only list
+    whose most-recent entry is the active workflow) rather than a single
+    workflow string.
     """
     log.info("driver_main starting for run_dir=%s", app_state.run.run_dir)
 
@@ -81,7 +85,9 @@ async def driver_main(app_state: AppState) -> None:
         "subagent_dir": subagent_dir,
         "project_dir": app_state.run.project_dir,
         "task_description": app_state.run.task_description,
-        "workflow": workflow_name,
+        # workflow_history replaces the old single "workflow" string field.
+        # koan_set_workflow appends entries on each switch.
+        "workflow_history": make_initial_workflow_history(workflow_name, initial_phase),
         "phase_instructions": initial_guidance,   # scope framing for initial phase
     }
 

@@ -26,6 +26,7 @@ from .events import (
     build_tool_result_captured,
 )
 from .logger import get_logger
+from .lib.task_json import current_workflow
 from .lib.workflows import get_workflow
 from .phases import PHASE_MODULE_MAP, PhaseContext
 from .prompts import AGENT_TYPE_PROMPTS
@@ -62,7 +63,11 @@ CLAUDE_TOOL_WHITELISTS: dict[str, str] = {
 }
 
 
-def _claude_post_build_args(role: str, run_dir: str, project_dir: str) -> list[str]:
+def _claude_post_build_args(
+    role: str,
+    run_dir: str,
+    project_dir: str,
+) -> list[str]:
     """Compose claude-only post-build args: tool whitelist, slash-command disable,
     strict MCP config, additional directories, and permission mode.
 
@@ -122,12 +127,20 @@ async def write_task_json(subagent_dir: str, task_dict: dict) -> None:
 # -- PhaseContext builder ------------------------------------------------------
 
 def _build_phase_ctx(task: dict, subagent_dir: str) -> PhaseContext:
+    """Build a PhaseContext from a task.json dict for any subagent role.
+
+    Resolves workflow_name from workflow_history for the orchestrator and
+    defaults to empty string for executor/scout subagents whose task.json
+    does not carry the field.
+    """
     return PhaseContext(
         run_dir=task.get("run_dir", ""),
         subagent_dir=subagent_dir,
         project_dir=task.get("project_dir", ""),
         task_description=task.get("task_description", ""),
-        workflow_name=task.get("workflow", ""),
+        # current_workflow reads workflow_history[-1]["name"]; returns "" when
+        # absent so executor/scout task.json files behave identically to before.
+        workflow_name=current_workflow(task, default=""),
         phase_instructions=task.get("instructions") or task.get("phase_instructions") or task.get("task"),
         executor_artifacts=task.get("artifacts", []),
         story_id=task.get("story_id"),
@@ -143,6 +156,12 @@ def _build_phase_ctx(task: dict, subagent_dir: str) -> PhaseContext:
 # -- Main spawn function -------------------------------------------------------
 
 async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None = None) -> SubagentResult:
+    """Spawn a subagent process and stream its output into the projection store.
+
+    For the orchestrator role, the workflow lookup reads task["workflow_history"]
+    via current_workflow(), falling back to "plan" when the history is missing or
+    empty. Executor and scout roles look up their phase module from PHASE_MODULE_MAP.
+    """
     role = task["role"]
     agent_id = str(uuid.uuid4())
     store = app_state.projection_store
@@ -205,10 +224,10 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
     # Look up phase module and system prompt.
     # Persistent orchestrator: uses the workflow's initial_phase to select
     # the step-guidance module. This must agree with driver.py which sets
-    # app_state.phase = workflow.initial_phase. Falls back to "plan"
-    # workflow when no workflow name is on the task.
+    # app_state.phase = workflow.initial_phase. Falls back to "plan" via
+    # current_workflow when workflow_history is absent or empty.
     if role == "orchestrator":
-        workflow_name = task.get("workflow", "plan")
+        workflow_name = current_workflow(task, default="plan")
         workflow = get_workflow(workflow_name)
         phase_module = workflow.get_module(workflow.initial_phase)
     else:

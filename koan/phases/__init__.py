@@ -23,7 +23,7 @@ class PhaseContext:
     subagent_dir: str
     project_dir: str = ""
     task_description: str = ""
-    workflow_name: str = ""              # populated from task["workflow"]
+    workflow_name: str = ""              # populated from task["workflow_history"][-1]["name"]
     phase_instructions: str | None = None
     executor_artifacts: list[str] = field(default_factory=list)  # for executor subagent
     proposal_made: bool = False

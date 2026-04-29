@@ -27,6 +27,7 @@ from starlette.responses import StreamingResponse
 
 from ..artifacts import list_artifacts
 from ..run_state import atomic_write_json
+from ..lib.task_json import current_workflow, make_initial_workflow_history
 from ..probe import ProbeResult
 from ..projections import _primary_agent_id
 from ..state import ChatMessage
@@ -274,6 +275,8 @@ async def api_start_run(r: Request) -> Response:
     task.json to a fresh run directory, and creates a per-run driver task.
     Returns 409 if a driver task for the current run is still alive (concurrent
     starts are rejected; the frontend should not reach this path organically).
+    The run-root task.json carries workflow_history (a single-entry list on
+    first write) rather than the retired single workflow string field.
     """
     body = await r.json()
     task = body.get("task", "")
@@ -438,7 +441,11 @@ async def api_start_run(r: Request) -> Response:
         run_dir / "task.json",
         {
             "task": task,
-            "workflow": workflow_name,
+            # workflow_history replaces the old single "workflow" string field.
+            # Most-recent entry is the active workflow; koan_set_workflow appends on switch.
+            "workflow_history": make_initial_workflow_history(
+                workflow_name, workflow_obj.initial_phase
+            ),
             "created_at": time.time(),
             "project_dir": st.run.project_dir,
             # Debug breadcrumb: the IDs passed on start-run. Not the delivery path;
@@ -1650,6 +1657,13 @@ async def api_initial_prompt(r: Request) -> Response:
 # -- Sessions endpoints -------------------------------------------------------
 
 async def api_sessions_list(r: Request) -> Response:
+    """Return the list of past runs for the sessions UI.
+
+    The workflow field in each session dict is derived from
+    workflow_history[-1]["name"] via current_workflow(). The API response
+    shape is unchanged: the frontend still receives {run_id, task, workflow,
+    created_at, project_dir}; only the on-disk source for workflow has changed.
+    """
     sessions = []
     if RUNS_DIR.is_dir():
         entries = sorted(RUNS_DIR.iterdir(), reverse=True)
@@ -1664,7 +1678,9 @@ async def api_sessions_list(r: Request) -> Response:
             sessions.append({
                 "run_id": run_path.name,
                 "task": data.get("task", ""),
-                "workflow": data.get("workflow", ""),
+                # workflow is derived from workflow_history to keep the response
+                # shape identical to the old schema while supporting history.
+                "workflow": current_workflow(data, default=""),
                 "created_at": data.get("created_at", 0),
                 "project_dir": data.get("project_dir", ""),
             })

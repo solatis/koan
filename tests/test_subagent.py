@@ -238,6 +238,30 @@ class TestCompleteStep:
         assert agent.step == 2
 
 
+# -- _build_phase_ctx tests ---------------------------------------------------
+
+class TestBuildPhaseCtx:
+    def test_build_phase_ctx_reads_workflow_history(self):
+        """_build_phase_ctx resolves workflow_name from workflow_history."""
+        from koan.subagent import _build_phase_ctx
+
+        task = {
+            "run_dir": "/tmp/run",
+            "workflow_history": [
+                {"name": "milestones", "phase": "intake", "started_at": 1.0}
+            ],
+        }
+        ctx = _build_phase_ctx(task, "/tmp/sub")
+        assert ctx.workflow_name == "milestones"
+
+    def test_build_phase_ctx_defaults_when_history_missing(self):
+        """_build_phase_ctx returns empty workflow_name when workflow_history is absent."""
+        from koan.subagent import _build_phase_ctx
+
+        ctx = _build_phase_ctx({"run_dir": "/tmp/run"}, "/tmp/sub")
+        assert ctx.workflow_name == ""
+
+
 # -- spawn_subagent tests -----------------------------------------------------
 
 class TestSpawnSubagent:
@@ -727,3 +751,4 @@ class TestClaudePostBuildArgs:
             assert "--allowedTools" in args, role
             at_idx = args.index("--allowedTools")
             assert args[at_idx + 1] == "mcp__koan__*,Bash", role
+

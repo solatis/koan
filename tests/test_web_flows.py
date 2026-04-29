@@ -860,3 +860,44 @@ async def test_artifact_list_includes_status(tmp_path):
     assert "status" in by_path["plain.md"]
     assert by_path["plain.md"]["status"] is None
 
+
+# -- api_sessions_list: workflow_history schema --------------------------------
+
+def test_api_sessions_list_returns_workflow_from_history(tmp_path, client):
+    """api_sessions_list derives the workflow field from workflow_history[-1]["name"]."""
+    run_dir = tmp_path / "2099000000-aabbccdd"
+    run_dir.mkdir()
+    (run_dir / "task.json").write_text(json.dumps({
+        "task": "build something",
+        "workflow_history": [{"name": "plan", "phase": "intake", "started_at": 0.0}],
+        "created_at": 0.0,
+        "project_dir": "/some/project",
+    }))
+
+    with patch("koan.web.app.RUNS_DIR", tmp_path):
+        resp = client.get("/api/sessions")
+
+    assert resp.status_code == 200
+    sessions = resp.json()["sessions"]
+    assert len(sessions) == 1
+    assert sessions[0]["workflow"] == "plan"
+
+
+def test_api_sessions_list_handles_empty_history(tmp_path, client):
+    """api_sessions_list returns workflow='' and does not crash when workflow_history is empty."""
+    run_dir = tmp_path / "2099000001-aabbccdd"
+    run_dir.mkdir()
+    (run_dir / "task.json").write_text(json.dumps({
+        "task": "build something",
+        "workflow_history": [],
+        "created_at": 0.0,
+        "project_dir": "/some/project",
+    }))
+
+    with patch("koan.web.app.RUNS_DIR", tmp_path):
+        resp = client.get("/api/sessions")
+
+    assert resp.status_code == 200
+    sessions = resp.json()["sessions"]
+    assert len(sessions) == 1
+    assert sessions[0]["workflow"] == ""
