@@ -101,8 +101,6 @@
   gap: 8px;
 }
 
-.cq-submit-actions .atom-btn--primary { flex: 1; }
-
 /* ======== QueueItem ======== */
 .qi {
   display: grid;

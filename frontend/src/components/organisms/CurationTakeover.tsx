@@ -5,6 +5,9 @@
  * all other run-scoped views. Submits decisions to /api/memory/curation which
  * resolves the orchestrator's blocked future.
  *
+ * The batch auto-submits the moment the last pending proposal is decided --
+ * no manual Submit button. Cancel submits a reject-all payload immediately.
+ *
  * Per-proposal decision/feedback draft is store-only (accept-loss: cleared
  * when the batch clears). Batch data itself is server-backed and survives
  * a page refresh.
@@ -77,23 +80,44 @@ export function CurationTakeover() {
 
   const proposals = batch.proposals.map(p => mapProposal(p, draft[p.id] ?? { feedback: '' }))
 
-  const buildDecisions = (): api.CurationDecision[] =>
+  /**
+   * Build the CurationDecision payload for every proposal in the batch.
+   *
+   * `override` lets the auto-submit path inject the just-decided value for one
+   * proposal without waiting for a React re-render: the `draft` closure captured
+   * by this function is the pre-update snapshot, so reading `draft[id]` after
+   * calling `setDecision(id, ...)` would still return the old value. Passing an
+   * override avoids that race without requiring an imperative store read.
+   */
+  const buildDecisions = (
+    override?: { id: string; decision: 'approved' | 'rejected' }
+  ): api.CurationDecision[] =>
     batch.proposals.map(p => {
       const d = draft[p.id] ?? {}
       const ids = decisionFileIds[p.id] ?? []
+      const decision: 'approved' | 'rejected' =
+        override && override.id === p.id
+          ? override.decision
+          : (d.decision ?? 'rejected')
       const entry: api.CurationDecision = {
         proposal_id: p.id,
-        decision: d.decision ?? 'rejected',
+        decision,
         feedback: d.feedback ?? '',
       }
       if (ids.length > 0) entry.attachments = ids
       return entry
     })
 
-  const handleSubmit = async () => {
+  /**
+   * Submit a fully-built decisions payload. Owns the `submitting` re-entry
+   * guard so that auto-submit and cancel share identical transport semantics.
+   * Callers are responsible for building the payload before calling this
+   * (auto-submit: via buildDecisions({id, decision}); cancel: inline reject-all).
+   */
+  const submitWithDecisions = async (decisions: api.CurationDecision[]) => {
     if (submitting) return
     setSubmitting(true)
-    await api.submitMemoryCuration(batch.batchId, buildDecisions()).catch(() => {})
+    await api.submitMemoryCuration(batch.batchId, decisions).catch(() => {})
     setSubmitting(false)
   }
 
@@ -105,17 +129,49 @@ export function CurationTakeover() {
     setSelectedIndex(i => Math.min(i + 1, proposals.length - 1))
   }
 
+  /**
+   * Cancel = reject all with no feedback or attachments, submitted immediately.
+   * Thin wrapper around submitWithDecisions with an inline reject-all payload.
+   */
   const handleCancel = async () => {
-    if (submitting) return
-    setSubmitting(true)
-    // Cancel = reject all with no feedback.
     const decisions = batch.proposals.map(p => ({
       proposal_id: p.id,
       decision: 'rejected' as const,
       feedback: '',
     }))
-    await api.submitMemoryCuration(batch.batchId, decisions).catch(() => {})
-    setSubmitting(false)
+    await submitWithDecisions(decisions)
+  }
+
+  /**
+   * Returns true iff every proposal OTHER than `clickedId` already has a
+   * decision in the current draft snapshot. When true, the click that just
+   * landed is the one that takes pending from 1 to 0, so auto-submit must fire.
+   *
+   * Reads the pre-update `draft` snapshot deliberately: `setDecision` will
+   * have been called on `clickedId` just before this check, but the closure
+   * here still holds the old map -- so we exclude `clickedId` from the check.
+   */
+  const isLastPending = (clickedId: string): boolean =>
+    batch.proposals.every(p =>
+      p.id === clickedId ? true : Boolean(draft[p.id]?.decision)
+    )
+
+  /**
+   * Handle an Approve or Reject click. Two branches:
+   * - If this is the last pending proposal (pending 1 -> 0): auto-submit with
+   *   an override so the payload includes the just-decided value before React
+   *   re-renders. advanceSelection is intentionally skipped -- the takeover
+   *   is about to unmount.
+   * - Otherwise: record the decision and advance the selection cursor so the
+   *   user can move through the batch without manual navigation.
+   */
+  const handleDecide = (id: string, decision: 'approved' | 'rejected') => {
+    setDecision(id, decision)
+    if (isLastPending(id)) {
+      void submitWithDecisions(buildDecisions({ id, decision }))
+      return
+    }
+    advanceSelection()
   }
 
   return (
@@ -123,12 +179,11 @@ export function CurationTakeover() {
       proposals={proposals}
       selectedIndex={selectedIndex}
       onSelectIndex={setSelectedIndex}
-      onApprove={id => { setDecision(id, 'approved'); advanceSelection() }}
-      onReject={id => { setDecision(id, 'rejected'); advanceSelection() }}
+      onApprove={id => handleDecide(id, 'approved')}
+      onReject={id => handleDecide(id, 'rejected')}
       onChangeDecision={id => setDecision(id, undefined)}
       onFeedbackChange={(id, v) => setFeedback(id, v)}
       onProposalFileIdsChange={(id, ids) => setDecisionFileIds(prev => ({ ...prev, [id]: ids }))}
-      onSubmit={handleSubmit}
       onCancel={handleCancel}
     />
   )

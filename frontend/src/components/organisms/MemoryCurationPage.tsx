@@ -68,7 +68,8 @@ interface MemoryCurationPageProps {
   // the caller (CurationTakeover) owns the map to include in buildDecisions().
   onProposalFileIdsChange?: (id: string, ids: string[]) => void
   onCancel: () => void
-  onSubmit: () => void
+  // onSubmit is intentionally absent: submission is auto-triggered by the
+  // parent (CurationTakeover) on the pending->0 edge, not by a manual button.
 }
 
 const OP_LABELS: Record<Op, string> = { add: 'Add', update: 'Update', deprecate: 'Deprecate' }
@@ -97,6 +98,14 @@ function QueueItem({ state, index, op, seq, title, active, onClick }: {
   )
 }
 
+/**
+ * CurationQueue -- left-panel sidebar listing all proposals in the batch.
+ *
+ * Displays the tally row, the scrollable proposal list, and the submit-area
+ * footer. The primary submit affordance is implicit: CurationTakeover fires
+ * auto-submit when the last pending decision is made. This component only
+ * exposes Cancel, which submits a reject-all payload immediately.
+ */
 function CurationQueue({
   eyebrow = 'Memory curation \u00b7 post-mortem',
   subtitle,
@@ -107,7 +116,6 @@ function CurationQueue({
   approved,
   rejected,
   onCancel,
-  onSubmit,
 }: {
   eyebrow?: string
   subtitle?: string | ReactNode
@@ -118,7 +126,6 @@ function CurationQueue({
   approved: number
   rejected: number
   onCancel: () => void
-  onSubmit: () => void
 }) {
   const tallyCells: ReactNode[] = []
   if (approved > 0) tallyCells.push(<span key="a"><span className="cq-tally-n">{approved}</span> approved</span>)
@@ -158,13 +165,10 @@ function CurationQueue({
       </div>
       <div className="cq-submit">
         <div className="cq-submit-note">
-          {pending > 0
-            ? `${pending} decision${pending !== 1 ? 's' : ''} pending. Submit will apply all approvals and send all feedback at once.`
-            : 'All proposals decided. Submit to apply the batch.'}
+          {`${pending} decision${pending !== 1 ? 's' : ''} pending. The last decision will submit the batch automatically.`}
         </div>
         <div className="cq-submit-actions">
           <Button variant="secondary" size="sm" onClick={onCancel}>Cancel</Button>
-          <Button variant="primary" size="sm" onClick={onSubmit} disabled={pending > 0}>Submit batch</Button>
         </div>
       </div>
     </div>
@@ -243,6 +247,15 @@ function ProposalDetailPane({
   )
 }
 
+/**
+ * MemoryCurationPage -- two-panel memory curation layout.
+ *
+ * Left panel: CurationQueue (proposal list + submit area).
+ * Right panel: ProposalDetailPane (decision form for the selected proposal).
+ *
+ * Submission is auto-triggered by the parent (CurationTakeover) on the
+ * pending->0 edge; this component exposes no onSubmit prop.
+ */
 export function MemoryCurationPage({
   eyebrow,
   subtitle,
@@ -255,7 +268,6 @@ export function MemoryCurationPage({
   onFeedbackChange,
   onProposalFileIdsChange,
   onCancel,
-  onSubmit,
 }: MemoryCurationPageProps) {
   const pending = proposals.filter(p => !p.decision).length
   const approved = proposals.filter(p => p.decision === 'approved').length
@@ -274,7 +286,6 @@ export function MemoryCurationPage({
         approved={approved}
         rejected={rejected}
         onCancel={onCancel}
-        onSubmit={onSubmit}
       />
       {selected && (
         <ProposalDetailPane
