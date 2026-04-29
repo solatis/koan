@@ -78,6 +78,17 @@ PHASE_ROLE_CONTEXT = (
     "containers. A SEQ diagram shows messages between identified actors, not internal\n"
     "component calls.\n"
     "\n"
+    "## Mermaid syntax hazards\n"
+    "\n"
+    # Inline the sequenceDiagram semicolon rule so the LLM sees it at generation
+    # time rather than having to consult the reference doc. Mirrors the pattern
+    # used by the grounding and level-separation rules above.
+    "Do not use `;` (semicolon) inside `Note over`, `Note left of`, or `Note right of`\n"
+    "bodies, or inside message labels -- mermaid treats `;` as a statement separator\n"
+    "and will break the parser mid-sentence. Use `,` or `--` instead.\n"
+    "For multi-line Notes, use `<br>` rather than a raw newline in the body.\n"
+    "See docs/visualization-system.md section 8 for the full list of syntax hazards.\n"
+    "\n"
     "## Strict rules\n"
     "\n"
     "- MUST read `brief.md` and `core-flows.md` (when present) before writing.\n"

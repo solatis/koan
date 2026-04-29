@@ -56,6 +56,17 @@ PHASE_ROLE_CONTEXT = (
     "(brief.md and the dialogue that preceded this phase).\n"
     "See docs/visualization-system.md for full slot-and-suppression detail.\n"
     "\n"
+    "## Mermaid syntax hazards\n"
+    "\n"
+    # Inline the sequenceDiagram semicolon rule so the LLM sees it at generation
+    # time rather than having to consult the reference doc. Mirrors the pattern
+    # used by the suppression and grounding rules above.
+    "Do not use `;` (semicolon) inside `Note over`, `Note left of`, or `Note right of`\n"
+    "bodies, or inside message labels -- mermaid treats `;` as a statement separator\n"
+    "and will break the parser mid-sentence. Use `,` or `--` instead.\n"
+    "For multi-line Notes, use `<br>` rather than a raw newline in the body.\n"
+    "See docs/visualization-system.md section 8 for the full list of syntax hazards.\n"
+    "\n"
     "## Strict rules\n"
     "\n"
     "- MUST NOT include file paths, component names, or implementation detail.\n"

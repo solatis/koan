@@ -568,6 +568,16 @@ def test_core_flows_role_context_includes_seq_slot_rules():
     assert "docs/visualization-system.md" in ctx_text
 
 
+def test_core_flows_role_context_includes_mermaid_syntax_hazards():
+    """Core-flows PHASE_ROLE_CONTEXT must include the mermaid syntax-hazards subsection (semicolon, <br>, doc reference)."""
+    from koan.phases import core_flows
+    ctx_text = core_flows.PHASE_ROLE_CONTEXT
+    assert "Mermaid syntax hazards" in ctx_text
+    assert "semicolon" in ctx_text.lower() or "`;`" in ctx_text
+    assert "<br>" in ctx_text
+    assert "docs/visualization-system.md" in ctx_text
+
+
 # ---------------------------------------------------------------------------
 # tech_plan_spec
 # ---------------------------------------------------------------------------
@@ -610,6 +620,16 @@ def test_tech_plan_spec_role_context_includes_grounding_rule():
     ctx_text = tech_plan_spec.PHASE_ROLE_CONTEXT
     assert "diagram suppressed" in ctx_text
     assert "Grounding rule" in ctx_text or "grounding rule" in ctx_text.lower()
+
+
+def test_tech_plan_spec_role_context_includes_mermaid_syntax_hazards():
+    """Tech-plan-spec PHASE_ROLE_CONTEXT must include the mermaid syntax-hazards subsection (semicolon, <br>, doc reference)."""
+    from koan.phases import tech_plan_spec
+    ctx_text = tech_plan_spec.PHASE_ROLE_CONTEXT
+    assert "Mermaid syntax hazards" in ctx_text
+    assert "semicolon" in ctx_text.lower() or "`;`" in ctx_text
+    assert "<br>" in ctx_text
+    assert "docs/visualization-system.md" in ctx_text
 
 
 # ---------------------------------------------------------------------------

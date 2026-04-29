@@ -194,7 +194,41 @@ These are failure modes the corpus reports and the framework's structure prevent
 
 ---
 
-## §8. Out of scope
+## §8. Mermaid syntax hazards
+
+Mermaid's `sequenceDiagram` grammar treats certain punctuation as statement
+separators or syntax tokens. These traps appear when LLM-generated content
+embeds them in Note bodies or message labels.
+
+- **Do not use `;` inside `Note over` / `Note left of` / `Note right of`
+  bodies, or inside message labels (after the `:` in `A->>B: text`).** Mermaid
+  treats `;` as a statement separator, terminating the current statement
+  mid-sentence and breaking the parser on the next token. Use `,`, `--`, or
+  rephrase with two separate Notes.
+- **For multi-line Notes, use the `<br>` HTML break tag rather than embedding
+  a raw newline in the body.** Mermaid sequenceDiagram does not parse
+  multi-line Note bodies across raw newlines; `<br>` is the canonical
+  line-break mechanism inside Note text.
+
+Example:
+
+```
+# Bad -- semicolon terminates the Note mid-sentence
+Note over A, B: Two unrelated entry points; mutually exclusive per agent
+
+# Good -- replace with comma or em-dash equivalent
+Note over A, B: Two unrelated entry points -- mutually exclusive per agent
+
+# Good -- multi-line via <br>
+Note over A, B: Two unrelated entry points<br>Mutually exclusive per agent
+```
+
+See the [Mermaid sequence-diagram syntax docs](https://mermaid.js.org/syntax/sequenceDiagram.html)
+for the full grammar.
+
+---
+
+## §9. Out of scope
 
 These are deferred or explicitly not pursued, and named here so they are not silently re-litigated.
 
@@ -208,7 +242,7 @@ These are deferred or explicitly not pursued, and named here so they are not sil
 
 ---
 
-## §9. Summary of the four key constraints
+## §10. Summary of the four key constraints
 
 For an at-a-glance reference when prompting the orchestrator or reviewing its output:
 
