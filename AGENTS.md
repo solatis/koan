@@ -24,6 +24,7 @@ verification checklist.
 Spoke documents:
 
 - [docs/subagents.md](docs/subagents.md) -- spawn lifecycle, task manifest, step-first workflow, permissions
+- [docs/initiative.md](docs/initiative.md) -- initiative workflow contract, band hierarchy, gating
 - [docs/ipc.md](docs/ipc.md) -- HTTP MCP tool calls, blocking interactions, scout spawning, koan_yield blocking
 - [docs/state.md](docs/state.md) -- driver/LLM boundary, run state, orchestrator state
 - [docs/intake-loop.md](docs/intake-loop.md) -- two-step intake design, prompt engineering
@@ -31,6 +32,7 @@ Spoke documents:
 - [docs/projections.md](docs/projections.md) -- versioned event log, fold function, projection shape, SSE protocol, version-negotiated catch-up
 - [docs/token-streaming.md](docs/token-streaming.md) -- runner stdout parsing, SSE delta path
 - [docs/milestones.md](docs/milestones.md) -- milestone soundness criteria, sizing heuristics, grounding requirements
+- [docs/workflow-phases.md](docs/workflow-phases.md) -- phase taxonomy across all workflows, producer-validator pairing
 
 **Workflow types:** `plan` (intake -> plan-spec -> plan-review -> execute -> exec-review -> curation) . `milestones` (intake -> milestone-spec -> [milestone-review] -> plan-spec -> [plan-review] -> execute -> exec-review -> milestone-spec loop -> curation) . `initiative` (intake -> core-flows -> tech-plan-spec -> tech-plan-review -> milestone-spec -> [milestone-review] -> plan-spec -> [plan-review] -> execute -> exec-review -> milestone-spec loop -> curation) . `discovery` (frame; single-phase exploration)
 
@@ -145,7 +147,7 @@ during brief-generation step 1 (the read step).
 | `koan_memory_status`                                                              | All phases                                                                                                                                             |
 | `koan_search`                                                                     | All phases                                                                                                                                             |
 | `koan_reflect`                                                                    | All phases (orchestrator only)                                                                                                                         |
-| `koan_artifact_propose`                                                           | All phases (orchestrator only)                                                                                                                         |
+| `koan_artifact_write`                                                             | All phases (orchestrator only)                                                                                                                         |
 | `koan_artifact_list`                                                              | All phases (all roles via universal read-tool path)                                                                                                    |
 | `koan_artifact_view`                                                              | All phases (all roles via universal read-tool path)                                                                                                    |
 
