@@ -32,6 +32,17 @@ mermaid.initialize({
   securityLevel: 'strict',
 })
 
+// mermaid.render() creates temp container nodes (id and "d{id}") in document.body
+// for measurement, then removes them. If the calling component unmounts mid-render
+// or render rejects after the bomb-icon SVG was injected, those nodes survive and
+// stack on the page. Sweep them when we know we are done with this id.
+function sweepLeakedMermaidNodes(id: string): void {
+  for (const candidate of [id, 'd' + id]) {
+    const el = document.getElementById(candidate)
+    if (el !== null) el.remove()
+  }
+}
+
 interface MermaidBlockProps {
   code: string
 }
@@ -51,19 +62,41 @@ export function MermaidBlock({ code }: MermaidBlockProps): ReactElement {
     // committing state so a stale response from a superseded render is dropped.
     const token = ++renderToken.current
 
+    // Validate before render() so syntactically invalid input never reaches
+    // the renderer. mermaid.render() on bad input both throws AND injects the
+    // bomb-icon error SVG into document.body via its temp container; those
+    // nodes can leak when the parent unmounts before cleanup runs. parse()
+    // with suppressErrors returns false on syntax errors instead of throwing,
+    // and never mutates the DOM.
     mermaid
-      .render(id, code)
-      .then((result) => {
+      .parse(code, { suppressErrors: true })
+      .then((parsed) => {
         if (token !== renderToken.current) return
-        setSvg(result.svg)
-        setError(null)
-      })
-      .catch((err: unknown) => {
-        if (token !== renderToken.current) return
-        setSvg(null)
-        setError(err instanceof Error ? err.message : String(err))
+        if (parsed === false) {
+          setSvg(null)
+          setError('mermaid syntax error')
+          return
+        }
+        return mermaid
+          .render(id, code)
+          .then((result) => {
+            if (token !== renderToken.current) return
+            setSvg(result.svg)
+            setError(null)
+          })
+          .catch((err: unknown) => {
+            if (token !== renderToken.current) return
+            setSvg(null)
+            setError(err instanceof Error ? err.message : String(err))
+            sweepLeakedMermaidNodes(id)
+          })
       })
   }, [code, id])
+
+  // On unmount, sweep any mermaid temp nodes for this id that escaped cleanup.
+  useEffect(() => {
+    return () => { sweepLeakedMermaidNodes(id) }
+  }, [id])
 
   if (error !== null) {
     return (
