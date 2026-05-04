@@ -33,6 +33,14 @@ def drain_for_primary(
     per brief decision 5 -- both the Claude PostToolUse hook and the codex/
     gemini MCP-handler call this function. Centralising the drain prevents
     double-delivery bugs that two independent queue readers would introduce.
+
+    Observability of the early-return path (agent is None or not is_primary)
+    is intentionally NOT logged from this file. Instead, both callers emit a
+    DEBUG log at their own call site using their own existing module loggers:
+    - koan/agents/claude.py post_tool_use_hook (step 5b) uses koan.claude_sdk_agent
+    - koan/web/mcp_endpoint.py _drain_and_append_steering (step 7b) uses koan.mcp
+    This keeps koan/agents/steering.py free of its own logger per brief decision 4
+    (no new logger names added in this changeset).
     """
     if agent is None or not agent.is_primary:
         return []

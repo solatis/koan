@@ -525,7 +525,15 @@ class Notification(KoanBaseModel):
 # ---------------------------------------------------------------------------
 
 class SteeringMessage(KoanBaseModel):
+    """A pending steering message shown above the chat input.
+
+    timestamp_ms is the enqueue wall-clock time (milliseconds since epoch),
+    carried from the steering_queued event payload. None for events recorded
+    before this field was introduced -- callers must treat None as "not
+    available" rather than zero to avoid spurious zero-latency readings.
+    """
     content: str
+    timestamp_ms: int | None = None
 
 class PhaseInfo(KoanBaseModel):
     """A phase the user can transition to, as shown in the command palette."""
@@ -1720,7 +1728,12 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
             case "steering_queued":
                 if projection.run is None:
                     return projection
-                entry = SteeringMessage(content=payload.get("content", ""))
+                # timestamp_ms is optional: absent on legacy events.jsonl entries.
+                # Treat None as "not available" (not 0) to avoid false zero-latency.
+                entry = SteeringMessage(
+                    content=payload.get("content", ""),
+                    timestamp_ms=payload.get("timestamp_ms"),
+                )
                 return projection.model_copy(update={
                     "run": projection.run.model_copy(update={
                         "steering": [*projection.run.steering, entry],
@@ -1730,6 +1743,9 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
             case "steering_delivered":
                 if projection.run is None:
                     return projection
+                # enqueue_ts_ms_list and delivery_ts_ms exist on the wire event
+                # for replay/latency analysis only; they are not stored in the
+                # live projection -- no in-memory consumer reads them here.
                 return projection.model_copy(update={
                     "run": projection.run.model_copy(update={"steering": []}),
                 })

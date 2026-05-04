@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import TYPE_CHECKING, AsyncIterator, Iterator
 
 from ..logger import get_logger
@@ -345,9 +346,33 @@ class ClaudeSDKAgent:
             after both built-in tools (Bash, Read, etc.) and koan MCP tools.
             This is the sole steering drain entry for Claude agents -- the
             MCP-handler path bypasses the queue for claude runner_type per the
-            gate in mcp_endpoint.py:_drain_and_append_steering (Step 7).
+            gate in mcp_endpoint.py:_drain_and_append_steering.
+
+            Observability:
+            - Emits DEBUG on every hook fire (5a) so hook activity is visible
+              under KOAN_LOG_LEVEL=DEBUG regardless of drain outcome.
+            - Emits DEBUG when drain is skipped because the agent is not primary
+              (5b) -- logged here rather than inside drain_for_primary to keep
+              koan/agents/steering.py free of its own logger per brief decision 4.
+            - Captures per-message enqueue timestamps and delivery timestamp for
+              the steering_delivered event payload (5c), enabling latency
+              derivation from events.jsonl.
             """
+            # 5a: log every hook fire so operators can audit the full hook cadence.
+            tool_name = input.get("tool_name", "?") if isinstance(input, dict) else "?"
+            log.debug(
+                "PostToolUse hook fired | agent=%s tool=%s tool_use_id=%s",
+                agent_id, tool_name, tool_use_id,
+            )
             agent_state = app_state.agents.get(agent_id)
+            # 5b: observe the not-primary early-return before entering drain_for_primary.
+            # The gate logic lives inside drain_for_primary; this log surfaces the
+            # observation at the caller without adding a logger to steering.py.
+            if agent_state is None or not getattr(agent_state, "is_primary", False):
+                log.debug(
+                    "drain skipped (not primary) | agent_id=%s agent_missing=%s",
+                    agent_id, agent_state is None,
+                )
             from .steering import drain_for_primary, render_text
             messages = drain_for_primary(app_state, agent_state)
             if not messages:
@@ -358,10 +383,14 @@ class ClaudeSDKAgent:
                 "steering delivered via PostToolUse hook | %d message(s): %s",
                 len(messages), previews,
             )
+            # 5c: capture per-message enqueue timestamps and delivery wall-clock
+            # time for the event payload; latency = delivery_ts_ms - enqueue_ts_ms.
+            enqueue_ts_ms_list = [m.timestamp_ms for m in messages]
+            delivery_ts_ms = int(time.time() * 1000)
             from ..events import build_steering_delivered
             app_state.projection_store.push_event(
                 "steering_delivered",
-                build_steering_delivered(len(messages)),
+                build_steering_delivered(len(messages), enqueue_ts_ms_list, delivery_ts_ms),
             )
             return {
                 "hookSpecificOutput": {

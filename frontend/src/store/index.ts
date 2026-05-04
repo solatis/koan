@@ -248,6 +248,7 @@ export interface Notification {
 
 export interface SteeringMessage {
   content: string
+  timestampMs?: number
 }
 
 export interface Suggestion {

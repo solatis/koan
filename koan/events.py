@@ -297,12 +297,39 @@ def build_default_profile_changed(name: str) -> dict:
     return {"name": name}
 
 
-def build_steering_queued(content: str) -> dict:
-    return {"content": content}
+def build_steering_queued(content: str, timestamp_ms: int) -> dict:
+    """Build steering_queued event payload.
+
+    timestamp_ms is the enqueue wall-clock time (milliseconds since epoch).
+    Stored on the projection's SteeringMessage so downstream consumers can
+    derive enqueue-to-delivery latency once the matching steering_delivered
+    event arrives.
+    """
+    return {"content": content, "timestamp_ms": timestamp_ms}
 
 
-def build_steering_delivered(count: int) -> dict:
-    return {"count": count}
+def build_steering_delivered(
+    count: int,
+    enqueue_ts_ms_list: list[int],
+    delivery_ts_ms: int,
+) -> dict:
+    """Build steering_delivered event payload.
+
+    enqueue_ts_ms_list contains one entry per drained message, in FIFO drain
+    order (parallel to the messages list returned by drain_for_primary). This
+    preserves per-message latency derivation when N > 1 messages drain together.
+
+    delivery_ts_ms is the wall-clock time the batch was delivered (ms since
+    epoch). Latency for message i: delivery_ts_ms - enqueue_ts_ms_list[i].
+
+    These fields live only on the wire event for log/replay analysis; they are
+    not folded into the live projection state.
+    """
+    return {
+        "count": count,
+        "enqueue_ts_ms_list": enqueue_ts_ms_list,
+        "delivery_ts_ms": delivery_ts_ms,
+    }
 
 
 def build_default_scout_concurrency_changed(value: int) -> dict:

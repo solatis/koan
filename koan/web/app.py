@@ -555,7 +555,11 @@ async def api_chat(r: Request) -> Response:
         st.interactions.steering_queue.append(msg)
         # Show in the steering indicator above chat -- not inline
         st.projection_store.push_event(
-            "steering_queued", build_steering_queued(msg.content),
+            "steering_queued", build_steering_queued(msg.content, msg.timestamp_ms),
+        )
+        log.debug(
+            "steering enqueued | ts=%d agent=%s artifact=%s len=%d",
+            msg.timestamp_ms, primary_id or "-", msg.artifact_path or "-", len(msg.content),
         )
 
     return JSONResponse({"ok": True})
@@ -624,7 +628,11 @@ async def api_artifact_comment(r: Request) -> Response:
     else:
         st.interactions.steering_queue.append(msg)
         st.projection_store.push_event(
-            "steering_queued", build_steering_queued(msg.content),
+            "steering_queued", build_steering_queued(msg.content, msg.timestamp_ms),
+        )
+        log.debug(
+            "steering enqueued | ts=%d agent=%s artifact=%s len=%d",
+            msg.timestamp_ms, primary_id or "-", msg.artifact_path or "-", len(msg.content),
         )
 
     return JSONResponse({"ok": True})

@@ -523,13 +523,25 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
 
         Returns (new_blocks, manifest); does not mutate the input so callers
         with aliased references stay consistent.
+
+        DEBUG logs are emitted on each early-return gate so operators can audit
+        why steering was skipped for a given agent under KOAN_LOG_LEVEL=DEBUG.
+        The not-primary log (7b) covers the same observability gap that
+        drain_for_primary intentionally leaves open (see steering.py docstring).
         """
         # Gate 1: only primary agents (orchestrators) receive steering.
+        # 7b: log the not-primary skip so operators can correlate with agent roles.
         if agent is not None and not agent.is_primary:
+            log.debug(
+                "drain skipped (not primary) | agent_id=%s",
+                agent.agent_id if agent else "?",
+            )
             return blocks, []
         # Gate 2: Claude receives steering via the SDK PostToolUse hook; the
         # MCP-handler path is a no-op for Claude to prevent double-delivery.
+        # 7a: log the claude bypass so operators can confirm the gate is active.
         if agent is not None and agent.runner_type == "claude":
+            log.debug("drain skipped (claude bypass) | agent_id=%s", agent.agent_id)
             return blocks, []
         from ..agents.steering import drain_for_primary, render_blocks
         messages = drain_for_primary(app_state, agent)
@@ -540,9 +552,14 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
             "steering delivered via MCP handler | %d message(s): %s",
             len(messages), previews,
         )
+        # 7c: capture per-message enqueue timestamps and delivery wall-clock time.
+        # Latency for message i: delivery_ts_ms - enqueue_ts_ms_list[i].
+        enqueue_ts_ms_list = [m.timestamp_ms for m in messages]
+        delivery_ts_ms = int(time.time() * 1000)
         from ..events import build_steering_delivered
         app_state.projection_store.push_event(
-            "steering_delivered", build_steering_delivered(len(messages)),
+            "steering_delivered",
+            build_steering_delivered(len(messages), enqueue_ts_ms_list, delivery_ts_ms),
         )
         steering_blocks, steer_manifest = render_blocks(messages, app_state, agent)
         new_blocks: list[ContentBlock] = list(blocks) + steering_blocks
