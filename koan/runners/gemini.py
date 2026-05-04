@@ -7,8 +7,9 @@ import json
 import uuid
 from pathlib import Path
 
+from ..agents.base import AgentDiagnostic, AgentError
 from ..types import AgentInstallation, ModelInfo, ThinkingMode
-from .base import KOAN_MCP_TOOLS, RunnerDiagnostic, RunnerError, StreamEvent
+from .base import KOAN_MCP_TOOLS, StreamEvent
 
 # Canonical tool name mappings for Gemini's tool vocabulary.
 _TOOL_NAME_MAP: dict[str, str] = {
@@ -75,9 +76,9 @@ class GeminiRunner:
         system_prompt: str = "",
     ) -> list[str]:
         if thinking not in self.supported_thinking_modes:
-            raise RunnerError(RunnerDiagnostic(
+            raise AgentError(AgentDiagnostic(
                 code="unsupported_thinking_mode",
-                runner="gemini",
+                agent="gemini",
                 stage="build_command",
                 message=f"Thinking mode '{thinking}' is not supported by gemini",
             ))
@@ -152,16 +153,16 @@ class GeminiRunner:
         try:
             raw = json.loads(path.read_text("utf-8"))
         except json.JSONDecodeError as e:
-            raise RunnerError(RunnerDiagnostic(
+            raise AgentError(AgentDiagnostic(
                 code="mcp_inject_failed",
-                runner="gemini",
+                agent="gemini",
                 stage="build_command",
                 message=f"Existing .gemini/settings.json is not valid JSON: {e}",
             )) from e
         if not isinstance(raw, dict):
-            raise RunnerError(RunnerDiagnostic(
+            raise AgentError(AgentDiagnostic(
                 code="mcp_inject_failed",
-                runner="gemini",
+                agent="gemini",
                 stage="build_command",
                 message=f"Expected top-level object in {path}, got {type(raw).__name__}",
                 details={"actual_type": type(raw).__name__},
@@ -171,9 +172,9 @@ class GeminiRunner:
     def _merge_mcp(self, existing: dict, mcp_url: str, path: Path) -> None:
         servers = existing.get("mcpServers", {})
         if not isinstance(servers, dict):
-            raise RunnerError(RunnerDiagnostic(
+            raise AgentError(AgentDiagnostic(
                 code="mcp_inject_failed",
-                runner="gemini",
+                agent="gemini",
                 stage="build_command",
                 message=f"mcpServers in {path} is not an object, got {type(servers).__name__}",
                 details={"actual_type": type(servers).__name__},
@@ -181,18 +182,18 @@ class GeminiRunner:
         if "koan" in servers:
             koan_entry = servers["koan"]
             if not isinstance(koan_entry, dict):
-                raise RunnerError(RunnerDiagnostic(
+                raise AgentError(AgentDiagnostic(
                     code="mcp_inject_failed",
-                    runner="gemini",
+                    agent="gemini",
                     stage="build_command",
                     message=f"mcpServers.koan in {path} is not an object, got {type(koan_entry).__name__}",
                     details={"actual_type": type(koan_entry).__name__},
                 ))
             current_url = koan_entry.get("httpUrl")
             if current_url != mcp_url:
-                raise RunnerError(RunnerDiagnostic(
+                raise AgentError(AgentDiagnostic(
                     code="mcp_inject_failed",
-                    runner="gemini",
+                    agent="gemini",
                     stage="build_command",
                     message=f"Conflicting koan MCP entry in {path}: existing url={current_url}",
                     details={"existing_url": current_url, "requested_url": mcp_url},
@@ -206,9 +207,9 @@ class GeminiRunner:
             tmp.write_text(json.dumps(data, indent=2) + "\n", "utf-8")
             tmp.rename(path)
         except OSError as e:
-            raise RunnerError(RunnerDiagnostic(
+            raise AgentError(AgentDiagnostic(
                 code="mcp_inject_failed",
-                runner="gemini",
+                agent="gemini",
                 stage="build_command",
                 message=f"Failed to write .gemini/settings.json: {e}",
             )) from e

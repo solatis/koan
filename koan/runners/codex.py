@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import json
 
+from ..agents.base import AgentDiagnostic, AgentError
 from ..types import AgentInstallation, ModelInfo, ThinkingMode
-from .base import KOAN_MCP_TOOLS, RunnerDiagnostic, RunnerError, StreamEvent
+from .base import KOAN_MCP_TOOLS, StreamEvent
 
 # Canonical tool name mappings for Codex's tool vocabulary.
 _TOOL_NAME_MAP: dict[str, str] = {
@@ -71,9 +72,9 @@ class CodexRunner:
         system_prompt: str = "",
     ) -> list[str]:
         if thinking != "disabled":
-            raise RunnerError(RunnerDiagnostic(
+            raise AgentError(AgentDiagnostic(
                 code="unsupported_thinking_mode",
-                runner="codex",
+                agent="codex",
                 stage="build_command",
                 message=f"Thinking mode '{thinking}' is not supported by codex",
             ))

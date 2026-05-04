@@ -105,7 +105,7 @@ def test_start_run_blocked_no_runners(client, app_state):
 # -- Start-run preflight -------------------------------------------------------
 
 def test_preflight_returns_required_types(client, app_state):
-    from koan.runners.registry import compute_builtin_profiles
+    from koan.agents.registry import compute_builtin_profiles
     app_state.runner_config.probe_results = _make_probe_results()
     app_state.runner_config.builtin_profiles = compute_builtin_profiles(app_state.runner_config.probe_results)
     resp = client.get("/api/start-run/preflight?profile=balanced")
@@ -116,7 +116,7 @@ def test_preflight_returns_required_types(client, app_state):
 
 
 def test_preflight_shows_binary_validity(client, app_state, tmp_path):
-    from koan.runners.registry import compute_builtin_profiles
+    from koan.agents.registry import compute_builtin_profiles
     app_state.runner_config.probe_results = _make_probe_results()
     app_state.runner_config.builtin_profiles = compute_builtin_profiles(app_state.runner_config.probe_results)
     real_binary = tmp_path / "claude"
@@ -142,7 +142,7 @@ def test_preflight_missing_profile(client, app_state):
 # -- Start-run installation validation -----------------------------------------
 
 def test_start_run_rejects_missing_binary(client, app_state):
-    from koan.runners.registry import compute_builtin_profiles
+    from koan.agents.registry import compute_builtin_profiles
     app_state.runner_config.probe_results = _make_probe_results()
     app_state.runner_config.builtin_profiles = compute_builtin_profiles(app_state.runner_config.probe_results)
     app_state.runner_config.config.agent_installations = [
@@ -583,7 +583,7 @@ class TestProbeRefresh:
         app_state.runner_config.builtin_profiles = {}
 
         with patch("koan.probe.probe_all_runners", new_callable=AsyncMock, return_value=fresh_probes) as mock_probe, \
-             patch("koan.runners.registry.compute_builtin_profiles", return_value=fresh_builtins) as mock_builtins:
+             patch("koan.agents.registry.compute_builtin_profiles", return_value=fresh_builtins) as mock_builtins:
             resp = client.get("/api/probe?refresh=1")
 
         assert resp.status_code == 200

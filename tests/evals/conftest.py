@@ -86,10 +86,10 @@ def _detect_orchestrator_model() -> str:
     # Fail-soft: any exception returns "unknown" so the test session still runs
     # on fresh installs or in CI environments with a different config path.
     try:
+        from koan.agents.registry import AgentRegistry
         from koan.config import load_koan_config
-        from koan.runners.registry import RunnerRegistry
         config = asyncio.run(load_koan_config())
-        registry = RunnerRegistry()
+        registry = AgentRegistry()
         # SubagentRole is a Literal type alias, not an enum; pass the string directly.
         _, model, _ = registry.resolve_agent_config("orchestrator", config)
         return model

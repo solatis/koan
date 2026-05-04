@@ -75,6 +75,35 @@ class TestProbeClaudeSuccess:
         assert r.version == "claude 1.2.3"
 
 
+class TestProbeClaudeSDKUnavailable:
+    """_probe_claude returns unavailable when claude_agent_sdk is not importable.
+
+    The SDK is required for ClaudeSDKAgent; a working CLI binary alone is not
+    sufficient after the M2 cutover.
+    """
+    @pytest.mark.anyio
+    async def test_sdk_import_error_returns_unavailable(self, monkeypatch):
+        import sys
+        auth_body = __import__("json").dumps({"loggedIn": True})
+
+        async def fake_run_cmd(args):
+            if "auth" in args:
+                return (0, auth_body, "")
+            if "--version" in args:
+                return (0, "claude 1.2.3\n", "")
+            return (-1, "", "")
+
+        # Simulate missing SDK by putting None in sys.modules. Python raises
+        # ImportError when a module mapping is None, regardless of the real
+        # install state.
+        monkeypatch.setitem(sys.modules, "claude_agent_sdk", None)
+        with patch("koan.probe.shutil.which", return_value="/fake/bin/claude"), \
+             patch("koan.probe._run_cmd", side_effect=fake_run_cmd):
+            r = await _probe_claude()
+        assert r.available is False
+        assert r.binary_path == "/fake/bin/claude"
+
+
 class TestProbeClaudeVersionFailure:
     @pytest.mark.anyio
     async def test_version_nonzero_returns_unavailable(self):

@@ -1,9 +1,11 @@
-# Runner protocol, StreamEvent, and RunnerDiagnostic.
+# Runner protocol and StreamEvent.
 # Defines the contract that all CLI runner adapters must satisfy.
+# RunnerDiagnostic and RunnerError removed in M2 alongside koan/runners/claude.py;
+# diagnostic types live in koan.agents.base (AgentDiagnostic, AgentError).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from ..types import AgentInstallation, ModelInfo, ThinkingMode
@@ -31,21 +33,6 @@ class StreamEvent:
     # EmbeddedResource/ImageContent blocks in the tool_result content. None
     # when no attachment blocks are present or the runner cannot extract them.
     attachments: list[dict] | None = None
-
-
-@dataclass(kw_only=True)
-class RunnerDiagnostic:
-    code: str
-    runner: str
-    stage: str
-    message: str
-    details: dict | None = None
-
-
-class RunnerError(RuntimeError):
-    def __init__(self, diagnostic: RunnerDiagnostic) -> None:
-        super().__init__(diagnostic.message)
-        self.diagnostic = diagnostic
 
 
 class Runner(Protocol):

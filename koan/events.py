@@ -1,5 +1,5 @@
 # Event payload builders -- bridges koan domain types into projection event payloads.
-# Imports AgentState, RunnerDiagnostic, list_artifacts, etc.
+# Imports AgentState, AgentDiagnostic, list_artifacts, etc.
 # koan/projections.py does NOT import from here.
 
 from __future__ import annotations
@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .runners.base import RunnerDiagnostic
+    from .agents.base import AgentDiagnostic
     from .state import AgentState
 
 
@@ -70,7 +70,13 @@ def build_agent_exited(
     return result
 
 
-def build_agent_spawn_failed(role: str, diagnostic: RunnerDiagnostic) -> dict:
+def build_agent_spawn_failed(role: str, diagnostic: AgentDiagnostic) -> dict:
+    """Build the agent_spawn_failed projection event payload.
+
+    Carries the role of the agent that failed to spawn, the diagnostic code,
+    message, and any details. Used by koan.subagent.spawn_subagent and
+    koan.agents.registry on resolution failure.
+    """
     return {
         "role": role,
         "error_code": diagnostic.code,

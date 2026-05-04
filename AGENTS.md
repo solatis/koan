@@ -23,6 +23,7 @@ verification checklist.
 
 Spoke documents:
 
+- [docs/agent-protocol.md](docs/agent-protocol.md) -- Agent Protocol, AgentOptions, ClaudeSDKAgent / CommandLineAgent, steering hook integration, HTTP MCP transport choice
 - [docs/subagents.md](docs/subagents.md) -- spawn lifecycle, task manifest, step-first workflow, permissions
 - [docs/initiative.md](docs/initiative.md) -- initiative workflow contract, band hierarchy, gating
 - [docs/ipc.md](docs/ipc.md) -- HTTP MCP tool calls, blocking interactions, scout spawning, koan_yield blocking
@@ -131,25 +132,25 @@ during brief-generation step 1 (the read step).
 
 **MCP permission fence -- orchestrator tool availability by phase:**
 
-| Tool                                                                              | Available phases                                                                                                                                       |
-| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `koan_complete_step`                                                              | All phases                                                                                                                                             |
-| `koan_set_phase`                                                                  | All phases (blocked mid-story during execution); accepts `"done"` as tombstone                                                                         |
-| `koan_set_workflow`                                                               | All phases (matches `koan_set_phase`); accepts any registered workflow name; always lands at the new workflow's `initial_phase`                        |
-| `koan_yield`                                                                      | All phases                                                                                                                                             |
-| `koan_ask_question`                                                               | All phases                                                                                                                                             |
+| Tool                                                                              | Available phases                                                                                                                                                                |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `koan_complete_step`                                                              | All phases                                                                                                                                                                      |
+| `koan_set_phase`                                                                  | All phases (blocked mid-story during execution); accepts `"done"` as tombstone                                                                                                  |
+| `koan_set_workflow`                                                               | All phases (matches `koan_set_phase`); accepts any registered workflow name; always lands at the new workflow's `initial_phase`                                                 |
+| `koan_yield`                                                                      | All phases                                                                                                                                                                      |
+| `koan_ask_question`                                                               | All phases                                                                                                                                                                      |
 | `koan_request_scouts`                                                             | `intake`, `core-flows`, `tech-plan-spec`, `tech-plan-review`, `ticket-breakdown`, `cross-artifact-validation`, `plan-spec`, `plan-review`, `milestone-spec`, `milestone-review` |
-| `koan_request_executor`                                                           | `execution`, `execute`                                                                                                                                 |
-| `koan_select_story`, `koan_complete_story`, `koan_retry_story`, `koan_skip_story` | `execution` only                                                                                                                                       |
-| `bash`                                                                            | `execution`, `implementation-validation`, `exec-review`                                                                                                |
-| `koan_memorize`                                                                   | All phases                                                                                                                                             |
-| `koan_forget`                                                                     | All phases                                                                                                                                             |
-| `koan_memory_status`                                                              | All phases                                                                                                                                             |
-| `koan_search`                                                                     | All phases                                                                                                                                             |
-| `koan_reflect`                                                                    | All phases (orchestrator only)                                                                                                                         |
-| `koan_artifact_write`                                                             | All phases (orchestrator only)                                                                                                                         |
-| `koan_artifact_list`                                                              | All phases (all roles via universal read-tool path)                                                                                                    |
-| `koan_artifact_view`                                                              | All phases (all roles via universal read-tool path)                                                                                                    |
+| `koan_request_executor`                                                           | `execution`, `execute`                                                                                                                                                          |
+| `koan_select_story`, `koan_complete_story`, `koan_retry_story`, `koan_skip_story` | `execution` only                                                                                                                                                                |
+| `bash`                                                                            | `execution`, `implementation-validation`, `exec-review`                                                                                                                         |
+| `koan_memorize`                                                                   | All phases                                                                                                                                                                      |
+| `koan_forget`                                                                     | All phases                                                                                                                                                                      |
+| `koan_memory_status`                                                              | All phases                                                                                                                                                                      |
+| `koan_search`                                                                     | All phases                                                                                                                                                                      |
+| `koan_reflect`                                                                    | All phases (orchestrator only)                                                                                                                                                  |
+| `koan_artifact_write`                                                             | All phases (orchestrator only)                                                                                                                                                  |
+| `koan_artifact_list`                                                              | All phases (all roles via universal read-tool path)                                                                                                                             |
+| `koan_artifact_view`                                                              | All phases (all roles via universal read-tool path)                                                                                                                             |
 
 ## 5. Need-to-Know Prompts
 

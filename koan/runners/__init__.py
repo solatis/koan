@@ -1,22 +1,19 @@
 # Public API for koan.runners -- runner protocol and concrete adapters.
+# Subordinate to koan.agents; CommandLineAgent in koan.agents.command_line
+# wraps these classes.
+#
+# RunnerRegistry, compute_balanced_profile, compute_builtin_profiles, and
+# resolve_runner have moved to koan.agents.registry. RunnerDiagnostic and
+# RunnerError deleted in M2 alongside koan/runners/claude.py; ClaudeRunner
+# re-export removed -- Claude uses ClaudeSDKAgent (koan/agents/claude.py).
 
-from .base import Runner, RunnerDiagnostic, RunnerError, StreamEvent
-from .claude import ClaudeRunner
+from .base import Runner, StreamEvent
 from .codex import CodexRunner
 from .gemini import GeminiRunner
-from .registry import RunnerRegistry, compute_balanced_profile, compute_builtin_profiles
-from .resolver import resolve_runner
 
 __all__ = [
     "Runner",
     "StreamEvent",
-    "RunnerDiagnostic",
-    "RunnerError",
-    "ClaudeRunner",
     "CodexRunner",
     "GeminiRunner",
-    "RunnerRegistry",
-    "compute_balanced_profile",
-    "compute_builtin_profiles",
-    "resolve_runner",
 ]

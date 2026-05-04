@@ -1,14 +1,14 @@
-# Unit tests for koan.runners.registry -- RunnerRegistry and compute_balanced_profile.
+# Unit tests for koan.runners.registry -- AgentRegistry and compute_balanced_profile.
 
 import asyncio
 import json
 
 import pytest
 
+from koan.agents.base import AgentError
+from koan.agents.registry import AgentRegistry, compute_balanced_profile, _best_supported_thinking
 from koan.config import KoanConfig, save_koan_config
 from koan.probe import ProbeResult
-from koan.runners.base import RunnerError
-from koan.runners.registry import RunnerRegistry, compute_balanced_profile, _best_supported_thinking
 from koan.types import AgentInstallation, ModelInfo, Profile, ProfileTier
 
 
@@ -138,7 +138,7 @@ class TestComputeBalancedProfile:
         assert p.tiers["standard"].runner_type == "claude"
 
 
-# -- RunnerRegistry.get_installation ------------------------------------------
+# -- AgentRegistry.get_installation ------------------------------------------
 
 class TestGetInstallation:
     def _make_config(self, installations):
@@ -147,29 +147,29 @@ class TestGetInstallation:
     def test_run_installation_resolved(self):
         inst = AgentInstallation(alias="my-claude", runner_type="claude", binary="/fake/bin/claude")
         config = self._make_config([inst])
-        reg = RunnerRegistry()
+        reg = AgentRegistry()
         result = reg.get_installation("claude", config, run_installations={"claude": "my-claude"})
         assert result is inst
 
     def test_fallback_to_first_installation(self):
         inst = AgentInstallation(alias="default-codex", runner_type="codex", binary="/fake/bin/codex")
         config = self._make_config([inst])
-        reg = RunnerRegistry()
+        reg = AgentRegistry()
         result = reg.get_installation("codex", config)
         assert result is inst
 
     def test_missing_installation_raises(self):
         config = self._make_config([])
-        reg = RunnerRegistry()
-        with pytest.raises(RunnerError) as exc_info:
+        reg = AgentRegistry()
+        with pytest.raises(AgentError) as exc_info:
             reg.get_installation("claude", config)
         assert exc_info.value.diagnostic.code == "no_installation"
 
     def test_run_alias_configured_but_missing_raises(self):
         inst = AgentInstallation(alias="real-claude", runner_type="claude", binary="/fake/bin/claude")
         config = self._make_config([inst])
-        reg = RunnerRegistry()
-        with pytest.raises(RunnerError) as exc_info:
+        reg = AgentRegistry()
+        with pytest.raises(AgentError) as exc_info:
             reg.get_installation("claude", config, run_installations={"claude": "ghost-alias"})
         assert exc_info.value.diagnostic.code == "no_installation"
         assert "ghost-alias" in exc_info.value.diagnostic.message
@@ -177,12 +177,12 @@ class TestGetInstallation:
     def test_fallback_only_when_no_active_alias(self):
         inst = AgentInstallation(alias="default-codex", runner_type="codex", binary="/fake/bin/codex")
         config = self._make_config([inst])
-        reg = RunnerRegistry()
+        reg = AgentRegistry()
         result = reg.get_installation("codex", config)
         assert result is inst
 
 
-# -- RunnerRegistry.resolve_installation ---------------------------------------
+# -- AgentRegistry.resolve_installation ---------------------------------------
 
 class TestResolveInstallation:
     def _make_config(self, installations):
@@ -193,15 +193,15 @@ class TestResolveInstallation:
         binary.touch()
         inst = AgentInstallation(alias="my-claude", runner_type="claude", binary=str(binary))
         config = self._make_config([inst])
-        reg = RunnerRegistry()
+        reg = AgentRegistry()
         result = reg.resolve_installation("claude", config, run_installations={"claude": "my-claude"})
         assert result is inst
 
     def test_raises_when_binary_missing(self):
         inst = AgentInstallation(alias="bad", runner_type="claude", binary="/nonexistent/claude")
         config = self._make_config([inst])
-        reg = RunnerRegistry()
-        with pytest.raises(RunnerError) as exc_info:
+        reg = AgentRegistry()
+        with pytest.raises(AgentError) as exc_info:
             reg.resolve_installation("claude", config)
         assert exc_info.value.diagnostic.code == "binary_not_found"
         assert "bad" in exc_info.value.diagnostic.message
@@ -209,8 +209,8 @@ class TestResolveInstallation:
 
     def test_raises_when_no_installations(self):
         config = self._make_config([])
-        reg = RunnerRegistry()
-        with pytest.raises(RunnerError) as exc_info:
+        reg = AgentRegistry()
+        with pytest.raises(AgentError) as exc_info:
             reg.resolve_installation("claude", config)
         assert exc_info.value.diagnostic.code == "no_installation"
 

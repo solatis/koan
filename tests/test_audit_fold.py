@@ -3,11 +3,11 @@
 from copy import copy
 
 from koan.audit.events import (
+    AgentDiagnosticEvent,
     HeartbeatEvent,
     PhaseEndEvent,
     PhaseStartEvent,
     Projection,
-    RunnerDiagnosticEvent,
     StepTransitionEvent,
     ThinkingEvent,
     ToolCallEvent,
@@ -125,12 +125,12 @@ class TestToolResult:
         assert "read" in r.last_action
 
 
-class TestRunnerDiagnostic:
+class TestAgentDiagnostic:
     def test_fatal_code_sets_failed(self):
         p = _base_projection()
-        e = RunnerDiagnosticEvent(
+        e = AgentDiagnosticEvent(
             ts="2026-01-01T00:06:00Z", seq=5,
-            code="bootstrap_failure", runner="claude", stage="handshake",
+            code="bootstrap_failure", agent="claude", stage="handshake",
             message="Process exited before first koan_complete_step call",
         )
         r = fold(p, e)
@@ -139,9 +139,9 @@ class TestRunnerDiagnostic:
 
     def test_non_fatal_code_preserves_status(self):
         p = _base_projection()
-        e = RunnerDiagnosticEvent(
+        e = AgentDiagnosticEvent(
             ts="2026-01-01T00:06:00Z", seq=5,
-            code="model_rate_limit", runner="claude", stage="request",
+            code="model_rate_limit", agent="claude", stage="request",
             message="Rate limited, retrying",
         )
         r = fold(p, e)

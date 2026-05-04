@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 
 import aiofiles
 
+from .agents.base import Agent, AgentDiagnostic, AgentError, AgentOptions
+from .agents.registry import AgentRegistry
 from .audit import EventLog
 from .run_state import ensure_subagent_directory
 from .events import (
@@ -30,11 +32,8 @@ from .lib.task_json import current_workflow
 from .lib.workflows import get_workflow
 from .phases import PHASE_MODULE_MAP, PhaseContext
 from .prompts import AGENT_TYPE_PROMPTS
-from .runners import RunnerDiagnostic, RunnerError
-from .runners.registry import RunnerRegistry
 
 if TYPE_CHECKING:
-    from .runners.base import Runner
     from .state import AppState
 
 log = get_logger("subagent")
@@ -55,94 +54,17 @@ log = get_logger("subagent")
 #
 # These are Claude Code PascalCase tool names.  Other runners (codex, gemini)
 # have their own mechanisms and are not affected by this whitelist.
+#
+# CLAUDE_TOOL_WHITELISTS stays in koan/subagent.py for M1 (Plan Decision 9).
+# AgentOptions.available_tools is read from this dict at spawn time. A future
+# milestone may move it into the agent registry once a clear consumer pattern
+# emerges.
 
 CLAUDE_TOOL_WHITELISTS: dict[str, str] = {
     "orchestrator": "Read,Write,Edit,Bash,Glob,Grep,WebFetch,WebSearch",
     "executor":     "Read,Write,Edit,Bash,Glob,Grep,TaskCreate,TaskUpdate,TaskList,TaskGet,TaskStop,TaskOutput",
     "scout":        "Read,Bash,Glob,Grep",
 }
-
-
-def _claude_post_build_args(
-    role: str,
-    run_dir: str,
-    project_dir: str,
-    additional_dirs: list[str],
-) -> list[str]:
-    """Compose claude-only post-build args: tool whitelist, slash-command disable,
-    strict MCP config, additional directories, and permission mode.
-
-    Returns a list of argv entries to append to a claude command. Pure function --
-    no I/O, no globals beyond the CLAUDE_TOOL_WHITELISTS module constant.
-
-    project_dir is listed before run_dir so the project is searched first.
-    additional_dirs (each --add-dir <PATH> at koan run startup) are emitted
-    after run_dir, in the order the user specified them. Empty strings
-    anywhere in the input are skipped to avoid passing --add-dir "".
-    """
-    args: list[str] = []
-    whitelist = CLAUDE_TOOL_WHITELISTS.get(role)
-    if whitelist is not None:
-        args.extend(["--tools", whitelist])
-    args.append("--disable-slash-commands")
-    args.append("--strict-mcp-config")
-    # Add project and run directories so the CLI can read/edit files in both
-    # locations without prompting; acceptEdits gates writes at the tool level.
-    if project_dir:
-        args.extend(["--add-dir", project_dir])
-    if run_dir:
-        args.extend(["--add-dir", run_dir])
-    for extra in additional_dirs:
-        if extra:
-            args.extend(["--add-dir", extra])
-    # acceptEdits is safe for all roles: the CLAUDE_TOOL_WHITELISTS already
-    # restrict which roles receive Write/Edit in their tool vocabulary, so
-    # scouts cannot write even though the permission mode is permissive.
-    args.extend(["--permission-mode", "acceptEdits"])
-    args.extend(["--allowedTools", "mcp__koan__*,Bash"])
-    return args
-
-
-def _codex_post_build_args(
-    run_dir: str,
-    project_dir: str,
-    additional_dirs: list[str],
-) -> list[str]:
-    """Compose codex-only post-build args: --add-dir for project, run, and extras.
-
-    Each directory becomes a separate --add-dir <DIR> flag, matching codex
-    exec's CLI shape ("Additional directories that should be writable
-    alongside the primary workspace"). Empty strings are skipped.
-
-    project_dir comes first so codex treats it as the primary workspace
-    conceptually, even though the actual primary is established by the
-    subprocess cwd in spawn_subagent.
-    """
-    args: list[str] = []
-    for d in (project_dir, run_dir, *additional_dirs):
-        if d:
-            args.extend(["--add-dir", d])
-    return args
-
-
-def _gemini_post_build_args(
-    run_dir: str,
-    project_dir: str,
-    additional_dirs: list[str],
-) -> list[str]:
-    """Compose gemini-only post-build args: --include-directories for project,
-    run, and extras.
-
-    Each directory becomes a separate --include-directories <DIR> flag.
-    Gemini also accepts comma-separated values, but the repeatable form
-    avoids escaping concerns when paths contain commas. Empty strings
-    are skipped.
-    """
-    args: list[str] = []
-    for d in (project_dir, run_dir, *additional_dirs):
-        if d:
-            args.extend(["--include-directories", d])
-    return args
 
 
 def _now_iso() -> str:
@@ -154,6 +76,7 @@ def _now_iso() -> str:
 class SubagentResult:
     exit_code: int
     final_response: str = ""
+    error: str | None = None
 
 
 # -- Boot prompt ---------------------------------------------------------------
@@ -206,16 +129,28 @@ def _build_phase_ctx(task: dict, subagent_dir: str) -> PhaseContext:
 
 # -- Main spawn function -------------------------------------------------------
 
-async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None = None) -> SubagentResult:
-    """Spawn a subagent process and stream its output into the projection store.
+async def spawn_subagent(
+    task: dict,
+    app_state: AppState,
+    agent_impl: Agent | None = None,
+) -> SubagentResult:
+    """Spawn a subagent process via the Agent abstraction.
 
-    For the orchestrator role, the workflow lookup reads task["workflow_history"]
-    via current_workflow(), falling back to "plan" when the history is missing or
-    empty. Executor and scout roles look up their phase module from PHASE_MODULE_MAP.
-    Per-runner directory-scoping flags (claude --add-dir, codex --add-dir,
-    gemini --include-directories) are appended to cmd after build_command
-    returns, sourced from task["project_dir"], task["run_dir"], and
-    task["additional_dirs"].
+    Resolves an Agent (via AgentRegistry) when none is injected, opens an
+    event log, registers AgentState, drives agent_impl.run(options) to
+    completion, and translates yielded StreamEvents into projection events.
+
+    The handshake gate (agent.handshake_observed on the AgentState) is
+    enforced at exit; bootstrap_failure diagnostics are emitted when not
+    observed.
+
+    agent_impl.register_process registers the underlying process (if any)
+    into app_state._active_processes for shutdown cancellation.
+
+    Variable-naming discipline: 'agent' always refers to the AgentState
+    instance (e.g. agent.handshake_observed). The Agent Protocol instance
+    is always 'agent_impl'. They must never be confused -- the handshake
+    check reads agent.handshake_observed (AgentState), not agent_impl.
     """
     role = task["role"]
     agent_id = str(uuid.uuid4())
@@ -231,26 +166,29 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
     else:
         Path(subagent_dir).mkdir(parents=True, exist_ok=True)
 
-    # Resolve runner via registry
-    if runner is None:
+    # Resolve Agent via registry when not injected. model/installation/thinking
+    # are None in the test-injection else-branch; AgentOptions receives dummy
+    # values that FakeAgent ignores.
+    if agent_impl is None:
         try:
             config = app_state.runner_config.config
-            registry = RunnerRegistry()
+            registry = AgentRegistry()
             installation, model_alias, thinking_mode = registry.resolve_agent_config(
                 role, config,
                 builtin_profiles=app_state.runner_config.builtin_profiles,
                 run_installations=app_state.run.run_installations,
             )
-
-            runner = registry.get_runner(installation.runner_type, subagent_dir)
+            # Pass app_state so ClaudeSDKAgent can capture it in its PostToolUse
+            # hook closure. CommandLineAgent ignores the extra parameter.
+            agent_impl = registry.get_agent(installation.runner_type, subagent_dir, app_state)
             model = model_alias
-        except RunnerError as e:
-            log.error("runner resolution failed for %s: %s", role, e.diagnostic.message)
+        except AgentError as e:
+            log.error("agent resolution failed for %s: %s", role, e.diagnostic.message)
             # Write diagnostic to EventLog
             try:
                 event_log = EventLog(subagent_dir, role, phase=role, model=None)
                 await event_log.open()
-                await event_log.emit_runner_diagnostic(e.diagnostic)
+                await event_log.emit_agent_diagnostic(e.diagnostic)
                 await event_log.close()
             except Exception:
                 log.warning("failed to write diagnostic event log for %s", role)
@@ -258,7 +196,7 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
                 "agent_spawn_failed",
                 build_agent_spawn_failed(role, e.diagnostic),
             )
-            return SubagentResult(exit_code=1)
+            return SubagentResult(exit_code=1, error=e.diagnostic.message)
     else:
         model = None
         installation = None
@@ -293,13 +231,16 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
 
     if phase_module is None:
         log.error("no phase module for role %s", role)
-        return SubagentResult(exit_code=1)
+        return SubagentResult(exit_code=1, error=f"no phase module for role {role}")
 
     # Create EventLog
     event_log = EventLog(subagent_dir, role, phase=role, model=model)
     await event_log.open()
 
-    # Register AgentState
+    # Register AgentState.
+    # 'agent' (AgentState) is deliberately named distinct from 'agent_impl'
+    # (Agent Protocol). All handshake checks, token tracking, and final_response
+    # reads use 'agent'. All Protocol calls use 'agent_impl'.
     from .state import AgentState
     agent = AgentState(
         agent_id=agent_id,
@@ -313,245 +254,203 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
         event_log=event_log,
         model=model,
         is_primary=(role == "orchestrator"),
-        # Populate from runner so upload_ids_to_blocks can gate on "claude"
-        # regardless of whether this agent is the orchestrator, scout, or executor.
-        runner_type=runner.name if runner is not None else "",
+        # runner_type carries the agent name ('claude', 'codex', 'gemini', 'fake'
+        # in tests). Used by upload_ids_to_blocks and steering-drain routing (M2).
+        runner_type=agent_impl.name if agent_impl is not None else "",
     )
     app_state.agents[agent_id] = agent
 
     # Emit phase start to audit log
     await event_log.emit_phase_start(phase_module.TOTAL_STEPS)
 
-    # Build command before emitting agent_spawned -- if build_command fails, no
-    # agent_spawned event is emitted (per plan: "the agent was never launched").
+    # Construct AgentOptions. CLAUDE_TOOL_WHITELISTS stays in this file (Plan
+    # Decision 9); AgentOptions.available_tools is built from it here.
+    # In the test-injection else-branch, installation/thinking/model are None;
+    # FakeAgent.run() ignores these fields, so dummy values are acceptable.
+    from .types import AgentInstallation as _AgentInstallation
+    options = AgentOptions(
+        role=role,
+        agent_id=agent_id,
+        model=model,
+        thinking=thinking_mode,
+        system_prompt=system_prompt,
+        boot_prompt=boot_prompt(role),
+        mcp_url=mcp_url,
+        available_tools=(
+            CLAUDE_TOOL_WHITELISTS[role].split(",")
+            if role in CLAUDE_TOOL_WHITELISTS else []
+        ),
+        # allowed_tools: claude requires pre-approval for MCP+Bash; others
+        # have no equivalent flag and leave this empty.
+        allowed_tools=(
+            ["mcp__koan__*", "Bash"]
+            if (installation is not None and installation.runner_type == "claude")
+            else []
+        ),
+        project_dir=task.get("project_dir", ""),
+        run_dir=task.get("run_dir", ""),
+        additional_dirs=task.get("additional_dirs", []),
+        cwd=task.get("project_dir") or subagent_dir,
+        permission_mode="acceptEdits",
+        installation=installation,
+        extras={},
+    )
+
+    # Register the process into the active-process registry before iteration.
+    # CommandLineAgent stores the registry reference and populates it as soon
+    # as the subprocess is spawned inside run(). FakeAgent is a no-op.
+    agent_impl.register_process(app_state._active_processes, agent_id)
+
+    # Emit agent_spawned now that AgentState is fully registered and we are
+    # about to start iterating. build_command errors that used to abort before
+    # this point now surface from within agent_impl.run() as AgentError.
+    store.push_event("agent_spawned", build_agent_spawned(agent), agent_id=agent_id)
+
+    log.info("running %s (agent_id=%s) via %s", role, agent_id, agent_impl.name)
+
+    # Stream tracking -- same dicts as before; only the iteration source changes.
+    call_ids_by_block: dict[int, tuple[str, str]] = {}
+    call_id_by_tool_use_id: dict[str, str] = {}
+
     try:
-        if installation is not None and thinking_mode is not None:
-            cmd = runner.build_command(
-                boot_prompt(role), mcp_url, installation, model, thinking_mode,
-                system_prompt=system_prompt,
-            )
-        else:
-            cmd = runner.build_command(boot_prompt(role), mcp_url, model,
-                                       system_prompt=system_prompt)
-    except RunnerError as e:
-        await event_log.emit_runner_diagnostic(e.diagnostic)
+        async for ev in agent_impl.run(options):
+            if ev.type == "tool_start":
+                call_id = str(uuid.uuid4())
+                tool_name = ev.tool_name or "tool"
+                block_idx = ev.block_index if ev.block_index is not None else -1
+                call_ids_by_block[block_idx] = (call_id, tool_name)
+                # Record tool_use_id -> call_id so tool_result events
+                # arriving later (from user message) can be correlated.
+                if ev.tool_use_id:
+                    call_id_by_tool_use_id[ev.tool_use_id] = call_id
+                store.push_event(
+                    "tool_request",
+                    build_tool_request(call_id, tool_name, ev.tool_use_id or ""),
+                    agent_id=agent_id,
+                )
+            elif ev.type == "tool_input_delta":
+                block_idx = ev.block_index if ev.block_index is not None else -1
+                pair = call_ids_by_block.get(block_idx)
+                if pair is not None:
+                    cid, tname = pair
+                    store.push_event(
+                        "tool_input_delta",
+                        build_tool_input_delta(cid, tname, ev.tool_args, ev.content),
+                        agent_id=agent_id,
+                    )
+            elif ev.type == "tool_stop":
+                # content_block_stop signals args are final; no projection
+                # event emitted (per intake decision 2 -- no tool_stop event).
+                # Pop from call_ids_by_block to prevent EOF re-emit; the
+                # tool_result projection event fires later when the user
+                # message with the tool_result block arrives.
+                block_idx = ev.block_index if ev.block_index is not None else -1
+                call_ids_by_block.pop(block_idx, None)
+            elif ev.type == "token_delta":
+                agent.token_count["received"] = agent.token_count.get("received", 0) + len(ev.content or "")
+                store.push_event("stream_delta", {"delta": ev.content or ""}, agent_id=agent_id)
+            elif ev.type == "thinking":
+                store.push_event("thinking", {"delta": ev.content or ""}, agent_id=agent_id)
+            elif ev.type == "assistant_text":
+                if ev.content:
+                    agent.final_response = ev.content
+            elif ev.type == "tool_result":
+                # Agent parsed a tool_result block from a user message.
+                # Map the LLM's tool_use_id back to our local call_id.
+                tool_use_id = ev.tool_use_id or ""
+                cid = call_id_by_tool_use_id.pop(tool_use_id, None)
+                if cid is not None:
+                    store.push_event(
+                        "tool_result",
+                        build_tool_result(
+                            cid,
+                            ev.tool_name or "",
+                            result=ev.content,
+                            attachments=ev.attachments,
+                            metrics=ev.metrics,
+                            ts_ms=int(time.time() * 1000),
+                        ),
+                        agent_id=agent_id,
+                    )
+                    # Also emit tool_result_captured for exploration tools so
+                    # aggregate child metrics continue to populate (preserved
+                    # per intake constraint -- tool_result_captured is orthogonal
+                    # to tool_result and both fire for read/grep/ls).
+                    if ev.tool_name in ("read", "grep", "ls"):
+                        store.push_event(
+                            "tool_result_captured",
+                            build_tool_result_captured(
+                                cid,
+                                ev.tool_name,
+                                metrics=ev.metrics,
+                            ),
+                            agent_id=agent_id,
+                        )
+                    # Remove from call_ids_by_block too (batch path: Codex/Gemini
+                    # synthesize tool_result without a preceding tool_stop, so
+                    # the block entry persists otherwise and EOF cleanup re-emits).
+                    to_remove = [k for k, (v, _) in call_ids_by_block.items() if v == cid]
+                    for k in to_remove:
+                        del call_ids_by_block[k]
+            elif ev.type == "turn_complete":
+                pass
+            else:
+                log.debug(
+                    "unknown stream event type=%s agent=%s",
+                    ev.type, agent_id[:8],
+                )
+
+    except AgentError as e:
+        # Agent raised a structured failure during run(). Write to event log
+        # and emit a spawn_failed projection event.
+        log.error(
+            "AgentError during run for %s (agent_id=%s): %s",
+            role, agent_id, e.diagnostic.message,
+        )
+        await event_log.emit_agent_diagnostic(e.diagnostic)
         store.push_event(
             "agent_spawn_failed",
             build_agent_spawn_failed(role, e.diagnostic),
         )
-        await event_log.close()
-        del app_state.agents[agent_id]
-        return SubagentResult(exit_code=1)
 
-    # Per-runner post-build: directory-scoping flags and (claude-only) tool whitelist
-    # and permission mode. Each helper sources project_dir, run_dir, and
-    # additional_dirs from task so the spawn site does not need to know about
-    # runner-specific flag names. Unknown runners silently get no directory flags,
-    # preserving today's behavior for any future runners.
-    if runner.name == "claude":
-        cmd.extend(_claude_post_build_args(
-            role=role,
-            run_dir=task.get("run_dir", ""),
-            project_dir=task.get("project_dir", ""),
-            additional_dirs=task.get("additional_dirs", []),
-        ))
-    elif runner.name == "codex":
-        cmd.extend(_codex_post_build_args(
-            run_dir=task.get("run_dir", ""),
-            project_dir=task.get("project_dir", ""),
-            additional_dirs=task.get("additional_dirs", []),
-        ))
-    elif runner.name == "gemini":
-        cmd.extend(_gemini_post_build_args(
-            run_dir=task.get("run_dir", ""),
-            project_dir=task.get("project_dir", ""),
-            additional_dirs=task.get("additional_dirs", []),
-        ))
+    # EOF cleanup -- degrade any in-flight streaming tools still open at EOF.
+    # Under normal operation this dict is empty: streaming tools get their
+    # block popped at tool_stop, and non-streaming at tool_result.
+    # This path fires only on abnormal termination (process killed mid-stream).
+    for _idx, (cid, tname) in call_ids_by_block.items():
+        store.push_event(
+            "tool_result",
+            build_tool_result(cid, tname),
+            agent_id=agent_id,
+        )
+    call_ids_by_block.clear()
 
-    log.debug(
-        "spawn command: role=%s argc=%d cmd[0]=%s",
-        role, len(cmd), cmd[0] if cmd else "",
-    )
-    # Emit agent_spawned only after build_command succeeds -- process is about to start
-    store.push_event("agent_spawned", build_agent_spawned(agent), agent_id=agent_id)
+    # Tombstone: mark end of this agent's stream
+    store.push_event("stream_cleared", {}, agent_id=agent_id)
 
-    # Spawn process — cwd is the project directory so that tools like
-    # `find .`, `ls`, `grep -r` naturally scope to the user's codebase.
-    # Falls back to subagent_dir if project_dir is unavailable.
-    spawn_cwd = task.get("project_dir") or subagent_dir
-    log.info("spawning %s (agent_id=%s) cwd=%s: %s", role, agent_id, spawn_cwd, " ".join(cmd))
-    # limit= raises the asyncio StreamReader per-line buffer above its 64 KB
-    # default. A single stream-json event from the child CLI (long thinking
-    # block, fat tool result, large assistant content envelope) routinely
-    # exceeds 64 KB; readline() then raises LimitOverrunError and the scout's
-    # output becomes unreadable mid-run.
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=spawn_cwd,
-        limit=4 * 1024 * 1024,
-    )
-    app_state._active_processes[agent_id] = proc
-
-    # Stream tracking
-    async def stream_stdout():
-        assert proc.stdout is not None
-        # call_ids_by_block: block_index -> (call_id, tool_name) for in-flight
-        # streaming tool blocks (tool_start -> tool_stop window).
-        call_ids_by_block: dict[int, tuple[str, str]] = {}
-        # call_id_by_tool_use_id: LLM-assigned id -> our local call_id, kept
-        # from tool_start through tool_result so the result correlates correctly.
-        call_id_by_tool_use_id: dict[str, str] = {}
-
-        async for raw in proc.stdout:
-            line = raw.decode("utf-8", errors="replace").rstrip("\n")
-            try:
-                events = runner.parse_stream_event(line)
-            except Exception as exc:
-                log.warning(
-                    "parse_stream_event failed for %s (agent_id=%s): %s",
-                    role, agent_id, exc,
-                )
-                # Degrade in-flight streaming tools to completed with no result.
-                for _idx, (cid, tname) in call_ids_by_block.items():
-                    store.push_event(
-                        "tool_result",
-                        build_tool_result(cid, tname),
-                        agent_id=agent_id,
-                    )
-                call_ids_by_block.clear()
-                continue
-            for ev in events:
-                if ev.type == "tool_start":
-                    call_id = str(uuid.uuid4())
-                    tool_name = ev.tool_name or "tool"
-                    block_idx = ev.block_index if ev.block_index is not None else -1
-                    call_ids_by_block[block_idx] = (call_id, tool_name)
-                    # Record tool_use_id -> call_id so tool_result events
-                    # arriving later (from user message) can be correlated.
-                    if ev.tool_use_id:
-                        call_id_by_tool_use_id[ev.tool_use_id] = call_id
-                    store.push_event(
-                        "tool_request",
-                        build_tool_request(call_id, tool_name, ev.tool_use_id or ""),
-                        agent_id=agent_id,
-                    )
-                elif ev.type == "tool_input_delta":
-                    block_idx = ev.block_index if ev.block_index is not None else -1
-                    pair = call_ids_by_block.get(block_idx)
-                    if pair is not None:
-                        cid, tname = pair
-                        store.push_event(
-                            "tool_input_delta",
-                            build_tool_input_delta(cid, tname, ev.tool_args, ev.content),
-                            agent_id=agent_id,
-                        )
-                elif ev.type == "tool_stop":
-                    # content_block_stop signals args are final; no projection
-                    # event emitted (per intake decision 2 -- no tool_stop event).
-                    # Pop from call_ids_by_block to prevent EOF re-emit; the
-                    # tool_result projection event fires later when the user
-                    # message with the tool_result block arrives.
-                    block_idx = ev.block_index if ev.block_index is not None else -1
-                    call_ids_by_block.pop(block_idx, None)
-                elif ev.type == "token_delta":
-                    agent.token_count["received"] = agent.token_count.get("received", 0) + len(ev.content or "")
-                    store.push_event("stream_delta", {"delta": ev.content or ""}, agent_id=agent_id)
-                elif ev.type == "thinking":
-                    store.push_event("thinking", {"delta": ev.content or ""}, agent_id=agent_id)
-                elif ev.type == "assistant_text":
-                    if ev.content:
-                        agent.final_response = ev.content
-                elif ev.type == "tool_result":
-                    # Runner parsed a tool_result block from a user message.
-                    # Map the LLM's tool_use_id back to our local call_id.
-                    tool_use_id = ev.tool_use_id or ""
-                    cid = call_id_by_tool_use_id.pop(tool_use_id, None)
-                    if cid is not None:
-                        store.push_event(
-                            "tool_result",
-                            build_tool_result(
-                                cid,
-                                ev.tool_name or "",
-                                result=ev.content,
-                                attachments=ev.attachments,
-                                metrics=ev.metrics,
-                                ts_ms=int(time.time() * 1000),
-                            ),
-                            agent_id=agent_id,
-                        )
-                        # Also emit tool_result_captured for exploration tools so
-                        # aggregate child metrics continue to populate (preserved
-                        # per intake constraint -- tool_result_captured is orthogonal
-                        # to tool_result and both fire for read/grep/ls).
-                        if ev.tool_name in ("read", "grep", "ls"):
-                            store.push_event(
-                                "tool_result_captured",
-                                build_tool_result_captured(
-                                    cid,
-                                    ev.tool_name,
-                                    metrics=ev.metrics,
-                                ),
-                                agent_id=agent_id,
-                            )
-                        # Remove from call_ids_by_block too (batch path: Codex/Gemini
-                        # synthesize tool_result without a preceding tool_stop, so
-                        # the block entry persists otherwise and EOF cleanup re-emits).
-                        to_remove = [k for k, (v, _) in call_ids_by_block.items() if v == cid]
-                        for k in to_remove:
-                            del call_ids_by_block[k]
-                elif ev.type == "turn_complete":
-                    pass
-                else:
-                    log.debug(
-                        "unknown stream event type=%s agent=%s",
-                        ev.type, agent_id[:8],
-                    )
-
-        # Degrade any in-flight streaming tools still open at stdout EOF.
-        # Under normal operation this dict is empty: streaming tools get their
-        # block popped at tool_stop, and non-streaming at tool_result.
-        # This path fires only on abnormal termination (process killed mid-stream).
-        for _idx, (cid, tname) in call_ids_by_block.items():
-            store.push_event(
-                "tool_result",
-                build_tool_result(cid, tname),
-                agent_id=agent_id,
-            )
-        call_ids_by_block.clear()
-
-        # Tombstone: mark end of this agent's stream
-        store.push_event("stream_cleared", {}, agent_id=agent_id)
-
-    async def drain_stderr():
-        assert proc.stderr is not None
-        buf: list[str] = []
-        async for raw in proc.stderr:
-            buf.append(raw.decode("utf-8", errors="replace"))
-        return "".join(buf)
-
-    stdout_task = asyncio.create_task(stream_stdout())
-    stderr_task = asyncio.create_task(drain_stderr())
-
-    # Wait for exit
-    exit_code = await proc.wait()
-    await stdout_task
-    stderr_output = await stderr_task
+    # Collect exit code and stderr from agent_impl.
+    # exit_code is None for FakeAgent (which does not spawn a process);
+    # default to 0 so test doubles that set handshake_observed work correctly.
+    raw_exit_code = agent_impl.exit_code
+    exit_code = raw_exit_code if raw_exit_code is not None else 0
+    stderr_output = agent_impl.stderr_output
 
     if stderr_output.strip():
         log.warning("stderr from %s (agent_id=%s): %s", role, agent_id, stderr_output[:500])
 
-    # Handshake check
+    # Handshake check -- uses agent (AgentState), NOT agent_impl.
+    # This check must reference agent.handshake_observed (the MCP-path flag
+    # set when koan_complete_step fires). Confusing agent with agent_impl here
+    # would silently break bootstrap_failure detection.
     error_str: str | None = None
     if not agent.handshake_observed:
-        diag = RunnerDiagnostic(
+        diag = AgentDiagnostic(
             code="bootstrap_failure",
-            runner=runner.name,
+            agent=agent_impl.name,
             stage="handshake",
             message="Process exited before first koan_complete_step call",
         )
-        await event_log.emit_runner_diagnostic(diag)
+        await event_log.emit_agent_diagnostic(diag)
         error_str = "bootstrap_failure"
         exit_code = 1
     elif exit_code != 0:
@@ -589,7 +488,7 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
 
     log_fn = log.info if exit_code == 0 else log.warning
     log_fn("%s (agent_id=%s) exited with code %d", role, agent_id, exit_code)
-    return SubagentResult(exit_code=exit_code, final_response=final_response)
+    return SubagentResult(exit_code=exit_code, final_response=final_response, error=error_str)
 
 
 # -- Interaction cleanup -------------------------------------------------------

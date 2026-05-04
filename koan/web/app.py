@@ -363,8 +363,8 @@ async def api_start_run(r: Request) -> Response:
             st.run.run_installations[rt] = alias
 
     # Pre-validate installations for every runner type the profile requires
-    from ..runners.registry import RunnerRegistry
-    from ..runners.base import RunnerError
+    from ..agents.registry import AgentRegistry as RunnerRegistry
+    from ..agents.base import AgentError as RunnerError
     registry = RunnerRegistry()
     checked_types: set[str] = set()
     for tier in profile_obj.tiers.values():
@@ -1150,7 +1150,7 @@ def _serialize_profile(p: Profile, read_only: bool) -> dict:
 
 async def _refresh_probe_state(st: AppState, broadcast: bool = True) -> None:
     from ..probe import probe_all_runners
-    from ..runners.registry import compute_builtin_profiles
+    from ..agents.registry import compute_builtin_profiles
 
     st.runner_config.probe_results = await probe_all_runners()
     st.runner_config.builtin_profiles = compute_builtin_profiles(st.runner_config.probe_results)

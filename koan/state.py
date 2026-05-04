@@ -62,8 +62,10 @@ class AgentState:
     final_response: str = ""
     is_primary: bool = True
     # "claude", "codex", "gemini", or "" (default -- treated as non-Claude).
-    # Populated at every spawn site from runner.name. Used by upload_ids_to_blocks
-    # to decide whether to emit File/Image blocks or a text-notice fallback.
+    # Populated by spawn_subagent from agent_impl.name (the Agent Protocol's
+    # name attribute). Used by upload_ids_to_blocks to decide whether to emit
+    # File/Image blocks or a text-notice fallback, and (in M2) by
+    # steering-drain routing to distinguish Claude from command-line agents.
     runner_type: str = ""
     started_at: datetime = field(default_factory=_utcnow)
 

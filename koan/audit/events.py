@@ -91,12 +91,18 @@ class ToolResultEvent:
 
 
 @dataclass(kw_only=True)
-class RunnerDiagnosticEvent:
-    kind: Literal["runner_diagnostic"] = "runner_diagnostic"
+class AgentDiagnosticEvent:
+    """Audit event recording an agent-side diagnostic (spawn failure, MCP injection
+    failure, bootstrap failure, etc.). Renamed from RunnerDiagnosticEvent in M1
+    of the SDK migration. The 'agent' field carries the agent name ('claude',
+    'codex', 'gemini').
+    """
+
+    kind: Literal["agent_diagnostic"] = "agent_diagnostic"
     ts: str = ""
     seq: int = 0
     code: str = ""
-    runner: str = ""
+    agent: str = ""
     stage: str = ""
     message: str = ""
     details: dict | None = None
@@ -111,7 +117,7 @@ AuditEvent = Union[
     ThinkingEvent,
     ToolCallEvent,
     ToolResultEvent,
-    RunnerDiagnosticEvent,
+    AgentDiagnosticEvent,
 ]
 
 # Fatal diagnostic codes that force status to "failed".

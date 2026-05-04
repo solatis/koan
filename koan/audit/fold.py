@@ -100,11 +100,12 @@ def fold(s: Projection, e: AuditEvent) -> Projection:
         base.tokens_received = s.tokens_received + e.output
         return base
 
-    if kind == "runner_diagnostic":
+    # Renamed from runner_diagnostic in M1 of the SDK migration.
+    if kind == "agent_diagnostic":
         base.last_action = e.message
         base.diagnostic = {
             "code": e.code,
-            "runner": e.runner,
+            "agent": e.agent,
             "stage": e.stage,
             "message": e.message,
             "details": e.details,

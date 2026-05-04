@@ -1231,39 +1231,8 @@ class TestBuildArtifactDiff:
 
 class TestToolNameNormalization:
 
-    def test_claude_normalizes_Read(self):
-        import json
-        from koan.runners.claude import ClaudeRunner
-        runner = ClaudeRunner(subagent_dir="/tmp/test")
-        line = json.dumps({
-            "type": "assistant",
-            "message": {"content": [{"type": "tool_use", "name": "Read", "input": {"file_path": "/tmp/f"}}]},
-        })
-        evts = runner.parse_stream_event(line)
-        # Fallback emits tool_start + tool_input_delta
-        assert any(e.tool_name == "read" for e in evts)
-
-    def test_claude_normalizes_Bash(self):
-        import json
-        from koan.runners.claude import ClaudeRunner
-        runner = ClaudeRunner(subagent_dir="/tmp/test")
-        line = json.dumps({
-            "type": "assistant",
-            "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}]},
-        })
-        evts = runner.parse_stream_event(line)
-        assert any(e.tool_name == "bash" for e in evts)
-
-    def test_claude_filters_koan_mcp_tool(self):
-        import json
-        from koan.runners.claude import ClaudeRunner
-        runner = ClaudeRunner(subagent_dir="/tmp/test")
-        line = json.dumps({
-            "type": "assistant",
-            "message": {"content": [{"type": "tool_use", "name": "koan_complete_step", "input": {}}]},
-        })
-        evts = runner.parse_stream_event(line)
-        assert evts == []
+    # Claude runner tests removed in M2; ClaudeRunner is deleted.
+    # Claude path coverage comes from tests/test_subagent.py (FakeAgent).
 
     def test_codex_normalizes_read_file(self):
         import json

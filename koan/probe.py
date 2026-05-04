@@ -50,6 +50,7 @@ async def _run_cmd(args: list[str]) -> tuple[int, str, str]:
 
 
 async def _probe_claude() -> ProbeResult:
+    """Probe the claude CLI binary, auth status, and model list."""
     binary = shutil.which("claude")
     if binary is None:
         return ProbeResult(runner_type="claude", available=False)
@@ -68,10 +69,21 @@ async def _probe_claude() -> ProbeResult:
     if rc_v != 0:
         return ProbeResult(runner_type="claude", available=False, binary_path=binary)
 
+    # Verify that the claude_agent_sdk package is importable in this Python env.
+    # The SDK is required for ClaudeSDKAgent; the CLI binary alone is not enough.
+    try:
+        import claude_agent_sdk  # noqa: F401
+    except ImportError:
+        return ProbeResult(runner_type="claude", available=False, binary_path=binary)
+
     models: list[ModelInfo] = []
     try:
-        from .runners.claude import ClaudeRunner
-        models = ClaudeRunner(subagent_dir="").list_models(binary)
+        # Claude uses ClaudeSDKAgent (M2 cutover); call its classmethod directly.
+        # CommandLineAgent.list_models is no longer the right call site for claude.
+        from .agents.claude import ClaudeSDKAgent
+        from .types import AgentInstallation
+        installation = AgentInstallation(alias="claude", runner_type="claude", binary=binary, extra_args=[])
+        models = ClaudeSDKAgent.list_models(installation)
     except Exception:
         pass
 
@@ -79,6 +91,7 @@ async def _probe_claude() -> ProbeResult:
 
 
 async def _probe_codex() -> ProbeResult:
+    """Probe the codex CLI binary, auth status, and model list."""
     binary = shutil.which("codex")
     if binary is None:
         return ProbeResult(runner_type="codex", available=False)
@@ -94,8 +107,10 @@ async def _probe_codex() -> ProbeResult:
 
     models: list[ModelInfo] = []
     try:
-        from .runners.codex import CodexRunner
-        models = CodexRunner().list_models(binary)
+        from .agents.command_line import CommandLineAgent
+        from .types import AgentInstallation
+        installation = AgentInstallation(alias="codex", runner_type="codex", binary=binary, extra_args=[])
+        models = CommandLineAgent.list_models(installation)
     except Exception:
         pass
 
@@ -103,6 +118,7 @@ async def _probe_codex() -> ProbeResult:
 
 
 async def _probe_gemini() -> ProbeResult:
+    """Probe the gemini CLI binary, auth status, and model list."""
     binary = shutil.which("gemini")
     if binary is None:
         return ProbeResult(runner_type="gemini", available=False)
@@ -118,8 +134,10 @@ async def _probe_gemini() -> ProbeResult:
     models: list[ModelInfo] = []
     if available:
         try:
-            from .runners.gemini import GeminiRunner
-            models = GeminiRunner(subagent_dir="").list_models(binary)
+            from .agents.command_line import CommandLineAgent
+            from .types import AgentInstallation
+            installation = AgentInstallation(alias="gemini", runner_type="gemini", binary=binary, extra_args=[])
+            models = CommandLineAgent.list_models(installation)
         except Exception:
             pass
 
@@ -133,6 +151,12 @@ async def _probe_gemini() -> ProbeResult:
 
 
 async def probe_all_runners() -> list[ProbeResult]:
+    """Probe all known runner types concurrently and return their ProbeResults.
+
+    Failures in individual probes are caught internally; this function always
+    returns a list of three ProbeResult entries (claude, codex, gemini) even
+    if all probes fail.
+    """
     try:
         results = await asyncio.gather(
             _probe_claude(),

@@ -513,48 +513,39 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
         blocks: list[ContentBlock],
         agent: AgentState | None = None,
     ) -> tuple[list[ContentBlock], list[dict]]:
-        """Drain any queued steering messages and append to a block list.
+        """Drain queued steering messages and append to a block list, for
+        codex/gemini agents only.
 
-        Only the primary agent (orchestrator) receives steering. Subagents
-        (scouts, planners, executors) never see user steering messages.
-        Returns (new_blocks, manifest) where new_blocks has steering appended;
-        does not mutate the input so callers with aliased references stay consistent.
+        Claude agents receive steering via the ClaudeSDKAgent PostToolUse hook
+        (koan/agents/claude.py) and bypass this path. Returning blocks unchanged
+        for Claude leaves the steering queue intact for the hook to drain -- the
+        two paths are mutually exclusive per agent, so there is no race.
 
-        Per-message interleaving: each steering message gets its own text block
-        plus any File/Image blocks for its attachments, sandwiched between the
-        steering envelope open/close blocks.
+        Returns (new_blocks, manifest); does not mutate the input so callers
+        with aliased references stay consistent.
         """
+        # Gate 1: only primary agents (orchestrators) receive steering.
         if agent is not None and not agent.is_primary:
             return blocks, []
-        from ..state import drain_steering_messages
-        messages = drain_steering_messages(app_state)
+        # Gate 2: Claude receives steering via the SDK PostToolUse hook; the
+        # MCP-handler path is a no-op for Claude to prevent double-delivery.
+        if agent is not None and agent.runner_type == "claude":
+            return blocks, []
+        from ..agents.steering import drain_for_primary, render_blocks
+        messages = drain_for_primary(app_state, agent)
         if not messages:
             return blocks, []
         previews = [m.content[:80] for m in messages]
         log.info(
-            "steering delivered | %d message(s): %s",
+            "steering delivered via MCP handler | %d message(s): %s",
             len(messages), previews,
         )
         from ..events import build_steering_delivered
         app_state.projection_store.push_event(
             "steering_delivered", build_steering_delivered(len(messages)),
         )
-        from .uploads import upload_ids_to_blocks
-        new_blocks: list[ContentBlock] = list(blocks)
-        steer_manifest: list[dict] = []
-        new_blocks.append(steering_envelope_open())
-        for msg in messages:
-            new_blocks.append(steering_message_block(msg))
-            if msg.attachments:
-                bs, ms = upload_ids_to_blocks(
-                    app_state.uploads,
-                    app_state.run.run_dir or "",
-                    msg.attachments,
-                    agent.runner_type if agent is not None else "",
-                )
-                new_blocks.extend(bs)
-                steer_manifest.extend(ms)
-        new_blocks.append(steering_envelope_close())
+        steering_blocks, steer_manifest = render_blocks(messages, app_state, agent)
+        new_blocks: list[ContentBlock] = list(blocks) + steering_blocks
         return new_blocks, steer_manifest
 
     async def _compute_memory_injection(agent: AgentState) -> str:
