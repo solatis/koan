@@ -194,6 +194,39 @@ function AskQuestionCard({ toolInput, inFlight }: Omit<KoanToolCardProps, 'toolN
   )
 }
 
+// ExecutorCard renders one koan_request_executor call. Each call has its own
+// ToolKoanEntry (correlated by call_id), so concurrent executors render as
+// independent cards. The executor's terminal error -- the failing agent's last
+// message before exit -- arrives in this entry's result and is shown inline,
+// replacing the prior toast-notification path.
+function ExecutorCard({ toolInput, result, inFlight }: Omit<KoanToolCardProps, 'toolName'>) {
+  const artifacts = (toolInput?.artifacts as string[] | undefined) ?? []
+  const status = (result?.status as string | undefined) ?? null
+  const failed = status === 'failed'
+  const errorText = (result?.error as string | undefined) ?? ''
+  const exitCode = result?.exit_code as number | undefined
+  const label = inFlight ? 'Running executor' : failed ? 'Executor failed' : 'Executor done'
+  return (
+    <div className={`ktc ktc--executor${failed ? ' ktc--executor-failed' : ''}`}>
+      <div className="ktc-header">
+        <span className="ktc-indicator">
+          {inFlight ? <span className="ktc-running-dot" /> : <CheckSvg />}
+        </span>
+        <span className="ktc-label">{label}</span>
+        {artifacts.length > 0 && (
+          <span className="ktc-meta">{artifacts.length} artifact{artifacts.length === 1 ? '' : 's'}</span>
+        )}
+      </div>
+      {failed && (
+        <div className="ktc-executor-error">
+          {exitCode != null && <div className="ktc-executor-error-meta">exit {exitCode}</div>}
+          {errorText && <Md>{errorText}</Md>}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // FallbackCard is NOT in TOOL_RENDERERS -- it takes its own clean prop shape
 // and is invoked directly by the dispatch else-branch. This avoids threading
 // a label through the ToolRenderer signature.
@@ -219,6 +252,7 @@ const TOOL_RENDERERS: Record<string, ToolRenderer> = {
   koan_artifact_write: ArtifactWriteCard,
   koan_yield: YieldCard,
   koan_ask_question: AskQuestionCard,
+  koan_request_executor: ExecutorCard,
 }
 
 export function KoanToolCard(props: KoanToolCardProps): ReactElement | null {

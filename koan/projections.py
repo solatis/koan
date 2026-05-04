@@ -898,19 +898,10 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 new_agents = dict(projection.run.agents)
                 new_agents[agent_id] = new_agent
                 new_run = projection.run.model_copy(update={"agents": new_agents})
-                new_projection = projection.model_copy(update={"run": new_run})
-
-                # Append error notification
-                if error:
-                    notif = Notification(
-                        message=f"Agent {agent_id} exited with error: {error}",
-                        level="error",
-                        timestamp_ms=int(datetime.now(timezone.utc).timestamp() * 1000),
-                    )
-                    new_projection = new_projection.model_copy(update={
-                        "notifications": [*new_projection.notifications, notif],
-                    })
-                return new_projection
+                # Executor failures surface in the orchestrator's koan_request_executor
+                # tool result (see ExecutorCard); failed agent status persists on
+                # agent.status/agent.error. No transient notification toast.
+                return projection.model_copy(update={"run": new_run})
 
             case "agent_spawn_failed":
                 notif = Notification(

@@ -1385,8 +1385,15 @@ def build_mcp_server(app_state: AppState) -> tuple[FastMCP, Handlers]:
             from ..subagent import spawn_subagent
             result = await spawn_subagent(task, app_state)
 
-            status = "succeeded" if result.exit_code == 0 else f"failed (exit {result.exit_code})"
-            result_blocks = [_text_block(f"Executor {status}.")]
+            if result.exit_code == 0:
+                payload = {"status": "succeeded"}
+            else:
+                payload = {
+                    "status": "failed",
+                    "exit_code": result.exit_code,
+                    "error": result.error or "",
+                }
+            result_blocks = [_text_block(json.dumps(payload))]
             result_blocks, steer_manifest = _drain_and_append_steering(result_blocks, agent)
             _push_tool_attachments(steer_manifest, agent)
             return result_blocks

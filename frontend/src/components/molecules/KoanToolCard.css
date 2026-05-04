@@ -143,6 +143,29 @@
   color: var(--text-body);
 }
 
+/* ---- ExecutorCard ---- */
+.ktc--executor-failed {
+  border-left-color: var(--status-failed);
+}
+.ktc--executor-failed .ktc-label {
+  color: var(--status-failed);
+}
+.ktc-executor-error {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--bg-thinking);
+  border-radius: var(--radius-md);
+  font-size: var(--type-prose);
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+.ktc-executor-error-meta {
+  font-family: var(--font-mono);
+  font-size: var(--type-tool-path);
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
 /* ---- FallbackCard ---- */
 /* Muted label distinguishes fallback from first-class renderers */
 .ktc--fallback .ktc-label {

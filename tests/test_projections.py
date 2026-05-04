@@ -303,9 +303,9 @@ class TestFoldAgentLifecycle:
         r = fold(p, _e("agent_exited", {"exit_code": 1, "error": "boom"}, agent_id="a1"))
         assert r.run.agents["a1"].status == "failed"
         assert r.run.agents["a1"].error == "boom"
-        # Error notification appended
-        assert len(r.notifications) == 1
-        assert "boom" in r.notifications[0].message
+        # Tracked-agent error surfaces inline (executor: koan_request_executor
+        # tool result; orchestrator: agent.error). No notification toast.
+        assert r.notifications == []
 
     def test_agent_exited_accumulates_usage_into_conversation(self):
         p = _proj_with_primary("a1")
