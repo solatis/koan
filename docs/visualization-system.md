@@ -3,7 +3,7 @@
 The framework is grounded in four papers in this project corpus that address the same class of problem — machine generation of architectural diagrams from textual sources.
 
 - **CIAO** (2604.08293) — generates system-level architecture documentation from GitHub repos using C4 + ISO/IEC/IEEE 42010 + SEI Views & Beyond.
-- **MASC4** (2510.22787) — generates C4 (L1–L3) views from a *system brief* via LLM agents. No source code; pure intent-to-diagram.
+- **MASC4** (2510.22787) — generates C4 (L1–L3) views from a _system brief_ via LLM agents. No source code; pure intent-to-diagram.
 - **VisDocSketcher** (2509.11942) — generates Mermaid sketches from Jupyter notebooks via static analysis + LLM agents.
 - **ArchView** (2603.21178) — evaluates LLM-generated architecture views across 340 repositories, by view type, granularity, and concern.
 
@@ -49,13 +49,13 @@ The framework supports five Mermaid diagram types. Selection is constrained by A
 
 > "Control flow and data flow achieved balanced performance across both SSIM and LLM quality, making them most reliable for automated view generation. … General documentation failed both visually and semantically." — ArchView
 
-| ID  | Mermaid type                  | Concern                                                       | C4 level         |
-| --- | ----------------------------- | ------------------------------------------------------------- | ---------------- |
-| CTX | `flowchart`                   | System boundaries, external actors, external systems          | L1 (Context)     |
-| CON | `flowchart`                   | Runtime building blocks and their connections                 | L2 (Container)   |
-| CMP | `classDiagram` or `flowchart` | Internal modules of one container, structural relations       | L3 (Component)   |
-| SEQ | `sequenceDiagram`             | Interaction over time across components or actors             | crosses L2 / L3  |
-| STT | `stateDiagram-v2`             | Lifecycle of an entity with non-trivial transitions           | orthogonal       |
+| ID  | Mermaid type                  | Concern                                                 | C4 level        |
+| --- | ----------------------------- | ------------------------------------------------------- | --------------- |
+| CTX | `flowchart`                   | System boundaries, external actors, external systems    | L1 (Context)    |
+| CON | `flowchart`                   | Runtime building blocks and their connections           | L2 (Container)  |
+| CMP | `classDiagram` or `flowchart` | Internal modules of one container, structural relations | L3 (Component)  |
+| SEQ | `sequenceDiagram`             | Interaction over time across components or actors       | crosses L2 / L3 |
+| STT | `stateDiagram-v2`             | Lifecycle of an entity with non-trivial transitions     | orthogonal      |
 
 ### What is deliberately not in the catalog
 
@@ -80,16 +80,16 @@ The framework's deterministic core: for each Koan document type, an explicit set
 
 The mapping below uses Traycer-aligned document names, since Koan's structure is Traycer-inspired. Substitute names where they differ.
 
-| Document         | Section / slot                                  | Diagram ID                        | Required? |
-| ---------------- | ----------------------------------------------- | --------------------------------- | --------- |
-| Epic Brief       | (none)                                          | —                                 | —         |
-| Core Flows       | per-flow: Interaction                           | SEQ                               | required (default) |
-| Tech Plan        | Architectural Approach                          | CON                               | required (default) |
-| Tech Plan        | Component Architecture: per-component           | CMP                               | required for ≥1 component (default) |
-| Tech Plan        | Cross-component flows                           | SEQ                               | required for non-trivial flows |
-| Tech Plan        | Per-entity lifecycle (when applicable)          | STT                               | conditional on §5 threshold |
-| Ticket           | (none)                                          | —                                 | —         |
-| Ticket Bundle    | Dependency overview                             | `flowchart` (chain or DAG)        | required when ≥3 tickets |
+| Document      | Section / slot                         | Diagram ID                 | Required?                           |
+| ------------- | -------------------------------------- | -------------------------- | ----------------------------------- |
+| Epic Brief    | (none)                                 | —                          | —                                   |
+| Core Flows    | per-flow: Interaction                  | SEQ                        | required (default)                  |
+| Tech Plan     | Architectural Approach                 | CON                        | required (default)                  |
+| Tech Plan     | Component Architecture: per-component  | CMP                        | required for ≥1 component (default) |
+| Tech Plan     | Cross-component flows                  | SEQ                        | required for non-trivial flows      |
+| Tech Plan     | Per-entity lifecycle (when applicable) | STT                        | conditional on §5 threshold         |
+| Ticket        | (none)                                 | —                          | —                                   |
+| Ticket Bundle | Dependency overview                    | `flowchart` (chain or DAG) | required when ≥3 tickets            |
 
 **Epic Brief intentionally has no diagram.** It is intent-level, three-to-eight sentences. ArchView's "General documentation failed" finding applies most strongly here: the higher the abstraction and the more catch-all the slot, the more semantic noise an automated diagram introduces.
 
@@ -107,16 +107,16 @@ A slot is rendered as prose only when its complexity falls below a measurable th
 
 These thresholds are an **extension of the framework**, not citations from the corpus. VisDocSketcher's input-complexity analysis motivates the principle (notebooks "with varying lengths and structural complexity" produce sketches of varying quality) but does not give numbers.
 
-| Slot              | Suppress when                                                        |
-| ----------------- | -------------------------------------------------------------------- |
-| CTX               | Fewer than 3 external actors / systems referenced                    |
-| CON               | Single container, or 2 containers with one connection                |
-| CMP               | Fewer than 4 components in scope for the container                   |
-| SEQ               | 2 actors, fewer than 4 messages, no branching                        |
-| STT               | Fewer than 3 states, or no guards / conditional transitions          |
+| Slot              | Suppress when                                                          |
+| ----------------- | ---------------------------------------------------------------------- |
+| CTX               | Fewer than 3 external actors / systems referenced                      |
+| CON               | Single container, or 2 containers with one connection                  |
+| CMP               | Fewer than 4 components in scope for the container                     |
+| SEQ               | 2 actors, fewer than 4 messages, no branching                          |
+| STT               | Fewer than 3 states, or no guards / conditional transitions            |
 | Ticket bundle dep | Fewer than 3 tickets, or pure linear chain expressible in one sentence |
 
-When a slot is suppressed, the orchestrator writes the same information as prose at the slot's location and emits the marker comment `<!-- diagram suppressed: below complexity threshold -->`. The slot is never silently skipped.
+When a slot is suppressed, the orchestrator writes the same information as prose at the slot's location. The slot is never silently skipped, but it is also never marked as suppressed -- the prose stands on its own. Do NOT emit any "diagram suppressed" comment, banner, or placeholder; the rendered output should look exactly like normal prose.
 
 ---
 
@@ -124,11 +124,11 @@ When a slot is suppressed, the orchestrator writes the same information as prose
 
 Each diagram slot is generated by a prompt with five fixed parts. The structure is taken almost directly from MASC4 (Persona + Task + Context) and CIAO (global + section-specific):
 
-1. **Role / persona.** A one-sentence positioning. Example: *"You are a software architect documenting the runtime structure of a system-in-design."*
-2. **Task.** The diagram ID, the concern, and the audience. Example: *"Produce a Mermaid `flowchart` diagram (CON, L2 Container view) for the audience of an engineer who will implement against this plan."*
-3. **Inputs / context.** A bounded set of inputs the LLM may draw from (Epic Brief, Core Flows, codebase analysis notes). MASC4 calls this `C(s)`; CIAO calls it the *Flattened Repository*.
+1. **Role / persona.** A one-sentence positioning. Example: _"You are a software architect documenting the runtime structure of a system-in-design."_
+2. **Task.** The diagram ID, the concern, and the audience. Example: _"Produce a Mermaid `flowchart` diagram (CON, L2 Container view) for the audience of an engineer who will implement against this plan."_
+3. **Inputs / context.** A bounded set of inputs the LLM may draw from (Epic Brief, Core Flows, codebase analysis notes). MASC4 calls this `C(s)`; CIAO calls it the _Flattened Repository_.
 4. **Output schema.** A Mermaid syntax skeleton with placeholders, plus structural constraints (max nodes, allowed edge labels, allowed node shapes, suppression marker).
-5. **Grounding rule.** Verbatim from CIAO's design intent: *"evidence-grounded generation requirements and explicitly forbid inventing architectural elements not present in the repository."* For Koan: forbid introducing components, actors, or states that do not appear in the bounded inputs.
+5. **Grounding rule.** Verbatim from CIAO's design intent: _"evidence-grounded generation requirements and explicitly forbid inventing architectural elements not present in the repository."_ For Koan: forbid introducing components, actors, or states that do not appear in the bounded inputs.
 
 ### Concrete example: the CON slot in a Tech Plan
 
@@ -167,8 +167,8 @@ You may use ONLY the following:
 [Grounding rule]
 Do NOT introduce containers, services, or data stores that are not named or directly implied
 by the inputs. If the inputs do not yield at least 3 containers, emit a single-sentence prose
-description in place of the diagram and the marker:
-    <!-- diagram suppressed: below complexity threshold -->
+description in place of the diagram. Do not emit any "diagram suppressed" marker or
+placeholder text -- the prose alone is the slot.
 ```
 
 The same five-part scaffold is reused for every diagram ID. Only [Task] and [Output schema] vary across slots.
@@ -248,5 +248,5 @@ For an at-a-glance reference when prompting the orchestrator or reviewing its ou
 
 1. **Levels.** C4 L1–L3. No L4.
 2. **Notation.** Mermaid only.
-3. **Decision authority.** Templates decide *whether* and *what type*. The LLM decides *which instances* and *whether the slot is below the suppression threshold*.
+3. **Decision authority.** Templates decide _whether_ and _what type_. The LLM decides _which instances_ and _whether the slot is below the suppression threshold_.
 4. **Grounding.** No component, actor, or state in any diagram may appear that is not in the bounded inputs.

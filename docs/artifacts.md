@@ -75,7 +75,7 @@ Required sections, in order:
 1. **Initiative** -- one paragraph restating the user's task in refined
    wording.
 2. **Scope** -- contains two subsections: `### In scope` and `### Out of
-   scope`. Out-of-scope matters more than in-scope because it prevents
+scope`. Out-of-scope matters more than in-scope because it prevents
    downstream scope growth.
 3. **Affected subsystems** -- concrete file paths and modules with one-line
    descriptions, grounded in real code structure (verified during intake's
@@ -108,9 +108,9 @@ is discovered during the phase; the artifact has no fixed flow count.
 Per-flow content:
 
 - Either a mermaid `sequenceDiagram` block (the SEQ slot from
-  `visualization-system.md` §4) **or** the suppression marker comment
-  `<!-- diagram suppressed: below complexity threshold -->` when the flow has
-  2 actors AND fewer than 4 messages AND no branching.
+  `visualization-system.md` §4) **or** plain prose only (no marker, no
+  placeholder) when the flow has 2 actors AND fewer than 4 messages AND no
+  branching.
 - A step narrative covering: trigger (what initiates the flow), the sequenced
   steps in order, and exit conditions (success, failure, timeout).
 
@@ -159,8 +159,8 @@ Structural rules:
   diagrams show containers, not components. CMP diagrams show components
   within one container, not other containers. SEQ diagrams show messages
   between identified actors, not internal component calls.
-- Below-threshold slots are rendered as prose with the suppression marker
-  comment `<!-- diagram suppressed: below complexity threshold -->`.
+- Below-threshold slots are rendered as prose only. Do NOT emit a marker
+  comment or placeholder -- the prose alone is the slot.
 
 Source of truth: `koan/phases/tech_plan_spec.py:PHASE_ROLE_CONTEXT`.
 

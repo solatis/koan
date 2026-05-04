@@ -560,11 +560,18 @@ def test_core_flows_role_context_forbids_implementation_detail():
 
 
 def test_core_flows_role_context_includes_seq_slot_rules():
-    """Core-flows PHASE_ROLE_CONTEXT must mention sequenceDiagram, suppression marker, and visualization-system.md."""
+    """Core-flows PHASE_ROLE_CONTEXT must mention sequenceDiagram, the suppression rule, and visualization-system.md.
+
+    The suppression rule is now "render as prose only, no marker" -- explicitly
+    forbidding the old `<!-- diagram suppressed ... -->` placeholder, which
+    leaked into rendered output as visible text.
+    """
     from koan.phases import core_flows
     ctx_text = core_flows.PHASE_ROLE_CONTEXT
     assert "sequenceDiagram" in ctx_text
-    assert "diagram suppressed" in ctx_text
+    assert "Suppression rule" in ctx_text
+    assert "no marker comment" in ctx_text
+    assert "diagram suppressed" not in ctx_text
     assert "docs/visualization-system.md" in ctx_text
 
 
@@ -615,10 +622,14 @@ def test_tech_plan_spec_role_context_includes_slot_mapping():
 
 
 def test_tech_plan_spec_role_context_includes_grounding_rule():
-    """Tech-plan-spec PHASE_ROLE_CONTEXT must include suppression marker and grounding rule."""
+    """Tech-plan-spec PHASE_ROLE_CONTEXT must include the suppression rule (no marker) and grounding rule."""
     from koan.phases import tech_plan_spec
     ctx_text = tech_plan_spec.PHASE_ROLE_CONTEXT
-    assert "diagram suppressed" in ctx_text
+    assert "below threshold" in ctx_text.lower()
+    # Source string wraps lines, so collapse whitespace before searching for the rule.
+    collapsed = " ".join(ctx_text.lower().split())
+    assert "no marker comment" in collapsed
+    assert "diagram suppressed" not in ctx_text
     assert "Grounding rule" in ctx_text or "grounding rule" in ctx_text.lower()
 
 
@@ -670,7 +681,8 @@ def test_tech_plan_review_role_context_diagram_accuracy_check():
     from koan.phases import tech_plan_review
     ctx_text = tech_plan_review.PHASE_ROLE_CONTEXT
     assert "grounding" in ctx_text.lower()
-    assert "suppression" in ctx_text.lower() or "diagram suppressed" in ctx_text
+    assert "suppression" in ctx_text.lower()
+    # Marker text only allowed in the "reject if found" guidance, never as a positive instruction.
     assert "level-separation" in ctx_text.lower() or "level separation" in ctx_text.lower()
 
 

@@ -50,8 +50,9 @@ PHASE_ROLE_CONTEXT = (
     "## SEQ slot rules (from docs/visualization-system.md section 4)\n"
     "\n"
     "One `sequenceDiagram` per flow. Suppression rule: if a flow has only 2 actors\n"
-    "AND fewer than 4 messages AND no branching, suppress the diagram to prose with\n"
-    "the marker comment `<!-- diagram suppressed: below complexity threshold -->`.\n"
+    "AND fewer than 4 messages AND no branching, render the flow as prose only --\n"
+    "no diagram, no marker comment, no 'suppressed' placeholder. Just the step\n"
+    "narrative under the flow's heading.\n"
     "Grounding rule: no actor in any diagram may be absent from the bounded inputs\n"
     "(brief.md and the dialogue that preceded this phase).\n"
     "See docs/visualization-system.md for full slot-and-suppression detail.\n"
@@ -127,9 +128,10 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
             "- Trigger: what starts the flow.",
             "- Sequenced steps: the observable steps in order.",
             "- Exit conditions: the outcomes (success, failure, timeout, etc.).",
-            "- Diagram decision: does this flow warrant a `sequenceDiagram`, or should it",
-            "  be suppressed to prose with the marker comment?",
-            "  Suppress when: 2 actors AND fewer than 4 messages AND no branching.",
+            "- Diagram decision: does this flow warrant a `sequenceDiagram`, or should",
+            "  it render as prose only (no diagram, no marker, no placeholder)?",
+            "  Render as prose only when: 2 actors AND fewer than 4 messages AND no",
+            "  branching.",
             "",
             "## What to call koan_complete_step with",
             "",
@@ -164,8 +166,6 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "",
                 "## Flow 2: <title>",
                 "",
-                "<!-- diagram suppressed: below complexity threshold -->",
-                "",
                 "Step narrative: trigger, sequenced steps, exit conditions.",
                 '""",',
                 '    status="Final",',
@@ -176,9 +176,9 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "",
                 "One section per flow (`## Flow N: <title>`). Each section contains:",
                 "",
-                "- A mermaid `sequenceDiagram` block, OR the suppression marker comment",
-                "  `<!-- diagram suppressed: below complexity threshold -->` when the flow",
-                "  has 2 actors AND fewer than 4 messages AND no branching.",
+                "- A mermaid `sequenceDiagram` block, OR no diagram at all (prose only,",
+                "  no marker, no placeholder) when the flow has 2 actors AND fewer than",
+                "  4 messages AND no branching.",
                 "- A step narrative: trigger, the sequenced steps in order, and exit",
                 "  conditions (success, failure, timeout, etc.).",
                 "",

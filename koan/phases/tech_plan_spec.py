@@ -59,9 +59,8 @@ PHASE_ROLE_CONTEXT = (
     "  Suppress when: fewer than 3 states OR no guards/conditional transitions.\n"
     "- Data Model: fenced code blocks for schema definitions. NOT ER diagrams.\n"
     "\n"
-    "Suppression marker: `<!-- diagram suppressed: below complexity threshold -->`.\n"
-    "Use this marker comment in place of the diagram when the slot is below\n"
-    "threshold; follow with prose describing the content.\n"
+    "When a slot is below threshold, render it as prose only -- no diagram, no\n"
+    "marker comment, no 'suppressed' placeholder. The prose alone is the slot.\n"
     "\n"
     "See docs/visualization-system.md for full slot-and-suppression detail.\n"
     "\n"
@@ -158,8 +157,8 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
             "## Identify the three sections' content",
             "",
             "For each section, decide which visualization slots warrant diagrams vs",
-            "suppression-prose (with the suppression marker comment). Recall the thresholds",
-            "from PHASE_ROLE_CONTEXT -- repeated here at point of use:",
+            "prose-only rendering (no diagram, no marker, no placeholder). Recall the",
+            "thresholds from PHASE_ROLE_CONTEXT -- repeated here at point of use:",
             "",
             "- CON: suppress when single container OR 2 containers with one connection.",
             "- CMP: suppress when fewer than 4 components in scope.",
@@ -232,9 +231,9 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "",
                 "### Architectural Approach",
                 "CON diagram (`flowchart` container view) showing runtime processes,",
-                "services, and data stores. Suppress (with marker comment) when single",
-                "container OR 2 containers with one connection. Include: chosen path AND",
-                "rejected alternatives with rationale.",
+                "services, and data stores. When single container OR 2 containers with",
+                "one connection, omit the diagram and use prose only -- no marker, no",
+                "placeholder. Include: chosen path AND rejected alternatives with rationale.",
                 "",
                 "### Data Model",
                 "Fenced code blocks for schema definitions. NOT ER diagrams. Include",
@@ -244,15 +243,16 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "CMP diagrams (`classDiagram` or `flowchart` per container) for internal",
                 "structure. SEQ (`sequenceDiagram`) for cross-component flows. STT",
                 "(`stateDiagram-v2`) for per-entity lifecycles when warranted (>= 3 states",
-                "with conditional transitions). Suppress below-threshold slots with marker",
-                "comment. Include: chosen path AND rejected alternatives with rationale.",
+                "with conditional transitions). For below-threshold slots, render prose",
+                "only -- no diagram, no marker, no placeholder. Include: chosen path AND",
+                "rejected alternatives with rationale.",
                 "",
                 "## Constraints (repeated from PHASE_ROLE_CONTEXT at point of use)",
                 "",
                 "- Grounding rule: every node/actor/state must trace to a named concept in",
                 "  brief.md, core-flows.md (if present), or codebase analysis notes.",
                 "- Level-separation: no cross-level mixing within a single diagram.",
-                "- Suppression marker: `<!-- diagram suppressed: below complexity threshold -->`.",
+                "- Below-threshold slots: prose only. No diagram, no marker, no placeholder.",
                 "- status='In-Progress': the reviewer may rewrite in place.",
             ],
             invoke_after=terminal_invoke(ctx.next_phase, ctx.suggested_phases),

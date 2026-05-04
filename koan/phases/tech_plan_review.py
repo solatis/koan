@@ -72,9 +72,9 @@ PHASE_ROLE_CONTEXT = (
     "  inputs (brief.md, core-flows.md, codebase analysis). Every diagram element\n"
     "  must trace to a named concept in the inputs.\n"
     "- Suppression rule (section 5): below-threshold slots must be rendered as\n"
-    "  prose with the marker comment `<!-- diagram suppressed: below complexity\n"
-    "  threshold -->`. Check that above-threshold slots ARE rendered as diagrams\n"
-    "  (not silently omitted).\n"
+    "  prose only -- no marker, no placeholder. Check that above-threshold slots\n"
+    "  ARE rendered as diagrams (not silently omitted), and that below-threshold\n"
+    "  slots have substantive prose covering the same content.\n"
     "- Level-separation rule (section 7 anti-patterns): no cross-level mixing\n"
     "  within a single diagram. A CON diagram must not contain components; a CMP\n"
     "  diagram must not contain other containers.\n"
@@ -225,9 +225,10 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "",
                 "- **Grounding**: every node/actor/state must trace to a named concept in",
                 "  brief.md, core-flows.md (if present), or codebase analysis.",
-                "- **Suppression**: below-threshold slots must have the marker comment",
-                "  `<!-- diagram suppressed: below complexity threshold -->`.",
-                "  Above-threshold slots must be rendered as diagrams (not omitted).",
+                "- **Suppression**: below-threshold slots must be rendered as prose only",
+                "  -- no marker, no placeholder. Above-threshold slots must be rendered",
+                "  as diagrams (not omitted). If you find a `<!-- diagram suppressed ...`",
+                "  marker, treat it as an internal finding and rewrite to remove it.",
                 "- **Level-separation**: no cross-level mixing within a single diagram.",
                 "  CON must not contain components; CMP must not contain other containers.",
                 "",
