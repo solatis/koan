@@ -325,11 +325,17 @@ class CommandLineAgent:
     def list_models(cls, installation: AgentInstallation) -> list[ModelInfo]:
         """Return the model list for the given installation.
 
-        Dispatches to the appropriate Runner's list_models without instantiating
-        a full agent (no subprocess spawn). Used by koan/probe.py to populate
+        Dispatches based on installation.runner_type without instantiating a full
+        agent (no subprocess spawn). Used by koan/probe.py to populate
         ProbeResult.models at startup.
 
-        Runner classes are imported lazily to avoid circular imports at module level.
+        Note: the 'claude' branch dispatches to ClaudeSDKAgent.list_models, NOT
+        to a Runner.list_models, because ClaudeRunner was deleted in M2. The
+        docstring phrase "appropriate Runner's list_models" is historical; for
+        claude, the SDK agent owns the model-listing path.
+
+        Runner and agent classes are imported lazily to avoid circular imports at
+        module level (same rationale as AgentRegistry.get_agent).
         """
         runner_type = installation.runner_type
         binary = installation.binary

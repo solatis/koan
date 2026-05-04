@@ -116,7 +116,7 @@ function ProfileForm({
               onChange={e => setTierField(tier, 'runner_type', e.target.value)}
               style={{ flex: 1 }}
             >
-              <option value="">-- runner --</option>
+              <option value="">-- agent --</option>
               {runners.map(r => (
                 <option key={r.runner_type} value={r.runner_type}>
                   {r.runner_type}
@@ -197,7 +197,7 @@ function InstallationForm({
 
   const handleDetect = async () => {
     if (!runnerType) {
-      setFormError('Select a runner type first')
+      setFormError('Select an agent type first')
       return
     }
     const res = await api.detectAgent(runnerType)
@@ -253,14 +253,14 @@ function InstallationForm({
         </div>
       )}
       <div className="tier-form-row">
-        <span className="tier-form-label">Runner</span>
+        <span className="tier-form-label">Agent</span>
         <select
           className="model-tier-select"
           style={{ flex: 1 }}
           value={runnerType}
           onChange={e => setRunnerType(e.target.value)}
         >
-          <option value="">-- runner type --</option>
+          <option value="">-- agent type --</option>
           {allRunners.map(r => (
             <option key={r.runner_type} value={r.runner_type}>
               {r.runner_type}

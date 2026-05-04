@@ -85,6 +85,13 @@ class AgentRegistry:
     ) -> Agent:
         """Construct and return an Agent for the given runner_type.
 
+        runner_type identifies the agent class for this profile tier. The name
+        is historical (predates the M2 Runner -> Agent rename) and is preserved
+        for config-schema stability. Current mapping:
+          'claude'  -> ClaudeSDKAgent (drives the Claude Agent SDK directly)
+          'codex'   -> CommandLineAgent(CodexRunner)
+          'gemini'  -> CommandLineAgent(GeminiRunner)
+
         In M2 the 'claude' branch resolves to ClaudeSDKAgent; codex and gemini
         still resolve to CommandLineAgent wrapping their respective Runner.
         ClaudeSDKAgent requires app_state for the steering PostToolUse hook
