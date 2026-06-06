@@ -360,6 +360,52 @@ async def test_primary_parks_then_resumes_then_terminates(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_partstart_first_chunk_emitted(tmp_path):
+    """The leading text chunk in PartStartEvent is emitted as the opening delta.
+
+    Regression: Gemini ships the first text chunk inside PartStartEvent(TextPart)
+    rather than a follow-up PartDeltaEvent. The streamed view accumulates
+    token_delta content, so dropping the PartStartEvent chunk truncates the
+    first characters of every text block. This drives a FunctionModel whose
+    stream yields the opening chunk via PartStartEvent and asserts the
+    concatenated token_delta stream reproduces the full text intact.
+    """
+    from pydantic_ai.models.function import FunctionModel
+    import koan.agents.adapter as adapter_mod
+    from koan.agents.events import StreamEvent
+
+    full_text = "To make sure I'm helping effectively, could you clarify?"
+    # FunctionModel places the first yielded string in PartStartEvent(TextPart).content
+    # and the remaining strings as PartDeltaEvent(TextPartDelta) events.
+    chunks = ["To make sure ", "I'm helping ", "effectively, ", "could you clarify?"]
+
+    async def stream_func(messages, info):
+        """Yield chunks so the first arrives via PartStartEvent, rest via PartDeltaEvent."""
+        for chunk in chunks:
+            yield chunk
+
+    app_state, _ = _make("partstart-test", str(tmp_path), is_primary=False)
+
+    orig_bm = adapter_mod.build_model
+    orig_bms = adapter_mod.build_model_settings
+    adapter_mod.build_model = lambda s: FunctionModel(stream_function=stream_func)
+    adapter_mod.build_model_settings = lambda s: {}
+    try:
+        events: list[StreamEvent] = [
+            ev async for ev in _agent(app_state, tmp_path).run(_options("partstart-test"))
+        ]
+    finally:
+        adapter_mod.build_model = orig_bm
+        adapter_mod.build_model_settings = orig_bms
+
+    streamed = "".join(e.content or "" for e in events if e.type == "token_delta")
+    assert streamed == full_text, (
+        f"streamed token_delta text must reproduce the full text without losing "
+        f"the leading chunk; got {streamed!r}"
+    )
+
+
+@pytest.mark.anyio
 async def test_yolo_primary_synthesizes_without_parking(tmp_path, monkeypatch):
     """Under yolo, a primary agent never parks -- it synthesizes the next prompt.
     The yolo helper is patched to set workflow_done so the loop terminates after

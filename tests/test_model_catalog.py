@@ -66,7 +66,7 @@ class TestPriceForUsage:
     def test_cache_tokens_accepted(self) -> None:
         """price_for_usage accepts cache_read_tokens and cache_write_tokens without error."""
         result = price_for_usage(
-            "google", "gemini-2.5-pro",
+            "google", "gemini-3.1-pro-preview",
             input_tokens=1000, output_tokens=500,
             cache_read_tokens=200, cache_write_tokens=100,
         )

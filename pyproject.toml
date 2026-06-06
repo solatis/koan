@@ -13,6 +13,7 @@ dependencies = [
     "voyageai>=0.3",
     "lancedb>=0.20",
     "pydantic-ai-slim[anthropic,bedrock,google,openai,duckduckgo]==2.0.0b5",
+    "genai-prices>=0.0.64",
     "mcp",
 ]
 

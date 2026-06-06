@@ -14,10 +14,11 @@
 # node/event -> StreamEvent translation map (verified against pydantic-ai 2.0.0b5):
 #
 #  ModelRequestNode stream events:
-#    PartStartEvent(TextPart)         -> (no event; text starts accumulating)
+#    PartStartEvent(TextPart)         -> token_delta if part.content (Gemini ships
+#                                        first chunk here; PartDeltaEvents carry rest)
 #    PartDeltaEvent(TextPartDelta)    -> token_delta  (content_delta)
 #    PartEndEvent(TextPart)           -> assistant_text (full accumulated text)
-#    PartStartEvent(ThinkingPart)     -> (no event; thinking starts accumulating)
+#    PartStartEvent(ThinkingPart)     -> thinking if part.content (leading chunk)
 #    PartDeltaEvent(ThinkingPartDelta)-> thinking (content_delta)
 #    PartEndEvent(ThinkingPart)       -> (no explicit event; flush already done)
 #    PartStartEvent(ToolCallPart)     -> tool_start (tool_name, tool_use_id,

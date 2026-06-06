@@ -308,6 +308,7 @@ async def run_agent_loop(
         PartStartEvent,
         TextPart,
         TextPartDelta,
+        ThinkingPart,
         ThinkingPartDelta,
         ToolCallPart,
         ToolCallPartDelta,
@@ -348,6 +349,21 @@ async def run_agent_loop(
                                         tool_name=part.tool_name,
                                         tool_use_id=part.tool_call_id,
                                         block_index=ev.index,
+                                    )
+                                # Gemini delivers the first text/thinking chunk
+                                # inside the PartStartEvent rather than a follow-up
+                                # PartDeltaEvent. Emit it now so it is not dropped;
+                                # PartDeltaEvents carry the remainder without overlap.
+                                elif isinstance(part, TextPart) and part.content:
+                                    yield StreamEvent(
+                                        type="token_delta",
+                                        content=part.content,
+                                    )
+                                elif isinstance(part, ThinkingPart) and part.content:
+                                    yield StreamEvent(
+                                        type="thinking",
+                                        content=part.content,
+                                        is_thinking=True,
                                     )
                             elif isinstance(ev, PartDeltaEvent):
                                 delta = ev.delta

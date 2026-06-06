@@ -47,11 +47,11 @@ MODEL_CAPABILITIES: dict[
     tuple[list[ThinkingMode], "ModelTier | None", int, str],
 ] = {
     # Google -- model IDs here must be genai-prices-resolvable (versioned form).
-    # The built-in profiles use "gemini-flash-lite-latest" for the actual API call;
-    # "gemini-2.5-flash-lite" is the versioned ID that resolves in the price snapshot.
-    ("google", "gemini-2.5-pro"):        (["medium", "high"], "strong",   1_000_000, "Gemini 2.5 Pro"),
-    ("google", "gemini-2.5-flash"):      (["low", "medium"],  "standard", 1_000_000, "Gemini 2.5 Flash"),
-    ("google", "gemini-2.5-flash-lite"): ([],                 "cheap",    1_000_000, "Gemini 2.5 Flash Lite"),
+    # gemini-3.1-pro-preview has a null context_window in the 0.0.64 snapshot, so
+    # the 1_000_000 koan-owned fallback is required (the registry test asserts > 0).
+    ("google", "gemini-3.1-pro-preview"): (["medium", "high"], "strong",   1_000_000, "Gemini 3.1 Pro Preview"),
+    ("google", "gemini-3.5-flash"):       (["low", "medium"],  "standard", 1_000_000, "Gemini 3.5 Flash"),
+    ("google", "gemini-3.1-flash-lite"):  ([],                 "cheap",    1_000_000, "Gemini 3.1 Flash Lite"),
     # Anthropic -- extended thinking supported on Opus and Sonnet tiers.
     ("anthropic", "claude-opus-4-0"):         (["medium", "high"], "strong",   200_000,   "Claude Opus 4"),
     ("anthropic", "claude-sonnet-4-5"):       (["low", "medium"],  "standard", 1_000_000, "Claude Sonnet 4.5"),
