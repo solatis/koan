@@ -21,6 +21,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from koan.tools.builtin_tools import (
+    _MAX_TOOL_OUTPUT_BYTES,
+    _MAX_TOOL_OUTPUT_LINES,
+    _enforce_output_limits,
     _enforce_path_scope,
     bash_tool,
     edit_tool,
@@ -29,6 +32,7 @@ from koan.tools.builtin_tools import (
     read_tool,
     write_tool,
 )
+from koan.tools.line_anchors import ANCHOR_DELIMITER, compute_anchors
 
 
 # -- Helpers ----------------------------------------------------------------- #
@@ -89,56 +93,90 @@ async def test_write_tool_creates_parent_dirs(tmp_path):
     assert target.exists()
 
 
-# -- edit_tool --------------------------------------------------------------- #
+# -- edit_tool (anchored) ---------------------------------------------------- #
+
+
+def _anchor_token(content: str, line_index: int) -> str:
+    """Build the '{anchor}{ANCHOR_DELIMITER}{line}' token for a 0-based line, as read would emit."""
+    lines = content.splitlines()
+    anchors = compute_anchors(lines)
+    return f"{anchors[line_index]}{ANCHOR_DELIMITER}{lines[line_index]}"
 
 
 @pytest.mark.anyio
-async def test_edit_tool_single_match(tmp_path):
-    """edit_tool replaces a uniquely-occurring old_string with new_string."""
+async def test_edit_tool_replace_line(tmp_path):
+    """edit_tool replaces the anchored line, leaving the rest intact."""
     target = tmp_path / "edit.txt"
-    target.write_text("line one\nline two\nline three\n")
+    content = "line one\nline two\nline three\n"
+    target.write_text(content)
     ctx = _make_ctx(run_dir=str(tmp_path))
-    result = await edit_tool(ctx, str(target), "line two", "LINE TWO")
+    result = await edit_tool(ctx, str(target), _anchor_token(content, 1), "LINE TWO")
     assert target.read_text() == "line one\nLINE TWO\nline three\n"
-    assert "1" in result
+    assert "Edited" in result
 
 
 @pytest.mark.anyio
-async def test_edit_tool_multiple_match_rejected(tmp_path):
-    """edit_tool returns an error when old_string appears more than once.
-
-    Single-unique-match semantics require exactly one occurrence when
-    replace_all=False.
-    """
+async def test_edit_tool_disambiguates_duplicate_lines(tmp_path):
+    """Identical lines get distinct anchors (~N); editing one leaves the others."""
     target = tmp_path / "edit.txt"
-    target.write_text("dup dup dup")
+    content = "dup\ndup\ndup\n"
+    target.write_text(content)
     ctx = _make_ctx(run_dir=str(tmp_path))
-    result = await edit_tool(ctx, str(target), "dup", "rep")
-    assert "Error" in result
-    # File should be unchanged.
-    assert target.read_text() == "dup dup dup"
+    # Edit the second occurrence (index 1) only.
+    await edit_tool(ctx, str(target), _anchor_token(content, 1), "rep")
+    assert target.read_text() == "dup\nrep\ndup\n"
 
 
 @pytest.mark.anyio
-async def test_edit_tool_replace_all(tmp_path):
-    """edit_tool replaces all occurrences when replace_all=True."""
+async def test_edit_tool_range_replace(tmp_path):
+    """edit_tool replaces an inclusive [anchor, end_anchor] range with new text."""
     target = tmp_path / "edit.txt"
-    target.write_text("x x x")
+    content = "a\nb\nc\nd\n"
+    target.write_text(content)
     ctx = _make_ctx(run_dir=str(tmp_path))
-    result = await edit_tool(ctx, str(target), "x", "y", replace_all=True)
-    assert target.read_text() == "y y y"
-    assert "3" in result
+    result = await edit_tool(
+        ctx, str(target),
+        _anchor_token(content, 1), "B\nC2",
+        end_anchor=_anchor_token(content, 2),
+    )
+    assert target.read_text() == "a\nB\nC2\nd\n"
+    assert "Edited" in result
 
 
 @pytest.mark.anyio
-async def test_edit_tool_missing_old_string(tmp_path):
-    """edit_tool returns an error when old_string is not found."""
+async def test_edit_tool_insert_after(tmp_path):
+    """edit_tool insert_after places text below the anchored line."""
     target = tmp_path / "edit.txt"
-    target.write_text("hello world")
+    content = "a\nb\n"
+    target.write_text(content)
     ctx = _make_ctx(run_dir=str(tmp_path))
-    result = await edit_tool(ctx, str(target), "missing", "replacement")
-    assert "Error" in result
-    assert target.read_text() == "hello world"
+    await edit_tool(ctx, str(target), _anchor_token(content, 0), "a2", edit_type="insert_after")
+    assert target.read_text() == "a\na2\nb\n"
+
+
+@pytest.mark.anyio
+async def test_edit_tool_anchor_not_found(tmp_path):
+    """edit_tool errors (file unchanged) when the anchor is absent."""
+    target = tmp_path / "edit.txt"
+    target.write_text("hello world\n")
+    ctx = _make_ctx(run_dir=str(tmp_path))
+    result = await edit_tool(ctx, str(target), "deadbeef§missing line", "x")
+    assert "Error" in result and "not found" in result
+    assert target.read_text() == "hello world\n"
+
+
+@pytest.mark.anyio
+async def test_edit_tool_content_mismatch_rejected(tmp_path):
+    """edit_tool errors on inline-content drift (anchor exists, content differs)."""
+    target = tmp_path / "edit.txt"
+    content = "alpha\nbeta\n"
+    target.write_text(content)
+    anchors = compute_anchors(content.splitlines())
+    ctx = _make_ctx(run_dir=str(tmp_path))
+    # Correct anchor for line 0 but wrong inline content -> drift error.
+    result = await edit_tool(ctx, str(target), f"{anchors[0]}{ANCHOR_DELIMITER}WRONG", "x")
+    assert "Error" in result and "mismatch" in result
+    assert target.read_text() == content
 
 
 # -- _enforce_path_scope ----------------------------------------------------- #
@@ -196,7 +234,13 @@ def test_enforce_path_scope_empty_run_dir_skips_check(tmp_path):
 
 @pytest.mark.anyio
 async def test_read_tool_returns_numbered_lines(tmp_path):
-    """read_tool returns cat -n formatted output with 1-based line numbers."""
+    """read_tool returns anchored format: {lineno}\t{anchor}{ANCHOR_DELIMITER}{content}.
+
+    Line numbers are 1-based and absolute. Each line includes an anchor
+    (8-hex + optional ~N ordinal) before the ANCHOR_DELIMITER and content.
+    """
+    from koan.tools.line_anchors import ANCHOR_DELIMITER as D, fnv1a32
+
     target = tmp_path / "input.txt"
     target.write_text("alpha\nbeta\ngamma\n")
     ctx = _make_ctx(run_dir=str(tmp_path))
@@ -205,8 +249,9 @@ async def test_read_tool_returns_numbered_lines(tmp_path):
     assert lines[0].startswith("1\t")
     assert lines[1].startswith("2\t")
     assert lines[2].startswith("3\t")
-    assert "alpha" in lines[0]
-    assert "beta" in lines[1]
+    # Verify the anchor+delimiter is present and content follows.
+    assert f"{fnv1a32('alpha')}{D}alpha" in lines[0]
+    assert f"{fnv1a32('beta')}{D}beta" in lines[1]
 
 
 @pytest.mark.anyio
@@ -337,3 +382,118 @@ async def test_bash_tool_nonzero_exit_code_included(tmp_path):
     ctx = _make_ctx(run_dir=str(tmp_path))
     result = await bash_tool(ctx, "exit 42")
     assert "42" in result
+
+
+# -- output limits (_enforce_output_limits) ---------------------------------- #
+
+
+def test_enforce_output_limits_within_bounds_unchanged():
+    """A small result passes through _enforce_output_limits verbatim."""
+    text = "line one\nline two\nline three"
+    assert _enforce_output_limits(text) == text
+
+
+def test_enforce_output_limits_rejects_over_line_cap():
+    """More than _MAX_TOOL_OUTPUT_LINES lines is rejected with an error (not truncated)."""
+    # Short lines so the byte cap is not the trigger -- isolate the line cap.
+    text = "\n".join("x" for _ in range(_MAX_TOOL_OUTPUT_LINES + 1))
+    out = _enforce_output_limits(text)
+    assert out.startswith("Error: tool result too large")
+    assert "lines" in out
+    assert f"limit {_MAX_TOOL_OUTPUT_LINES}" in out
+
+
+def test_enforce_output_limits_rejects_over_byte_cap():
+    """A result >= _MAX_TOOL_OUTPUT_BYTES bytes on few lines is rejected by the byte cap."""
+    # One long line: under the line cap, over the byte cap.
+    text = "y" * (_MAX_TOOL_OUTPUT_BYTES + 1)
+    out = _enforce_output_limits(text)
+    assert out.startswith("Error: tool result too large")
+    assert "bytes" in out
+
+
+@pytest.mark.anyio
+async def test_read_tool_rejects_large_file(tmp_path):
+    """read_tool errors on a file whose default-limit slice exceeds the line cap."""
+    target = tmp_path / "big.txt"
+    target.write_text("".join(f"line {i}\n" for i in range(_MAX_TOOL_OUTPUT_LINES + 50)))
+    ctx = _make_ctx(run_dir=str(tmp_path))
+    result = await read_tool(ctx, str(target))
+    assert result.startswith("Error: tool result too large")
+
+
+@pytest.mark.anyio
+async def test_read_tool_slice_under_cap_succeeds(tmp_path):
+    """read_tool with an offset/limit slice under the cap returns content normally.
+
+    This is the escape hatch the error message points the model to: paging a
+    large file with offset/limit keeps each result within the budget.
+    """
+    target = tmp_path / "big.txt"
+    target.write_text("".join(f"line {i}\n" for i in range(_MAX_TOOL_OUTPUT_LINES + 50)))
+    ctx = _make_ctx(run_dir=str(tmp_path))
+    result = await read_tool(ctx, str(target), offset=0, limit=100)
+    assert not result.startswith("Error:")
+    assert result.splitlines()[0].startswith("1\t")
+
+
+@pytest.mark.anyio
+async def test_read_tool_enforce_limits_false_bypasses_ceiling(tmp_path):
+    """read_tool with enforce_limits=False returns full content without rejection.
+
+    This is the M2 seam that Milestone 3's koan_artifact_read uses to bypass
+    the untrusted-tool ceiling while still delegating to the same read_tool.
+    """
+    target = tmp_path / "big.txt"
+    target.write_text("".join(f"line {i}\n" for i in range(_MAX_TOOL_OUTPUT_LINES + 50)))
+    ctx = _make_ctx(run_dir=str(tmp_path))
+    result = await read_tool(ctx, str(target), enforce_limits=False)
+    # Full anchored content returned without an error.
+    assert not result.startswith("Error:")
+    assert result.splitlines()[0].startswith("1\t")
+
+
+@pytest.mark.anyio
+async def test_bash_tool_rejects_large_output(tmp_path):
+    """bash_tool errors when a command's output exceeds the line cap."""
+    ctx = _make_ctx(run_dir=str(tmp_path))
+    result = await bash_tool(ctx, f"seq 1 {_MAX_TOOL_OUTPUT_LINES + 100}")
+    assert result.startswith("Error: tool result too large")
+
+
+# -- _is_ignored (glob/grep filter) ------------------------------------------ #
+
+
+@pytest.mark.anyio
+async def test_glob_skips_ignored_dirs(tmp_path):
+    """glob_tool excludes files under ignored directories (e.g. __pycache__, .venv).
+
+    Files rooted directly in tmp_path are included; those inside an ignored
+    subdir are filtered out even when the glob pattern would match them.
+    """
+    # A normal source file -- should appear.
+    (tmp_path / "source.py").write_text("# real")
+    # A file inside an ignored subdir -- should be excluded.
+    ignored = tmp_path / "__pycache__"
+    ignored.mkdir()
+    (ignored / "source.pyc").write_text("# cached")
+
+    ctx = _make_ctx(run_dir=str(tmp_path))
+    result = await glob_tool(ctx, "**/*", str(tmp_path))
+    assert "source.py" in result
+    assert "__pycache__" not in result or "source.pyc" not in result
+
+
+@pytest.mark.anyio
+async def test_grep_skips_ignored_dirs(tmp_path):
+    """grep_tool excludes files under ignored directories from the candidate set."""
+    (tmp_path / "real.py").write_text("needle")
+    ignored = tmp_path / "node_modules"
+    ignored.mkdir()
+    (ignored / "dep.js").write_text("needle")
+
+    ctx = _make_ctx(run_dir=str(tmp_path))
+    result = await grep_tool(ctx, "needle", str(tmp_path))
+    assert "real.py" in result
+    # node_modules content must not appear.
+    assert "dep.js" not in result

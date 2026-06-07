@@ -4,8 +4,9 @@
 # Output formats mirror koan/agents/claude.py's parser spec so the metrics
 # parser in spawn_subagent's fan-out works unchanged.
 #
-# read  -- line-numbered cat -n output: "{number}\t{line}"
+# read  -- anchored line output: "{number}\t{anchor}§{line}" (see line_anchors.py)
 #          -> _parse_read_result: {lines_read, bytes_read}
+#          edit references the anchor instead of an exact string match.
 # grep  -- "Found N matches in M files" header + match lines
 #          -> _parse_grep_result: {matches, files_matched}
 # glob  -- "Found N files" header + one path per line
@@ -31,6 +32,8 @@ import re
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from .line_anchors import apply_anchored_edit, render_anchored
 
 if TYPE_CHECKING:
     from .koan_tools import ToolDeps
@@ -127,26 +130,6 @@ def _record_path_for_context_injection(deps: Any, resolved_path: Path) -> None:
             pending.add(f)
 
 
-# -- cat -n format helper ----------------------------------------------------- #
-
-
-def _cat_n_format(content: str, offset: int) -> str:
-    """Format file content as cat -n output: line-numbered with tab separator.
-
-    Produces the exact format that koan/agents/claude.py:_parse_read_result
-    expects to derive {lines_read, bytes_read} metrics. Line numbers are
-    1-based and include the offset so callers requesting a slice see correct
-    absolute line numbers in the output.
-    """
-    lines = content.splitlines(keepends=True)
-    parts = []
-    for i, line in enumerate(lines, start=offset + 1):
-        # Strip trailing newline for the numbered format; the line body is then
-        # appended without a trailing newline because the join adds "\n" later.
-        parts.append(f"{i}\t{line.rstrip(chr(10))}")
-    return "\n".join(parts)
-
-
 # -- Tool implementations ----------------------------------------------------- #
 
 
@@ -155,13 +138,16 @@ async def read_tool(
     file_path: str,
     offset: int = 0,
     limit: int = 2000,
+    enforce_limits: bool = True,
 ) -> str:
-    """Read a file and return its contents in line-numbered cat -n format.
+    """Read a file and return its contents in anchored line format.
 
-    Honoring offset and limit mirrors the built-in Read tool the Claude SDK
-    provided. The output format ({line_number}\\t{line_content}) is what
-    _parse_read_result in koan/agents/claude.py expects for computing
-    {lines_read, bytes_read} metrics.
+    Each output line is `{lineno}\\t{anchor}{ANCHOR_DELIMITER}{content}` where
+    the anchor can be copied into edit_tool to target that line. Anchors are
+    computed over the whole file so a slice's anchors resolve at edit time.
+
+    The output format preserves the `{digit}\\t` prefix that
+    _parse_read_result_from_content keys on, so lines_read metrics stay correct.
 
     Path resolution is relative to run_dir when available. After reading,
     the resolved path is recorded for just-in-time context-file injection.
@@ -171,6 +157,10 @@ async def read_tool(
         file_path: Absolute or relative path to read.
         offset: 0-based line offset to start reading from (default 0).
         limit: Maximum number of lines to return (default 2000).
+        enforce_limits: When True (default), reject results exceeding the size
+            ceiling. Set to False only by trusted wrappers (e.g. koan_artifact_read
+            in Milestone 3) that are exempt from the untrusted-tool reject ceiling.
+            Never expose this parameter to the model-facing registered read tool.
     """
     deps = getattr(ctx, "deps", None)
     resolved = _resolve_path(file_path, deps)
@@ -180,15 +170,14 @@ async def read_tool(
     except OSError as e:
         return f"Error reading {file_path}: {e}"
 
-    lines = content.splitlines(keepends=True)
-    slice_ = lines[offset: offset + limit]
-    sliced_content = "".join(slice_)
-
     # Record for context-file injection after a successful read.
     if deps is not None:
         _record_path_for_context_injection(deps, resolved)
 
-    return _cat_n_format(sliced_content, offset)
+    # Anchored output: "{lineno}\t{anchor}§{content}". The anchor lets edit
+    # target this line without exact-string-match (see docs/tools.md).
+    rendered = render_anchored(content, offset, limit)
+    return _enforce_output_limits(rendered) if enforce_limits else rendered
 
 
 async def write_tool(ctx: Any, file_path: str, content: str) -> str:
@@ -224,24 +213,25 @@ async def write_tool(ctx: Any, file_path: str, content: str) -> str:
 async def edit_tool(
     ctx: Any,
     file_path: str,
-    old_string: str,
-    new_string: str,
-    replace_all: bool = False,
+    anchor: str,
+    text: str,
+    end_anchor: str | None = None,
+    edit_type: str = "replace",
 ) -> str:
-    """Edit a file by replacing an exact string match.
+    """Edit a file by anchored line reference (see docs/tools.md).
 
-    Single-unique-match semantics by default: raises an error when old_string
-    has zero occurrences or more than one occurrence (unless replace_all=True).
-    Enforces path-scope for planning roles.
-    After editing, the resolved path is recorded for context-file injection.
+    The anchor is copied from a `read` -- `{8-hex}{ANCHOR_DELIMITER}{line text}` --
+    giving a precise location plus drift verification, instead of exact-string-match.
+    Enforces path-scope for planning roles. After editing, the resolved path is
+    recorded for context-file injection.
 
     Args:
         ctx: PydanticAI RunContext with ToolDeps as deps.
         file_path: Absolute or relative path to edit.
-        old_string: The exact string to replace (must appear exactly once when
-                    replace_all=False).
-        new_string: The replacement string (may be different content or empty).
-        replace_all: When True, replace every occurrence; skip uniqueness check.
+        anchor: The anchor token of the target line (`{anchor}{ANCHOR_DELIMITER}{line}` from read).
+        text: Replacement / inserted content (split on newlines; empty deletes).
+        end_anchor: Optional second anchor for an inclusive multi-line replace range.
+        edit_type: "replace" (default), "insert_before", or "insert_after".
     """
     deps = getattr(ctx, "deps", None)
     resolved = _resolve_path(file_path, deps)
@@ -254,28 +244,89 @@ async def edit_tool(
     except OSError as e:
         return f"Error reading {file_path}: {e}"
 
-    count = existing.count(old_string)
-    if count == 0:
-        return f"Error: old_string not found in {file_path}"
-    if not replace_all and count > 1:
-        return (
-            f"Error: old_string appears {count} times in {file_path}; "
-            f"use replace_all=True to replace all occurrences, or provide "
-            f"more context to make the match unique"
-        )
-
-    updated = existing.replace(old_string, new_string) if replace_all else existing.replace(old_string, new_string, 1)
+    updated, err = apply_anchored_edit(existing, anchor, text, end_anchor, edit_type)
+    if err:
+        return f"Error: {err}"
 
     try:
         resolved.write_text(updated, encoding="utf-8")
     except OSError as e:
         return f"Error writing {file_path}: {e}"
 
-    replaced_count = count if replace_all else 1
     if deps is not None:
         _record_path_for_context_injection(deps, resolved)
 
-    return f"Replaced {replaced_count} occurrence(s) of old_string in {file_path}"
+    return f"Edited {file_path} ({edit_type})"
+
+
+# -- Search scoping + output limits ------------------------------------------- #
+#
+# glob/grep recurse with "**/*", which pathlib walks into dependency, build, and
+# VCS directories (the koan repo's own .env/ venv is ~34k files, node_modules and
+# __pycache__ tens of thousands more). Unfiltered, a single grep reads megabytes
+# of irrelevant content and the next model request exceeds the provider's
+# input-token limit (Gemini rejects requests over ~1M tokens). These guards keep
+# search results scoped to source and bound any single tool result's size.
+
+_IGNORED_DIRS: frozenset[str] = frozenset({
+    ".git", ".hg", ".svn",
+    "node_modules", "__pycache__",
+    ".venv", ".env", "venv", "env",
+    ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox",
+    "dist", "build", ".next", ".cache", ".idea", ".vscode",
+})
+
+# Hard ceilings on a single tool result. A read/grep/glob/bash result that
+# exceeds either limit is REJECTED with an error rather than truncated, so no
+# single call can inflate the conversation history toward the provider's
+# input-token ceiling. Erroring forces the model to narrow the call (tighter
+# grep pattern, read offset/limit, scoped bash) before any content lands in
+# history. Conservative by default.
+_MAX_TOOL_OUTPUT_LINES: int = 500
+_MAX_TOOL_OUTPUT_BYTES: int = 10_000
+
+
+def _is_ignored(path: Path, root: Path) -> bool:
+    """True when *path* sits under an ignored directory component below *root*.
+
+    The check is on the path's components relative to the search root, so an
+    explicit search rooted inside an ignored directory (e.g. path=node_modules/x)
+    is still honoured -- only recursion that descends INTO an ignored subdir from
+    a higher root is skipped.
+    """
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        rel = path
+    return any(part in _IGNORED_DIRS for part in rel.parts)
+
+
+def _enforce_output_limits(text: str) -> str:
+    """Return *text* unchanged, or an error message when it is too large to inject.
+
+    A tool result is rejected (not truncated) when it exceeds either ceiling:
+      - more than _MAX_TOOL_OUTPUT_LINES lines, or
+      - _MAX_TOOL_OUTPUT_BYTES bytes or more (UTF-8 encoded).
+
+    Returning an error -- rather than a truncated prefix -- keeps the running
+    history small: no partial content lands, and the model gets an actionable
+    message telling it how to narrow the call so the retry fits.
+    """
+    n_bytes = len(text.encode("utf-8"))
+    n_lines = len(text.splitlines())
+    if n_lines <= _MAX_TOOL_OUTPUT_LINES and n_bytes < _MAX_TOOL_OUTPUT_BYTES:
+        return text
+    reasons: list[str] = []
+    if n_lines > _MAX_TOOL_OUTPUT_LINES:
+        reasons.append(f"{n_lines} lines (limit {_MAX_TOOL_OUTPUT_LINES})")
+    if n_bytes >= _MAX_TOOL_OUTPUT_BYTES:
+        reasons.append(f"{n_bytes} bytes (limit {_MAX_TOOL_OUTPUT_BYTES})")
+    return (
+        f"Error: tool result too large -- {', '.join(reasons)}. The result was "
+        "not returned, to keep the context budget intact. Narrow the call and "
+        "retry: use a tighter grep pattern or glob, read a slice with "
+        "offset/limit, or scope the bash command (e.g. head, specific paths)."
+    )
 
 
 async def glob_tool(ctx: Any, pattern: str, path: str | None = None) -> str:
@@ -284,8 +335,10 @@ async def glob_tool(ctx: Any, pattern: str, path: str | None = None) -> str:
     Returns a "Found N files" header followed by one matching path per line.
     The header format lets _parse_grep_result in koan/agents/claude.py derive
     {matches, files_matched} metrics -- glob matches are file-per-match since
-    each path IS the match. After listing, the search root is recorded for
-    context-file injection.
+    each path IS the match. Ignored directories (e.g. .git, node_modules, .venv)
+    are excluded to keep results focused on source. Results are rejected with an
+    error when they exceed the size ceiling. After listing, the search root is
+    recorded for context-file injection.
 
     Args:
         ctx: PydanticAI RunContext with ToolDeps as deps.
@@ -300,7 +353,10 @@ async def glob_tool(ctx: Any, pattern: str, path: str | None = None) -> str:
         search_root = Path(run_dir) if run_dir else Path.cwd()
 
     try:
-        matches = sorted(str(p) for p in search_root.glob(pattern))
+        matches = sorted(
+            str(p) for p in search_root.glob(pattern)
+            if not _is_ignored(p, search_root)
+        )
     except Exception as e:
         return f"Error running glob {pattern!r} in {search_root}: {e}"
 
@@ -316,7 +372,7 @@ async def glob_tool(ctx: Any, pattern: str, path: str | None = None) -> str:
     if deps is not None:
         _record_path_for_context_injection(deps, search_root)
 
-    return result
+    return _enforce_output_limits(result)
 
 
 async def grep_tool(
@@ -330,6 +386,9 @@ async def grep_tool(
     Emits a "Found N matches in M files" header followed by matching lines in
     "file:line_number:content" format. The header is what _parse_grep_result in
     koan/agents/claude.py expects to derive {matches, files_matched} metrics.
+    Ignored directories (e.g. .git, node_modules, .venv) are excluded from the
+    candidate file set. Results are rejected with an error when they exceed the
+    size ceiling.
 
     Args:
         ctx: PydanticAI RunContext with ToolDeps as deps.
@@ -352,7 +411,7 @@ async def grep_tool(
         try:
             candidates = [
                 p for p in search_root.glob(file_glob)
-                if p.is_file()
+                if p.is_file() and not _is_ignored(p, search_root)
             ]
         except Exception as e:
             return f"Error finding files for grep in {search_root}: {e}"
@@ -388,7 +447,7 @@ async def grep_tool(
     if deps is not None:
         _record_path_for_context_injection(deps, search_root)
 
-    return result
+    return _enforce_output_limits(result)
 
 
 async def bash_tool(
@@ -400,6 +459,7 @@ async def bash_tool(
 
     No sandbox is applied -- keep the current permission posture. Bash is
     exempt from context-file injection (no single canonical path argument).
+    Results are rejected with an error when they exceed the size ceiling.
 
     Args:
         ctx: PydanticAI RunContext with ToolDeps as deps.
@@ -424,7 +484,7 @@ async def bash_tool(
             combined = combined + result.stderr if combined else result.stderr
         if result.returncode != 0:
             combined = f"Exit code: {result.returncode}\n{combined}"
-        return combined if combined else ""
+        return _enforce_output_limits(combined) if combined else ""
     except subprocess.TimeoutExpired:
         return f"Error: command timed out after {timeout}s: {command}"
     except Exception as e:
@@ -527,8 +587,11 @@ def build_builtin_toolset() -> Any:
     ts: FunctionToolset[Any] = FunctionToolset()
 
     # -- read ------------------------------------------------------------------
+    # enforce_limits is intentionally absent from _read's signature -- the model-
+    # facing built-in read ALWAYS enforces the ceiling. Only trusted wrappers
+    # (e.g. koan_artifact_read in M3) call read_tool directly with enforce_limits=False.
     async def _read(ctx, file_path: str, offset: int = 0, limit: int = 2000) -> str:
-        """Read a file and return contents with line numbers for precise editing."""
+        """Read a file and return anchored, line-numbered content for precise editing."""
         return await read_tool(ctx, file_path, offset, limit)
 
     ts.add_function(
@@ -536,8 +599,9 @@ def build_builtin_toolset() -> Any:
         takes_ctx=True,
         name="read",
         description=(
-            "Read a file from the local filesystem. Returns line-numbered content "
-            "in cat -n format ({line_number}\\t{content}). "
+            "Read a file from the local filesystem. Each line is returned as "
+            "{line_number}\\t{anchor}§{content}. Copy an anchor (the "
+            "{anchor}§{content} part) into the edit tool to change that line. "
             "Use offset and limit to read large files in pages."
         ),
     )
@@ -562,21 +626,25 @@ def build_builtin_toolset() -> Any:
     async def _edit(
         ctx,
         file_path: str,
-        old_string: str,
-        new_string: str,
-        replace_all: bool = False,
+        anchor: str,
+        text: str,
+        end_anchor: str | None = None,
+        edit_type: str = "replace",
     ) -> str:
-        """Edit a file by replacing an exact string match (single-unique-match by default)."""
-        return await edit_tool(ctx, file_path, old_string, new_string, replace_all)
+        """Edit a file by anchored line reference (anchor copied from read)."""
+        return await edit_tool(ctx, file_path, anchor, text, end_anchor, edit_type)
 
     ts.add_function(
         _edit,
         takes_ctx=True,
         name="edit",
         description=(
-            "Edit a file by replacing old_string with new_string. "
-            "By default enforces single-unique-match semantics: old_string must appear "
-            "exactly once. Use replace_all=True to replace every occurrence."
+            "Edit a file by anchored line reference. Read the file first; copy the "
+            "target line's anchor token ({anchor}§{line text}) into `anchor`. "
+            "edit_type='replace' (default) replaces that line, or the inclusive "
+            "range [anchor, end_anchor] when end_anchor is given; empty `text` "
+            "deletes. 'insert_before'/'insert_after' insert `text` at the anchor. "
+            "If an anchor is not found, re-read the file for current anchors."
         ),
     )
 
