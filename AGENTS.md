@@ -32,6 +32,8 @@ Spoke documents:
 - [docs/phase-trust.md](docs/phase-trust.md) -- phase trust model, verification boundaries, adversarial review
 - [docs/projections.md](docs/projections.md) -- versioned event log, fold function, projection shape, SSE protocol, version-negotiated catch-up
 - [docs/token-streaming.md](docs/token-streaming.md) -- in-process StreamEvent delta path, SSE bridge
+- [docs/tools.md](docs/tools.md) -- tool-layer strategy: trusted/untrusted taxonomy, read/grep output format, hash-anchored edit protocol
+- [docs/tool-output-limits.md](docs/tool-output-limits.md) -- tool-result size strategy, untrusted (reject) vs trusted (bound-by-construction) classes
 - [docs/milestones.md](docs/milestones.md) -- milestone soundness criteria, sizing heuristics, grounding requirements
 - [docs/workflow-phases.md](docs/workflow-phases.md) -- phase taxonomy across all workflows, producer-validator pairing
 
@@ -150,7 +152,7 @@ of truth.
 | `koan_artifact_write`                                                             | All phases (orchestrator only)                                                                                                                                                           |
 | `koan_artifact_edit`                                                              | All phases (orchestrator only)                                                                                                                                                           |
 | `koan_artifact_list`                                                              | All phases (all roles via universal read-tool path)                                                                                                                                      |
-| `koan_artifact_view`                                                              | All phases (all roles via universal read-tool path)                                                                                                                                      |
+| `koan_artifact_read`                                                              | All phases (all roles via universal read-tool path); run-dir-scoped wrapper over `read`                                                                                                  |
 
 ## 5. Need-to-Know Prompts
 

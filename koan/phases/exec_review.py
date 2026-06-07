@@ -146,7 +146,7 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "## What to do with the classification",
                 "",
                 "- **All findings internal -> rewrite in place**. For targeted fixes, prefer",
-                "  `koan_artifact_edit(filename=<plan_artifact>, old_string=..., new_string=...)`",
+                "  `koan_artifact_edit(filename=<plan_artifact>, anchor=..., text=...)`",
                 "  for each change. For extensive rewrites, use",
                 '  `koan_artifact_write(filename="<plan_artifact>", content=<corrected_plan>)`.',
                 "  Use the workflow's plan filename (plan.md or plan-milestone-N.md). The",

@@ -99,7 +99,7 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
         lines.extend([
             "## Read initiative context",
             "",
-            "Read `brief.md` from the run directory first via `koan_artifact_view`.",
+            "Read `brief.md` from the run directory first via `koan_artifact_read`.",
             "It contains the frozen initiative scope, decisions, and constraints from",
             "intake. The flows you describe in core-flows.md must correspond to the",
             "operational behavior the initiative implies.",

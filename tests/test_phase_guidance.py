@@ -545,12 +545,12 @@ def test_frame_get_next_step_returns_none():
 # ---------------------------------------------------------------------------
 
 def test_core_flows_step1_reads_brief_md():
-    """Core-flows step 1 must instruct reading brief.md via koan_artifact_view."""
+    """Core-flows step 1 must instruct reading brief.md via koan_artifact_read."""
     from koan.phases import core_flows
     g = core_flows.step_guidance(1, _ctx())
     text = "\n".join(g.instructions)
     assert "brief.md" in text
-    assert "koan_artifact_view" in text or "Read initiative context" in text
+    assert "koan_artifact_read" in text or "Read initiative context" in text
 
 
 def test_core_flows_step2_writes_core_flows_md():

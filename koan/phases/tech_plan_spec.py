@@ -121,7 +121,7 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
         lines.extend([
             "## Read initiative context",
             "",
-            "Read the following artifacts via `koan_artifact_view` before doing anything else:",
+            "Read the following artifacts via `koan_artifact_read` before doing anything else:",
             "",
             "1. `brief.md` -- frozen initiative scope, decisions, and constraints.",
             "2. `core-flows.md` -- frozen operational-behavior artifact (read if present;",

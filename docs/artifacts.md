@@ -3,7 +3,7 @@
 Artifacts are markdown files that the orchestrator writes into the run directory
 (`~/.koan/runs/<id>/`). They carry information between phases and, in some cases,
 from phases to executor subagents. This document is the authoritative source of
-truth for artifact lifetime, frontmatter shape, the artifact write tool, and the
+truth for artifact lifetime, the artifact read/write/edit tools, and the
 section structure each artifact must contain.
 
 ---
@@ -247,55 +247,47 @@ Source of truth: `koan/phases/plan_spec.py:PHASE_ROLE_CONTEXT`.
 
 ---
 
-## Frontmatter convention
+## Plain files (no frontmatter)
 
-Every artifact written by `koan_artifact_write` or `koan_artifact_edit` has
-a YAML frontmatter block prepended by the driver:
+Artifacts are **plain markdown files** in the run directory. They carry no
+driver-managed frontmatter: `koan_artifact_write` writes the body verbatim.
+Listing metadata (size, modified time) comes from the filesystem
+(`list_artifacts`), not from any embedded block.
 
-```
----
-created: 2026-04-26T12:34:56.789012+00:00
-last_modified: 2026-04-26T12:34:56.789012+00:00
----
-```
-
-Frontmatter rules:
-
-- **Driver-managed, LLM-invisible.** The LLM never sees or writes frontmatter.
-  `koan_artifact_view` strips it before returning the body to the caller.
-- **Fields**: `created` (ISO-8601 UTC), `last_modified` (ISO-8601 UTC). Field
-  order is stable (`created`, `last_modified`).
-- **First write**: both `created` and `last_modified` are set to the write
-  timestamp.
-- **Subsequent writes**: `created` is preserved; `last_modified` is updated.
-- **Migration**: artifacts written before frontmatter was introduced have no
-  frontmatter block. On the next write, frontmatter is attached; `created` is
-  set to the migration timestamp (the original creation moment is
-  unrecoverable). Stale `status` keys from pre-removal artifacts are silently
-  dropped on the next write.
-- **Parse failure**: if an existing file has malformed frontmatter (no closing
-  `---` delimiter or invalid YAML), the driver logs a warning, treats the file
-  as having no frontmatter, and overwrites with valid frontmatter on the next
-  write.
+> History: artifacts previously embedded a YAML `created`/`last_modified`
+> frontmatter block that the tools stripped on read. Nothing outside the tools
+> consumed it (the sidebar uses filesystem mtime/size), so it was dropped when
+> the artifact tools became thin wrappers over `read`/`write`/`edit`.
 
 ---
 
-## Write and edit tools
+## Read, write, and edit tools
 
-**`koan_artifact_write(filename, content)`** -- full-rewrite tool. Writes the
-file with managed frontmatter and returns immediately with
-`{"ok": true, "filename": ...}`. Emits `artifact_diff` events for the sidebar.
-Use this to create an artifact or replace it wholesale.
+The artifact tools are **run-dir-scoped wrappers** over the built-in
+`read`/`write`/`edit` (see [tools.md](./tools.md)). They give planning roles a
+file interface limited to their run directory's artifacts -- the orchestrator
+can produce and revise artifacts but cannot write/edit arbitrary project files.
+Each wrapper adds filename validation, run-dir containment, and (for
+write/edit) the `artifact_diff` projection event.
 
-**`koan_artifact_edit(filename, old_string, new_string)`** -- surgical edit
-tool. Reads the artifact body (frontmatter-stripped), replaces exactly one
-occurrence of `old_string` with `new_string`, and re-writes via the atomic
-helper (preserving `created`, refreshing `last_modified`). Returns
-`{"ok": true, "filename": ...}` on success. Emits `artifact_diff` events.
-Error conditions: `not_found` (file missing), `no_match` (zero occurrences),
-`multiple_matches` (more than one occurrence), `invalid_edit` (empty
-`old_string` or `old_string == new_string`). Preferred for targeted in-place
-fixes; `koan_artifact_write` is preferred for extensive rewrites.
+**`koan_artifact_write(filename, content)`** -- full rewrite. Writes the body
+verbatim and returns `{"ok": true, "filename": ...}`. Emits `artifact_diff`.
+Use it to create an artifact or replace it wholesale.
+
+**`koan_artifact_read(filename, offset?, limit?)`** -- returns anchored,
+line-numbered content (`{lineno}\t{anchor}§{line}`). Copy an anchor into
+`koan_artifact_edit`; page large artifacts with `offset`/`limit` for
+convenience. `koan_artifact_read` is **trusted and exempt** from the untrusted
+reject ceiling: it calls `read_tool(..., enforce_limits=False)` and returns
+large artifacts in full with no hard reject. Error: `not_found`.
+
+**`koan_artifact_edit(filename, anchor, text, end_anchor?, edit_type?)`** --
+anchored line edit (see the hash-anchored protocol in [tools.md](./tools.md)).
+`edit_type` is `replace` (default), `insert_before`, or `insert_after`; an
+inclusive range replace uses `end_anchor`; empty `text` deletes. Returns
+`{"ok": true, "filename": ...}`. Errors: `not_found` (file missing),
+`edit_failed` (anchor not found, content drift, or bad edit_type). Preferred for
+targeted in-place fixes; `koan_artifact_write` for extensive rewrites.
 
 The legacy `koan_artifact_propose` tool was retired in M5 (commit `99a4e29`)
 along with the inline-review frontend surface (M6, commit `1670f06`).

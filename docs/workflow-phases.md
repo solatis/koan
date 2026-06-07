@@ -195,7 +195,7 @@ phase yields rather than auto-advancing because user direction is
 required to choose the downstream phase.
 
 The dominant tool-call shape is `koan_ask_question` for clarifying
-interactions and exit conditions, `koan_artifact_view` for upstream
+interactions and exit conditions, `koan_artifact_read` for upstream
 artifacts, and `koan_artifact_write` for the terminal `core-flows.md`
 write. Scout dispatch is rarely warranted because the work is about
 externally visible behavior rather than codebase structure; the
@@ -277,7 +277,7 @@ Upstream is tech-plan-spec; downstream is `milestone-spec` when the
 architecture is acceptable, or `tech-plan-spec` on loop-back. The phase
 does not auto-advance.
 
-The dominant tool-call shape is `koan_artifact_view` to read
+The dominant tool-call shape is `koan_artifact_read` to read
 `tech-plan.md`, `core-flows.md`, and `brief.md`; `koan_request_scouts` to
 verify architectural claims about integration points (scouts are sanctioned
 and encouraged in this phase -- unlike plan-review, mechanical accuracy is
@@ -307,7 +307,7 @@ initiative workflow is that `tech-plan.md` is present in the
 artifact set, and the per-phase guidance for milestone-spec and
 plan-spec should reference it as an authoritative source for the
 architectural decisions that constrain decomposition and per-milestone
-plans. The artifact is read via `koan_artifact_view`; no new tool is
+plans. The artifact is read via `koan_artifact_read`; no new tool is
 needed.
 
 ### curation (closing band)
