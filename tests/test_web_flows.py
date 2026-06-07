@@ -773,32 +773,26 @@ def _make_orchestrator_agent(tmp_path, agent_id="test-write"):
 
 
 @pytest.mark.anyio
-async def test_artifact_write_atomic_writes_with_frontmatter(tmp_path):
-    """koan_artifact_write creates the file with driver-managed frontmatter."""
+async def test_artifact_write_creates_plain_file(tmp_path):
+    """koan_artifact_write writes the body verbatim -- artifacts have no frontmatter."""
     from koan.tools.koan_tools import ToolDeps, artifact_write_core
-    from koan.artifacts import split_frontmatter
 
-    app_state, agent = _make_orchestrator_agent(tmp_path, "test-write-fm")
+    app_state, agent = _make_orchestrator_agent(tmp_path, "test-write-plain")
     deps = ToolDeps(app_state=app_state, agent=agent)
 
     result = await artifact_write_core(deps, "smoke.md", "hello")
 
     assert (tmp_path / "smoke.md").exists()
     text = (tmp_path / "smoke.md").read_text()
-    assert text.startswith("---\n")
-    meta, body = split_frontmatter(text)
-    assert meta is not None
-    # Status field removed -- only timestamps in frontmatter
-    assert "status" not in meta
-    assert "created" in meta
-    assert body == "hello"
+    # Plain file: the body is on disk verbatim, no YAML frontmatter preamble.
+    assert text == "hello"
+    assert not text.startswith("---")
 
     # Return value is ok=True JSON string (cores return str, not content blocks).
     import json
     payload = json.loads(result)
     assert payload["ok"] is True
     assert payload["filename"] == "smoke.md"
-    assert "status" not in payload
 
 
 @pytest.mark.anyio
@@ -846,90 +840,161 @@ async def test_artifact_write_does_not_block_2(tmp_path):
     assert result is not None
 
 
+def _body_anchor_token(body: str, line_index: int) -> str:
+    """Build the '{anchor}§{line}' token for a 0-based body line (as read emits).
+
+    Used by the edit tests to construct the anchor argument from known body content
+    without going through a full artifact_read_core round-trip.
+    """
+    from koan.tools.line_anchors import ANCHOR_DELIMITER, compute_anchors
+
+    lines = body.splitlines()
+    anchors = compute_anchors(lines)
+    return f"{anchors[line_index]}{ANCHOR_DELIMITER}{lines[line_index]}"
+
+
 @pytest.mark.anyio
-async def test_artifact_view_strips_frontmatter(tmp_path):
-    """koan_artifact_view returns body only -- no YAML preamble visible to LLM."""
-    from koan.tools.koan_tools import ToolDeps, artifact_view_core
-    from koan.artifacts import write_artifact_atomic
+async def test_artifact_read_returns_anchored_content(tmp_path):
+    """koan_artifact_read returns anchored, line-numbered content of the artifact."""
+    from koan.tools.koan_tools import ToolDeps, artifact_write_core, artifact_read_core
+    from koan.tools.line_anchors import ANCHOR_DELIMITER
 
-    app_state, agent = _make_orchestrator_agent(tmp_path, "test-view-strip")
+    app_state, agent = _make_orchestrator_agent(tmp_path, "test-read")
+    deps = ToolDeps(app_state=app_state, agent=agent)
 
-    target = tmp_path / "doc.md"
-    write_artifact_atomic(target, "# Hello\nbody text\n")
+    await artifact_write_core(deps, "doc.md", "# Hello\nbody text\n")
 
-    # Cores return str directly (no content blocks).
-    returned_text = await artifact_view_core(ToolDeps(app_state=app_state, agent=agent), "doc.md")
-    assert "---" not in returned_text
-    assert "# Hello\nbody text\n" == returned_text
+    # Anchored output: "{lineno}\t{anchor}§{content}".
+    returned_text = await artifact_read_core(deps, "doc.md")
+    lines = returned_text.splitlines()
+    assert lines[0].startswith("1\t") and lines[0].endswith(f"{ANCHOR_DELIMITER}# Hello")
+    assert lines[1].startswith("2\t") and lines[1].endswith(f"{ANCHOR_DELIMITER}body text")
+
+
+@pytest.mark.anyio
+async def test_artifact_read_rejects_path_traversal(tmp_path):
+    """koan_artifact_read confines to run_dir -- a traversal filename is rejected."""
+    from koan.tools.koan_tools import ToolDeps, artifact_read_core
+
+    app_state, agent = _make_orchestrator_agent(tmp_path, "test-read-traversal")
+    deps = ToolDeps(app_state=app_state, agent=agent)
+
+    with pytest.raises(ValueError) as exc_info:
+        await artifact_read_core(deps, "../escape.md")
+    # The slash guard fires before resolution; either way it is rejected.
+    assert "invalid_filename:" in str(exc_info.value) or "invalid_path:" in str(exc_info.value)
+
+
+@pytest.mark.anyio
+async def test_artifact_read_large_artifact_no_rejection(tmp_path):
+    """koan_artifact_read is trusted and exempt from the M2 reject ceiling.
+
+    Writes an artifact whose body exceeds 500 lines, then reads it via
+    artifact_read_core and asserts the full content is returned (no
+    'tool result too large' error). Guards Decision 6 / enforce_limits=False.
+    """
+    from koan.tools.koan_tools import ToolDeps, artifact_write_core, artifact_read_core
+
+    app_state, agent = _make_orchestrator_agent(tmp_path, "test-read-large")
+    deps = ToolDeps(app_state=app_state, agent=agent)
+
+    # 600 lines -- well over the 500-line reject ceiling for untrusted tools.
+    body = "\n".join(f"line {i}" for i in range(600)) + "\n"
+    await artifact_write_core(deps, "large.md", body)
+
+    result = await artifact_read_core(deps, "large.md")
+
+    # Must not be a rejection message.
+    assert "tool result too large" not in result
+    # Must contain first and last lines in anchored format.
+    result_lines = result.splitlines()
+    assert result_lines[0].endswith("line 0")
+    assert result_lines[599].endswith("line 599")
 
 
 @pytest.mark.anyio
 async def test_artifact_list_omits_status(tmp_path):
-    """koan_artifact_list JSON must not contain a status field per artifact."""
+    """koan_artifact_list JSON carries path/size/modified_at, no status field."""
     import json
     from koan.tools.koan_tools import ToolDeps, artifact_list_core
-    from koan.artifacts import write_artifact_atomic
 
     app_state, agent = _make_orchestrator_agent(tmp_path, "test-list-no-status")
 
-    write_artifact_atomic(tmp_path / "with-fm.md", "body")
-    (tmp_path / "plain.md").write_text("# No frontmatter\n")
+    (tmp_path / "one.md").write_text("body\n")
+    (tmp_path / "two.md").write_text("# No frontmatter\n")
 
     result = await artifact_list_core(ToolDeps(app_state=app_state, agent=agent))
     payload = json.loads(result)
     by_path = {a["path"]: a for a in payload["artifacts"]}
 
-    assert "status" not in by_path["with-fm.md"]
-    assert "status" not in by_path["plain.md"]
-    assert "path" in by_path["with-fm.md"]
-    assert "size" in by_path["with-fm.md"]
-    assert "modified_at" in by_path["with-fm.md"]
+    assert "status" not in by_path["one.md"]
+    assert "status" not in by_path["two.md"]
+    assert "path" in by_path["one.md"]
+    assert "size" in by_path["one.md"]
+    assert "modified_at" in by_path["one.md"]
 
 
 # -- koan_artifact_edit -------------------------------------------------------
 
 @pytest.mark.anyio
-async def test_artifact_edit_replaces_single_occurrence(tmp_path):
-    """koan_artifact_edit replaces exactly one occurrence and the body is updated."""
+async def test_artifact_edit_replaces_anchored_line(tmp_path):
+    """koan_artifact_edit replaces the anchored line and updates the body."""
     import json
     from koan.tools.koan_tools import ToolDeps, artifact_write_core, artifact_edit_core
-    from koan.artifacts import split_frontmatter
 
     app_state, agent = _make_orchestrator_agent(tmp_path, "test-edit-replace")
     deps = ToolDeps(app_state=app_state, agent=agent)
 
     await artifact_write_core(deps, "doc.md", "hello world\n")
 
-    result = await artifact_edit_core(deps, "doc.md", "world", "koan")
-    # Cores return a JSON string directly (no content blocks).
+    token = _body_anchor_token("hello world\n", 0)
+    result = await artifact_edit_core(deps, "doc.md", token, "hello koan")
     payload = json.loads(result)
     assert payload["ok"] is True
     assert payload["filename"] == "doc.md"
 
-    _, body = split_frontmatter((tmp_path / "doc.md").read_text())
+    body = (tmp_path / "doc.md").read_text()
     assert body == "hello koan\n"
     assert "world" not in body
 
 
 @pytest.mark.anyio
-async def test_artifact_edit_preserves_created(tmp_path):
-    """koan_artifact_edit preserves the created timestamp across edits."""
+async def test_artifact_edit_disambiguates_duplicate_lines(tmp_path):
+    """Identical body lines get distinct anchors; editing one leaves the others."""
     from koan.tools.koan_tools import ToolDeps, artifact_write_core, artifact_edit_core
-    from koan.artifacts import split_frontmatter
 
-    app_state, agent = _make_orchestrator_agent(tmp_path, "test-edit-created")
+    app_state, agent = _make_orchestrator_agent(tmp_path, "test-edit-dup")
     deps = ToolDeps(app_state=app_state, agent=agent)
 
-    await artifact_write_core(deps, "doc.md", "original content\n")
-    first_meta, _ = split_frontmatter((tmp_path / "doc.md").read_text())
-    assert first_meta is not None
-    original_created = first_meta["created"]
+    await artifact_write_core(deps, "doc.md", "foo\nfoo\n")
+    # Edit the second 'foo' (index 1) only -- the ~2 ordinal anchor.
+    token = _body_anchor_token("foo\nfoo\n", 1)
+    await artifact_edit_core(deps, "doc.md", token, "baz")
 
-    await artifact_edit_core(deps, "doc.md", "original", "updated")
-    second_meta, _ = split_frontmatter((tmp_path / "doc.md").read_text())
-    assert second_meta is not None
-    assert second_meta["created"] == original_created
-    assert "last_modified" in second_meta
+    assert (tmp_path / "doc.md").read_text() == "foo\nbaz\n"
+
+
+@pytest.mark.anyio
+async def test_artifact_edit_then_read_round_trip(tmp_path):
+    """An anchor from koan_artifact_read resolves in koan_artifact_edit; the change sticks."""
+    from koan.tools.koan_tools import (
+        ToolDeps, artifact_write_core, artifact_read_core, artifact_edit_core,
+    )
+    from koan.tools.line_anchors import ANCHOR_DELIMITER
+
+    app_state, agent = _make_orchestrator_agent(tmp_path, "test-edit-roundtrip")
+    deps = ToolDeps(app_state=app_state, agent=agent)
+
+    await artifact_write_core(deps, "doc.md", "alpha\nbeta\n")
+
+    # Take the anchor straight from read output (not a precomputed helper).
+    read_out = await artifact_read_core(deps, "doc.md")
+    line2 = read_out.splitlines()[1]            # "2\t{anchor}§beta"
+    token = line2.split("\t", 1)[1]             # "{anchor}§beta"
+    assert token.endswith(f"{ANCHOR_DELIMITER}beta")
+
+    await artifact_edit_core(deps, "doc.md", token, "BETA")
+    assert (tmp_path / "doc.md").read_text() == "alpha\nBETA\n"
 
 
 @pytest.mark.anyio
@@ -942,13 +1007,13 @@ async def test_artifact_edit_file_not_found(tmp_path):
 
     # Cores raise ValueError("code: message") instead of ToolError.
     with pytest.raises(ValueError) as exc_info:
-        await artifact_edit_core(deps, "missing.md", "old", "new")
+        await artifact_edit_core(deps, "missing.md", "deadbeef§x", "new")
     assert "not_found:" in str(exc_info.value)
 
 
 @pytest.mark.anyio
-async def test_artifact_edit_no_match(tmp_path):
-    """koan_artifact_edit raises ValueError with 'no_match:' when old_string is absent."""
+async def test_artifact_edit_anchor_not_found(tmp_path):
+    """koan_artifact_edit raises 'edit_failed:' when the anchor is absent from the body."""
     from koan.tools.koan_tools import ToolDeps, artifact_write_core, artifact_edit_core
 
     app_state, agent = _make_orchestrator_agent(tmp_path, "test-edit-nomatch")
@@ -957,53 +1022,43 @@ async def test_artifact_edit_no_match(tmp_path):
     await artifact_write_core(deps, "doc.md", "hello world\n")
 
     with pytest.raises(ValueError) as exc_info:
-        await artifact_edit_core(deps, "doc.md", "nonexistent", "x")
-    assert "no_match:" in str(exc_info.value)
+        await artifact_edit_core(deps, "doc.md", "deadbeef§nonexistent", "x")
+    assert "edit_failed:" in str(exc_info.value)
+    assert "not found" in str(exc_info.value)
 
 
 @pytest.mark.anyio
-async def test_artifact_edit_multiple_matches(tmp_path):
-    """koan_artifact_edit raises ValueError with 'multiple_matches:' when >1 occurrence."""
+async def test_artifact_edit_content_mismatch(tmp_path):
+    """koan_artifact_edit raises 'edit_failed:' on inline-content drift."""
     from koan.tools.koan_tools import ToolDeps, artifact_write_core, artifact_edit_core
+    from koan.tools.line_anchors import ANCHOR_DELIMITER, compute_anchors
 
-    app_state, agent = _make_orchestrator_agent(tmp_path, "test-edit-multi")
+    app_state, agent = _make_orchestrator_agent(tmp_path, "test-edit-drift")
     deps = ToolDeps(app_state=app_state, agent=agent)
 
-    await artifact_write_core(deps, "doc.md", "foo bar foo\n")
+    await artifact_write_core(deps, "doc.md", "real line\n")
+    anchor = compute_anchors(["real line"])[0]
 
     with pytest.raises(ValueError) as exc_info:
-        await artifact_edit_core(deps, "doc.md", "foo", "baz")
-    assert "multiple_matches:" in str(exc_info.value)
+        await artifact_edit_core(deps, "doc.md", f"{anchor}{ANCHOR_DELIMITER}WRONG", "x")
+    assert "edit_failed:" in str(exc_info.value)
+    assert "mismatch" in str(exc_info.value)
 
 
 @pytest.mark.anyio
-async def test_artifact_edit_invalid_edit_empty_old(tmp_path):
-    """koan_artifact_edit raises ValueError with 'invalid_edit:' for an empty old_string."""
+async def test_artifact_edit_invalid_edit_type(tmp_path):
+    """koan_artifact_edit raises 'edit_failed:' for an unknown edit_type."""
     from koan.tools.koan_tools import ToolDeps, artifact_write_core, artifact_edit_core
 
-    app_state, agent = _make_orchestrator_agent(tmp_path, "test-edit-empty")
+    app_state, agent = _make_orchestrator_agent(tmp_path, "test-edit-badtype")
     deps = ToolDeps(app_state=app_state, agent=agent)
 
     await artifact_write_core(deps, "doc.md", "content\n")
+    token = _body_anchor_token("content\n", 0)
 
     with pytest.raises(ValueError) as exc_info:
-        await artifact_edit_core(deps, "doc.md", "", "new")
-    assert "invalid_edit:" in str(exc_info.value)
-
-
-@pytest.mark.anyio
-async def test_artifact_edit_invalid_edit_same_strings(tmp_path):
-    """koan_artifact_edit raises ValueError with 'invalid_edit:' when old==new."""
-    from koan.tools.koan_tools import ToolDeps, artifact_write_core, artifact_edit_core
-
-    app_state, agent = _make_orchestrator_agent(tmp_path, "test-edit-same")
-    deps = ToolDeps(app_state=app_state, agent=agent)
-
-    await artifact_write_core(deps, "doc.md", "same content\n")
-
-    with pytest.raises(ValueError) as exc_info:
-        await artifact_edit_core(deps, "doc.md", "same", "same")
-    assert "invalid_edit:" in str(exc_info.value)
+        await artifact_edit_core(deps, "doc.md", token, "new", edit_type="frobnicate")
+    assert "edit_failed:" in str(exc_info.value)
 
 
 @pytest.mark.anyio
@@ -1018,7 +1073,8 @@ async def test_artifact_edit_emits_diff_events(tmp_path):
     # Clear events recorded during write so we can isolate the edit's events
     events_before = len(app_state.projection_store.events)
 
-    await artifact_edit_core(deps, "doc.md", "before", "after")
+    token = _body_anchor_token("before edit\n", 0)
+    await artifact_edit_core(deps, "doc.md", token, "after edit")
 
     new_event_types = [
         e.event_type for e in app_state.projection_store.events[events_before:]

@@ -67,5 +67,5 @@ KOAN_MCP_TOOLS: frozenset[str] = frozenset({
     "koan_artifact_write",
     "koan_memory_propose",
     "koan_artifact_list",
-    "koan_artifact_view",
+    "koan_artifact_read",
 })

@@ -887,103 +887,106 @@ async def reflect_core(
 
 
 # -- Artifact tool cores -------------------------------------------------------
+# koan_artifact_read/write/edit are thin, run-dir-scoped wrappers over the
+# built-in read/write/edit tools (koan/tools/builtin_tools.py). They exist to
+# give planning roles (e.g. the orchestrator) a file interface limited to their
+# run directory's artifacts -- the orchestrator can produce and revise artifacts
+# but cannot write or edit arbitrary project files. Artifacts are plain markdown
+# (no frontmatter), so the wrappers add only filename validation, run-dir
+# containment, and the artifact_diff projection event around the shared tools.
 
 
-async def artifact_write_core(deps: ToolDeps, filename: str, content: str) -> str:
-    """Core logic for koan_artifact_write.
+class _DepsCtx:
+    """Minimal RunContext stand-in exposing `.deps`.
 
-    Validates filename, resolves the run directory, writes the artifact
-    atomically (with managed frontmatter), and emits an artifact_diff event.
-    Returns a JSON string {"ok": true, "filename": "..."}.
-
-    Raises ValueError("invalid_filename: ...") for non-conforming filenames.
-    Raises ValueError("no_run_dir: ...") when no run directory is available.
+    The built-in tools read their dependencies off `ctx.deps`; the artifact
+    wrappers hold `deps` directly, so they pass this shim to delegate.
     """
-    import json
 
-    from ..artifacts import write_artifact_atomic
-    from ..driver import _push_artifact_diff
+    __slots__ = ("deps",)
 
-    # _validate_artifact_filename is now module-local (relocated from mcp_endpoint in M1).
-    agent = deps.agent
-    app_state = deps.app_state
+    def __init__(self, deps: ToolDeps) -> None:
+        self.deps = deps
+
+
+def _resolve_artifact_path(deps: ToolDeps, filename: str) -> Path:
+    """Validate *filename* and resolve it to an absolute path inside run_dir.
+
+    Shared guard for the artifact wrappers: rejects malformed filenames and any
+    path that escapes run_dir, so the wrapped read/write/edit can only touch
+    run-directory artifacts. Raises ValueError("code: message").
+    """
+    import os
 
     err = _validate_artifact_filename(filename)
     if err:
         raise ValueError(f"invalid_filename: {err}")
 
-    run_dir = _resolve_run_dir_core(agent, app_state)
+    run_dir = _resolve_run_dir_core(deps.agent, deps.app_state)
     if not run_dir:
         raise ValueError("no_run_dir: No run directory available")
 
-    target = Path(run_dir) / filename
-    write_artifact_atomic(target, content or "")
-    _push_artifact_diff(app_state)
+    run_root = Path(run_dir).resolve()
+    target = (run_root / filename).resolve()
+    if target != run_root and not str(target).startswith(str(run_root) + os.sep):
+        raise ValueError("invalid_path: filename escapes run_dir")
+    return target
 
+
+async def artifact_write_core(deps: ToolDeps, filename: str, content: str) -> str:
+    """Core logic for koan_artifact_write -- run-dir-scoped wrapper over write_tool.
+
+    Validates the filename, resolves it inside run_dir, delegates to the built-in
+    write tool (verbatim body, no frontmatter), and emits an artifact_diff event.
+    Returns a JSON string {"ok": true, "filename": "..."}.
+
+    Raises ValueError("invalid_filename"/"no_run_dir"/"invalid_path"/"write_failed").
+    """
+    import json
+
+    from ..driver import _push_artifact_diff
+    from .builtin_tools import write_tool
+
+    target = _resolve_artifact_path(deps, filename)
+    result = await write_tool(_DepsCtx(deps), str(target), content or "")
+    if result.startswith("Error"):
+        raise ValueError(f"write_failed: {result}")
+
+    _push_artifact_diff(deps.app_state)
     return json.dumps({"ok": True, "filename": filename})
 
 
 async def artifact_edit_core(
     deps: ToolDeps,
     filename: str,
-    old_string: str,
-    new_string: str,
+    anchor: str,
+    text: str,
+    end_anchor: str | None = None,
+    edit_type: str = "replace",
 ) -> str:
-    """Core logic for koan_artifact_edit.
+    """Core logic for koan_artifact_edit -- run-dir-scoped wrapper over edit_tool.
 
-    Validates filename and edit parameters, resolves the run directory, reads
-    the artifact body (stripping frontmatter), applies a single-occurrence
-    replace, and re-writes via write_artifact_atomic. Emits artifact_diff.
-    Returns a JSON string {"ok": true, "filename": "..."}.
+    Validates the filename, resolves it inside run_dir, and delegates to the
+    built-in anchored edit tool (anchor copied from koan_artifact_read; see
+    docs/tools.md), then emits artifact_diff. Returns {"ok": true, "filename"}.
 
-    Error codes (all raised as ValueError("code: message")):
-        invalid_filename, invalid_edit, no_run_dir, not_found, no_match,
-        multiple_matches.
+    Raises ValueError("invalid_filename"/"no_run_dir"/"invalid_path"/"not_found"/
+    "edit_failed").
     """
     import json
-    import os
 
-    from ..artifacts import split_frontmatter, write_artifact_atomic
     from ..driver import _push_artifact_diff
+    from .builtin_tools import edit_tool
 
-    # _validate_artifact_filename is now module-local (relocated from mcp_endpoint in M1).
-    agent = deps.agent
-    app_state = deps.app_state
-
-    err = _validate_artifact_filename(filename)
-    if err:
-        raise ValueError(f"invalid_filename: {err}")
-
-    if not old_string:
-        raise ValueError("invalid_edit: old_string must be non-empty")
-    if old_string == new_string:
-        raise ValueError(
-            "invalid_edit: old_string and new_string are identical; no edit to apply"
-        )
-
-    run_dir = _resolve_run_dir_core(agent, app_state)
-    if not run_dir:
-        raise ValueError("no_run_dir: No run directory available")
-
-    target = Path(run_dir) / filename
+    target = _resolve_artifact_path(deps, filename)
     if not target.is_file():
         raise ValueError(f"not_found: {filename} not found")
 
-    raw = target.read_text(encoding="utf-8")
-    _, body = split_frontmatter(raw)
+    result = await edit_tool(_DepsCtx(deps), str(target), anchor, text, end_anchor, edit_type)
+    if result.startswith("Error"):
+        raise ValueError(f"edit_failed: {result}")
 
-    count = body.count(old_string)
-    if count == 0:
-        raise ValueError("no_match: old_string not found in artifact body")
-    if count > 1:
-        raise ValueError(
-            f"multiple_matches: {count} occurrences found; old_string must match exactly one"
-        )
-
-    new_body = body.replace(old_string, new_string, 1)
-    write_artifact_atomic(target, new_body)
-    _push_artifact_diff(app_state)
-
+    _push_artifact_diff(deps.app_state)
     return json.dumps({"ok": True, "filename": filename})
 
 
@@ -1008,40 +1011,35 @@ async def artifact_list_core(deps: ToolDeps) -> str:
     return json.dumps({"artifacts": artifacts})
 
 
-async def artifact_view_core(deps: ToolDeps, filename: str) -> str:
-    """Core logic for koan_artifact_view.
+async def artifact_read_core(
+    deps: ToolDeps,
+    filename: str,
+    offset: int = 0,
+    limit: int = 2000,
+) -> str:
+    """Core logic for koan_artifact_read -- run-dir-scoped wrapper over read_tool.
 
-    Resolves the run directory, guards against path traversal, reads the
-    artifact body (stripping driver-managed frontmatter), and returns it.
+    Validates the filename, resolves it inside run_dir, and delegates to the
+    built-in read tool, returning anchored, line-numbered content
+    ("{lineno}\\t{anchor}§{content}"). The anchor lets koan_artifact_edit target a
+    line; offset/limit page large artifacts.
 
-    Raises ValueError("no_run_dir: ..."), ValueError("invalid_path: ..."),
-    or ValueError("not_found: ...") on failure.
+    koan_artifact_read is a TRUSTED command (Decision 6) -- exempt from the
+    Milestone-2 reject ceiling. enforce_limits=False bypasses _enforce_output_limits
+    so large artifacts are not rejected; the reject ceiling only applies to untrusted
+    built-in tool calls.
+
+    Raises ValueError("invalid_filename"/"no_run_dir"/"invalid_path"/"not_found").
     """
-    import os
+    from .builtin_tools import read_tool
 
-    from ..artifacts import split_frontmatter
-
-    agent = deps.agent
-    app_state = deps.app_state
-
-    run_dir = _resolve_run_dir_core(agent, app_state)
-    if not run_dir:
-        raise ValueError("no_run_dir: No run directory available")
-
-    # Path-traversal guard: resolve and verify containment.
-    run_root = Path(run_dir).resolve()
-    target = (run_root / filename).resolve()
-    if target != run_root and not str(target).startswith(str(run_root) + os.sep):
-        raise ValueError("invalid_path: filename escapes run_dir")
-
+    target = _resolve_artifact_path(deps, filename)
     if not target.is_file():
         raise ValueError(f"not_found: {filename} not found")
 
-    # Strip driver-managed frontmatter: LLMs should see the body only;
-    # exposing frontmatter would invite the model to reproduce it.
-    raw = target.read_text(encoding="utf-8")
-    _, body = split_frontmatter(raw)
-    return body
+    # enforce_limits=False is load-bearing: artifact reads are trusted and must
+    # not be rejected for size (brief.md Decision 6).
+    return await read_tool(_DepsCtx(deps), str(target), offset, limit, enforce_limits=False)
 
 
 # -- Interaction tool cores ----------------------------------------------------
@@ -1530,31 +1528,34 @@ def build_koan_toolset(allowed_names: "frozenset[str] | None" = None) -> Any:
     # ---- M3: artifact tools ----
 
     async def _koan_artifact_write(ctx, filename: str, content: str) -> str:
-        """Write or update an artifact file. Full-rewrite semantics with managed frontmatter."""
+        """Write or update a run-directory artifact (plain markdown, no frontmatter)."""
         return await artifact_write_core(ctx.deps, filename, content)
 
     async def _koan_artifact_edit(
         ctx,
         filename: str,
-        old_string: str,
-        new_string: str,
+        anchor: str,
+        text: str,
+        end_anchor: str | None = None,
+        edit_type: str = "replace",
     ) -> str:
-        """Surgical in-place edit of an artifact body. Single-unique-match semantics."""
-        return await artifact_edit_core(ctx.deps, filename, old_string, new_string)
+        """Anchored in-place edit of an artifact body (anchor from koan_artifact_read)."""
+        return await artifact_edit_core(ctx.deps, filename, anchor, text, end_anchor, edit_type)
 
     async def _koan_artifact_list(ctx) -> str:
         """List artifacts in the run directory."""
         return await artifact_list_core(ctx.deps)
 
-    async def _koan_artifact_view(ctx, filename: str) -> str:
-        """Return the full text content of an artifact (frontmatter stripped)."""
-        return await artifact_view_core(ctx.deps, filename)
+    async def _koan_artifact_read(ctx, filename: str, offset: int = 0, limit: int = 2000) -> str:
+        """Return anchored, line-numbered artifact content (run-dir scoped read)."""
+        return await artifact_read_core(ctx.deps, filename, offset, limit)
 
     _reg(
         _koan_artifact_write,
         "koan_artifact_write",
         (
-            "Write or update an artifact file. Driver manages YAML frontmatter. "
+            "Write or update a run-directory artifact. Writes the body verbatim as plain "
+            "markdown (no frontmatter). "
             "Args: filename (must match [a-z0-9][a-z0-9_-]*.md), content (markdown body)."
         ),
     )
@@ -1562,8 +1563,12 @@ def build_koan_toolset(allowed_names: "frozenset[str] | None" = None) -> Any:
         _koan_artifact_edit,
         "koan_artifact_edit",
         (
-            "Surgical single-occurrence edit of an artifact body. "
-            "Strips frontmatter before matching. Args: filename, old_string, new_string."
+            "Anchored in-place edit of an artifact body. Read the artifact first "
+            "(koan_artifact_read); "
+            "copy the target line's anchor token ({anchor}§{line}) into `anchor`. "
+            "edit_type='replace' (default) replaces the line, or the inclusive range "
+            "[anchor, end_anchor]; empty `text` deletes. 'insert_before'/'insert_after' "
+            "insert `text`. Args: filename, anchor, text, end_anchor?, edit_type?."
         ),
     )
     _reg(
@@ -1572,9 +1577,14 @@ def build_koan_toolset(allowed_names: "frozenset[str] | None" = None) -> Any:
         "List run-directory artifacts with path, size, and modification time.",
     )
     _reg(
-        _koan_artifact_view,
-        "koan_artifact_view",
-        "Return the full body of an artifact (driver frontmatter stripped). Arg: filename.",
+        _koan_artifact_read,
+        "koan_artifact_read",
+        (
+            "Read a run-directory artifact as anchored, line-numbered content "
+            "({lineno}\\t{anchor}§{line}). Copy an anchor into koan_artifact_edit to "
+            "change a line; page large artifacts with offset/limit. "
+            "Args: filename, offset?, limit?."
+        ),
     )
 
     # ---- M5: in-process interaction tools ----

@@ -84,7 +84,7 @@ _UNIVERSAL_MEMORY_TOOLS: frozenset[str] = frozenset({
 # Read-only artifact tools -- always allowed for all roles in every phase.
 _UNIVERSAL_READ_TOOLS: frozenset[str] = frozenset({
     "koan_artifact_list",
-    "koan_artifact_view",
+    "koan_artifact_read",
 })
 
 _ORCHESTRATOR_SCOUT_PHASES: frozenset[str] = frozenset({
@@ -123,7 +123,7 @@ class ToolPolicy:
             conditional tools excluded -- they are added by compose_toolset).
         universal_tools: Tools allowed for every role in every phase
             (koan_memory_status, koan_search, koan_artifact_list,
-            koan_artifact_view).
+            koan_artifact_read).
         read_tools: Non-bash file tools always allowed for all roles
             (read, grep, glob, find, ls).
         bash_phases: Phases where bash is allowed for the orchestrator role.

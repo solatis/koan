@@ -48,7 +48,7 @@ const KOAN_TOOL_LABELS: Record<string, string> = {
   koan_retry_story: 'Retrying story',
   koan_skip_story: 'Skipping story',
   koan_artifact_list: 'Listing artifacts',
-  koan_artifact_view: 'Viewing artifact',
+  koan_artifact_read: 'Reading artifact',
   koan_memorize: 'Recording memory',
   koan_forget: 'Forgetting memory entry',
   koan_memory_status: 'Reading memory status',
