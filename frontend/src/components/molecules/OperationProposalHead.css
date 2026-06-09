@@ -1,0 +1,27 @@
+.oph-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.oph-seq {
+  font-family: var(--font-mono);
+  font-size: var(--type-tool-type);
+  color: var(--text-hint);
+  letter-spacing: 0.5px;
+}
+
+.oph-decision {
+  margin-left: auto;
+}
+
+.oph-title {
+  margin: 8px 0 0;
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 400;
+  letter-spacing: -0.3px;
+  line-height: 1.25;
+  color: var(--text-primary);
+}

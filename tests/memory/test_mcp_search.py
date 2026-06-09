@@ -1,3 +1,9 @@
+# Tests for search_core.
+#
+# Calls the in-process core directly via ToolDeps. run_reflect_agent and
+# retrieval_search are monkeypatched at the origin module
+# (koan.memory.retrieval) since search_core imports from there directly.
+
 from __future__ import annotations
 
 import json
@@ -5,30 +11,20 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastmcp.exceptions import ToolError
 
 from koan.memory.retrieval.types import SearchResult
 from koan.memory.types import MemoryEntry
 from koan.state import AgentState, AppState
-from koan.web import mcp_endpoint
+
+
+def _json(result: str) -> dict:
+    """JSON-decode a core result string."""
+    return json.loads(result)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _unwrap(tool):
-    for attr in ("fn", "func", "_fn", "_func", "__wrapped__", "callback"):
-        candidate = getattr(tool, attr, None)
-        if callable(candidate):
-            return candidate
-    if callable(tool):
-        return tool
-    raise RuntimeError(f"Cannot unwrap FastMCP tool: {tool!r}")
-
-
-koan_search = _unwrap(mcp_endpoint.koan_search)
-
 
 def _make_entry(n: int = 1, etype: str = "context") -> MemoryEntry:
     return MemoryEntry(
@@ -49,10 +45,17 @@ def _make_result(n: int = 1, etype: str = "context") -> SearchResult:
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
-def mem_env(tmp_path, monkeypatch):
+def mem_env(tmp_path):
+    """Build a minimal in-process environment for memory tests.
+
+    Builds ToolDeps directly; init_memory_services() is called so
+    memory.retrieval_index is populated and tests can replace it with a mock.
+    """
+    from koan.tools.koan_tools import ToolDeps
+
     app_state = AppState()
-    app_state.project_dir = str(tmp_path)
-    app_state.phase = "curation"
+    app_state.run.project_dir = str(tmp_path)
+    app_state.run.phase = "curation"
 
     agent = AgentState(
         agent_id="test-search-agent",
@@ -62,30 +65,37 @@ def mem_env(tmp_path, monkeypatch):
     agent.run_dir = str(tmp_path)
     agent.step = 1
     app_state.agents[agent.agent_id] = agent
+    app_state.init_memory_services()
 
-    monkeypatch.setattr(mcp_endpoint, "_app_state", app_state)
-    monkeypatch.setattr(mcp_endpoint, "_memory_store", None)
-    token = mcp_endpoint._agent_ctx.set(agent)
+    deps = ToolDeps(app_state=app_state, agent=agent)
 
-    yield {"agent": agent, "app_state": app_state, "project_dir": tmp_path}
-
-    mcp_endpoint._agent_ctx.reset(token)
-    mcp_endpoint._reset_memory_store()
+    yield {
+        "agent": agent,
+        "app_state": app_state,
+        "project_dir": tmp_path,
+        "deps": deps,
+    }
 
 
 @pytest.fixture
 def search_env(mem_env, monkeypatch):
+    """Extend mem_env with a mock retrieval index.
+
+    Patches koan.memory.retrieval.search (the origin module) since
+    search_core imports from there directly. Tests that previously
+    patched mcp_endpoint.retrieval_search now patch the origin.
+    """
+    import koan.memory.retrieval as retrieval_mod
+
     fixed_results = [_make_result(1), _make_result(2)]
 
     mock_index = MagicMock()
     mock_search = AsyncMock(return_value=fixed_results)
 
-    monkeypatch.setattr(mcp_endpoint, "_retrieval_index", mock_index)
-    monkeypatch.setattr(mcp_endpoint, "retrieval_search", mock_search)
+    mem_env["app_state"].memory.retrieval_index = mock_index
+    monkeypatch.setattr(retrieval_mod, "search", mock_search)
 
     yield {**mem_env, "mock_index": mock_index, "mock_search": mock_search, "fixed_results": fixed_results}
-
-    mcp_endpoint._reset_retrieval_index()
 
 
 # ---------------------------------------------------------------------------
@@ -95,47 +105,40 @@ def search_env(mem_env, monkeypatch):
 class TestKoanSearch:
     @pytest.mark.anyio
     async def test_search_returns_json_with_results(self, search_env):
-        raw = await koan_search(query="test")
-        result = json.loads(raw)
+        from koan.tools.koan_tools import search_core
+        result = _json(await search_core(search_env["deps"], query="test"))
         assert "results" in result
         assert len(result["results"]) == 2
         assert result["results"][0]["entry_id"] == 1
 
     @pytest.mark.anyio
     async def test_search_type_filter_forwarded(self, search_env):
-        await koan_search(query="x", type="procedure")
+        from koan.tools.koan_tools import search_core
+        await search_core(search_env["deps"], query="x", type="procedure")
         mock_search = search_env["mock_search"]
         call_kwargs = mock_search.call_args
         assert call_kwargs.kwargs.get("type_filter") == "procedure"
 
     @pytest.mark.anyio
     async def test_search_invalid_type_raises(self, search_env):
-        with pytest.raises(ToolError) as exc:
-            await koan_search(query="x", type="nonsense")
-        body = json.loads(str(exc.value))
-        assert body["error"] == "invalid_type"
+        from koan.tools.koan_tools import search_core
+        # Cores raise ValueError for invalid types (not ToolError).
+        with pytest.raises(ValueError) as exc:
+            await search_core(search_env["deps"], query="x", type="nonsense")
+        assert "invalid" in str(exc.value).lower() or "nonsense" in str(exc.value)
 
     @pytest.mark.anyio
-    async def test_search_api_error_raises_tool_error(self, mem_env, monkeypatch):
+    async def test_search_api_error_raises_runtime_error(self, mem_env, monkeypatch):
+        import koan.memory.retrieval as retrieval_mod
+
         mock_index = MagicMock()
-        monkeypatch.setattr(mcp_endpoint, "_retrieval_index", mock_index)
+        mem_env["app_state"].memory.retrieval_index = mock_index
         monkeypatch.setattr(
-            mcp_endpoint, "retrieval_search",
-            AsyncMock(side_effect=RuntimeError("API key missing"))
+            retrieval_mod, "search",
+            AsyncMock(side_effect=RuntimeError("API key missing")),
         )
-        with pytest.raises(ToolError) as exc:
-            await koan_search(query="x")
-        body = json.loads(str(exc.value))
-        assert body["error"] == "search_failed"
-        mcp_endpoint._reset_retrieval_index()
-
-    @pytest.mark.anyio
-    async def test_search_permission_denied_without_agent(self, search_env):
-        token = mcp_endpoint._agent_ctx.set(None)
-        try:
-            with pytest.raises(ToolError) as exc:
-                await koan_search(query="x")
-            body = json.loads(str(exc.value))
-            assert body["error"] == "permission_denied"
-        finally:
-            mcp_endpoint._agent_ctx.reset(token)
+        from koan.tools.koan_tools import search_core
+        # Cores re-raise RuntimeError (not ToolError).
+        with pytest.raises(RuntimeError) as exc:
+            await search_core(mem_env["deps"], query="x")
+        assert "API key missing" in str(exc.value)

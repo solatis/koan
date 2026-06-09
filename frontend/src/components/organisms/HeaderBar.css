@@ -106,3 +106,40 @@
   font-weight: 500;
   color: var(--text-on-dark);
 }
+
+/* ---- Sub-page crumbs (navigation mode only) ---- */
+/* Rendered after the nav links to show current sub-page context. Uses the
+   same color family as nav links; separator is a decorative chevron (\u203a). */
+.hb-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  /* Visually separated from nav links by a thin left border */
+  padding-left: 16px;
+  border-left: 1px solid rgba(240, 232, 216, 0.15); /* matches hb-divider family */
+}
+
+.hb-crumb-sep {
+  font-size: var(--type-breadcrumb);
+  color: var(--text-on-dark-muted);
+  opacity: 0.5;
+  user-select: none;
+}
+
+.hb-crumb-link {
+  font-size: var(--type-breadcrumb);
+  font-weight: 400;
+  color: var(--text-on-dark-muted);
+  text-decoration: none;
+  transition: color var(--duration-fast) var(--ease-default);
+}
+
+.hb-crumb-link:hover {
+  color: var(--text-on-dark);
+}
+
+.hb-crumb-label {
+  font-size: var(--type-breadcrumb);
+  font-weight: 500;
+  color: var(--text-on-dark);
+}

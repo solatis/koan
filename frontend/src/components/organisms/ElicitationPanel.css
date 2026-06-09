@@ -124,6 +124,45 @@
   margin-bottom: 8px;
 }
 
+/* Free-text textarea wrapper */
+.ep-free-text-wrap {
+  position: relative;
+}
+
+.ep-attach-btn {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  background: none;
+  border: none;
+  padding: 4px;
+  cursor: pointer;
+  color: var(--text-hint);
+  display: flex;
+  align-items: center;
+  opacity: 0.6;
+  transition: opacity var(--duration-fast);
+}
+
+.ep-attach-btn:hover {
+  opacity: 1;
+}
+
+.ep-file-input {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  opacity: 0;
+}
+
+.ep-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
 /* Free-text textarea */
 .ep-free-text {
   display: block;

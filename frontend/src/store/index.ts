@@ -1,31 +1,73 @@
 import { create } from 'zustand'
+import { devtools } from 'zustand/middleware'
 
 // -- Wire types — match backend KoanBaseModel.to_wire() output exactly --------
 
-export interface Installation {
-  alias: string
-  runnerType: string
-  binary: string
-  extraArgs: string[]
-  available: boolean
-}
+// Installation interface removed in M4: agent installation concept deleted.
+// Provider credentials are the availability model (see ProviderStatus below).
 
 export interface Profile {
   name: string
   readOnly: boolean
-  tiers: Record<string, string>   // role → installation alias
+  /** M3: tier values changed from strings (alias) to nested provider/model/thinking objects. */
+  tiers: Record<string, { provider: string; model: string; thinking: string }>
+}
+
+/**
+ * Provider credential availability and non-secret config surfaced via
+ * Settings.providerStatus (M2/M3). region and baseUrl are non-secret
+ * and stored in providerAuth; the encrypted key is never returned.
+ */
+export interface ProviderStatus {
+  provider: string
+  available: boolean
+  /** Env var names checked for this provider (never values). */
+  envKeys: string[]
+  /** Non-secret region used for bedrock (required) and openai/anthropic (optional). */
+  region: string | null
+  /** Non-secret endpoint override (base_url) for openai, anthropic, bedrock. */
+  baseUrl: string | null
+}
+
+/** One entry from the all-providers model catalog surfaced via Settings.modelRegistry (M2/M3). */
+export interface ModelRegistryEntry {
+  provider: string
+  model: string
+  displayName: string
+  contextWindow: number
+  thinkingModes: string[]
+  tierHint: string | null
+}
+
+/**
+ * One entry in the per-provider dynamic model overlay (Settings.providerModels).
+ * Lighter sibling of ModelRegistryEntry: no thinkingModes or tierHint.
+ * Populated by provider_models_listed events (eager startup + Test/save refresh).
+ */
+export interface ProviderModel {
+  provider: string
+  model: string
+  displayName: string
+  contextWindow: number
 }
 
 export interface Settings {
-  installations: Record<string, Installation>
+  // installations removed in M4: agent installation concept deleted.
   profiles: Record<string, Profile>
   defaultProfile: string
   defaultScoutConcurrency: number
+  workflows: WorkflowInfo[]   // populated once at startup by workflows_listed; static for the process lifetime
+  /** M2/M3: per-provider credential availability, populated by provider_status_listed initial event. */
+  providerStatus: ProviderStatus[]
+  /** M2/M3: all-providers model catalog, populated by model_registry_listed initial event. */
+  modelRegistry: ModelRegistryEntry[]
+  /** Dynamic per-provider model overlay; populated by provider_models_listed events. */
+  providerModels: ProviderModel[]
 }
 
 export interface RunConfig {
   profile: string
-  installations: Record<string, string>  // role → installation alias
+  // installations removed in M4: agent installation concept deleted.
   scoutConcurrency: number
 }
 
@@ -36,11 +78,32 @@ export interface TextEntry { type: 'text'; text: string }
 export interface StepEntry { type: 'step'; step: number; stepName: string; totalSteps: number | null }
 export interface UserMessageEntry { type: 'user_message'; content: string; timestampMs: number }
 
-interface BaseToolEntry { callId: string; inFlight: boolean }
+// Mirrors backend AttachmentEntry with Pydantic's to_camel wire format.
+export interface AttachmentEntry {
+  uploadId: string
+  filename: string
+  size: number
+  contentType: string
+  path: string
+}
+
+// Placing attachments on BaseToolEntry means all tool-entry variants inherit
+// it automatically; the fold sets it only when the event carries a manifest.
+// toolInput is the server-side aggregate of all received deltas (M1 fold sets
+// it on every tool_input_delta). toolInputDelta is the last-arrived chunk;
+// exposed for future highlight-the-just-changed use but not read by M2 consumers.
+interface BaseToolEntry {
+  callId: string
+  inFlight: boolean
+  attachments?: AttachmentEntry[] | null
+  toolInput?: Record<string, unknown> | null
+  toolInputDelta?: Record<string, unknown> | string | null
+}
 export interface ToolWriteEntry   extends BaseToolEntry { type: 'tool_write';   file: string }
 export interface ToolEditEntry    extends BaseToolEntry { type: 'tool_edit';    file: string }
 export interface ToolBashEntry    extends BaseToolEntry { type: 'tool_bash';    command: string }
 export interface ToolGenericEntry extends BaseToolEntry { type: 'tool_generic'; toolName: string; summary: string }
+export interface ToolKoanEntry   extends BaseToolEntry { type: 'tool_koan';    toolName: string; args: Record<string, unknown>; result: Record<string, unknown> | null }
 
 // Aggregate children — exploration tools (read/grep/ls) never appear as
 // top-level ConversationEntry values. They live only inside ToolAggregateEntry.
@@ -86,7 +149,7 @@ export interface YieldEntry { type: 'yield'; prompt: string; suggestions: Sugges
 export type ConversationEntry =
   | ThinkingEntry | TextEntry | StepEntry | UserMessageEntry
   | ToolWriteEntry | ToolEditEntry | ToolBashEntry | ToolGenericEntry
-  | ToolAggregateEntry
+  | ToolKoanEntry | ToolAggregateEntry
   | DebugStepGuidanceEntry | PhaseBoundaryEntry | YieldEntry
 
 export interface Conversation {
@@ -96,6 +159,77 @@ export interface Conversation {
   isThinking: boolean
   inputTokens: number
   outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  totalCostUsd: number
+  contextWindowPercent: number
+}
+
+// -- Memory types -- mirrors backend KoanBaseModel.to_wire() camelCase output --
+
+export type MemoryType = 'decision' | 'lesson' | 'context' | 'procedure'
+
+export interface MemoryEntrySummary {
+  seq: string
+  type: MemoryType
+  title: string
+  createdMs: number
+  modifiedMs: number
+}
+
+export interface Proposal {
+  id: string
+  op: 'add' | 'update' | 'deprecate'
+  type: MemoryType
+  seq: string
+  title: string
+  meta: string
+  rationale: string
+  body?: string
+  before?: string
+  after?: string
+}
+
+export interface ActiveCurationBatch {
+  proposals: Proposal[]
+  batchId: string
+  contextNote: string
+}
+
+export interface MemoryState {
+  entries: Record<string, MemoryEntrySummary>
+  summary: string
+}
+
+export interface ReflectCitation {
+  id: number
+  title: string
+  type: MemoryType
+  modifiedMs: number
+}
+
+export interface ReflectTrace {
+  iteration: number
+  kind: 'search' | 'done' | 'thinking' | 'text'
+  query: string
+  typeFilter: string
+  resultCount: number | null
+  delta: string
+}
+
+export interface ReflectRun {
+  sessionId: string
+  question: string
+  status: 'in_progress' | 'done' | 'cancelled' | 'failed'
+  startedAtMs: number
+  completedAtMs: number | null
+  iteration: number
+  maxIterations: number
+  model: string
+  traces: ReflectTrace[]
+  answer: string
+  citations: ReflectCitation[]
+  error: string
 }
 
 // -- Agent --------------------------------------------------------------------
@@ -158,6 +292,7 @@ export interface Notification {
 
 export interface SteeringMessage {
   content: string
+  timestampMs?: number
 }
 
 export interface Suggestion {
@@ -170,22 +305,34 @@ export interface ActiveYield {
   suggestions: Suggestion[]
 }
 
+// ActiveArtifactReview removed in M6 -- koan_artifact_propose deleted in M5;
+// the backend no longer emits artifact_review_started events.
+
 export interface PhaseInfo {
   id: string
   description: string
+}
+
+export interface WorkflowInfo {
+  id: string
+  description: string
+  phases: PhaseInfo[]
+  initialPhase: string
 }
 
 export interface Run {
   config: RunConfig
   phase: string
   workflow: string    // active workflow name
-  availablePhases: PhaseInfo[]  // populated on workflow_selected; drives the / command palette
+  availablePhases: PhaseInfo[]      // populated on workflow_selected; drives the / command palette
+  // availableWorkflows removed: the workflows registry now lives at settings.workflows (populated by the workflows_listed initial event).
   agents: Record<string, Agent>
   focus: Focus | null
   artifacts: Record<string, ArtifactInfo>
   completion: CompletionInfo | null
   steering: SteeringMessage[]
   activeYield: ActiveYield | null  // non-null while orchestrator is blocked in koan_yield
+  activeCurationBatch: ActiveCurationBatch | null  // non-null while orchestrator is blocked in koan_memory_propose
 }
 
 // -- Store --------------------------------------------------------------------
@@ -199,15 +346,46 @@ interface KoanState {
   settings: Settings
   run: Run | null
   notifications: Notification[]
+  // Project-scoped memory state (not run-scoped; survives workflow boundaries)
+  memory: MemoryState
+  // Project-scoped reflect state
+  reflect: ReflectRun | null
 
   // Local UI state (not from server)
   settingsOpen: boolean
+
+  // Ephemeral snapshot of the last run's completion — populated on the null->non-null
+  // rising edge of run.completion and cleared by the user (dismiss button) or a new run.
+  // Not persisted; not mirrored in the projection. UI-only.
+  lastCompletion: CompletionInfo | null
+  setLastCompletion: (c: CompletionInfo | null) => void
 
   // Local draft for chat input — set by YieldPanel row selections
   chatDraft: string
 
   // Local UI state: currently open artifact review (path or null)
   reviewingArtifact: string | null
+
+  // Timestamp of the last yield resolution (suggestion clicked / chat submitted).
+  // Null until the first yield resolves; all artifacts show as "changed" until then.
+  // Updated client-side on send; not persisted or mirrored in SSE projection.
+  lastTouchpointMs: number | null
+  setLastTouchpointMs: (ms: number) => void
+
+  // Store-only curation draft (accept-loss: cleared on memory_curation_cleared).
+  // Keyed by proposal id; seeded by resetMemoryCurationDraft on batch mount.
+  memoryCurationDraft: Record<string, { decision?: 'approved' | 'rejected'; feedback: string }>
+  setMemoryCurationDecision: (id: string, decision: 'approved' | 'rejected' | undefined) => void
+  setMemoryCurationFeedback: (id: string, text: string) => void
+  resetMemoryCurationDraft: (batch: ActiveCurationBatch | null) => void
+
+  // Store-only memory sidebar state (shared across overview/detail/reflect pages)
+  memorySidebar: { search: string; filter: 'all' | MemoryType }
+  setMemorySidebarSearch: (v: string) => void
+  setMemorySidebarFilter: (v: 'all' | MemoryType) => void
+
+  // Merge memory entries from API fetches without replacing server-patched state
+  upsertMemoryEntries: (list: MemoryEntrySummary[]) => void
 
   // Actions
   setConnected: (v: boolean) => void
@@ -216,28 +394,102 @@ interface KoanState {
   setReviewingArtifact: (path: string | null) => void
 }
 
-export const useStore = create<KoanState>((set) => ({
-  connected: false,
-  lastVersion: 0,
+export const useStore = create<KoanState>()(
+  devtools(
+    (set) => ({
+      connected: false,
+      lastVersion: 0,
 
-  settings: {
-    installations: {},
-    profiles: {},
-    defaultProfile: 'balanced',
-    defaultScoutConcurrency: 8,
-  },
-  run: null,
-  notifications: [],
+      settings: {
+        // installations removed in M4: agent installation concept deleted.
+        profiles: {},
+        defaultProfile: 'balanced',
+        defaultScoutConcurrency: 8,
+        workflows: [],
+        providerStatus: [],
+        modelRegistry: [],
+        providerModels: [],
+      },
+      run: null,
+      notifications: [],
+      memory: { entries: {}, summary: '' },
+      reflect: null,
 
-  settingsOpen: false,
-  chatDraft: '',
-  reviewingArtifact: null,
+      settingsOpen: false,
+      lastCompletion: null,
+      chatDraft: '',
+      reviewingArtifact: null,
+      lastTouchpointMs: null,
+      memoryCurationDraft: {},
+      memorySidebar: { search: '', filter: 'all' },
 
-  setConnected: (v) => set({ connected: v }),
-  setSettingsOpen: (v) => set({ settingsOpen: v }),
-  setChatDraft: (text) => set({ chatDraft: text }),
-  setReviewingArtifact: (path) => set({ reviewingArtifact: path }),
-}))
+      setMemoryCurationDecision: (id, decision) =>
+        set(s => ({
+          memoryCurationDraft: {
+            ...s.memoryCurationDraft,
+            [id]: { ...(s.memoryCurationDraft[id] ?? { feedback: '' }), decision },
+          },
+        }), false, 'setMemoryCurationDecision'),
+
+      setMemoryCurationFeedback: (id, text) =>
+        set(s => ({
+          memoryCurationDraft: {
+            ...s.memoryCurationDraft,
+            [id]: { ...(s.memoryCurationDraft[id] ?? {}), feedback: text },
+          },
+        }), false, 'setMemoryCurationFeedback'),
+
+      resetMemoryCurationDraft: (batch) => {
+        if (batch === null) {
+          set({ memoryCurationDraft: {} }, false, 'resetMemoryCurationDraft/clear')
+        } else {
+          const draft: KoanState['memoryCurationDraft'] = {}
+          for (const p of batch.proposals) {
+            draft[p.id] = { feedback: '' }
+          }
+          set({ memoryCurationDraft: draft }, false, 'resetMemoryCurationDraft/seed')
+        }
+      },
+
+      setMemorySidebarSearch: (v) =>
+        set(s => ({ memorySidebar: { ...s.memorySidebar, search: v } }), false, 'setMemorySidebarSearch'),
+
+      setMemorySidebarFilter: (v) =>
+        set(s => ({ memorySidebar: { ...s.memorySidebar, filter: v } }), false, 'setMemorySidebarFilter'),
+
+      upsertMemoryEntries: (list) =>
+        set(s => {
+          const merged = { ...s.memory.entries }
+          for (const e of list) {
+            merged[e.seq] = e
+          }
+          return { memory: { ...s.memory, entries: merged } }
+        }, false, 'upsertMemoryEntries'),
+
+      setConnected: (v) => set({ connected: v }, false, 'setConnected'),
+      setSettingsOpen: (v) => set({ settingsOpen: v }, false, 'setSettingsOpen'),
+      setLastCompletion: (c) => set({ lastCompletion: c }, false, 'setLastCompletion'),
+      setChatDraft: (text) => set({ chatDraft: text }, false, 'setChatDraft'),
+      setReviewingArtifact: (path) => set({ reviewingArtifact: path }, false, 'setReviewingArtifact'),
+      setLastTouchpointMs: (ms) => set({ lastTouchpointMs: ms }, false, 'setLastTouchpointMs'),
+    }),
+    {
+      name: 'koan',
+      // Enabled in Vite dev server (DEV=true) OR when the backend injected
+      // <meta name="koan-debug" content="1"> into index.html (which the
+      // backend does when started with `uv run koan run --debug`). We read
+      // the meta tag inline here rather than via a window flag set from
+      // main.tsx, because ES import evaluation happens before main.tsx's
+      // body runs — by the time this store module evaluates, the DOM head
+      // is already parsed and the meta tag is queryable.
+      enabled:
+        import.meta.env.DEV ||
+        document
+          .querySelector('meta[name="koan-debug"]')
+          ?.getAttribute('content') === '1',
+    },
+  ),
+)
 
 export type KoanStore = typeof useStore
 

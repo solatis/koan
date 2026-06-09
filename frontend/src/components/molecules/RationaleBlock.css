@@ -1,0 +1,35 @@
+.rb {
+  padding: 12px 16px;
+  border-radius: var(--radius-lg);
+  background: var(--bg-thinking);
+  color: var(--text-body);
+  font-size: var(--type-breadcrumb);
+  line-height: 1.6;
+  font-style: normal;
+}
+
+.rb-label {
+  font-size: var(--type-label);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  font-weight: 500;
+  color: var(--text-thinking);
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.rb-label::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-circle);
+  background: var(--text-thinking);
+  flex-shrink: 0;
+}
+
+.rb code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}

@@ -4,9 +4,11 @@
   border: 1.5px solid var(--border-input);
   border-radius: var(--radius-xl);
   padding: var(--padding-input);
+  transition: border-color var(--duration-fast), box-shadow var(--duration-fast);
 }
 
-.fi--focused {
+.fi--focused,
+.fi--dragging {
   border-color: var(--color-orange);
   box-shadow: 0 0 0 3px var(--focus-ring);
 }
@@ -15,7 +17,32 @@
   opacity: 0.5;
 }
 
-/* ---- Textarea ---- */
+/* ---- Drop overlay ---- */
+.fi-drop-overlay {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-xl);
+  background: rgba(255, 255, 255, 0.92);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  z-index: 10;
+  color: var(--color-orange);
+}
+
+.fi-drop-label {
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* ---- Textarea wrapper ---- */
+.fi-textarea-wrap {
+  position: relative;
+}
+
 .fi-textarea {
   display: block;
   width: 100%;
@@ -28,10 +55,53 @@
   resize: vertical;
   outline: none;
   min-height: 40px;
+  padding-right: 28px;
 }
 
 .fi-textarea::placeholder {
   color: var(--text-placeholder);
+}
+
+/* ---- Gutter attach button ---- */
+.fi-attach-btn {
+  position: absolute;
+  right: 0;
+  bottom: 4px;
+  background: none;
+  border: none;
+  padding: 4px;
+  cursor: pointer;
+  color: var(--text-hint);
+  display: flex;
+  align-items: center;
+  opacity: 0.6;
+  transition: opacity var(--duration-fast);
+}
+
+.fi-attach-btn:hover {
+  opacity: 1;
+}
+
+.fi-attach-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.3;
+}
+
+/* ---- Hidden file input ---- */
+.fi-file-input {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  opacity: 0;
+}
+
+/* ---- File chips row ---- */
+.fi-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
 }
 
 /* ---- Footer row ---- */

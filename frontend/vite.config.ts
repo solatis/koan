@@ -21,6 +21,14 @@ export default defineConfig({
     minify: false,
   },
 
+  // Scope dep-scanning to the main app entry. Without this, Vite walks the
+  // whole frontend/ tree and tries to scan review/index.html, whose entry
+  // has a dynamic glob import that can't be statically resolved. The review
+  // tool has its own config (vite.review.config.ts, run via `npm run review`).
+  optimizeDeps: {
+    entries: ['index.html'],
+  },
+
   server: {
     proxy: {
       // Proxy all backend traffic through Vite's dev server.
@@ -28,7 +36,7 @@ export default defineConfig({
       // so chunks are forwarded immediately rather than batched. Without this,
       // SSE events arrive in groups after a delay, breaking the real-time feed.
       '/events': {
-        target: 'http://localhost:8000',
+        target: 'http://localhost:1729',
         changeOrigin: true,
         configure: (proxy) => {
           proxy.on('proxyReq', (proxyReq) => {
@@ -41,8 +49,8 @@ export default defineConfig({
           })
         },
       },
-      '/api': { target: 'http://localhost:8000', changeOrigin: true },
-      '/mcp': { target: 'http://localhost:8000', changeOrigin: true },
+      '/api': { target: 'http://localhost:1729', changeOrigin: true },
+      '/mcp': { target: 'http://localhost:1729', changeOrigin: true },
     },
   },
 })

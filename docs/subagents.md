@@ -1,6 +1,6 @@
 # Subagents
 
-How koan spawns, manages, and terminates LLM subagent processes.
+How koan spawns, manages, and terminates LLM subagent tasks.
 
 > Parent doc: [architecture.md](./architecture.md)
 
@@ -8,47 +8,64 @@ How koan spawns, manages, and terminates LLM subagent processes.
 
 ## Task Manifest
 
-Every subagent starts as a CLI process (`claude`, `codex`, or `gemini`) with
-MCP config pointing at the driver's HTTP endpoint. The driver reads `task.json`
-from the subagent directory to set up the agent's state in the in-process
-registry.
+Every subagent is an asyncio task inside the single backend process. Before
+spawning, the driver writes `task.json` to the subagent directory and registers
+the agent in the in-process `AppState` registry.
 
 ### `task.json` schema
 
 The manifest is a discriminated union on the `role` field. Common fields
-(`role`, `run_dir`, `mcp_url`) appear on every variant; role-specific fields
-are nested naturally rather than flattened into a shared namespace.
+(`role`, `run_dir`) appear on every variant; role-specific fields are nested
+naturally rather than flattened into a shared namespace.
 
 ```json
 {
   "role": "intake",
-  "run_dir": "/path/to/run",
-  "mcp_url": "http://localhost:8420/mcp?agent_id=intake-abc123"
+  "run_dir": "/path/to/run"
 }
 ```
 
 Role-specific fields:
 
-| Role           | Additional fields                 |
-| -------------- | --------------------------------- |
-| `orchestrator` | `project_dir`, `task_description` |
-| `scout`        | `question`, `investigator_role`   |
-| `executor`     | `artifacts`, `instructions`       |
+| Role           | Additional fields                                                                      |
+| -------------- | -------------------------------------------------------------------------------------- |
+| `orchestrator` | `project_dir`, `task_description`, `workflow_history: list[{name, phase, started_at}]` |
+| `scout`        | `question`, `investigator_role`                                                        |
+| `executor`     | `artifacts`, `instructions`                                                            |
+
+`workflow_history` is an append-only list; the most-recent entry is the active
+workflow. Executor and scout task.json files do not carry this field.
 
 ### Lifecycle
 
-`task.json` is **write-once, read-once**:
+For **executor and scout** subagents, `task.json` is **write-once, read-once**:
 
 1. Driver creates the subagent directory
 2. Driver writes `task.json` (atomic: tmp + rename)
 3. Driver assigns `agent_id`, registers agent in in-process registry
-4. Driver writes MCP config and spawns the CLI process
-5. Child connects to `mcp_url`, calls `koan_complete_step`
+4. Driver spawns the subagent as an asyncio task via `spawn_subagent`
+5. The subagent task calls `_step_phase_handshake_core` to receive step 1
+   guidance as its first turn prompt; this is the bootstrap signal
 6. `task.json` is never modified after spawn
+
+For the **orchestrator**, `task.json` is written at spawn and then appended
+on each `koan_set_workflow` call -- see "Workflow history mutation" below.
 
 This makes every subagent directory **self-describing** and **inspectable**
 after the fact. `cat task.json` shows exactly what the subagent was asked
-to do.
+to do (and, for the orchestrator, which workflows it has visited).
+
+### Workflow history mutation
+
+`koan_set_workflow` is the sole writer of subsequent `workflow_history`
+entries in the orchestrator's `task.json`. The contract:
+
+- Writes are always atomic (tmp + rename via `write_task_json`).
+- Each call appends exactly one `WorkflowHistoryEntry` to the list.
+- Readers must tolerate the file growing between reads; the last entry
+  is always the active workflow.
+- Executor and scout `task.json` files are unaffected -- they do not
+  carry the `workflow_history` field.
 
 ### Why not CLI flags
 
@@ -71,47 +88,37 @@ The previous design passed task configuration as 9 CLI flags. Problems:
 driver: mkdir subagent_dir
 driver: write task.json to subagent_dir (atomic)
 driver: assign agent_id, register in agent registry
-          -> init step engine, permissions, event log from task.json
-driver: write MCP config (runner-specific):
-          claude: mcp-config.json
-          codex: -c runtime override
-          gemini: .gemini/settings.json in cwd
-driver: spawn_subagent(task, subagent_dir, runner)
-          -> runner.build_command(boot_prompt, mcp_url, model, cwd)
-          -> subprocess.Popen(cmd, cwd=cwd, stdout=PIPE, stderr=PIPE)
-          -> parse stdout line-by-line for streaming events
-          -> wait for process exit
+          -> init step engine, event log from task.json
+          -> compose toolset for (role, phase) via compose_toolset
+driver: spawn_subagent(task, app_state)
+          -> creates PydanticAIAgent with composed toolsets
+          -> starts asyncio task: run_agent_loop(options, agent_impl, app_state)
+          -> loop injects step 1 guidance as first turn prompt
+          -> loop drives one turn per agent.iter() call
+          -> await task completion
 driver: deregister agent_id
 driver: check exit code, emit workflow_completed
 ```
 
-### Child side
+### Agent side (first turn)
 
 ```
-CLI process starts (claude/codex/gemini)
-  -> connects to MCP endpoint at mcp_url
-  -> discovers available tools via MCP
-
-LLM receives boot prompt:
-  "You are a koan {role} agent. Call koan_complete_step to receive your instructions."
-  -> LLM calls koan_complete_step via MCP
-  -> MCP endpoint looks up agent_id, advances step 0 -> 1
-  -> returns step 1 guidance as tool result
+run_agent_loop starts:
+  -> calls _step_phase_handshake_core (step 0 -> 1 transition)
+     -> prepends SYSTEM_PROMPT, returns formatted step 1 guidance
+  -> injects guidance as first turn prompt
+  -> agent.iter() runs the first turn (model request -> tool calls -> terminal text)
+  -> first turn reaches End node: AgentState.first_turn_completed = True
+  -> resolve_turn_outcome fires: advance to next step or hand back
 ```
 
-### Boot prompt
-
-```
-"You are a koan {role} agent. Call koan_complete_step to receive your instructions."
-```
-
-One sentence. No task content. The role name is included for primacy -- it
-anchors the LLM's identity before it receives any instructions. Task-specific
-parameters live in `task.json` and flow into step guidance via the phase module.
+There is no boot prompt. The role identity is carried by the `SYSTEM_PROMPT`
+prepended to step 1 guidance. Task-specific parameters live in `task.json`
+and flow into step guidance via the phase module.
 
 ### Fail-fast guards (bootstrap invariants only)
 
-The MCP endpoint validates required `task.json` fields at agent registration:
+The driver validates required `task.json` fields at agent registration:
 
 | Role     | Required fields | Failure if missing                                                      |
 | -------- | --------------- | ----------------------------------------------------------------------- |
@@ -126,7 +133,7 @@ parent->child contract (programming/configuration error), not model behavior.
 ## Step-First Workflow
 
 Phase modules in `koan/phases/` define step guidance, system prompts, and
-hooks for non-linear flows. The step engine in `koan/web/mcp_endpoint.py`
+hooks for non-linear flows. The turn-outcome resolver in `koan/agents/loop.py`
 manages the step counter and dispatches to phase module functions.
 
 Phase modules:
@@ -166,15 +173,28 @@ pipeline, kept for reference.
 
 ### Step progression state machine
 
+The turn-outcome resolver (`resolve_turn_outcome`) runs at each end-of-turn:
+
 ```
-koan_complete_step arrives via MCP:
-  step == 0       -> step=1, prepend SYSTEM_PROMPT, return format_step(step_guidance(1))  [boot/phase transition]
-  otherwise       -> validate_step_completion(step)                       [pre-condition check]
-                  -> next_step = get_next_step(step)                      [pure: decides where to go]
-  next_step is None -> return format_phase_complete(phase, suggested, descriptions) [non-blocking; orchestrator then calls koan_yield]
-  next_step < prev  -> on_loop_back(prev, next_step)                     [side effects of loop]
-  next_step != None -> step=next_step, return format_step(step_guidance(next_step)) + any buffered user messages  [advance]
+terminal-text turn fires resolve_turn_outcome:
+  step == 0  -> step=1, prepend SYSTEM_PROMPT, inject format_step(step_guidance(1))
+               [loop bootstrap / phase transition]
+  otherwise  -> validate_step_completion(step)              [pre-condition check]
+             -> next_step = get_next_step(step)             [pure: decides where to go]
+  next_step < prev  -> on_loop_back(prev, next_step)        [side effects of loop]
+  next_step != None -> step=next_step, inject format_step(step_guidance(next_step))
+                       + any buffered user messages          [advance]
+  next_step is None, primary agent  -> hand back to user
+  next_step is None, non-primary    -> terminate
 ```
+
+The actual phase-boundary directive lives in each phase's last-step
+`step_guidance()` return value, in the `invoke_after` field. The helper
+`terminal_invoke(ctx.next_phase, ctx.suggested_phases)` renders either an
+auto-advance directive (`koan_set_phase`) or a hand-back directive
+(`koan_suggest_next` then end the turn) depending on whether
+`PhaseBinding.next_phase` is bound. See `docs/guided-transitions.md` for the
+per-workflow transition tables.
 
 ### System prompt vs task content
 
@@ -182,9 +202,8 @@ The system prompt establishes **role identity and rules** -- who you are, what
 you must/must not do, what output files you produce, what tools you have. It
 deliberately omits task details.
 
-Task details arrive as **step guidance** -- the return value of
-`koan_complete_step` -- after the LLM has already established the tool-calling
-pattern. This separation is load-bearing (see
+Task details arrive as **step guidance** -- injected as the turn prompt by the
+loop at each step. This separation is load-bearing (see
 [architecture pitfalls](./architecture.md#pitfalls)).
 
 ### format_step structure
@@ -197,107 +216,58 @@ Every step guidance string has the same structure:
 
 {instructions}
 
-WHEN DONE: Call koan_complete_step to advance to the next step.
-Do NOT call this tool until the work described in this step is finished.
+WHEN DONE: end your turn once this step's work is complete -- a turn that
+ends with no further tool call advances you to the next step automatically.
+Do not end your turn until the step's work is done.
 ```
 
-The invoke-after directive is always **last** (recency reinforcement).
-
-### The `thoughts` parameter -- escape hatch, not data channel
-
-`thoughts` on `koan_complete_step` is an **escape hatch** for models that
-cannot produce both text output and a tool call in the same response.
-
-**The invariant:** `thoughts` must **NEVER** be actively used to capture task
-output. No summaries, no reports, no structured data extraction.
-
-Task output goes to files (`findings.md`, `landscape.md`, `plan.md`, etc.).
-The driver/parent reads those files after the subagent exits.
+The invoke-after directive is always **last** (recency reinforcement). For the
+last step of a phase, `terminal_invoke` replaces the default footer with either
+an auto-advance directive (`koan_set_phase`) or a hand-back directive
+(`koan_suggest_next` then end the turn).
 
 ---
 
 ## Permissions
 
-Two enforcement layers restrict what tools each agent can use:
-
-1. **CLI tool whitelist** (`CLAUDE_TOOL_WHITELISTS` in `subagent.py`) --
-   controls which Claude Code built-in tools exist in the model's context.
-   Unlisted tools are not presented to the model at all; it has no awareness
-   they exist and cannot attempt to call them.
-2. **MCP permission fence** (`check_permission()` in `koan/lib/permissions.py`)
-   -- controls which koan MCP tools are callable per role and phase.
-
-These layers are complementary. The CLI whitelist gates built-in tools (Read,
-Write, Edit, Bash, etc.). The MCP fence gates koan tools (koan_complete_step,
-koan_set_phase, etc.). Together they implement defense-in-depth: an agent
-never sees tools it should not use, and tools it can see are still validated
-per-call.
-
-### CLI tool whitelists
+Capability restriction is **construction-time**, not call-time.
+`compose_toolset(policy, role, phase)` in `koan/tools/tool_policy.py` builds
+the allowed tool vocabulary once per (role, phase) before the agent's loop
+starts. Disallowed tools never enter the model's context; the model cannot
+call what it cannot see.
 
 Agents should not have access to tools they are never intended to need. A
 smaller tool vocabulary reduces misbehavior, token waste, and the chance of
-the model drifting toward irrelevant built-in capabilities (plan mode,
-autonomous scheduling, subagent spawning) that compete with koan's step-first
-workflow.
+the model drifting toward irrelevant capabilities (plan mode, autonomous
+scheduling, subagent spawning) that compete with koan's step-first workflow.
 
-| Role             | Built-in tools                                                                                                               |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| **orchestrator** | `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `WebFetch`, `WebSearch`                                                     |
-| **executor**     | `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `TaskCreate`, `TaskUpdate`, `TaskList`, `TaskGet`, `TaskStop`, `TaskOutput` |
-| **scout**        | `Read`, `Bash`, `Glob`, `Grep`                                                                                               |
+### Per-role built-in tool vocabulary
 
-All agents also receive `--disable-slash-commands` (no skills) and
-`--strict-mcp-config` (only koan's MCP server, no ambient servers).
+| Role             | Built-in tools                                                           |
+| ---------------- | ------------------------------------------------------------------------ |
+| **orchestrator** | `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `WebFetch`, `WebSearch` |
+| **executor**     | `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`                          |
+| **scout**        | `Read`, `Bash`, `Glob`, `Grep`                                           |
 
-Notably excluded from all roles: `Agent` (bypasses spawn lifecycle),
-`EnterPlanMode`/`ExitPlanMode` (competes with step-first workflow),
-`ScheduleWakeup`/`CronCreate` (autonomous scheduling), `EnterWorktree`
-(breaks directory assumptions).
+### Per-role koan tool vocabulary
 
-### MCP permission fence
+The allowlist tables in `koan/tools/tool_policy.py` define which koan tools
+are composed into each role's toolset. The orchestrator's toolset is
+phase-aware -- tools vary by the current phase (`ROLE_PERMISSIONS` joined with
+the `_ORCHESTRATOR_SCOUT_PHASES`, `_ORCHESTRATOR_BASH_PHASES`, and
+`_ORCHESTRATOR_STORY_TOOLS` frozensets). Executor and scout use static sets:
 
-Default-deny, role-based, enforced at runtime.
+| Role         | koan tools                   | notes                                                      |
+| ------------ | ---------------------------- | ---------------------------------------------------------- |
+| **scout**    | (none beyond universal read) | No user interaction. No nested scouts. No write.           |
+| **executor** | `koan_ask_question`          | Must modify the actual codebase; bash + write unrestricted |
 
-#### READ_TOOLS (always allowed)
+#### READ_TOOLS (always composed for all roles)
 
-`bash`, `read`, `grep`, `glob`, `find`, `ls` -- allowed for all roles. This is
-an accepted limitation: `bash` can write files, but distinguishing read-bash
-from write-bash is intractable at the permission layer.
-
-#### Role permission matrix
-
-The orchestrator role uses **phase-aware permissions** -- available tools
-vary by the current phase. Executor and scout use static permission sets.
-
-**Orchestrator phase-aware permissions:**
-
-| Tool                                                                              | Available phases                                                                                                 |
-| --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `koan_complete_step`                                                              | All phases                                                                                                       |
-| `koan_set_phase`                                                                  | All phases (blocked mid-story during execution)                                                                  |
-| `koan_ask_question`                                                               | All phases                                                                                                       |
-| `koan_request_scouts`                                                             | `intake`, `core-flows`, `tech-plan`, `ticket-breakdown`, `cross-artifact-validation`, `plan-spec`, `plan-review` |
-| `koan_request_executor`                                                           | `execution`, `execute`                                                                                           |
-| `koan_select_story`, `koan_complete_story`, `koan_retry_story`, `koan_skip_story` | `execution` only                                                                                                 |
-| `write`, `edit` (run_dir scoped)                                                  | All phases except `brief-generation` step 1                                                                      |
-| `bash`                                                                            | `execution`, `implementation-validation`                                                                         |
-
-**Other role static permissions:**
-
-| Role         | koan tools                                | write/edit       | notes                                                   |
-| ------------ | ----------------------------------------- | ---------------- | ------------------------------------------------------- |
-| **scout**    | `koan_complete_step`                      | none             | No user interaction. No nested scouts. No file writing. |
-| **executor** | `koan_complete_step`, `koan_ask_question` | **unrestricted** | Must modify the actual codebase                         |
-
-#### Path scoping
-
-Planning roles (orchestrator, scout) can only `write`/`edit` files inside the
-run directory via MCP write/edit tools. The permission check resolves both the
-tool's `path` argument and the run directory, then verifies the tool path
-starts with the run path. Built-in Write/Edit bypass MCP and are not subject
-to this check; path discipline for built-in tools relies on prompt engineering
-and the CLI whitelist.
+`bash`, `read`, `grep`, `glob`, `find`, `ls` -- composed into every role. This
+is an accepted limitation: `bash` can write files, but distinguishing read-bash
+from write-bash is intractable at the vocabulary layer. Prompt engineering
+constrains intended bash use; vocabulary restriction does not.
 
 ---
 
@@ -348,53 +318,37 @@ requires updating that map.
 
 Model tiers use a profile-based system. Each profile defines three tiers
 (`strong`, `standard`, `cheap`), and an active profile is selected at runtime.
-Agent installations declare available runners and binaries. Config is persisted
-to `~/.koan/config.json`:
+Provider credentials come from environment variables; no binary or installation
+config is stored. Config is persisted to `~/.koan/config.yaml`:
 
-```json
-{
-  "agentInstallations": [
-    {
-      "alias": "claude-sonnet",
-      "runnerType": "claude",
-      "binary": "claude",
-      "extraArgs": []
-    }
-  ],
-  "profiles": [
-    {
-      "name": "balanced",
-      "tiers": {
-        "strong": {
-          "runnerType": "claude",
-          "model": "claude-sonnet-4-5",
-          "thinking": "disabled"
-        },
-        "standard": {
-          "runnerType": "claude",
-          "model": "claude-sonnet-4-5",
-          "thinking": "disabled"
-        },
-        "cheap": {
-          "runnerType": "claude",
-          "model": "claude-haiku-4-5",
-          "thinking": "disabled"
-        }
-      }
-    }
-  ],
-  "activeProfile": "balanced",
-  "scoutConcurrency": 8
-}
+```yaml
+profiles:
+  - name: balanced
+    tiers:
+      strong:
+        provider: google
+        model: gemini-2.5-pro-preview-06-05
+        thinking: disabled
+      standard:
+        provider: google
+        model: gemini-2.5-pro-preview-06-05
+        thinking: disabled
+      cheap:
+        provider: google
+        model: gemini-2.5-flash-preview-05-20
+        thinking: disabled
+active_profile: balanced
+scout_concurrency: 8
 ```
 
 Roles map to tiers (`strong`/`standard`/`cheap`), and tier-to-model bindings
 are configured per-profile. Switching profiles changes all model assignments at
-once without touching role definitions.
+once without touching role definitions. Provider availability is checked via
+`ProviderStatus` (env-key presence); no binary probe is performed.
 
 ### Scout concurrency
 
-`scoutConcurrency` (default: 8) controls how many scout subagents run in
+`scout_concurrency` (default: 8) controls how many scout subagents run in
 parallel. Increase for faster scouting on machines with ample resources;
 decrease to reduce peak memory pressure.
 
@@ -445,15 +399,15 @@ The JSON files have distinct lifecycles per
 ## Web Server Integration
 
 The driver pushes SSE events directly from in-process state transitions. When
-a tool call arrives via MCP, the handler emits audit events and pushes SSE
-updates to connected browsers in the same call chain.
+an in-process tool core runs, it emits audit events and pushes SSE updates to
+connected browsers in the same call chain.
 
 ```
-tool call arrives via MCP
-  -> handler processes call
+tool core called by agent (in-process)
+  -> core processes call
   -> emits audit event -> fold -> state.json
   -> pushes SSE event to browsers
-  -> returns tool result to subagent
+  -> returns tool result to agent
 ```
 
 Agent registration and deregistration are tracked in the in-process

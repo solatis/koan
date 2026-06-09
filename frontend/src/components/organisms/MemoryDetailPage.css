@@ -1,0 +1,132 @@
+.mdp {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 26px 24px 40px;
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: 24px;
+  align-items: start;
+}
+
+.mdp-main {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* ======== EntryDetailCard ======== */
+.dc {
+  background: var(--bg-card);
+  border: 0.5px solid var(--border-card);
+  border-radius: var(--radius-2xl);
+  padding: 28px 40px 32px;
+}
+
+.dc-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.dc-seq {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-hint);
+  letter-spacing: 0.5px;
+}
+
+.dc-title {
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 400;
+  color: var(--text-primary);
+  letter-spacing: -0.3px;
+  line-height: 1.25;
+  margin: 8px 0 10px;
+}
+
+/* ---- Dates grid ---- */
+.dc-dates {
+  display: grid;
+  grid-template-columns: repeat(3, auto);
+  gap: 32px;
+  padding: 14px 0 18px;
+  margin-bottom: 22px;
+  border-bottom: 0.5px solid var(--border-divider-light);
+}
+
+.dc-date-label {
+  font-size: var(--type-label);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-muted);
+  font-weight: 500;
+  margin-bottom: 4px;
+}
+
+.dc-date-value {
+  font-family: var(--font-mono);
+  font-size: var(--type-body);
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.dc-date-sub {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-hint);
+  margin-top: 1px;
+}
+
+/* ---- Prose body ---- */
+.dc-body {
+  max-width: 720px;
+  font-size: 15px;
+  line-height: 1.75;
+  color: var(--text-body);
+}
+
+.dc-body p { margin: 0 0 16px; }
+.dc-body p:last-child { margin-bottom: 0; }
+
+.dc-body code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  background: var(--bg-tool-row);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.dc-body strong { color: var(--text-primary); font-weight: 500; }
+.dc-body em { font-style: italic; color: var(--text-subtle); }
+
+/* ---- Filename ---- */
+.dc-filename {
+  margin-top: 18px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-hint);
+}
+
+/* ---- Actions footer ---- */
+.dc-actions {
+  margin-top: 28px;
+  padding-top: 20px;
+  border-top: 0.5px solid var(--border-divider-light);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dc-editmeta {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.dc-spacer { flex: 1; }
+
+/* rc-* rules live in RelationsCard.css (molecule). Removed here after
+   promotion from page-local to shared molecule. */

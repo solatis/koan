@@ -2,6 +2,8 @@
  * RadioOption — a selectable option card for elicitation questions.
  *
  * Renders a radio circle, label text, and optional "recommended" badge.
+ * When `isCustom` is true and the option is selected, renders a multi-line
+ * <textarea> for free-form answers (the "Other (type your own)" field).
  * Controlled component — parent manages selection state via `selected`
  * prop and `onClick` callback.
  *
@@ -22,7 +24,7 @@ interface RadioOptionProps {
 }
 
 export function RadioOption({ label, selected, recommended, isCustom, customText, onCustomTextChange, onClick }: RadioOptionProps) {
-  const inputRef = useRef<HTMLInputElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
     if (isCustom && selected) inputRef.current?.focus()
@@ -43,10 +45,10 @@ export function RadioOption({ label, selected, recommended, isCustom, customText
           <span className="ro-label">{label}</span>
         </span>
         {isCustom && selected && (
-          <input
+          <textarea
             ref={inputRef}
             className="ro-custom-input"
-            type="text"
+            rows={3}
             placeholder="Type your response..."
             value={customText ?? ''}
             onChange={e => onCustomTextChange?.(e.target.value)}

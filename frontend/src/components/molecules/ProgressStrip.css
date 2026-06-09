@@ -1,0 +1,22 @@
+.ps {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  padding: 12px 0 16px;
+  border-bottom: 0.5px solid var(--border-divider-light);
+}
+
+.ps-segments {
+  display: flex;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.ps-sep {
+  color: var(--border-input);
+}
+
+.ps-spacer {
+  flex: 1;
+}

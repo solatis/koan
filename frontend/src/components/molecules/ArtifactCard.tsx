@@ -17,6 +17,9 @@ interface ArtifactCardProps {
   variant?: 'recent' | 'stable'
   active?: boolean
   onClick?: () => void
+  // True when the artifact was modified after the last yield resolution;
+  // drives the amber dot indicator in the sidebar.
+  changed?: boolean
 }
 
 const FileIcon = ({ stroke }: { stroke: string }) => (
@@ -26,7 +29,7 @@ const FileIcon = ({ stroke }: { stroke: string }) => (
   </svg>
 )
 
-export function ArtifactCard({ filename, modifiedAgo, variant = 'recent', active, onClick }: ArtifactCardProps) {
+export function ArtifactCard({ filename, modifiedAgo, variant = 'recent', active, onClick, changed }: ArtifactCardProps) {
   const cls = `ac${onClick ? ' ac--clickable' : ''}${active ? ' ac--active' : ''}`
   return (
     <div className={cls} onClick={onClick} role={onClick ? 'button' : undefined} tabIndex={onClick ? 0 : undefined}>
@@ -34,7 +37,10 @@ export function ArtifactCard({ filename, modifiedAgo, variant = 'recent', active
         <FileIcon stroke={variant === 'recent' ? '#b8b0d0' : '#d0f0e8'} />
       </span>
       <span className="ac-info">
-        <span className="ac-filename">{filename}</span>
+        <span className="ac-filename">
+          {filename}
+          {changed && <span className="ac-changed" aria-label="changed since last touchpoint" />}
+        </span>
         <span className="ac-time">{modifiedAgo}</span>
       </span>
     </div>

@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 
 import aiofiles
 
+from .agents.base import Agent, AgentDiagnostic, AgentError, AgentOptions
+from .agents.registry import AgentRegistry
 from .audit import EventLog
 from .run_state import ensure_subagent_directory
 from .events import (
@@ -20,123 +22,30 @@ from .events import (
     build_agent_spawn_failed,
     build_agent_spawned,
     build_questions_answered,
-    build_tool_bash,
-    build_tool_called,
-    build_tool_completed,
-    build_tool_edit,
-    build_tool_grep,
-    build_tool_ls,
-    build_tool_read,
+    build_tool_input_delta,
+    build_tool_request,
+    build_tool_result,
     build_tool_result_captured,
-    build_tool_started,
-    build_tool_stopped,
-    build_tool_write,
 )
 from .logger import get_logger
+from .lib.task_json import current_workflow
 from .lib.workflows import get_workflow
 from .phases import PHASE_MODULE_MAP, PhaseContext
 from .prompts import AGENT_TYPE_PROMPTS
-from .runners import RunnerDiagnostic, RunnerError
-from .runners.registry import RunnerRegistry
 
 if TYPE_CHECKING:
-    from .runners.base import Runner
     from .state import AppState
 
 log = get_logger("subagent")
 
 
-def _emit_exploration_tool_completion(
-    store,
-    agent_id: str,
-    call_id: str,
-    tool_name: str,
-    summary: str,
-    now_ms: int,
-) -> None:
-    """Emit the typed projection event + tool_completed for a streaming read/grep/ls.
-
-    Called from stream_stdout's tool_stop handler when Claude's streaming path
-    finishes an exploration tool. The args are finalized at tool_stop, so this
-    helper can create the aggregate child and close it in one step. Child
-    metric fields stay None until a matching tool_result_captured arrives
-    from a later user message.
-    """
-    if tool_name == "read":
-        file_part, lines_part = summary, ""
-        if ":" in summary:
-            head, tail = summary.rsplit(":", 1)
-            if tail and (tail[0].isdigit() or "-" in tail):
-                file_part, lines_part = head, tail
-        store.push_event(
-            "tool_read",
-            build_tool_read(call_id, file_part, lines_part, ts_ms=now_ms),
-            agent_id=agent_id,
-        )
-    elif tool_name == "grep":
-        store.push_event(
-            "tool_grep",
-            build_tool_grep(call_id, summary, ts_ms=now_ms),
-            agent_id=agent_id,
-        )
-    else:  # ls
-        store.push_event(
-            "tool_ls",
-            build_tool_ls(call_id, summary, ts_ms=now_ms),
-            agent_id=agent_id,
-        )
-    store.push_event(
-        "tool_completed",
-        build_tool_completed(call_id, tool_name, ts_ms=now_ms),
-        agent_id=agent_id,
-    )
-
-# -- Tool whitelists (Claude Code --tools) -------------------------------------
+# _emit_exploration_tool_completion removed in M1: exploration tool lifecycle
+# is now handled uniformly by the tool_request / tool_input_delta / tool_result
+# events emitted by the streaming loop. No per-tool-type emission path remains.
 #
-# Agents should not have access to tools they are never intended to need.
-# Restricting the tool vocabulary at the CLI level prevents the model from
-# even seeing irrelevant tools (EnterPlanMode, Agent, TaskCreate, etc.),
-# which reduces misbehavior and token waste.  The MCP permission fence
-# remains the authority for koan-specific tools; this whitelist controls
-# only Claude Code built-in tools.
-#
-# These are Claude Code PascalCase tool names.  Other runners (codex, gemini)
-# have their own mechanisms and are not affected by this whitelist.
-
-CLAUDE_TOOL_WHITELISTS: dict[str, str] = {
-    "orchestrator": "Read,Write,Edit,Bash,Glob,Grep,WebFetch,WebSearch",
-    "executor":     "Read,Write,Edit,Bash,Glob,Grep,TaskCreate,TaskUpdate,TaskList,TaskGet,TaskStop,TaskOutput",
-    "scout":        "Read,Bash,Glob,Grep",
-}
-
-
-def _claude_post_build_args(role: str, run_dir: str, project_dir: str) -> list[str]:
-    """Compose claude-only post-build args: tool whitelist, slash-command disable,
-    strict MCP config, additional directories, and permission mode.
-
-    Returns a list of argv entries to append to a claude command. Pure function --
-    no I/O, no globals beyond the CLAUDE_TOOL_WHITELISTS module constant.
-
-    project_dir is listed before run_dir so the project is searched first.
-    Empty dir strings are skipped to avoid passing --add-dir "" to the CLI.
-    """
-    args: list[str] = []
-    whitelist = CLAUDE_TOOL_WHITELISTS.get(role)
-    if whitelist is not None:
-        args.extend(["--tools", whitelist])
-    args.append("--disable-slash-commands")
-    args.append("--strict-mcp-config")
-    # Add project and run directories so the CLI can read/edit files in both
-    # locations without prompting; acceptEdits gates writes at the tool level.
-    if project_dir:
-        args.extend(["--add-dir", project_dir])
-    if run_dir:
-        args.extend(["--add-dir", run_dir])
-    # acceptEdits is safe for all roles: the CLAUDE_TOOL_WHITELISTS already
-    # restrict which roles receive Write/Edit in their tool vocabulary, so
-    # scouts cannot write even though the permission mode is permissive.
-    args.extend(["--permission-mode", "acceptEdits"])
-    return args
+# CLAUDE_TOOL_WHITELISTS and _build_claude_tool_lists removed in M4: the HTTP
+# MCP transport and the CLI Claude agent are deleted; the in-process PydanticAI
+# agent has no use for per-role CLI tool whitelists.
 
 
 def _now_iso() -> str:
@@ -148,13 +57,13 @@ def _now_iso() -> str:
 class SubagentResult:
     exit_code: int
     final_response: str = ""
+    error: str | None = None
 
 
 # -- Boot prompt ---------------------------------------------------------------
-
-def boot_prompt(role: str) -> str:
-    return f"You are a koan {role} agent. Call koan_complete_step to receive your instructions."
-
+# boot_prompt removed in M6: the loop bootstrap calls _step_phase_handshake_core
+# directly, so no one-sentence boot directive is needed. The first step's
+# guidance is injected as the first turn's prompt.
 
 # -- task.json writer ----------------------------------------------------------
 
@@ -169,12 +78,23 @@ async def write_task_json(subagent_dir: str, task_dict: dict) -> None:
 # -- PhaseContext builder ------------------------------------------------------
 
 def _build_phase_ctx(task: dict, subagent_dir: str) -> PhaseContext:
+    """Build a PhaseContext from a task.json dict for any subagent role.
+
+    Resolves workflow_name from workflow_history for the orchestrator and
+    defaults to empty string for executor/scout subagents whose task.json
+    does not carry the field. project_dir and additional_dirs are read
+    from task.json verbatim and stored on the context so phase modules
+    can render them in step prompts.
+    """
     return PhaseContext(
         run_dir=task.get("run_dir", ""),
         subagent_dir=subagent_dir,
         project_dir=task.get("project_dir", ""),
+        additional_dirs=task.get("additional_dirs", []),
         task_description=task.get("task_description", ""),
-        workflow_name=task.get("workflow", ""),
+        # current_workflow reads workflow_history[-1]["name"]; returns "" when
+        # absent so executor/scout task.json files behave identically to before.
+        workflow_name=current_workflow(task, default=""),
         phase_instructions=task.get("instructions") or task.get("phase_instructions") or task.get("task"),
         executor_artifacts=task.get("artifacts", []),
         story_id=task.get("story_id"),
@@ -189,7 +109,30 @@ def _build_phase_ctx(task: dict, subagent_dir: str) -> PhaseContext:
 
 # -- Main spawn function -------------------------------------------------------
 
-async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None = None) -> SubagentResult:
+async def spawn_subagent(
+    task: dict,
+    app_state: AppState,
+    agent_impl: Agent | None = None,
+) -> SubagentResult:
+    """Spawn an in-process subagent via the Agent abstraction.
+
+    Resolves a PydanticAIAgent (via AgentRegistry) when none is injected,
+    opens an event log, registers AgentState, drives agent_impl.run(options)
+    to completion, and translates yielded StreamEvents into projection events.
+
+    The handshake gate (agent.first_turn_completed on the AgentState) is
+    enforced at exit; bootstrap_failure diagnostics are emitted when not set.
+    first_turn_completed is set by run_agent_loop once the first turn reaches
+    the End node.
+
+    M4: mcp_url plumbing, installation field, and available_tools/allowed_tools
+    removed -- the HTTP MCP transport and CLI/SDK agent path are deleted.
+
+    Variable-naming discipline: 'agent' always refers to the AgentState
+    instance (e.g. agent.first_turn_completed). The Agent Protocol instance
+    is always 'agent_impl'. They must never be confused -- the handshake
+    check reads agent.first_turn_completed (AgentState), not agent_impl.
+    """
     role = task["role"]
     agent_id = str(uuid.uuid4())
     store = app_state.projection_store
@@ -204,26 +147,46 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
     else:
         Path(subagent_dir).mkdir(parents=True, exist_ok=True)
 
-    # Resolve runner via registry
-    if runner is None:
+    # M1->M2 seam: resolve the ModelSpec for the role, then raise NotImplementedError.
+    # Legacy SDK/CLI agent construction is intentionally non-functional after the
+    # M1 config reshape -- the new spawn path is wired to PydanticAIAgent in M2.
+    # agent_impl is still accepted as an injection point for tests that bypass
+    # the registry entirely (FakeAgent path).
+    if agent_impl is None:
         try:
-            config = app_state.config
-            registry = RunnerRegistry()
-            installation, model_alias, thinking_mode = registry.resolve_agent_config(
-                role, config,
-                builtin_profiles=app_state.builtin_profiles,
-                run_installations=app_state.run_installations,
+            config = app_state.provider_config.config
+            registry = AgentRegistry()
+            # resolve_model_spec replaces resolve_agent_config; returns a ModelSpec.
+            # M5: builtin_profiles param removed from resolve_model_spec.
+            model_spec = registry.resolve_model_spec(role, config)
+            # M2 seam: PydanticAIAgent wired here; the legacy binary spawn path
+            # is non-functional after the M1 config reshape.
+            # Lazy import to avoid a circular dependency: koan/agents imports from
+            # koan/subagent (indirectly via events/state), so importing PydanticAIAgent
+            # at module level would create a cycle.
+            from .agents.pydantic_ai import PydanticAIAgent
+            agent_impl = PydanticAIAgent(
+                model_spec=model_spec,
+                app_state=app_state,
+                subagent_dir=subagent_dir,
             )
-
-            runner = registry.get_runner(installation.runner_type, subagent_dir)
-            model = model_alias
-        except RunnerError as e:
-            log.error("runner resolution failed for %s: %s", role, e.diagnostic.message)
+            # model, installation, thinking_mode are legacy fields consumed by
+            # the AgentOptions constructor below. PydanticAIAgent does not use
+            # them (it reads model_spec directly); set them to None so the
+            # AgentOptions is constructed cleanly without AttributeError.
+            model = model_spec.model
+            installation = None
+            thinking_mode = None
+            # Carry provider and context_window for the fold's cost/percent derivation.
+            provider = model_spec.provider
+            context_window = model_spec.context_window
+        except AgentError as e:
+            log.error("agent resolution failed for %s: %s", role, e.diagnostic.message)
             # Write diagnostic to EventLog
             try:
                 event_log = EventLog(subagent_dir, role, phase=role, model=None)
                 await event_log.open()
-                await event_log.emit_runner_diagnostic(e.diagnostic)
+                await event_log.emit_agent_diagnostic(e.diagnostic)
                 await event_log.close()
             except Exception:
                 log.warning("failed to write diagnostic event log for %s", role)
@@ -231,16 +194,24 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
                 "agent_spawn_failed",
                 build_agent_spawn_failed(role, e.diagnostic),
             )
-            return SubagentResult(exit_code=1)
+            return SubagentResult(exit_code=1, error=e.diagnostic.message)
     else:
         model = None
         installation = None
         thinking_mode = None
+        # No model_spec when agent_impl is injected (test path); defaults signal
+        # the fold that provider/context_window are unavailable for this agent.
+        provider = None
+        context_window = 0
 
-    # Write task.json
-    mcp_url = f"http://127.0.0.1:{app_state.port}/mcp/?agent_id={agent_id}"
-    task_on_disk = {**task, "mcp_url": mcp_url}
+    # Write task.json. mcp_url omitted in M4: the HTTP MCP transport is deleted
+    # and the in-process agent reads tools from the PydanticAI toolset, not MCP.
+    task_on_disk = dict(task)
     await write_task_json(subagent_dir, task_on_disk)
+    log.debug(
+        "task.json written: path=%s bytes=%d",
+        subagent_dir, len(json.dumps(task_on_disk)),
+    )
 
     # Build PhaseContext
     phase_ctx = _build_phase_ctx(task, subagent_dir)
@@ -248,10 +219,10 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
     # Look up phase module and system prompt.
     # Persistent orchestrator: uses the workflow's initial_phase to select
     # the step-guidance module. This must agree with driver.py which sets
-    # app_state.phase = workflow.initial_phase. Falls back to "plan"
-    # workflow when no workflow name is on the task.
+    # app_state.phase = workflow.initial_phase. Falls back to "plan" via
+    # current_workflow when workflow_history is absent or empty.
     if role == "orchestrator":
-        workflow_name = task.get("workflow", "plan")
+        workflow_name = current_workflow(task, default="plan")
         workflow = get_workflow(workflow_name)
         phase_module = workflow.get_module(workflow.initial_phase)
     else:
@@ -262,13 +233,16 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
 
     if phase_module is None:
         log.error("no phase module for role %s", role)
-        return SubagentResult(exit_code=1)
+        return SubagentResult(exit_code=1, error=f"no phase module for role {role}")
 
     # Create EventLog
     event_log = EventLog(subagent_dir, role, phase=role, model=model)
     await event_log.open()
 
-    # Register AgentState
+    # Register AgentState.
+    # 'agent' (AgentState) is deliberately named distinct from 'agent_impl'
+    # (Agent Protocol). All handshake checks, token tracking, and final_response
+    # reads use 'agent'. All Protocol calls use 'agent_impl'.
     from .state import AgentState
     agent = AgentState(
         agent_id=agent_id,
@@ -281,292 +255,224 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
         phase_ctx=phase_ctx,
         event_log=event_log,
         model=model,
+        provider=provider,
+        context_window=context_window,
         is_primary=(role == "orchestrator"),
+        # runner_type carries the agent name ('claude', 'codex', 'gemini', 'fake'
+        # in tests). Used by upload_ids_to_blocks and steering-drain routing (M2).
+        runner_type=agent_impl.name if agent_impl is not None else "",
     )
     app_state.agents[agent_id] = agent
 
     # Emit phase start to audit log
     await event_log.emit_phase_start(phase_module.TOTAL_STEPS)
 
-    # Build command before emitting agent_spawned -- if build_command fails, no
-    # agent_spawned event is emitted (per plan: "the agent was never launched").
-    try:
-        if installation is not None and thinking_mode is not None:
-            cmd = runner.build_command(
-                boot_prompt(role), mcp_url, installation, model, thinking_mode,
-                system_prompt=system_prompt,
-            )
-        else:
-            cmd = runner.build_command(boot_prompt(role), mcp_url, model,
-                                       system_prompt=system_prompt)
-    except RunnerError as e:
-        await event_log.emit_runner_diagnostic(e.diagnostic)
-        store.push_event(
-            "agent_spawn_failed",
-            build_agent_spawn_failed(role, e.diagnostic),
-        )
-        await event_log.close()
-        del app_state.agents[agent_id]
-        return SubagentResult(exit_code=1)
+    # Construct AgentOptions. M4: mcp_url, available_tools, allowed_tools, and
+    # installation removed -- the CLI/SDK agent path is deleted; PydanticAIAgent
+    # reads model_spec directly.
+    options = AgentOptions(
+        role=role,
+        agent_id=agent_id,
+        model=model,
+        thinking=thinking_mode,
+        system_prompt=system_prompt,
+        project_dir=task.get("project_dir", ""),
+        run_dir=task.get("run_dir", ""),
+        additional_dirs=task.get("additional_dirs", []),
+        cwd=task.get("project_dir") or subagent_dir,
+        extras={},
+    )
 
-    # Claude-specific post-build: tool whitelist, slash-command disable,
-    # strict MCP config, additional working directories, and permission mode.
-    if runner.name == "claude":
-        cmd.extend(_claude_post_build_args(
-            role=role,
-            run_dir=task.get("run_dir", ""),
-            project_dir=task.get("project_dir", ""),
-        ))
+    # In-process agents have no subprocess to register (M9 rip-out dropped the
+    # register_process / active-process plumbing); spawn_subagent derives
+    # success/failure from a raised AgentError or the handshake check below.
 
-    # Emit agent_spawned only after build_command succeeds -- process is about to start
+    # Emit agent_spawned now that AgentState is fully registered and we are
+    # about to start iterating. build_command errors that used to abort before
+    # this point now surface from within agent_impl.run() as AgentError.
     store.push_event("agent_spawned", build_agent_spawned(agent), agent_id=agent_id)
 
-    # Spawn process — cwd is the project directory so that tools like
-    # `find .`, `ls`, `grep -r` naturally scope to the user's codebase.
-    # Falls back to subagent_dir if project_dir is unavailable.
-    spawn_cwd = task.get("project_dir") or subagent_dir
-    log.info("spawning %s (agent_id=%s) cwd=%s: %s", role, agent_id, spawn_cwd, " ".join(cmd))
-    # limit= raises the asyncio StreamReader per-line buffer above its 64 KB
-    # default. A single stream-json event from the child CLI (long thinking
-    # block, fat tool result, large assistant content envelope) routinely
-    # exceeds 64 KB; readline() then raises LimitOverrunError and the scout's
-    # output becomes unreadable mid-run.
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=spawn_cwd,
-        limit=4 * 1024 * 1024,
-    )
-    app_state._active_processes[agent_id] = proc
+    log.info("running %s (agent_id=%s) via %s", role, agent_id, agent_impl.name)
 
-    # Stream tracking
-    async def stream_stdout():
-        assert proc.stdout is not None
-        last_tool_name: str | None = None
-        last_call_id: str | None = None
-        streaming_call_ids: dict[int, tuple[str, str]] = {}
-        # Map Claude's tool_use_id -> our local call_id so that later
-        # tool_result events can be attributed to the correct projection entry.
-        call_id_by_tool_use_id: dict[str, str] = {}
+    # Stream tracking -- same dicts as before; only the iteration source changes.
+    call_ids_by_block: dict[int, tuple[str, str]] = {}
+    call_id_by_tool_use_id: dict[str, str] = {}
+    # Accumulate real token usage from StreamEvent.usage (set on turn_complete by
+    # PydanticAIAgent). When populated, replaces the char-length token_count
+    # approximation at agent_exited. CLI runners leave this None.
+    accumulated_usage: dict | None = None
+    # Captured if agent_impl.run() raises AgentError -- the in-process
+    # replacement for the old agent_impl.exit_code / stderr_output reads.
+    run_error: AgentError | None = None
 
-        async for raw in proc.stdout:
-            line = raw.decode("utf-8", errors="replace").rstrip("\n")
-            try:
-                events = runner.parse_stream_event(line)
-            except Exception as exc:
-                log.warning(
-                    "parse_stream_event failed for %s (agent_id=%s): %s",
-                    role, agent_id, exc,
+    try:
+        async for ev in agent_impl.run(options):
+            if ev.type == "tool_start":
+                call_id = str(uuid.uuid4())
+                tool_name = ev.tool_name or "tool"
+                block_idx = ev.block_index if ev.block_index is not None else -1
+                call_ids_by_block[block_idx] = (call_id, tool_name)
+                # Record tool_use_id -> call_id so tool_result events
+                # arriving later (from user message) can be correlated.
+                if ev.tool_use_id:
+                    call_id_by_tool_use_id[ev.tool_use_id] = call_id
+                store.push_event(
+                    "tool_request",
+                    build_tool_request(call_id, tool_name, ev.tool_use_id or ""),
+                    agent_id=agent_id,
                 )
-                for _idx, (cid, tname) in streaming_call_ids.items():
+            elif ev.type == "tool_input_delta":
+                block_idx = ev.block_index if ev.block_index is not None else -1
+                pair = call_ids_by_block.get(block_idx)
+                if pair is not None:
+                    cid, tname = pair
                     store.push_event(
-                        "tool_stopped",
-                        build_tool_stopped(cid, tname),
+                        "tool_input_delta",
+                        build_tool_input_delta(cid, tname, ev.tool_args, ev.content),
                         agent_id=agent_id,
                     )
-                streaming_call_ids.clear()
-                continue
-            for ev in events:
-                # Close implicit in-flight tool (non-streaming path) when
-                # the LLM moves on to thinking or text output.
-                if ev.type in ("token_delta", "thinking") and last_call_id is not None:
+            elif ev.type == "tool_stop":
+                # content_block_stop signals args are final; no projection
+                # event emitted (per intake decision 2 -- no tool_stop event).
+                # Pop from call_ids_by_block to prevent EOF re-emit; the
+                # tool_result projection event fires later when the user
+                # message with the tool_result block arrives.
+                block_idx = ev.block_index if ev.block_index is not None else -1
+                call_ids_by_block.pop(block_idx, None)
+            elif ev.type == "token_delta":
+                agent.token_count["received"] = agent.token_count.get("received", 0) + len(ev.content or "")
+                store.push_event("stream_delta", {"delta": ev.content or ""}, agent_id=agent_id)
+            elif ev.type == "thinking":
+                store.push_event("thinking", {"delta": ev.content or ""}, agent_id=agent_id)
+            elif ev.type == "assistant_text":
+                if ev.content:
+                    agent.final_response = ev.content
+            elif ev.type == "tool_result":
+                # Agent parsed a tool_result block from a user message.
+                # Map the LLM's tool_use_id back to our local call_id.
+                tool_use_id = ev.tool_use_id or ""
+                cid = call_id_by_tool_use_id.pop(tool_use_id, None)
+                if cid is not None:
                     store.push_event(
-                        "tool_completed",
-                        build_tool_completed(
-                            last_call_id, last_tool_name,
+                        "tool_result",
+                        build_tool_result(
+                            cid,
+                            ev.tool_name or "",
+                            result=ev.content,
+                            attachments=ev.attachments,
+                            metrics=ev.metrics,
                             ts_ms=int(time.time() * 1000),
                         ),
                         agent_id=agent_id,
                     )
-                    last_call_id = None
-                    last_tool_name = None
-
-                if ev.type == "tool_start":
-                    if last_call_id is not None and last_tool_name is not None:
-                        store.push_event(
-                            "tool_completed",
-                            build_tool_completed(
-                                last_call_id, last_tool_name,
-                                ts_ms=int(time.time() * 1000),
-                            ),
-                            agent_id=agent_id,
-                        )
-                        last_call_id = None
-                        last_tool_name = None
-                    call_id = str(uuid.uuid4())
-                    tool_name = ev.tool_name or "tool"
-                    block_idx = ev.block_index if ev.block_index is not None else -1
-                    streaming_call_ids[block_idx] = (call_id, tool_name)
-                    if tool_name in ("read", "grep", "ls"):
-                        # Exploration tools defer their projection emission to
-                        # tool_stop, where the full args are available. Capture
-                        # the tool_use_id → call_id mapping now so a later
-                        # tool_result block can find its aggregate child.
-                        if ev.tool_use_id:
-                            call_id_by_tool_use_id[ev.tool_use_id] = call_id
-                    else:
-                        # Non-exploration tools (bash/write/edit/custom) keep
-                        # the ToolGenericEntry flow — tool_started creates the
-                        # entry, tool_stopped attaches the summary.
-                        store.push_event(
-                            "tool_started",
-                            build_tool_started(call_id, tool_name),
-                            agent_id=agent_id,
-                        )
-                elif ev.type == "tool_input_delta":
-                    pass
-                elif ev.type == "tool_stop":
-                    block_idx = ev.block_index if ev.block_index is not None else -1
-                    pair = streaming_call_ids.pop(block_idx, None)
-                    if pair is not None:
-                        call_id, tool_name = pair
-                        summary = ev.summary or ""
-                        if tool_name in ("read", "grep", "ls"):
-                            _emit_exploration_tool_completion(
-                                store, agent_id, call_id, tool_name, summary,
-                                now_ms=int(time.time() * 1000),
-                            )
-                        else:
-                            store.push_event(
-                                "tool_stopped",
-                                build_tool_stopped(call_id, tool_name, summary),
-                                agent_id=agent_id,
-                            )
-                elif ev.type == "token_delta":
-                    agent.token_count["received"] = agent.token_count.get("received", 0) + len(ev.content or "")
-                    store.push_event("stream_delta", {"delta": ev.content or ""}, agent_id=agent_id)
-                elif ev.type == "thinking":
-                    store.push_event("thinking", {"delta": ev.content or ""}, agent_id=agent_id)
-                elif ev.type == "assistant_text":
-                    if ev.content:
-                        agent.final_response = ev.content
-                elif ev.type == "tool_call":
-                    if last_call_id is not None and last_tool_name is not None:
-                        store.push_event(
-                            "tool_completed",
-                            build_tool_completed(
-                                last_call_id, last_tool_name,
-                                ts_ms=int(time.time() * 1000),
-                            ),
-                            agent_id=agent_id,
-                        )
-                    call_id = str(uuid.uuid4())
-                    tool_name = ev.tool_name or "tool"
-                    summary = ev.summary or ""
-                    now_ms = int(time.time() * 1000)
-                    if tool_name == "read":
-                        file_part, lines_part = summary, ""
-                        if ":" in summary:
-                            head, tail = summary.rsplit(":", 1)
-                            if tail and (tail[0].isdigit() or "-" in tail):
-                                file_part, lines_part = head, tail
-                        # tool_use_id lets tool_result_captured match this call
-                        # later even though the call_id we assigned is local.
-                        if ev.tool_use_id:
-                            call_id_by_tool_use_id[ev.tool_use_id] = call_id
-                        store.push_event(
-                            "tool_read",
-                            build_tool_read(call_id, file_part, lines_part, ts_ms=now_ms),
-                            agent_id=agent_id,
-                        )
-                    elif tool_name == "write":
-                        store.push_event("tool_write", build_tool_write(call_id, summary), agent_id=agent_id)
-                    elif tool_name == "edit":
-                        store.push_event("tool_edit", build_tool_edit(call_id, summary), agent_id=agent_id)
-                    elif tool_name == "bash":
-                        store.push_event("tool_bash", build_tool_bash(call_id, summary), agent_id=agent_id)
-                    elif tool_name == "grep":
-                        if ev.tool_use_id:
-                            call_id_by_tool_use_id[ev.tool_use_id] = call_id
-                        store.push_event(
-                            "tool_grep",
-                            build_tool_grep(call_id, summary, ts_ms=now_ms),
-                            agent_id=agent_id,
-                        )
-                    elif tool_name == "ls":
-                        if ev.tool_use_id:
-                            call_id_by_tool_use_id[ev.tool_use_id] = call_id
-                        store.push_event(
-                            "tool_ls",
-                            build_tool_ls(call_id, summary, ts_ms=now_ms),
-                            agent_id=agent_id,
-                        )
-                    else:
-                        store.push_event(
-                            "tool_called",
-                            build_tool_called(call_id, tool_name, ev.tool_args or {}, summary),
-                            agent_id=agent_id,
-                        )
-                    last_call_id = call_id
-                    last_tool_name = tool_name
-                elif ev.type == "tool_result":
-                    # Runner parsed a tool_result block from a user message.
-                    # Map the LLM's tool_use_id back to our local call_id and
-                    # emit a projection event carrying the parsed metrics.
-                    tool_use_id = ev.tool_use_id or ""
-                    cid = call_id_by_tool_use_id.get(tool_use_id)
-                    if cid is not None:
+                    # Also emit tool_result_captured for exploration tools so
+                    # aggregate child metrics continue to populate (preserved
+                    # per intake constraint -- tool_result_captured is orthogonal
+                    # to tool_result and both fire for read/grep/ls).
+                    if ev.tool_name in ("read", "grep", "ls", "glob"):
                         store.push_event(
                             "tool_result_captured",
                             build_tool_result_captured(
                                 cid,
-                                ev.tool_name or "",
+                                ev.tool_name,
                                 metrics=ev.metrics,
                             ),
                             agent_id=agent_id,
                         )
-                elif ev.type == "turn_complete":
-                    pass
+                    # Remove from call_ids_by_block too (batch path: Codex/Gemini
+                    # synthesize tool_result without a preceding tool_stop, so
+                    # the block entry persists otherwise and EOF cleanup re-emits).
+                    to_remove = [k for k, (v, _) in call_ids_by_block.items() if v == cid]
+                    for k in to_remove:
+                        del call_ids_by_block[k]
+            elif ev.type == "turn_complete":
+                # Accumulate real token usage from PydanticAIAgent's RequestUsage.
+                # CLI runners emit turn_complete without usage; None is ignored here
+                # so the char-length fallback at agent_exited remains for those paths.
+                # cache_read/write_tokens are SUMMED (billing is cumulative).
+                # last_input_tokens is OVERWRITTEN each turn (not summed): the latest
+                # request's input embeds the full conversation history, so it reflects
+                # current context fullness for the context-window gauge.
+                if ev.usage is not None:
+                    if accumulated_usage is None:
+                        accumulated_usage = {
+                            "input_tokens": ev.usage.input_tokens,
+                            "output_tokens": ev.usage.output_tokens,
+                            "cache_read_tokens": ev.usage.cache_read_tokens or 0,
+                            "cache_write_tokens": ev.usage.cache_write_tokens or 0,
+                            "last_input_tokens": ev.usage.input_tokens,
+                        }
+                    else:
+                        accumulated_usage["input_tokens"] += ev.usage.input_tokens
+                        accumulated_usage["output_tokens"] += ev.usage.output_tokens
+                        accumulated_usage["cache_read_tokens"] = (
+                            accumulated_usage.get("cache_read_tokens", 0)
+                            + (ev.usage.cache_read_tokens or 0)
+                        )
+                        accumulated_usage["cache_write_tokens"] = (
+                            accumulated_usage.get("cache_write_tokens", 0)
+                            + (ev.usage.cache_write_tokens or 0)
+                        )
+                        # Overwrite last_input_tokens each turn (not cumulative sum).
+                        accumulated_usage["last_input_tokens"] = ev.usage.input_tokens
+            else:
+                log.debug(
+                    "unknown stream event type=%s agent=%s",
+                    ev.type, agent_id[:8],
+                )
 
-        # Close any in-flight streaming tools at stdout EOF
-        for _idx, (cid, tname) in streaming_call_ids.items():
-            store.push_event(
-                "tool_stopped",
-                build_tool_stopped(cid, tname),
-                agent_id=agent_id,
-            )
-        streaming_call_ids.clear()
+    except AgentError as e:
+        # Agent raised a structured failure during run(). Write to event log
+        # and emit a spawn_failed projection event.
+        run_error = e
+        log.error(
+            "AgentError during run for %s (agent_id=%s): %s",
+            role, agent_id, e.diagnostic.message,
+        )
+        await event_log.emit_agent_diagnostic(e.diagnostic)
+        store.push_event(
+            "agent_spawn_failed",
+            build_agent_spawn_failed(role, e.diagnostic),
+        )
 
-        # Close any implicit in-flight tool at stdout EOF
-        if last_call_id is not None and last_tool_name is not None:
-            store.push_event(
-                "tool_completed",
-                build_tool_completed(last_call_id, last_tool_name),
-                agent_id=agent_id,
-            )
+    # EOF cleanup -- degrade any in-flight streaming tools still open at EOF.
+    # Under normal operation this dict is empty: streaming tools get their
+    # block popped at tool_stop, and non-streaming at tool_result.
+    # This path fires only on abnormal termination (process killed mid-stream).
+    for _idx, (cid, tname) in call_ids_by_block.items():
+        store.push_event(
+            "tool_result",
+            build_tool_result(cid, tname),
+            agent_id=agent_id,
+        )
+    call_ids_by_block.clear()
 
-        # Tombstone: mark end of this agent's stream
-        store.push_event("stream_cleared", {}, agent_id=agent_id)
+    # Tombstone: mark end of this agent's stream
+    store.push_event("stream_cleared", {}, agent_id=agent_id)
 
-    async def drain_stderr():
-        assert proc.stderr is not None
-        buf: list[str] = []
-        async for raw in proc.stderr:
-            buf.append(raw.decode("utf-8", errors="replace"))
-        return "".join(buf)
-
-    stdout_task = asyncio.create_task(stream_stdout())
-    stderr_task = asyncio.create_task(drain_stderr())
-
-    # Wait for exit
-    exit_code = await proc.wait()
-    await stdout_task
-    stderr_output = await stderr_task
+    # Derive exit code + failure detail from the run. In-process agents have no
+    # subprocess: a clean run() is success (0), a raised AgentError is failure
+    # (1, with the diagnostic as the stderr-equivalent). The handshake check
+    # below can still override to 1 (bootstrap failure).
+    exit_code = 1 if run_error is not None else 0
+    stderr_output = run_error.diagnostic.message if run_error is not None else ""
 
     if stderr_output.strip():
         log.warning("stderr from %s (agent_id=%s): %s", role, agent_id, stderr_output[:500])
 
-    # Handshake check
+    # Handshake check -- uses agent (AgentState), NOT agent_impl.
+    # agent.first_turn_completed is set by run_agent_loop at end-of-turn-1;
+    # failure to set it means the agent exited before completing its first turn.
+    # Confusing agent with agent_impl here would silently break detection.
     error_str: str | None = None
-    if not agent.handshake_observed:
-        diag = RunnerDiagnostic(
+    if not agent.first_turn_completed:
+        diag = AgentDiagnostic(
             code="bootstrap_failure",
-            runner=runner.name,
+            agent=agent_impl.name,
             stage="handshake",
-            message="Process exited before first koan_complete_step call",
+            message="Process exited before completing its first turn",
         )
-        await event_log.emit_runner_diagnostic(diag)
+        await event_log.emit_agent_diagnostic(diag)
         error_str = "bootstrap_failure"
         exit_code = 1
     elif exit_code != 0:
@@ -579,8 +485,7 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
             role, agent_id, exit_code, error_str,
         )
 
-    # Cleanup: remove from active processes, resolve pending interactions
-    app_state._active_processes.pop(agent_id, None)
+    # Cleanup: resolve pending interactions for this agent.
     _cancel_pending_interactions(agent_id, app_state)
 
     # Finalize audit log
@@ -591,11 +496,17 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
     final_response = agent.final_response
     del app_state.agents[agent_id]
 
-    # Emit agent_exited to projection
-    token_usage = {
-        "input_tokens": agent.token_count.get("sent", 0),
-        "output_tokens": agent.token_count.get("received", 0),
-    }
+    # Emit agent_exited to projection.
+    # Use real token usage from PydanticAIAgent's StreamEvent.usage when available;
+    # fall back to the char-length token_count approximation for CLI runners that
+    # do not carry RequestUsage on turn_complete events.
+    if accumulated_usage is not None:
+        token_usage = accumulated_usage
+    else:
+        token_usage = {
+            "input_tokens": agent.token_count.get("sent", 0),
+            "output_tokens": agent.token_count.get("received", 0),
+        }
     store.push_event(
         "agent_exited",
         build_agent_exited(exit_code, error=error_str, usage=token_usage),
@@ -604,7 +515,7 @@ async def spawn_subagent(task: dict, app_state: AppState, runner: Runner | None 
 
     log_fn = log.info if exit_code == 0 else log.warning
     log_fn("%s (agent_id=%s) exited with code %d", role, agent_id, exit_code)
-    return SubagentResult(exit_code=exit_code, final_response=final_response)
+    return SubagentResult(exit_code=exit_code, final_response=final_response, error=error_str)
 
 
 # -- Interaction cleanup -------------------------------------------------------
@@ -624,19 +535,27 @@ def _cancel_pending_interactions(agent_id: str, app_state: AppState) -> None:
     store = app_state.projection_store
 
     # Cancel queued interactions belonging to this agent silently
+    original_queue_len = len(app_state.interactions.interaction_queue)
     remaining = []
-    for item in app_state.interaction_queue:
+    for item in app_state.interactions.interaction_queue:
         if item.agent_id == agent_id:
             if not item.future.done():
                 item.future.set_result(error_result)
             # No projection event for queued (never-active) interactions
         else:
             remaining.append(item)
-    app_state.interaction_queue.clear()
-    app_state.interaction_queue.extend(remaining)
+    app_state.interactions.interaction_queue.clear()
+    app_state.interactions.interaction_queue.extend(remaining)
+
+    cancelled_count = original_queue_len - len(remaining)
+    if cancelled_count:
+        log.debug(
+            "cancelled %d queued interactions for agent=%s",
+            cancelled_count, agent_id[:8],
+        )
 
     # Cancel active interaction with a typed cancellation event
-    active = app_state.active_interaction
+    active = app_state.interactions.active_interaction
     if active is not None and active.agent_id == agent_id:
         token = active.token
 
@@ -650,8 +569,12 @@ def _cancel_pending_interactions(agent_id: str, app_state: AppState) -> None:
         if not active.future.done():
             active.future.set_result(error_result)
         activate_next_interaction(app_state)
+        log.debug(
+            "cancelled active interaction type=%s token=%s for agent=%s",
+            active.type, active.token, agent_id[:8],
+        )
 
     # Clear yield_future if it was set (orchestrator crashed at phase boundary)
-    if app_state.yield_future is not None and not app_state.yield_future.done():
-        app_state.yield_future.set_result(False)
-    app_state.yield_future = None
+    if app_state.interactions.yield_future is not None and not app_state.interactions.yield_future.done():
+        app_state.interactions.yield_future.set_result(False)
+    app_state.interactions.yield_future = None

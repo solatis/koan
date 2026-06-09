@@ -1,5 +1,6 @@
-/* ReviewPanel -- full-width artifact review surface.
-   Card with header / scrollable body / footer. */
+/* ReviewPanel -- on-demand artifact viewer with single comment textarea.
+   Block-level classes (.rb-, .rc-, .rci-, .re-) removed in M6 along with
+   the per-block comment molecules. */
 
 .rp {
   background: var(--bg-card);
@@ -27,39 +28,27 @@
   flex-shrink: 0;
 }
 
-.rp-label {
-  font-family: var(--font-body);
-  font-size: var(--type-label);
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  color: var(--color-orange);
-}
-
 .rp-path {
   font-family: var(--font-mono);
   font-size: var(--type-tool-type);
   color: var(--text-muted);
 }
 
-.rp-badge {
+/* Single-use style for the header close button -- a plain text action,
+   not the primary submit; intentionally subdued to keep visual weight on
+   the path label. */
+.rp-close {
   font-family: var(--font-body);
-  font-size: var(--type-badge);
+  font-size: var(--type-label);
   color: var(--text-muted);
-  padding: 2px 10px;
-  background: var(--bg-tool-row);
-  border-radius: var(--radius-pill);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
 }
 
-.rp-badge-new {
-  font-family: var(--font-body);
-  font-size: var(--type-badge);
-  color: var(--color-orange);
-  font-weight: 500;
-  padding: 2px 8px;
-  background: var(--bg-selected);
-  border: 0.5px solid var(--color-orange);
-  border-radius: var(--radius-pill);
+.rp-close:hover {
+  color: var(--text-primary);
 }
 
 /* ---------- Body + markdown typography ---------- */
@@ -148,17 +137,9 @@
   flex-shrink: 0;
 }
 
-.rp-footer-label {
-  font-family: var(--font-body);
-  font-size: var(--type-label);
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--text-muted);
-  margin-bottom: 6px;
-}
-
-.rp-footer-ta {
+/* Single-use: textarea for the optional comment. Uses the same border and
+   focus treatment as other form inputs in the design system. */
+.rp-comment {
   width: 100%;
   min-height: 52px;
   padding: 10px 14px;
@@ -174,11 +155,11 @@
   box-sizing: border-box;
 }
 
-.rp-footer-ta::placeholder {
+.rp-comment::placeholder {
   color: var(--text-placeholder);
 }
 
-.rp-footer-ta:focus {
+.rp-comment:focus {
   border-color: var(--color-orange);
   box-shadow: 0 0 0 3px var(--focus-ring);
 }
@@ -190,8 +171,21 @@
   margin-top: 12px;
 }
 
-.rp-footer-hint {
+/* Single-use: primary submit button -- mirrors the existing Button atom
+   "primary sm" visual but defined locally to avoid coupling to Button's
+   internal class names. */
+.rp-submit {
   font-family: var(--font-body);
-  font-size: var(--type-label);
-  color: var(--text-hint);
+  font-size: var(--type-breadcrumb);
+  font-weight: 500;
+  color: #fff;
+  background: var(--color-orange);
+  border: none;
+  border-radius: var(--radius-lg);
+  padding: 6px 16px;
+  cursor: pointer;
+}
+
+.rp-submit:hover {
+  opacity: 0.88;
 }

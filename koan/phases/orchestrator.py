@@ -67,7 +67,7 @@ PHASE_ROLE_CONTEXT = (
     "- `koan_retry_story` -- to send a story back to the executor with a detailed failure summary.\n"
     "- `koan_skip_story` -- to skip a story that is superseded or no longer needed.\n"
     "- `koan_ask_question` -- to ask the human a targeted question when judgment is genuinely ambiguous.\n"
-    "- `koan_complete_step` -- to signal step completion with your findings.\n"
+    "- End your turn to advance to the next step after completing each step's work.\n"
     "- `write` / `edit` -- for updating artifact files inside the run directory only.\n"
     "- `bash` -- for running verification commands.\n"
     "\n"
@@ -143,7 +143,7 @@ def _pre_step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "",
                 "## Checklist before advancing",
                 "",
-                "Before calling koan_complete_step, confirm you have determined:",
+                "Before ending your turn, confirm you have determined:",
                 "- The execution order you recommend and why",
                 "- Any risks or concerns you identified",
                 "- The ID of the story you believe should run first",
@@ -168,11 +168,11 @@ def _pre_step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "## What to do",
                 "",
                 "Call `koan_select_story` with the ID of the story that should execute first.",
-                "Then call `koan_complete_step` with your reasoning.",
+                "Then end your turn with your reasoning.",
             ],
             invoke_after=(
-                "WHEN DONE: Call koan_select_story with your chosen story ID, then call koan_complete_step with your reasoning.\n"
-                "Do NOT call koan_complete_step until koan_select_story has been called."
+                "WHEN DONE: Call koan_select_story with your chosen story ID, then end your turn with your reasoning.\n"
+                "Do NOT end your turn until koan_select_story has been called."
             ),
         )
 
@@ -213,7 +213,7 @@ def _post_step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "",
                 "## Output",
                 "",
-                "Call koan_complete_step with your verification findings:",
+                "End your turn with your verification findings:",
                 "- A summary of every check run and its result (pass/fail)",
                 "- The full error output for any failures",
                 "- Your preliminary assessment: does the implementation appear correct?",
@@ -252,7 +252,7 @@ def _post_step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
             ],
             invoke_after=(
                 "WHEN DONE: Call EXACTLY ONE of: koan_complete_story, koan_retry_story, or (koan_ask_question then verdict tool).\n"
-                "Then call koan_complete_step to advance to the next step."
+                "Then end your turn to advance to the next step."
             ),
         )
 
@@ -286,7 +286,7 @@ def _post_step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "",
                 "If this story's completion makes another story unnecessary, call `koan_skip_story` with a clear reason.",
                 "",
-                "Then call koan_complete_step with a summary of what was propagated.",
+                "Then end your turn with a summary of what was propagated.",
             ],
         )
 
@@ -313,10 +313,10 @@ def _post_step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "",
                 "If one or more stories remain and are unblocked:",
                 "- Call `koan_select_story` with the ID of the next story.",
-                "- Then call `koan_complete_step` with your reasoning.",
+                "- Then end your turn with your reasoning.",
                 "",
                 "If no stories remain (all completed or skipped):",
-                "- Call `koan_complete_step` with a summary stating the epic is complete.",
+                "- End your turn with a summary stating the epic is complete.",
                 "  Do NOT call koan_select_story.",
                 "",
                 "If stories remain but all are blocked (dependencies not satisfied):",
@@ -324,7 +324,7 @@ def _post_step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "  Based on the answer, call the appropriate tool.",
             ],
             invoke_after=(
-                "WHEN DONE: If stories remain, call koan_select_story then koan_complete_step. If none remain, call koan_complete_step only."
+                "WHEN DONE: If stories remain, call koan_select_story then end your turn. If none remain, end your turn only."
             ),
         )
 

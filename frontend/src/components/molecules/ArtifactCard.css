@@ -54,6 +54,21 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+}
+
+/* `.ac-changed` -- small amber dot indicating the artifact was modified
+   since the last user touchpoint (yield resolution). Single-use color;
+   hardcoded here per token-discipline rule (no new design tokens). */
+.ac-changed {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f59e0b; /* amber: modified-since-touchpoint indicator */
+  margin-left: 6px;
+  flex-shrink: 0;
 }
 
 .ac-time {

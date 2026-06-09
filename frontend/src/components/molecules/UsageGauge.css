@@ -1,0 +1,41 @@
+/* UsageGauge -- token readout in the header right cluster.
+   Mirrors the .hb-elapsed / .hb-model type treatment (mono, on-dark muted). */
+.ug {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--text-on-dark-subtle);
+}
+
+.ug-label {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-on-dark-subtle);
+}
+
+.ug-val {
+  color: var(--text-on-dark-muted);
+}
+
+.ug-sep {
+  color: var(--text-on-dark-subtle);
+}
+
+/* Pipe separator between gauge sections (tok | cost | ctx | cache). */
+.ug-divider {
+  color: var(--text-on-dark-subtle);
+  opacity: 0.5;
+  margin: 0 2px;
+}
+
+/* Cost readout -- same muted treatment as token values. */
+.ug-cost {
+  color: var(--text-on-dark-muted);
+}
+
+/* Context-window percent readout. */
+.ug-ctx {
+  color: var(--text-on-dark-muted);
+}

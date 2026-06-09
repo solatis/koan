@@ -6,9 +6,21 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from koan.memory.bindings import ResolvedMemoryModel
 from koan.memory.retrieval.backend import _rrf_merge, rerank_results
 from koan.memory.retrieval.index import RetrievalIndex, _content_hash
 from koan.memory.retrieval.types import SearchResult
+
+
+def _fake_rmm() -> ResolvedMemoryModel:
+    """Return a fake ResolvedMemoryModel for patching resolve_memory_binding in rerank tests."""
+    return ResolvedMemoryModel(
+        provider_type="voyage",
+        model_id="voyage-4-large",
+        api_key="fake-key",
+        base_url=None,
+        region=None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +67,8 @@ FAKE_VECTOR = [0.1] * 1024
 
 
 @pytest.mark.anyio
-async def test_sync_indexes_new_files(mem_dir: Path) -> None:
+async def test_sync_indexes_new_files(mem_dir: Path, memory_config) -> None:
+    """New files are embedded and inserted into the index on first sync."""
     write_entry(mem_dir, 1, "Entry One", "Body of entry one.")
     write_entry(mem_dir, 2, "Entry Two", "Body of entry two.")
 
@@ -71,7 +84,8 @@ async def test_sync_indexes_new_files(mem_dir: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_sync_skips_unchanged_files(mem_dir: Path) -> None:
+async def test_sync_skips_unchanged_files(mem_dir: Path, memory_config) -> None:
+    """Unchanged files are not re-embedded on a second sync."""
     write_entry(mem_dir, 1, "Stable", "Body.")
     index = RetrievalIndex(mem_dir)
 
@@ -87,7 +101,8 @@ async def test_sync_skips_unchanged_files(mem_dir: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_sync_removes_deleted_files(mem_dir: Path) -> None:
+async def test_sync_removes_deleted_files(mem_dir: Path, memory_config) -> None:
+    """Rows for deleted files are pruned from the index on the next sync."""
     p1 = write_entry(mem_dir, 1, "Keep", "Body one.")
     p2 = write_entry(mem_dir, 2, "Delete", "Body two.")
     index = RetrievalIndex(mem_dir)
@@ -145,7 +160,8 @@ def _make_candidate(entry_id: int, etype: str = "context") -> dict:
 
 
 @pytest.mark.anyio
-async def test_search_applies_type_filter(mem_dir: Path) -> None:
+async def test_search_applies_type_filter(mem_dir: Path, memory_config) -> None:
+    """type_filter narrows reranked candidates to the specified type."""
     write_entry(mem_dir, 1, "Decision A", "Body.", etype="decision")
     write_entry(mem_dir, 2, "Context B", "Body.", etype="context")
 
@@ -158,7 +174,8 @@ async def test_search_applies_type_filter(mem_dir: Path) -> None:
         "results": [type("I", (), {"index": 0, "relevance_score": 0.9})()]
     })()
 
-    with patch("koan.memory.retrieval.backend._voyage_api_key", return_value="fake-key"):
+    with patch("koan.memory.retrieval.backend.resolve_memory_binding",
+               return_value=_fake_rmm()):
         with patch("voyageai.AsyncClient.rerank", new=AsyncMock(return_value=mock_rerank_result)):
             results = await rerank_results("query", candidates, k=5, type_filter="decision")
 
@@ -166,8 +183,8 @@ async def test_search_applies_type_filter(mem_dir: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_search_returns_top_k(mem_dir: Path) -> None:
-    # Write 5 entries
+async def test_search_returns_top_k(mem_dir: Path, memory_config) -> None:
+    """rerank_results returns at most k results from the candidates."""
     for i in range(1, 6):
         write_entry(mem_dir, i, f"Entry {i}", f"Body {i}.", etype="context")
 
@@ -176,14 +193,14 @@ async def test_search_returns_top_k(mem_dir: Path) -> None:
         for i in range(1, 6)
     ]
 
-    # Mock reranker returns top 3 results
     mock_results = [
         type("I", (), {"index": i, "relevance_score": 1.0 - i * 0.1})()
         for i in range(3)
     ]
     mock_rerank_result = type("R", (), {"results": mock_results})()
 
-    with patch("koan.memory.retrieval.backend._voyage_api_key", return_value="fake-key"):
+    with patch("koan.memory.retrieval.backend.resolve_memory_binding",
+               return_value=_fake_rmm()):
         with patch("voyageai.AsyncClient.rerank", new=AsyncMock(return_value=mock_rerank_result)):
             results = await rerank_results("query", candidates, k=3)
 

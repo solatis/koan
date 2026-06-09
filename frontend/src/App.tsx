@@ -1,22 +1,26 @@
 /*
- * EVENT TYPE → MOLECULE MAPPING (final, no gaps)
- * ─────────────────────────────────────────────────
- * thinking             → ThinkingBlock + Md
- * text                 → ProseCard + Md
- * tool_read/write/edit → ToolCallRow
- * tool_bash/grep/ls    → ToolCallRow
- * tool_generic         → ToolCallRow (koan_* orchestration tools suppressed)
- * step                 → StepHeader
- * debug_step_guidance  → StepGuidancePill + Md
- * user_message         → UserBubble + Md
- * phase_boundary       → PhaseMarker
- * yield                → YieldPanel
- * pendingThinking      → ThinkingBlock (always expanded)
- * pendingText          → ProseCard + Md + streaming cursor
+ * EVENT TYPE -> MOLECULE MAPPING (final, no gaps)
+ * -------------------------------------------------
+ * thinking             -> ThinkingBlock + Md
+ * text                 -> ProseCard + Md
+ * tool_write/edit      -> ToolCallRow
+ * tool_bash            -> ToolCallRow
+ * tool_generic         -> ToolCallRow (rare; non-koan custom tools only)
+ * tool_koan            -> KoanToolCard (dispatches by toolName;
+ *                          koan_complete_step and koan_set_phase
+ *                          suppressed inside the card)
+ * step                 -> StepHeader
+ * debug_step_guidance  -> StepGuidancePill + Md
+ * user_message         -> UserBubble + Md
+ * phase_boundary       -> PhaseMarker
+ * yield                -> YieldPanel
+ * pendingThinking      -> ThinkingBlock (always expanded)
+ * pendingText          -> ProseCard + Md + streaming cursor
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useStore, ConversationEntry, AskQuestion } from './store/index'
+import { useLocation, useNavigate } from 'react-router'
+import { useStore, ConversationEntry, AskQuestion, CompletionInfo } from './store/index'
 // DEBUG: expose store to window for browser-agent introspection
 ;(window as unknown as { __store: typeof useStore }).__store = useStore
 import { connectSSE } from './sse/connect'
@@ -25,6 +29,7 @@ import { useAutoScroll } from './hooks/useAutoScroll'
 import { normalizeOptions } from './utils'
 import * as api from './api/client'
 
+import { Button } from './components/atoms/Button'
 import { HeaderBar } from './components/organisms/HeaderBar'
 import { ArtifactsSidebar as ArtifactsSidebarOrg } from './components/organisms/ArtifactsSidebar'
 import { ScoutBar } from './components/organisms/ScoutBar'
@@ -45,14 +50,17 @@ import { YieldPanel } from './components/molecules/YieldPanel'
 import { StepHeader } from './components/molecules/StepHeader'
 import { CompletionBanner } from './components/molecules/CompletionBanner'
 import { SteeringBar } from './components/molecules/SteeringBar'
+// ArtifactReviewPin deleted in M6 (koan_artifact_propose removed in M5).
+import { KoanToolCard } from './components/molecules/KoanToolCard'
 
 import { Md } from './components/Md'
 import { Notification } from './components/Notification'
-// SettingsOverlay is no longer rendered — replaced by SettingsPage organism
-// import { SettingsOverlay } from './components/SettingsOverlay'
-import { SettingsPage, type Profile as SPProfile, type Installation as SPInstallation } from './components/organisms/SettingsPage'
-import { ReviewPanel, type ReviewSubmitPayload } from './components/organisms/ReviewPanel'
+// Installation type removed in M4: agent installation concept deleted.
+import { SettingsPage, type Profile as SPProfile, type ProviderConfigView } from './components/organisms/SettingsPage'
+import { ReviewPanel } from './components/organisms/ReviewPanel'
 import { SessionsPage } from './components/organisms/SessionsPage'
+import { MemoryRoutes } from './components/organisms/MemoryRoutes'
+import { CurationTakeover } from './components/organisms/CurationTakeover'
 
 import type { AggregateChild, AggregateReadChild, AggregateGrepChild, AggregateLsChild, ToolAggregateEntry } from './store/index'
 
@@ -80,6 +88,16 @@ function useHeaderData() {
     currentStep: lastStep?.step ?? 0,
     orchestratorModel: primary?.model ?? undefined,
     elapsed: primary ? elapsed : undefined,
+    usage: primary
+      ? {
+          inputTokens: primary.conversation.inputTokens,
+          outputTokens: primary.conversation.outputTokens,
+          cacheReadTokens: primary.conversation.cacheReadTokens,
+          cacheWriteTokens: primary.conversation.cacheWriteTokens,
+          totalCostUsd: primary.conversation.totalCostUsd,
+          contextWindowPercent: primary.conversation.contextWindowPercent,
+        }
+      : undefined,
   }
 }
 
@@ -91,6 +109,9 @@ function ConnectedSidebar() {
   const artifacts = useStore(s => s.run?.artifacts ?? {})
   const reviewingArtifact = useStore(s => s.reviewingArtifact)
   const setReviewingArtifact = useStore(s => s.setReviewingArtifact)
+  // lastTouchpointMs is null until the first yield resolves; all artifacts show
+  // as "changed" in that initial state, which is the intended behaviour.
+  const lastTouchpointMs = useStore(s => s.lastTouchpointMs)
   const entries = useMemo(() => {
     const now = Date.now()
     const list = Object.values(artifacts).map(a => {
@@ -100,12 +121,13 @@ function ConnectedSidebar() {
         filename: a.path.split('/').pop() || a.path,
         modifiedAgo: mins < 1 ? 'just now' : mins < 60 ? `modified ${mins}m ago` : `modified ${Math.floor(mins / 60)}h ago`,
         variant: mins < 5 ? ('recent' as const) : ('stable' as const),
+        changed: a.modifiedAt > (lastTouchpointMs ?? 0),
         _ts: a.modifiedAt,
       }
     })
     list.sort((a, b) => b._ts - a._ts)
-    return list.map(({ path, filename, modifiedAgo, variant }) => ({ path, filename, modifiedAgo, variant }))
-  }, [artifacts])
+    return list.map(({ path, filename, modifiedAgo, variant, changed }) => ({ path, filename, modifiedAgo, variant, changed }))
+  }, [artifacts, lastTouchpointMs])
   const handleClick = (path: string) => {
     setReviewingArtifact(reviewingArtifact === path ? null : path)
   }
@@ -136,20 +158,11 @@ function ConnectedScoutBar() {
 // Content stream
 // ---------------------------------------------------------------------------
 
-// Orchestration tools whose effects are visible through other molecules
-// (StepHeader, PhaseMarker). They should not render as rows.
-const SUPPRESSED_TOOLS = new Set(['koan_complete_step', 'koan_set_phase'])
-
-const KOAN_TOOL_LABELS: Record<string, string> = {
-  koan_request_scouts: 'Dispatching scouts',
-  koan_ask_question: 'Asking question',
-  koan_yield: 'Preparing response',
-  koan_request_executor: 'Starting executor',
-  koan_select_story: 'Selecting story',
-  koan_complete_story: 'Completing story',
-  koan_retry_story: 'Retrying story',
-  koan_skip_story: 'Skipping story',
-}
+// SUPPRESSED_TOOLS and KOAN_TOOL_LABELS moved into KoanToolCard in M2 of
+// unify-tool-lifecycle: post-M1, every koan MCP tool creates ToolKoanEntry
+// (not ToolGenericEntry), so the old SUPPRESSED_TOOLS check on entry.toolName
+// for tool_generic entries was dead code. Suppression and labels now live
+// co-located with the per-tool dispatch in KoanToolCard.
 
 // ---------------------------------------------------------------------------
 // Aggregate rendering helpers — pure functions, next to renderEntry so the
@@ -384,17 +397,29 @@ function renderEntry(entry: ConversationEntry, i: number) {
     case 'tool_aggregate':
       return renderAggregate(entry, i)
     case 'tool_write':
-      return <ToolCallRow key={i} tool="write" command={entry.file} status={entry.inFlight ? 'running' : 'done'} />
+      return <ToolCallRow key={i} tool="write" command={entry.file} status={entry.inFlight ? 'running' : 'done'} attachments={entry.attachments} />
     case 'tool_edit':
-      return <ToolCallRow key={i} tool="edit" command={entry.file} status={entry.inFlight ? 'running' : 'done'} />
+      return <ToolCallRow key={i} tool="edit" command={entry.file} status={entry.inFlight ? 'running' : 'done'} attachments={entry.attachments} />
     case 'tool_bash':
-      return <ToolCallRow key={i} tool="bash" command={entry.command} status={entry.inFlight ? 'running' : 'done'} />
-    case 'tool_generic': {
-      if (SUPPRESSED_TOOLS.has(entry.toolName)) return null
-      const label = KOAN_TOOL_LABELS[entry.toolName] ?? entry.toolName
-      const cmd = entry.toolName in KOAN_TOOL_LABELS ? '' : entry.summary
-      return <ToolCallRow key={i} tool={label} command={cmd} status={entry.inFlight ? 'running' : 'done'} />
-    }
+      return <ToolCallRow key={i} tool="bash" command={entry.command} status={entry.inFlight ? 'running' : 'done'} attachments={entry.attachments} />
+    // tool_generic is reached only by non-koan custom tools post-M1;
+    // koan MCP tools now create ToolKoanEntry via the broadened KOAN_MCP_TOOLS set.
+    case 'tool_generic':
+      return <ToolCallRow key={i} tool={entry.toolName} command={entry.summary} status={entry.inFlight ? 'running' : 'done'} attachments={entry.attachments} />
+    case 'tool_koan':
+      // toolInput is the M1 aggregate field for live partial-args rendering.
+      // Passed alongside args so ReflectCard (which reads args) continues
+      // to work unchanged until M3 refactors ToolKoanEntry split-source.
+      return (
+        <KoanToolCard
+          key={i}
+          toolName={entry.toolName}
+          args={entry.args}
+          toolInput={entry.toolInput ?? null}
+          result={entry.result}
+          inFlight={entry.inFlight}
+        />
+      )
     case 'step':
       return <StepHeader key={i} stepNumber={entry.step} totalSteps={entry.totalSteps ?? 0} stepName={entry.stepName} />
     case 'debug_step_guidance':
@@ -406,12 +431,21 @@ function renderEntry(entry: ConversationEntry, i: number) {
     case 'phase_boundary':
       return <PhaseMarker key={i} name={entry.phase} description={entry.description || entry.message} />
     case 'yield': {
-      const setChatDraft = useStore.getState().setChatDraft
+      const state = useStore.getState()
+      const setChatDraft = state.setChatDraft
+      // Compute changed artifacts at render time using the imperative store API.
+      // By the time lastTouchpointMs updates (on chat send), this yield entry is
+      // replaced by a user_message entry so stale changedArtifacts are never seen.
+      const ltp = state.lastTouchpointMs
+      const changedArtifacts = Object.values(state.run?.artifacts ?? {})
+        .filter(a => a.modifiedAt > (ltp ?? 0))
+        .map(a => a.path)
       return (
         <YieldPanel
           key={i}
           prompt={entry.prompt || 'What would you like to do next?'}
           suggestions={entry.suggestions}
+          changedArtifacts={changedArtifacts}
           onSelect={s => setChatDraft(s.command ? `/${s.id} ${s.command}` : `/${s.id} `)}
         />
       )
@@ -431,6 +465,11 @@ function ContentStream() {
   const conversation = useStore(s => focusAgentId ? s.run?.agents?.[focusAgentId]?.conversation : undefined)
   const run = useStore(s => s.run)
   const focus = useStore(s => s.run?.focus)
+  // Read from settings.workflows (static, populated at server startup) rather than
+  // run.availableWorkflows, which was removed in favour of a single source of truth.
+  const workflows = useStore(s => s.settings.workflows)
+  // reviewingArtifact used only by ArtifactReviewPin (deleted in M6); kept as
+  // context for the "already reviewing" guard if re-added in a future milestone.
   const scrollRef = useRef<HTMLDivElement>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   useAutoScroll(scrollRef)
@@ -463,10 +502,29 @@ function ContentStream() {
         {showFeedback && (
           <>
             <ConnectedSteeringBar />
+            {/* ArtifactReviewPin removed in M6 -- koan_artifact_propose deleted in M5. */}
             <FeedbackInput
-              onSend={msg => api.sendChatMessage(msg)}
+              onSend={(msg, attachments) => {
+                // Mark yield resolution so sidebar and yield panel reflect the new
+                // "changed since last touchpoint" baseline going forward.
+                useStore.getState().setLastTouchpointMs(Date.now())
+                return api.sendChatMessage(msg, attachments)
+              }}
               disabled={!!run?.completion}
-              availableCommands={run?.activeYield ? run.availablePhases : undefined}
+              availableCommands={
+                run?.activeYield
+                  ? [
+                      ...run.availablePhases,
+                      // Workflow commands use "workflow:<name>" IDs (colon, not space)
+                      // so the palette's startsWith filter works and no space breaks
+                      // the paletteOpen guard in FeedbackInput.
+                      ...workflows.map(w => ({
+                        id: `workflow:${w.id}`,
+                        description: `Switch to ${w.id} workflow${w.description ? ` -- ${w.description}` : ''}`,
+                      })),
+                    ]
+                  : undefined
+              }
               onPaletteToggle={setPaletteOpen}
             />
           </>
@@ -489,6 +547,9 @@ function ElicitationView() {
   const [currentIdx, setCurrentIdx] = useState(0)
   const [answers, setAnswers] = useState<Record<number, string | string[] | null>>({})
   const [otherTexts, setOtherTexts] = useState<Record<number, string>>({})
+  // Per-question attachment IDs; collected as the user pages through questions
+  // and folded into the final answer list on submit per M3 wire shape.
+  const [attachmentsByIdx, setAttachmentsByIdx] = useState<Record<number, string[]>>({})
   const [submitError, setSubmitError] = useState<string | null>(null)
 
   if (!focus || focus.type !== 'question') return null
@@ -553,9 +614,20 @@ function ElicitationView() {
     })
   }
 
-  const handleSubmit = async () => {
+  const handleSubmit = async (attachments?: string[]) => {
+    // Record attachments for the current question before advancing or submitting.
+    if (attachments && attachments.length > 0) {
+      setAttachmentsByIdx(prev => ({ ...prev, [currentIdx]: attachments }))
+    }
     if (currentIdx < total - 1) { setCurrentIdx(i => i + 1); return }
-    const final = resolveAnswers()
+    // Wrap each resolved answer as {answer, attachments?} per M3 wire shape.
+    // Use the just-received attachments for the final question rather than
+    // the stale state entry (state update is async).
+    const final = resolveAnswers().map((ans, i) => {
+      const a = i === currentIdx ? attachments : attachmentsByIdx[i]
+      if (a && a.length > 0) return { answer: ans, attachments: a }
+      return { answer: ans }
+    })
     const res = await api.submitAnswer(final, token)
     if (!res.ok) setSubmitError(res.message ?? 'Failed to submit answers')
   }
@@ -601,7 +673,7 @@ function ElicitationView() {
 // Completion
 // ---------------------------------------------------------------------------
 
-function CompletionView() {
+function CompletionView(props: { onBackToOverview?: () => void }) {
   const completion = useStore(s => s.run?.completion)
   const artifacts = useStore(s => s.run?.artifacts ?? {})
   if (!completion) return null
@@ -619,7 +691,15 @@ function CompletionView() {
             )}
           </>
         ) : (
-          <CompletionBanner variant="error">{completion.error || 'An error occurred.'}</CompletionBanner>
+          <>
+            <CompletionBanner variant="error">{completion.error || 'An error occurred.'}</CompletionBanner>
+            {props.onBackToOverview && (
+              <div className="completion-actions">
+                {/* Button visible only on failure; success auto-navigates on a timer. */}
+                <Button variant="secondary" onClick={props.onBackToOverview}>Back to overview</Button>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
@@ -637,24 +717,38 @@ function CompletionView() {
 const NAV_ITEMS = [
   { label: 'New run', key: 'new-run' },
   { label: 'Sessions', key: 'sessions' },
+  { label: 'Memory', key: 'memory' },
   { label: 'Settings', key: 'settings' },
 ]
+
+// Maps nav keys to URL paths for URL-driven navigation.
+const PATH_BY_KEY: Record<string, string> = {
+  'new-run': '/',
+  sessions: '/sessions',
+  memory: '/memory',
+  settings: '/settings',
+}
 
 // ---------------------------------------------------------------------------
 // Settings page wiring
 // ---------------------------------------------------------------------------
 
+/**
+ * ConnectedSettingsPage -- wires the store and API client to the presentational
+ * SettingsPage organism. Also wires provider configuration (M4): maps
+ * providerStatus to ProviderConfigView and threads onSaveProvider /
+ * onDeleteProvider through the unified /api/settings/provider endpoints.
+ * The dynamic provider model overlay (providerModels) is unioned into
+ * modelOptionsForRunner so LM Studio and other overlay models are selectable.
+ */
 function ConnectedSettingsPage() {
+  // Runner/model/thinking options come from the model registry in the projection
+  // store (populated by initial events at startup). M4: installationsDict removed.
   const profilesDict = useStore(s => s.settings.profiles)
-  const installationsDict = useStore(s => s.settings.installations)
   const scoutConcurrency = useStore(s => s.settings.defaultScoutConcurrency)
-  const [probeData, setProbeData] = useState<api.RunnerInfo[]>([])
-
-  useEffect(() => {
-    api.getProbeInfo()
-      .then(data => setProbeData(data.runners))
-      .catch(() => {}) /* probe failure is non-fatal — dropdowns stay empty */
-  }, [])
+  const modelRegistry = useStore(s => s.settings.modelRegistry)
+  const providerStatus = useStore(s => s.settings.providerStatus)
+  const providerModels = useStore(s => s.settings.providerModels)
 
   const profiles: SPProfile[] = useMemo(() =>
     Object.values(profilesDict).map(p => ({
@@ -662,37 +756,35 @@ function ConnectedSettingsPage() {
       name: p.name,
       locked: p.readOnly,
       tiers: {
-        /* TODO: model and thinking are not in the store wire format —
-           the backend profile tiers map role → installation alias.
-           We resolve the runner from the installation but model/thinking
-           are managed backend-side and not exposed in SSE state yet. */
-        strong: { runner: installationsDict[p.tiers['strong']]?.runnerType || p.tiers['strong'] || '', model: '', thinking: '' },
-        standard: { runner: installationsDict[p.tiers['standard']]?.runnerType || p.tiers['standard'] || '', model: '', thinking: '' },
-        cheap: { runner: installationsDict[p.tiers['cheap']]?.runnerType || p.tiers['cheap'] || '', model: '', thinking: '' },
+        // M3: tiers are now {provider, model, thinking}; map provider -> runner for SettingsPage.
+        strong:   { runner: p.tiers['strong']?.provider   || '', model: p.tiers['strong']?.model   || '', thinking: p.tiers['strong']?.thinking   || '' },
+        standard: { runner: p.tiers['standard']?.provider || '', model: p.tiers['standard']?.model || '', thinking: p.tiers['standard']?.thinking || '' },
+        cheap:    { runner: p.tiers['cheap']?.provider    || '', model: p.tiers['cheap']?.model    || '', thinking: p.tiers['cheap']?.thinking    || '' },
       },
     })),
-    [profilesDict, installationsDict],
+    [profilesDict],
   )
 
-  const installations: SPInstallation[] = useMemo(() =>
-    Object.values(installationsDict).map(i => ({
-      id: i.alias,
-      alias: i.alias,
-      runner: i.runnerType,
-      binary: i.binary,
-      extraArgs: i.extraArgs.join(' '),
-      isDefault: i.alias.endsWith('-default'),
-      available: i.available,
+  // Map store providerStatus to the presentational ProviderConfigView shape.
+  // region/baseUrl arrive via provider_status_listed JSON Patch (M3 backend).
+  const providers: ProviderConfigView[] = useMemo(() =>
+    providerStatus.map(ps => ({
+      provider: ps.provider,
+      available: ps.available,
+      region: ps.region ?? null,
+      baseUrl: ps.baseUrl ?? null,
     })),
-    [installationsDict],
+    [providerStatus],
   )
 
+  // Runner types: union of static registry and dynamic overlay providers.
   const runnerTypes = useMemo(() => {
-    // Prefer probe data (includes runners without installations); fall back to installed
-    if (probeData.length > 0) return probeData.map(r => r.runner_type).sort()
-    const types = new Set(Object.values(installationsDict).map(i => i.runnerType))
-    return [...types].sort()
-  }, [probeData, installationsDict])
+    const all = new Set([
+      ...modelRegistry.map(e => e.provider),
+      ...providerModels.map(e => e.provider),
+    ])
+    return [...all].sort()
+  }, [modelRegistry, providerModels])
 
   const runnerOptions = useMemo(() =>
     runnerTypes.map(r => ({ value: r, label: r })),
@@ -701,71 +793,67 @@ function ConnectedSettingsPage() {
 
   const modelOptionsForRunner = useMemo(() =>
     (runner: string) => {
-      const info = probeData.find(r => r.runner_type === runner)
-      return info?.models.map(m => ({ value: m.alias, label: m.display_name })) ?? []
+      const staticOpts = modelRegistry
+        .filter(e => e.provider === runner)
+        .map(e => ({ value: e.model, label: e.displayName || e.model }))
+      const staticModels = new Set(staticOpts.map(o => o.value))
+      // Append overlay models for this runner, deduping against static.
+      const overlayOpts = providerModels
+        .filter(e => e.provider === runner && !staticModels.has(e.model))
+        .map(e => ({ value: e.model, label: e.displayName || e.model }))
+      return [...staticOpts, ...overlayOpts]
     },
-    [probeData],
+    [modelRegistry, providerModels],
   )
 
   const thinkingOptionsForModel = useMemo(() =>
     (runner: string, model: string) => {
-      const info = probeData.find(r => r.runner_type === runner)
-      const modelInfo = info?.models.find(m => m.alias === model)
-      if (modelInfo && modelInfo.thinking_modes.length > 0) {
-        return modelInfo.thinking_modes.map(t => ({ value: t, label: t }))
+      // Overlay-only models have no registry entry -> returns [] -> only "disabled".
+      const entry = modelRegistry.find(e => e.provider === runner && e.model === model)
+      if (entry && entry.thinkingModes.length > 0) {
+        return entry.thinkingModes.map(t => ({ value: t, label: t }))
       }
-      // Fallback when no model selected or probe data unavailable
-      return [{ value: 'budget', label: 'budget' }, { value: 'medium', label: 'medium' }, { value: 'high', label: 'high' }]
+      return []
     },
-    [probeData],
+    [modelRegistry],
   )
 
   return (
     <SettingsPage
       profiles={profiles}
       onCreateProfile={async p => {
-        const tiers: Record<string, { runner_type: string; model: string; thinking: string }> = {}
+        // M3: map runner -> provider in the tier payload.
+        const tiers: Record<string, { provider: string; model: string; thinking: string }> = {}
         for (const [k, v] of Object.entries(p.tiers)) {
-          tiers[k] = { runner_type: v.runner, model: v.model, thinking: v.thinking }
+          tiers[k] = { provider: v.runner, model: v.model, thinking: v.thinking }
         }
         const res = await api.createProfile(p.name, tiers)
         if (!res.ok) throw new Error(res.message || 'Failed to create profile')
       }}
       onUpdateProfile={async (id, p) => {
         if (p.tiers) {
-          const tiers: Record<string, { runner_type: string; model: string; thinking: string }> = {}
+          // M3: map runner -> provider in the tier payload.
+          const tiers: Record<string, { provider: string; model: string; thinking: string }> = {}
           for (const [k, v] of Object.entries(p.tiers)) {
-            tiers[k] = { runner_type: v.runner, model: v.model, thinking: v.thinking }
+            tiers[k] = { provider: v.runner, model: v.model, thinking: v.thinking }
           }
           const res = await api.updateProfile(id, tiers)
           if (!res.ok) throw new Error(res.message || 'Failed to update profile')
         }
       }}
       onDeleteProfile={id => api.deleteProfile(id)}
-      installations={installations}
-      runnerTypes={runnerTypes}
-      onCreateInstallation={async inst => {
-        const res = await api.createAgent({
-          alias: inst.alias,
-          runner_type: inst.runner,
-          binary: inst.binary,
-          extra_args: inst.extraArgs ? inst.extraArgs.split(' ').filter(Boolean) : [],
-        })
-        if (!res.ok) throw new Error(res.message || 'Failed to create installation')
+      // installations/runnerTypes/onCreateInstallation/onUpdateInstallation/
+      // onDeleteInstallation/onDetectBinary removed in M4: installation concept deleted.
+      providers={providers}
+      onSaveProvider={async (provider, fields) => {
+        const res = await api.setProviderConfig(provider, fields)
+        if (!res.ok) throw new Error(res.message || 'Failed to save provider config')
       }}
-      onUpdateInstallation={async (id, inst) => {
-        const res = await api.updateAgent(id, {
-          ...(inst.runner && { runner_type: inst.runner }),
-          ...(inst.binary && { binary: inst.binary }),
-          ...(inst.extraArgs !== undefined && { extra_args: inst.extraArgs.split(' ').filter(Boolean) }),
-        })
-        if (!res.ok) throw new Error(res.message || 'Failed to update installation')
+      onDeleteProvider={async provider => {
+        const res = await api.deleteProviderConfig(provider)
+        if (!res.ok) throw new Error(res.message || 'Failed to delete provider config')
       }}
-      onDeleteInstallation={id => api.deleteAgent(id)}
-      onDetectBinary={async runner => {
-        const res = await api.detectAgent(runner)
-        return res.path
-      }}
+      onTestProvider={async (provider, fields) => api.testProviderConfig(provider, fields)}
       scoutConcurrency={scoutConcurrency}
       onScoutConcurrencyChange={n => api.saveScoutConcurrency(n)}
       runnerOptions={runnerOptions}
@@ -776,78 +864,8 @@ function ConnectedSettingsPage() {
 }
 
 // ---------------------------------------------------------------------------
-// Review view — renders ReviewPanel for the currently open artifact
+// Review view -- renders ReviewPanel for the currently open artifact
 // ---------------------------------------------------------------------------
-
-// DESIGN NOTE: the opener below deliberately does NOT ask the LLM to verify
-// its own revision before re-yielding. Intrinsic self-correction is a
-// documented anti-pattern -- the user's next review pass is the verifier,
-// not the model. Do not add "double-check your edits", "validate each
-// change", or any similar self-verification language.
-//
-// The opener also pairs with the REVIEW FEEDBACK LOOP contract documented
-// in the koan_yield tool docstring (koan/web/mcp_endpoint.py). Both sides
-// must stay in sync: the "I've reviewed `<path>`" sentinel is how the LLM
-// recognizes the payload as a review response.
-//
-// Three response types:
-//   1. Approval  -- no comments, no summary -> "approve it as-is"
-//   2. Structured -- inline comments (+ optional summary)
-//   3. Free-form  -- summary only, no inline comments
-function formatReviewMessage(path: string, payload: ReviewSubmitPayload): string {
-  const summary = payload.summary.trim()
-  const hasComments = payload.comments.length > 0
-  const hasSummary = summary.length > 0
-
-  // Approval -- no comments and no summary means the artifact is accepted.
-  if (!hasComments && !hasSummary) {
-    return `I've reviewed \`${path}\` and approve it as-is. No changes requested.`
-  }
-
-  const out: string[] = []
-
-  // Structured feedback -- inline comments (with optional summary).
-  if (hasComments) {
-    out.push(
-      `I've reviewed \`${path}\`. For each inline comment below, edit the cited section of the file to address it. Preserve everything not called out. When all comments are addressed, call \`koan_yield\` again so I can confirm or give another pass.`,
-    )
-
-    // Group comments by blockIndex in document order.
-    const groups = new Map<number, { preview: string; comments: string[] }>()
-    for (const c of payload.comments) {
-      const g = groups.get(c.blockIndex)
-      if (g) g.comments.push(c.text)
-      else groups.set(c.blockIndex, { preview: c.blockPreview, comments: [c.text] })
-    }
-    const sorted = [...groups.entries()].sort(([a], [b]) => a - b)
-
-    for (const [, g] of sorted) {
-      out.push('')
-      out.push('On the section:')
-      for (const line of g.preview.split('\n')) out.push(`> ${line}`)
-      out.push('')
-      for (const text of g.comments) {
-        const parts = text.split('\n')
-        out.push(`- ${parts[0]}`)
-        for (let i = 1; i < parts.length; i++) out.push(`  ${parts[i]}`)
-      }
-    }
-  }
-
-  // Free-form feedback -- summary only, no inline comments.
-  if (!hasComments && hasSummary) {
-    out.push(
-      `I've reviewed \`${path}\`. Apply the feedback below, then call \`koan_yield\` again so I can confirm or give another pass.`,
-    )
-  }
-
-  if (hasSummary) {
-    out.push('')
-    out.push(`**Summary:** ${summary}`)
-  }
-
-  return out.join('\n')
-}
 
 function ReviewView() {
   const path = useStore(s => s.reviewingArtifact)
@@ -868,10 +886,10 @@ function ReviewView() {
 
   if (!path) return null
 
-  const handleSubmit = (payload: ReviewSubmitPayload) => {
-    const message = formatReviewMessage(path, payload)
-    console.log('[review] submitting:\n' + message)
-    api.sendChatMessage(message)
+  // Submit to /api/artifact-comment (M5 endpoint). Flat schema: path + comment
+  // + attachments. The old /api/artifact-review and multi-block payload are gone.
+  const handleSubmit = (comment: string, attachments: string[]) => {
+    api.submitArtifactComment(path, comment, attachments)
     setReviewing(null)
   }
 
@@ -899,29 +917,46 @@ export default function App() {
   const run = useStore(s => s.run)
   const connected = useStore(s => s.connected)
   const reviewingArtifact = useStore(s => s.reviewingArtifact)
-  const activeYield = useStore(s => s.run?.activeYield ?? null)
-  const artifactsDict = useStore(s => s.run?.artifacts)
+  const completion = run?.completion ?? null
   const header = useHeaderData()
-  const [page, setPage] = useState<'new-run' | 'sessions' | 'settings'>('new-run')
+  const location = useLocation()
+  const navigate = useNavigate()
 
-  // Review auto-open: yield-triggered, not write-triggered. Fires when the
-  // orchestrator parks in koan_yield -- the synchronous checkpoint where a
-  // review is expected. Picks the newest .md artifact modified since the
-  // previous yield (or since app mount for the first yield). If no .md was
-  // modified in that window, no auto-open (the yield is not about an artifact).
-  // TODO: gate behind settings toggle "Auto-open new or changed artifacts".
-  const lastYieldAtRef = useRef<number>(Date.now())
+  // Derive the active nav key from the current URL path so browser back/forward
+  // updates the nav highlight without local state.
+  const page: 'new-run' | 'sessions' | 'memory' | 'settings' =
+    location.pathname.startsWith('/memory') ? 'memory'
+    : location.pathname === '/sessions' ? 'sessions'
+    : location.pathname === '/settings' ? 'settings'
+    : 'new-run'
+
+  // Auto-open effect removed in M6 -- koan_artifact_propose (and the
+  // activeArtifactReview field it drove) was deleted in M5. Artifacts are
+  // now opened on demand by the user clicking them in the sidebar.
+
+  // Snapshot run.completion into lastCompletion on the null->non-null rising
+  // edge only. The ref guards against re-snapshotting on every re-render or
+  // on future events that re-emit the same completion object.
+  const prevCompletionRef = useRef<CompletionInfo | null>(null)
   useEffect(() => {
-    if (activeYield === null) return
-    const cutoff = lastYieldAtRef.current
-    lastYieldAtRef.current = Date.now()
-    const candidates = Object.values(artifactsDict ?? {})
-      .filter(a => a.path.endsWith('.md') && a.modifiedAt > cutoff)
-    if (candidates.length === 0) return
-    const newest = candidates.reduce((a, b) => (a.modifiedAt >= b.modifiedAt ? a : b))
-    useStore.getState().setReviewingArtifact(newest.path)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeYield])
+    const current = run?.completion ?? null
+    if (prevCompletionRef.current === null && current !== null) {
+      useStore.getState().setLastCompletion(current)
+    }
+    prevCompletionRef.current = current
+  }, [run?.completion])
+
+  // Success: auto-clear + navigate after 3 seconds so the user can read the
+  // completion banner before the overview appears. The timer is cancelled if
+  // the component unmounts or if completion changes (e.g. SSE reconnect).
+  useEffect(() => {
+    if (!completion || !completion.success) return
+    const timer = setTimeout(async () => {
+      await api.clearRun()
+      navigate('/')
+    }, 3000)
+    return () => clearTimeout(timer)
+  }, [completion, navigate])
 
   useEffect(() => {
     let es: EventSource | null = null
@@ -940,17 +975,56 @@ export default function App() {
     return () => { es?.close() }
   }, [])
 
-  const goToSettings = () => setPage('settings')
+  const goToSettings = () => navigate('/settings')
   const focus = run?.focus
+
+  // Derive sub-page breadcrumbs from the current URL for memory routes.
+  const memoryCrumbs = useMemo(() => {
+    if (!location.pathname.startsWith('/memory')) return undefined
+    const parts = location.pathname.split('/').filter(Boolean)
+    if (parts.length === 1) return undefined  // /memory itself — no crumbs
+    if (parts[1] === 'reflect') {
+      const q = useStore.getState().reflect?.question ?? ''
+      const snip = q.length > 40 ? q.slice(0, 40) + '...' : q
+      return [
+        { label: 'Memory', href: '/memory' },
+        { label: 'Reflect' },
+        ...(snip ? [{ label: `"${snip}"` }] : []),
+      ]
+    }
+    return [
+      { label: 'Memory', href: '/memory' },
+      { label: `#${parts[1]}` },
+    ]
+  }, [location.pathname])
   const hasInteraction = focus && focus.type !== 'conversation'
-  const completion = run?.completion
 
   // --- Loading ---
   if (!connected) {
     return (
       <div className="app-root">
         <HeaderBar phase="" step="" totalSteps={0} currentStep={0} />
-        <div className="single-column"><div className="loading-center">connecting…</div></div>
+        <div className="single-column"><div className="loading-center">connecting...</div></div>
+      </div>
+    )
+  }
+
+  // --- Curation takeover: supersedes all run-scoped views ---
+  // Placed before hasInteraction/completion/review branches so it takes
+  // priority whenever the orchestrator is blocked in koan_memory_propose.
+  if (run?.activeCurationBatch) {
+    return (
+      <div className="app-root">
+        <HeaderBar
+          phase="" step="" totalSteps={0} currentStep={0}
+          mode="navigation"
+          navItems={NAV_ITEMS}
+          activeNav=""
+          crumbs={[{ label: 'Memory curation' }]}
+          onNavChange={k => navigate(PATH_BY_KEY[k] ?? '/')}
+        />
+        <CurationTakeover />
+        <Notification />
       </div>
     )
   }
@@ -964,7 +1038,8 @@ export default function App() {
           mode="navigation"
           navItems={NAV_ITEMS}
           activeNav={page}
-          onNavChange={k => setPage(k as typeof page)}
+          crumbs={memoryCrumbs}
+          onNavChange={k => navigate(PATH_BY_KEY[k] ?? '/')}
         />
         {page === 'new-run' && <div className="single-column"><NewRunForm /></div>}
         {page === 'sessions' && (
@@ -972,6 +1047,7 @@ export default function App() {
             <SessionsPage />
           </div>
         )}
+        {page === 'memory' && <div className="single-column"><MemoryRoutes /></div>}
         {page === 'settings' && <ConnectedSettingsPage />}
         <Notification />
       </div>
@@ -993,10 +1069,40 @@ export default function App() {
   }
 
   if (completion) {
+    if (completion.success) {
+      // Auto-navigation timer is running (3s). Keep workflow-mode header so
+      // the phase/step breadcrumb remains visible while the user waits.
+      return (
+        <div className="app-root">
+          <HeaderBar {...header} onSettingsClick={goToSettings} />
+          <div className="workflow-grid"><CompletionView /><ConnectedSidebar /></div>
+          <Notification />
+        </div>
+      )
+    }
+    // Failure: switch to navigation-mode header so nav clicks can clear and
+    // navigate. No auto-navigation — user must take an explicit action.
+    const handleNav = async (k: string) => {
+      await api.clearRun()
+      navigate(PATH_BY_KEY[k] ?? '/')
+    }
+    const handleBack = async () => {
+      await api.clearRun()
+      navigate('/')
+    }
     return (
       <div className="app-root">
-        <HeaderBar {...header} onSettingsClick={goToSettings} />
-        <div className="workflow-grid"><CompletionView /><ConnectedSidebar /></div>
+        <HeaderBar
+          phase="" step="" totalSteps={0} currentStep={0}
+          mode="navigation"
+          navItems={NAV_ITEMS}
+          activeNav=""
+          onNavChange={handleNav}
+        />
+        <div className="workflow-grid">
+          <CompletionView onBackToOverview={handleBack} />
+          <ConnectedSidebar />
+        </div>
         <Notification />
       </div>
     )

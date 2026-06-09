@@ -1,13 +1,23 @@
 # Artifact listing for run directory.
 # Scans run root .md files and stories/ recursively, excluding subagents/.
+#
+# Artifacts are plain markdown files -- no driver-managed frontmatter.
+# Listing metadata (size, mtime) comes from the filesystem.
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
+from .logger import get_logger
+
+log = get_logger("artifacts")
+
+
+# -- Artifact listing ----------------------------------------------------------
 
 def list_artifacts(run_dir: str | Path) -> list[dict]:
+    """List run-dir artifacts as {path, size, modified_at} dicts (root .md files + stories/, excluding subagents/)."""
     root = Path(run_dir)
     results: list[dict] = []
 

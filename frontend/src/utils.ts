@@ -13,11 +13,19 @@ export function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-// tiers is now Record<string, string> — role → installation alias
-export function tierSummary(tiers: Record<string, string>): string {
+/**
+ * Render a compact summary of profile tiers for display in the profile list.
+ *
+ * M3: tiers changed from Record<string,string> (role->alias) to
+ * Record<string,{provider,model,thinking}> to match the wire shape
+ * _serialize_profile emits. Renders "tier: provider/model" per entry.
+ */
+export function tierSummary(tiers: Record<string, { provider: string; model: string; thinking: string }>): string {
   const parts: string[] = []
-  for (const [role, alias] of Object.entries(tiers)) {
-    if (alias) parts.push(`${role}: ${alias}`)
+  for (const [role, t] of Object.entries(tiers)) {
+    if (t && t.provider && t.model) {
+      parts.push(`${role}: ${t.provider}/${t.model}`)
+    }
   }
   return parts.slice(0, 3).join(' | ') || '--'
 }

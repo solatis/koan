@@ -73,19 +73,23 @@
   color: var(--text-muted);
 }
 
-/* ---- Custom text input (visible only when isCustom + selected) ---- */
+/* Multi-line "other" answer field -- mirrors .ep-free-text / .nrf-textarea */
 .ro-custom-input {
   display: block;
   width: 100%;
-  padding: 8px 0;
+  min-height: 80px;
   margin-top: 8px;
-  background: transparent;
-  border: none;
-  border-bottom: 1px solid var(--border-card);
+  padding: 12px 14px;
+  background: var(--bg-base);
+  border: 1.5px solid var(--border-input);
+  border-radius: var(--radius-lg);
   font-family: var(--font-body);
   font-size: var(--type-body);
   color: var(--text-primary);
+  line-height: 1.5;
+  resize: vertical;
   outline: none;
+  box-sizing: border-box;
 }
 
 .ro-custom-input::placeholder {
@@ -93,5 +97,5 @@
 }
 
 .ro-custom-input:focus {
-  border-bottom-color: var(--border-input);
+  border-color: var(--color-orange);
 }

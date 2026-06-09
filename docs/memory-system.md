@@ -33,11 +33,12 @@ Koan's memory is fundamentally different:
   curation workflow. Every entry is human-reviewed before it enters
   memory.
 
-- **Structured, not atomic.** Each entry is 100–500 tokens of
-  self-contained prose — an architectural decision with rationale
-  and alternatives, not an atomic fact like "user prefers coffee."
-  The grain size is justified by EMem's neo-Davidsonian argument:
-  relational knowledge must stay bundled (Zhou et al., 2025).
+- **Structured, not atomic.** Each entry is a self-contained unit
+  carrying the knowledge its type requires — an architectural
+  decision with rationale and alternatives, not an atomic fact like
+  "user prefers coffee." The grain size is justified by EMem's
+  neo-Davidsonian argument: relational knowledge must stay bundled
+  (Zhou et al., 2025).
 
 - **The producer and consumer are LLMs.** The primary reader of
   memory entries is the intake agent at the start of the next
@@ -93,19 +94,50 @@ A file's presence is its status. If a file exists in `.koan/memory/`,
 it is active knowledge. The `koan_forget` tool deletes the file.
 Git preserves the history of anything removed.
 
+### Title writing
+
+Titles participate in the embedding text
+(`# {title}\ntype: {type}\n\n{body}` in
+`koan/memory/retrieval/index.py`). They are not just labels — they
+are the sharpest single line of the entry and carry embedding signal
+alongside the body.
+
+Titles read as factual headlines that name the specific decision,
+lesson, procedure, or context fact. They name a subsystem and a
+claim in one line, not just the topic.
+
+Good titles:
+
+- "PostgreSQL 16.2 chosen over SQLite for auth service due to
+  concurrent-write load"
+- "AGENTS.md describing functions that do not yet exist creates
+  implicit pressure on executors"
+- "All state file writes use atomic tmp-file + os.rename()"
+
+Bad titles:
+
+- "Memory system" — topic without a claim
+- "PostgreSQL decision" — vague, no claim
+- "Curation phase improvements" — vague, no specifics
+
+No length cap. Titles are as long as the claim requires.
+
 ### Prose body
 
-Everything after the frontmatter is the prose body, written in
-event-style following the writing discipline described below.
+Everything after the frontmatter is the prose body, written
+following the writing discipline described below.
 
-**The first 1–3 sentences must situate the entry in the project.**
-This follows Anthropic's contextual retrieval technique, which
+**The entry must be retrievable without external state.** This
+follows Anthropic's contextual retrieval technique, which
 demonstrated a 35% reduction in retrieval failures when contextual
-information is prepended to chunks before embedding. Because the
-entire file is embedded as a single chunk for retrieval, these
-opening sentences become part of the embedding and improve search
-matching. They are not a separate field — they are the natural
-opening of the prose, written as part of the body.
+information is present in the embedded chunk. Because the entire
+file is embedded as a single chunk for retrieval, the body should
+contain enough specific context — named subsystems, file paths,
+decision names — that the embedding has anchor signal and the entry
+is interpretable standalone. How this is achieved (a situating
+opening, a sharp title, concrete naming throughout the body) is the
+writer's choice. Vague openings without specific entities
+("This system...", "The project...") hurt retrieval.
 
 ### Complete example
 
@@ -118,43 +150,56 @@ modified: 2026-04-10T14:23:00Z
 related: [0002-infrastructure.md]
 ---
 
-This entry documents the choice of primary data store for the
-authentication service in TrapperKeeper, a distributed data firewall.
-
-On 2026-04-10, user decided to migrate the auth service from SQLite
-to PostgreSQL 16.2. Rationale: SQLite could not handle concurrent
-write loads from the new worker pool (>50 connections). Alternatives
-rejected: SQLite WAL mode (single-writer limitation), CockroachDB
-(operational complexity too high for a two-person team). Decision
-surfaced during intake when user described timeout errors under load.
+TrapperKeeper auth service -- user decided to migrate from SQLite to
+PostgreSQL 16.2 on 2026-04-10. Rationale: SQLite could not handle
+concurrent write loads from the new worker pool (>50 connections).
+Alternatives rejected: SQLite WAL mode (single-writer limitation),
+CockroachDB (operational complexity too high for a two-person team).
+Decision surfaced during intake when user described timeout errors
+under load.
 ```
 
 ---
 
 ## Writing discipline
 
-All memories are written as **temporally grounded, absolute facts**.
-This quality discipline is validated by SimpleMem (Liu et al., 2026),
-whose ablation showed that removing temporal normalization and
-coreference resolution reduced Temporal F1 by 56.7%. The EMem paper
-(Zhou et al., 2025, "A Simple Yet Strong Baseline for Long-Term
-Conversational Memory of LLM Agents") grounds this in neo-Davidsonian
-event semantics: treating events as single units with multiple
-arguments outperforms decomposing them into relation triples.
+Memory entries follow a writing discipline organized around what
+content each type must carry. The EMem paper (Zhou et al., 2025,
+"A Simple Yet Strong Baseline for Long-Term Conversational Memory
+of LLM Agents") grounds the structure in neo-Davidsonian event
+semantics: treating events as single units with multiple arguments
+outperforms decomposing them into relation triples. This argument
+applies most forcefully to decisions, where rationale, rejected
+alternatives, and surfacing context must stay bundled to preserve
+the knowledge's coherence.
+
+Temporal context lives in the entry's frontmatter `created` and
+`modified` fields, which `koan/memory/writer.py` populates
+automatically. Prose dates may appear when a specific date is itself
+part of the rationale or anchors a load-bearing fact (e.g., "the
+migration on 2026-04-10 failed because..."), but embedding a date
+in every claim is not required.
 
 ### Rules
 
-1. **Every statement includes a date.** The date the fact became true
-   or was observed. Temporal grounding makes every entry a historical
-   fact that remains true regardless of when it is read.
+1. **Situate for retrieval.** The entry should contain enough
+   specific context — named subsystems, file paths, decision names —
+   that the embedding has anchor signal and the entry is interpretable
+   standalone. A sharp title, concrete entity names in the body, or
+   both achieve this. Vague openings without specific entities
+   ("This system...", "The project...") hurt retrieval.
 
-2. **Attribute claims to their source.** "User stated...", "LLM
-   inferred...", "Post-mortem identified...". Source attribution lives
-   in the prose, not in metadata fields. User-stated facts carry
-   higher trust than LLM-inferred facts.
+2. **Attribute when it affects trust calibration.** User-stated facts
+   carry higher trust than LLM-inferred facts; name the source when
+   the distinction matters. Anonymous attribution ("it was decided")
+   still fails for decisions. Background facts, lessons, and
+   procedures may carry no attribution and should read as standalone
+   knowledge.
 
-3. **No forward-looking language.** Not "we will" but "On [date], user
-   stated the plan was to...".
+3. **No forward-looking language.** Entries record what has happened
+   or what is observed, not plans for the future. Rationale that
+   something "should" or "must" be done belongs inside a past-tense
+   framing of the decision that established the rule.
 
 4. **Name things concretely.** Not "the database" but "PostgreSQL 16.2"
    or "the auth service's primary data store."
@@ -168,10 +213,105 @@ Bad — relative, will become stale:
 
 > We use PostgreSQL for the auth service.
 
-Good — temporally grounded, always true as a historical fact:
+Good — concrete naming, rationale, rejected alternatives, standalone:
 
-> On 2026-04-10, user decided to use PostgreSQL 16.2 for the auth
-> service's data storage, replacing SQLite.
+> The auth service in TrapperKeeper uses PostgreSQL 16.2 as its
+> primary data store. Chosen over SQLite because concurrent write
+> loads from the worker pool (>50 connections) exceeded SQLite's
+> single-writer limit. Alternatives rejected: SQLite WAL mode
+> (single-writer limitation persists), CockroachDB (operational
+> complexity too high for a two-person team). Decision surfaced
+> during intake when user described timeout errors under load.
+
+---
+
+## Per-type writing guidelines
+
+Each memory type has a characteristic content shape. Length follows
+the content the entry must carry; there is no token target. The four
+types are defined in the section below; this section describes how
+each is written.
+
+### Decision
+
+A decision entry must carry: the choice, the rationale (why this
+over alternatives), the rejected alternatives and why they failed,
+and the surfacing context (how the decision came up). These elements
+must stay bundled — splitting rationale and rejected alternatives
+into separate entries destroys the coherence of the knowledge.
+
+Shape: `[Subsystem] -- [actor] decided [choice]. Rationale: [why].
+Alternatives rejected: [list with reasons]. Decision surfaced [when
+and how].`
+
+Example:
+
+> TrapperKeeper auth service -- user decided to migrate from SQLite
+> to PostgreSQL 16.2. Rationale: concurrent write loads from the
+> worker pool (>50 connections) exceeded SQLite's single-writer
+> capacity. Alternatives rejected: SQLite WAL mode (single-writer
+> limitation persists under high connection counts), CockroachDB
+> (operational complexity too high for a two-person team). Decision
+> surfaced during intake when user described timeout errors under
+> load.
+
+### Context
+
+A context entry must carry: the specific stable fact (with concrete
+entity names) and one sentence on why it matters for future agents.
+
+Shape: `[Subsystem / project area] -- [specific fact with concrete
+names]. This matters because [consequence for agents].`
+
+Example:
+
+> TrapperKeeper deployment -- secrets are managed via `.env` files
+> loaded by docker-compose; they must never appear in
+> `docker-compose.yml` or version control. This matters because
+> executors writing docker-compose changes may inadvertently inline
+> secrets if unaware of this constraint.
+
+### Lesson
+
+A lesson entry must carry: what happened (the concrete event), the
+root cause (not symptoms), and the prevention rule or procedure that
+follows.
+
+Shape: `[Subsystem] -- [what happened]. Root cause: [why].
+Prevention: [rule or procedure to prevent recurrence, or "see
+procedure NNNN" if a paired procedure exists].`
+
+Example:
+
+> User-management service deployment -- a feature branch added a
+> `last_seen_at` column to the ORM model but omitted the Alembic
+> migration. Local tests passed because the local test database was
+> SQLite, which auto-creates columns from ORM definitions. Staging
+> deployment failed when PostgreSQL rejected inserts for the missing
+> column. Root cause: test harness used a different database engine
+> than production, hiding schema drift at merge time. Prevention:
+> run all Alembic migrations against an empty PostgreSQL instance in
+> CI before test suites execute.
+
+### Procedure
+
+A procedure entry must carry: the triggering condition, the rule or
+action, and (where useful) the consequence of violating it. This is
+the type closest to a sharp factual rule — trigger condition,
+mechanism, consequence, and (where relevant) the counter-frame
+showing what the wrong approach looks like.
+
+Shape: `[Subsystem] -- when [trigger condition], [action / rule].
+Violating this leads to [consequence].`
+
+Example:
+
+> CI pipeline -- before any database migration lands in a branch,
+> run all pending Alembic migrations against an empty PostgreSQL
+> instance as a CI step. The wrong approach is relying on
+> ORM-level auto-migration or local test databases that diverge
+> from the production engine. Violating this leads to schema drift
+> that passes local tests and fails on staging or production.
 
 ---
 
@@ -373,9 +513,9 @@ Once the retrieval index is available (Milestone 3+), the curation
 step can use `koan_search` to find related entries before
 classifying, making duplicate detection more reliable.
 
-### MCP tools for memory operations
+### Memory operation tools
 
-The orchestrator interacts with memory through three MCP tools.
+The orchestrator interacts with memory through three in-process tools.
 Individual entry reading uses the orchestrator's native filesystem
 access (the entries are plain markdown).
 
@@ -441,8 +581,26 @@ Summary regeneration (inside `koan_memory_status`) uses a
 **cheap-tier model**. This is a mechanical operation — condensing
 existing entries into a prose overview.
 
-The `koan_reflect` tool uses a **cheap-tier model** for query
-generation and synthesis.
+The `koan_reflect` tool uses a **mid-tier model** (Gemini Flash,
+configurable via `KOAN_REFLECT_MODEL`) via **pydantic-ai** with the
+`google-gla` provider. Summary regeneration uses the same pydantic-ai
+path with the cheap-tier model (configurable via `KOAN_LLM_MODEL`,
+default `gemini-flash-lite-latest`). Both subsystems read `GEMINI_API_KEY`
+or `GOOGLE_API_KEY` from the environment.
+
+Reflect runs a multi-turn tool-calling loop in which a single LLM
+conversation plans queries, interprets results, judges sufficiency, and
+synthesizes the briefing. Thinking and text deltas are streamed as
+`reflect_trace` events (with `kind: "thinking"` or `kind: "text"`) so
+the frontend receives interleaved reasoning alongside search rows.
+These tasks sit squarely in the regime that modern mid-tier models
+handle well -- planning a handful of decomposed searches, reading
+structured results, writing a bounded briefing -- and a Pro-class
+model is overkill for the latency cost. Cheap-tier models (flash-lite
+and below) degrade sharply here: they echo the user's question as a
+single query, produce malformed tool calls, and give up early.
+Mid-tier is the sweet spot; reflect runs infrequently (only on
+explicit invocation) so the per-call cost is acceptable.
 
 ### Direct human editing
 
@@ -466,52 +624,40 @@ framing and rationale that make entries valuable.
 
 ### Entry grain size
 
-Each memory entry is 100–500 tokens: large enough to be
-self-contained, small enough that retrieving 3–5 entries fits within
-a reasonable token budget. This grain size is a deliberate design
-choice supported by three converging arguments.
+An entry is large enough to carry the content its type requires.
+The grain follows the content; there is no token target.
 
-**Empirical evidence on chunk size.** Mem0's benchmark (Table 2)
-shows that for atomic factual queries, small chunks (128–256 tokens)
-outperform large chunks (1024–2048 tokens) by ~32% when retrieving
-a single result. However, this data comes from conversational memory
-where answers are individual facts ("Alice's job is X"). Koan's
-knowledge is structurally different — a decision entry bundles a
-choice with its rationale, rejected alternatives, and surfacing
-context. These elements are not independent facts; they are one
-coherent unit of knowledge.
+**The neo-Davidsonian argument (Zhou et al., EMem 2025).** For
+decisions, this means bundling the choice, rationale, rejected
+alternatives, and surfacing context as one entry. When knowledge is
+relational — when the value lies in connections between elements —
+atomizing it into independent facts destroys the structure that
+makes it useful. If a decision ("chose PostgreSQL over SQLite due to
+concurrency, rejecting CockroachDB for operational complexity") is
+split into three separate atomic facts, a query about CockroachDB
+retrieves the CockroachDB fact but loses the decision context. The
+retriever would need to find all three facts and the LLM would need
+to reassemble them, requiring multi-hop reasoning at query time —
+the operation that degrades performance most across all benchmarks.
 
-**The neo-Davidsonian argument (Zhou et al., EMem 2025).** When
-knowledge is relational — when the value lies in connections between
-elements — atomizing it into independent facts destroys the
-structure that makes it useful. If a decision ("chose PostgreSQL
-over SQLite due to concurrency, rejecting CockroachDB for
-operational complexity") is split into three separate atomic facts,
-a query about CockroachDB retrieves the CockroachDB fact but loses
-the decision context. The retriever would need to find all three
-facts and the LLM would need to reassemble them, requiring
-multi-hop reasoning at query time — the operation that degrades
-performance most across all benchmarks.
+**Per-type grain.** For lessons, procedures, and context entries,
+the grain is the natural size of the knowledge: a lesson carries
+event + root cause + prevention; a procedure carries trigger + rule
 
-**Koan's knowledge is inherently relational.** Koan stores
-architectural decisions with rationale and alternatives, lessons
-with root causes and prevention strategies, procedures with
-conditionals and scope boundaries. These are not atomic preferences
-("user prefers tabs over spaces") — they are structured arguments
-where the rationale, the alternatives, and the context are all
-essential to the entry's value. The grain must be large enough to
-keep the relations intact within each entry, while small enough
-that a few retrieved entries fit the token budget.
+- consequence; a context entry carries the stable fact and why it
+  matters. These are typically tighter than decisions because the
+  structure is simpler.
 
-The grain size is therefore not "as small as possible" but "as
-small as possible while preserving the coherence of each knowledge
-unit." For koan's content type, that is 100–500 tokens per entry.
+The grain must keep the relations within each entry intact. Entries
+that omit rationale, root cause, or triggering conditions lose the
+value that makes them worth retrieving. Retrieving 3–5 entries at
+natural grain size fits within a reasonable context budget for most
+knowledge bases.
 
 ### Indexing
 
 The sync layer watches `.koan/memory/` and indexes each individual
-entry file as a single chunk. Because entries are written to be
-self-contained and are typically 100–500 tokens, most entries can
+entry file as a single chunk. Because entries are written to be self-contained, most entries can
 be embedded whole without further chunking.
 
 For each entry, the sync layer:
@@ -587,10 +733,11 @@ provides the _what to look for_ dimension.
 
 The second input is **recent artifacts and context** that provide
 the _where to look_ dimension -- the topical anchor. The anchor
-is composed from: the task description, all `.md` files in the
-run directory sorted by mtime ascending, and the prior phase's
-summary (captured automatically on the first `koan_yield` of
-each phase). The cheap model combines topic (from the
+is composed from: the task description, then all `.md` files in
+the run directory sorted by mtime ascending (chronological order
+puts the most recent artifact last, where attention is strongest;
+`brief.md` written by intake serves as the de facto initiative
+anchor). The cheap model combines topic (from the
 artifacts/context) with intent (from the directive) to produce
 well-formed queries.
 
@@ -640,8 +787,8 @@ should declare a directive.
 
 The design above maps to the following code locations:
 
-- **Attachment point**: `_step_phase_handshake` in
-  `koan/web/mcp_endpoint.py`, executed on the step 0 -> 1 transition of
+- **Attachment point**: `_step_phase_handshake_core` in
+  `koan/tools/koan_tools.py`, executed on the step 0 -> 1 transition of
   every orchestrator phase.
 - **Directive location**: `PhaseBinding.retrieval_directive` in
   `koan/lib/workflows.py`. The directive is a static, human-authored
@@ -649,15 +796,10 @@ The design above maps to the following code locations:
   for that phase (the curation phase uses an empty string because
   `koan_memory_status` already surfaces the full entry listing).
 - **Anchor composition**: `_compose_rag_anchor()` in
-  `koan/web/mcp_endpoint.py`. Order is task description, then all
-  `*.md` files in the run directory sorted by mtime ascending, then
-  `Run.phase_summaries[prior_phase]`.
-- **Summary capture**: The orchestrator's last assistant text preceding
-  the first `koan_yield` of a phase is captured into
-  `Run.phase_summaries[phase]` via the `phase_summary_captured` event.
-  Subsequent yields in the same phase do not overwrite. Projection
-  code: `_extract_last_orchestrator_text()` in
-  `koan/web/mcp_endpoint.py`.
+  `koan/tools/koan_tools.py`. Order is task description, then all
+  `*.md` files in the run directory sorted by mtime ascending.
+  `brief.md` (written by intake) is the de facto initiative anchor;
+  it appears among the run-dir markdown files sorted by mtime.
 - **Rendering**: `render_injection_block()` in
   `koan/memory/retrieval/rag.py` produces a `## Relevant memory`
   markdown block. Phase modules (intake, plan-spec, plan-review,
@@ -697,46 +839,64 @@ knows it needs (known unknown).
 
 **`koan_reflect(question, context?)`** is a synthesized briefing.
 The agent poses a broad question and gets back a coherent answer
-that draws on multiple entries. This is modeled as a mini-agent
-(cheap-tier model) running an evidence-gathering loop, inspired
-by Hindsight's CARA reflect architecture.
+that draws on multiple entries. Reflect is a single-conversation
+LLM tool-calling loop: one strong-tier model conversation plans
+query angles, calls a `search` tool as many times as it needs,
+reviews accumulated evidence, and calls a `done` tool when it has
+enough to synthesize the briefing. The loop is inspired by
+Hindsight's CARA reflect architecture and implemented in
+`koan/memory/retrieval/reflect.py` (`run_reflect_agent`).
 
-The reflect tool runs the following agentic loop:
+The loop exposes exactly two tools to the model:
 
-**Step 1: Orient.** The reflect agent loads the project summary to
-understand what knowledge areas exist. This is a direct file read,
-not a search.
+- **`search(query, type?, k?)`** — the same hybrid search + reranking
+  pipeline used everywhere else (steps 3-5 from mechanical retrieval).
+  The optional `type` filter narrows to a specific memory type; `k`
+  defaults to 5 and is capped at 20. Every entry returned across the
+  loop is tracked in a retrieved-set dict keyed by `entry_id`.
+- **`done(answer, memory_ids)`** — terminates the loop. `answer` is
+  markdown prose (target 300-500 tokens); `memory_ids` is a list of
+  integer entry IDs backing the briefing. The driver validates each
+  id against the retrieved set, drops unmatched ids with a log entry,
+  and resolves surviving ids to `{id, title}` citation pairs using
+  the retrieved-set dict. The calling agent receives
+  `{answer, citations, iterations}`.
 
-**Step 2: Plan queries.** Based on the question and the
-orientation context, the agent generates 3–5 search queries from
-different angles. Example: question "what constraints and patterns
-should guide SDK design?" produces queries like "SDK architecture
-decisions," "sensor lifecycle procedures," "testing philosophy
-conventions," "fail-safe default requirements," "past SDK-related
-lessons."
+The model drives the loop itself rather than having the Python caller
+orchestrate separate single-turn prompts for planning, sufficiency
+judgment, and synthesis. A single conversation lets the model adapt
+its next search to what it just found — a capability lost when
+control flow lives outside the LLM. The system prompt instructs the
+model to decompose the question into 3-5 component searches targeting
+different entities and concepts (decomposition examples are included
+in the prompt because models default to echoing the user's full
+question as a single query otherwise).
 
-**Step 3: Gather evidence.** For each query, run the standard
-retrieval pipeline (hybrid search + reranking, steps 3–5 from
-mechanical retrieval). Collect the top results across all queries.
+The loop is capped at 10 tool calls. Reaching the cap without a
+`done` call is a fail-fast: the MCP handler raises
+`ToolError("iteration_cap_exceeded")` and no partial briefing is
+returned. The iteration cap is a safety rail against runaway loops,
+not a soft budget to fill.
 
-**Step 4: Evaluate sufficiency.** The agent reviews the gathered
-entries and assesses whether they adequately answer the question.
-If critical gaps remain (the question asks about SDK testing but
-no testing-related entries were retrieved), generate 1–2
-additional targeted queries and retrieve more. This loop runs
-up to 3 iterations to prevent runaway searches.
+No `orient`, `list_entries`, or summary-load step runs at loop start.
+The model discovers vocabulary through exploratory searches, the same
+way `koan_search` callers do. Pre-loading the summary or listing all
+entries moves vocabulary discovery outside the loop and scales badly
+as the memory grows.
 
-**Step 5: Synthesize.** The agent reads all gathered entries
-(typically 8–15 after deduplication) and produces a coherent
-300–500 token briefing that answers the original question. The
-synthesis connects knowledge across different entry types —
-linking a decision about fail-safe defaults to a procedure about
-testing to a lesson about SDK initialization failures. Each claim
-in the briefing cites the specific entry it draws from (by file
-path).
+Citations flow as typed tool arguments, not as text embedded in the
+answer prose. The model emits `memory_ids: list[int]`; the driver
+resolves titles server-side from the retrieved set. The answer prose
+may reference entries by title for readability, but the canonical
+citation list is the structured `citations` field in the response.
+Parsing citations out of natural-language prose is explicitly out of
+scope — structured metadata belongs in tool schemas, not in
+free text.
 
-**Step 6: Return.** The briefing is returned to the calling agent
-as the tool's output.
+Hallucination validation stays structural. The driver drops any
+`memory_id` that was not returned by a `search` call during the loop.
+A judge-LLM pass over the answer prose is an evaluation-harness
+concern, not a synchronous tooling concern: it lives in `evals/`.
 
 The key differences from Hindsight's reflect that koan does NOT
 adopt: no disposition traits (Hindsight uses skepticism,
@@ -744,14 +904,17 @@ literalism, and empathy parameters — koan's reflect produces
 factual briefings, not opinionated interpretations), and no
 opinion formation (Hindsight creates and updates opinions with
 confidence scores — koan stores facts and decisions, not
-beliefs).
+beliefs). Koan also uses one search tool rather than Hindsight's
+five-tool surface: there is a single retrieval tier over a flat
+entry store, so no distinction between mental-model search,
+observation search, recall, and expand is needed.
 
-What koan DOES adopt from Hindsight's reflect: the agentic loop
-(iterative evidence gathering, not a single LLM call), the
-evidence-before-synthesis guardrail (the agent must gather
-entries before producing a briefing — it cannot answer from its
-parametric knowledge alone), and citation validation (the briefing
-can only cite entries that were actually retrieved).
+What koan DOES adopt from Hindsight's reflect: the
+single-conversation tool-calling loop (the LLM plans and adapts
+its own searches), the evidence-before-synthesis guardrail (the
+model must call `search` before claiming something is absent
+from memory), the 10-iteration cap, and post-hoc citation
+validation against the retrieved set.
 
 #### How the two mechanisms interact
 

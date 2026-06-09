@@ -1,47 +1,48 @@
-# Inter-Process Communication
+# In-Process Communication
 
-HTTP MCP-based communication between the driver and subagent processes.
+How the koan backend coordinates between the orchestrator, subagents, and the
+user through in-process asyncio primitives.
 
 > Parent doc: [architecture.md](./architecture.md)
 >
-> The MCP endpoint at `http://localhost:{port}/mcp?agent_id={id}` is the sole
-> communication channel between parent and child. See
+> Subagents are asyncio tasks inside the single backend process. Tool calls are
+> in-process function calls -- there is no HTTP MCP transport. See
 > [architecture.md -- Directory-as-contract](./architecture.md#6-directory-as-contract).
 
 ---
 
 ## Overview
 
-Subagent CLI processes (`claude`, `codex`, `gemini`) communicate with the
-driver via HTTP MCP tool calls. The driver runs a single Starlette HTTP server
-that handles both the web dashboard and the MCP tool endpoint. When a tool call
-arrives, the server looks up the agent's state by `agent_id` in an in-process
-registry and handles the call directly.
+Subagent tasks (orchestrator, scouts, executors) run as asyncio coroutines
+inside the koan backend. When a tool core needs to block on an external
+response, it does so via `asyncio.Future` objects stored in `AppState`.
 
-Three interactions involve blocking -- the HTTP request is held open while the
-driver awaits an external response:
+Three interactions involve blocking -- the tool core `await`s a future while
+the backend event loop handles other tasks:
 
 | Mechanism               | What blocks                        | Who responds                   |
 | ----------------------- | ---------------------------------- | ------------------------------ |
 | `koan_ask_question`     | User input needed                  | User via web UI                |
-| `koan_request_scouts`   | Scout subagents running            | Driver (after scouts complete) |
-| `koan_yield`            | Phase complete, awaiting direction | User via `POST /api/chat`      |
+| `koan_request_scouts`   | Scout subagents running            | Loop (after scouts complete)   |
+| Phase-boundary hand-back | Phase complete, awaiting direction | User via `POST /api/chat`      |
 
 User-facing tool calls (`koan_ask_question`) go through the `PendingInteraction`
-queue on `AppState`. The MCP handler creates an `asyncio.Future`, stores it in
+queue on `AppState`. The tool core creates an `asyncio.Future`, stores it in
 `AgentState.pending_tool`, enqueues a `PendingInteraction` on `AppState`, and
-awaits the Future. The HTTP connection stays open until the Future resolves.
+`await`s the future. The backend loop stays responsive; the orchestrator's
+current turn is blocked until the user responds.
 
-`koan_request_scouts` is handled entirely inline: the handler spawns scouts via
-`asyncio.gather` of `spawn_subagent` calls (bounded by a semaphore), collects
-their results, and returns directly. No `PendingInteraction` is created; the
-HTTP connection is held open only by the `await asyncio.gather(...)` call.
+`koan_request_scouts` is handled entirely inline: `request_scouts_core` spawns
+scouts via `asyncio.gather` of `spawn_subagent` calls (bounded by a semaphore),
+collects their results, and returns directly. No `PendingInteraction` is created.
 
-`koan_request_executor` spawns a single executor subagent and blocks until it
-exits. Like scouts, it is handled inline with no `PendingInteraction`.
+`koan_request_executor` spawns a single executor subagent and awaits its
+completion. Like scouts, it is handled inline with no `PendingInteraction`.
 
-`koan_yield` uses `AppState.yield_future` directly (not `PendingInteraction`).
-See [koan_yield Blocking](#koan_yield-blocking).
+The phase-boundary hand-back is not a tool call. When the turn-outcome resolver
+determines that steps are exhausted for a primary agent, `run_agent_loop`
+emits `yield_started` and `await`s `AppState.yield_future`, which is resolved
+when the user sends a message via `POST /api/chat`.
 
 There is no polling and no intermediate files for any of these flows.
 
@@ -53,33 +54,35 @@ There is no polling and no intermediate files for any of these flows.
 
 When a user-facing blocking tool is called:
 
-1. MCP endpoint receives tool call with `agent_id`
-2. Handler creates `asyncio.Future`, stores it in `AgentState.pending_tool`,
+1. Tool core creates `asyncio.Future`, stores it in `AgentState.pending_tool`,
    and enqueues a `PendingInteraction` on `AppState.interaction_queue`
-3. If no interaction is currently active, the interaction is promoted to
+2. If no interaction is currently active, the interaction is promoted to
    `AppState.active_interaction` and an SSE event is pushed to browsers
    (question form)
-4. Handler `await`s the Future -- HTTP connection stays open
-5. User fills the form in the web UI and submits:
+3. Tool core `await`s the Future -- the orchestrator turn is suspended
+4. User fills the form in the web UI and submits:
    - `POST /api/answer` resolves the Future for `koan_ask_question`
-6. Handler returns the resolved value as the MCP tool result; the next queued
-   interaction (if any) is promoted to active
+5. Tool core returns the resolved value; the next queued interaction (if any)
+   is promoted to active
 
 ```
-subagent ---POST /mcp koan_ask_question---> driver
-                                             |
-                                             +-- create Future
-                                             +-- store Future in AgentState.pending_tool
-                                             +-- enqueue PendingInteraction on AppState
-                                             +-- push SSE "ask" event to browser
-                                             +-- await Future
-                                             |
+tool core: koan_ask_question({ questions: [...] })
+  -> create Future
+  -> store Future in AgentState.pending_tool
+  -> enqueue PendingInteraction on AppState
+  -> push SSE "ask" event to browser
+  -> await Future
+
                           user fills form <---+
                           POST /api/answer ---+
                                              |
                                              +-- resolve Future with answer
                                              |
-subagent <---tool result (answer)----------- +
+tool core receives resolved value
+  -> clears AgentState.pending_tool
+  -> activates next queued interaction (if any)
+  -> formats answer as structured text
+  -> returns to caller (koan_ask_question registered function)
 ```
 
 ### `PendingInteraction`
@@ -94,7 +97,7 @@ queued in `AppState.interaction_queue`):
 - `future` -- the `asyncio.Future` awaiting resolution
 
 `AgentState.pending_tool` holds the raw `asyncio.Future` for the currently
-blocked MCP call on that agent (not the `PendingInteraction` object itself).
+blocked call on that agent (not the `PendingInteraction` object itself).
 
 ### Constraints
 
@@ -104,17 +107,15 @@ blocked MCP call on that agent (not the `PendingInteraction` object itself).
   call that would exceed the cap (9 total: 1 active + 8 queued) raises
   `interaction_queue_full`.
 - **No polling** -- resolution is immediate when the external actor responds.
-- **The subagent's LLM turn is blocked** while the Future is pending. The MCP
-  HTTP connection is held open; the LLM cannot call other tools until the
-  response arrives.
+- **The agent turn is suspended** while the Future is pending. The agent cannot
+  call other tools until the response arrives.
 
 ---
 
 ## Ask Flow
 
 ```
-subagent calls koan_ask_question({ questions: [...] })
-  -> MCP endpoint checks permissions
+koan_ask_question({ questions: [...] })
   -> creates asyncio.Future, stores in AgentState.pending_tool
   -> enqueues PendingInteraction { type: "ask" } on AppState
   -> if no active interaction: promotes to active, pushes SSE `questions_asked` event to browsers
@@ -124,11 +125,11 @@ user sees question form in web UI
   -> fills form, clicks Submit
   -> POST /api/answer -> resolves Future with user's selection
 
-MCP handler receives resolved value
+tool core receives resolved value
   -> clears AgentState.pending_tool
   -> activates next queued interaction (if any)
   -> formats answer as structured text
-  -> returns as MCP tool result to subagent
+  -> returns as tool result to agent
 ```
 
 The "Other" option is appended server-side -- the LLM never includes it.
@@ -138,25 +139,22 @@ The "Other" option is appended server-side -- the LLM never includes it.
 ## Scout Flow
 
 ```
-subagent calls koan_request_scouts({ questions: [...] })
-  -> MCP endpoint checks permissions
+koan_request_scouts({ questions: [...] })
   -> no PendingInteraction created
 
-  handler runs inline via asyncio.gather (semaphore-bounded concurrency):
+  request_scouts_core runs inline via asyncio.gather (semaphore-bounded concurrency):
     -> for each scout task:
         -> assign scout agent_id
         -> ensure subagent directory
-        -> spawn scout CLI process via spawn_subagent()
-        -> scout connects to /mcp?agent_id={scout_id}
-        -> scout calls koan_complete_step, does work, completes
+        -> spawn scout as asyncio task via spawn_subagent()
+        -> scout runs its step sequence in-process and exits
         -> SubagentResult collected (exit_code, final_response)
     -> all scouts run concurrently up to scout_concurrency limit
     -> asyncio.gather returns list of results
 
-MCP handler processes results
+tool core processes results
   -> collects non-None final_response values as findings
-  -> returns concatenated findings as MCP tool result to subagent
-  (HTTP connection was held open by await asyncio.gather for the duration)
+  -> returns concatenated findings as tool result to agent
 ```
 
 ### Scout pool behavior
@@ -170,8 +168,7 @@ All scouts are submitted concurrently with a configurable concurrency limit
 
 ### Scout success determination
 
-Scout success is derived from the subagent's exit code and final response, not
-file existence:
+Scout success is derived from the subagent's exit code and final response:
 
 ```python
 result = await spawn_subagent(scout_task, _app_state)
@@ -181,108 +178,96 @@ findings = result.final_response or None
 
 ### Failed scouts are non-fatal
 
-Scouts that exit non-zero return `None` from `run_scout()` and are omitted from
-findings. The tool result notes any missing scouts:
+Scouts that exit non-zero return `None` findings and are omitted from the
+concatenated output. The tool result notes any missing scouts:
 
-`"No findings returned."` (if all fail) or silently omits failed scouts from
-the concatenated output.
+`"No findings returned."` (if all fail) or silently omits failed scouts.
 
 ---
 
 ## Executor Flow
 
 ```
-orchestrator calls koan_request_executor({ artifacts: [...], instructions: "..." })
-  -> MCP endpoint checks permissions (execute or execution phase only)
+koan_request_executor({ artifacts: [...], instructions: "..." })
   -> no PendingInteraction created
   -> ensures subagent directory, writes task.json with artifacts + instructions
-  -> spawns executor CLI process via spawn_subagent()
-  -> executor connects to /mcp?agent_id={executor_id}
-  -> executor calls koan_complete_step, reads artifacts, plans, implements
-  -> executor calls koan_complete_step at each step boundary
-  -> executor process exits when done
-  -> MCP handler collects SubagentResult (exit_code, final_response)
-  -> returns success/failure summary as MCP tool result to orchestrator
-  (HTTP connection held open for the duration of execution)
+  -> spawns executor as asyncio task via spawn_subagent()
+  -> executor runs its step sequence in-process and exits
+  -> tool core collects SubagentResult (exit_code, final_response)
+  -> returns success/failure summary as tool result to orchestrator
 ```
 
-The orchestrator reports the result to the user in chat and then calls
-`koan_yield` to present follow-up options.
+The orchestrator reports the result to the user in chat and then ends its turn
+in terminal text to hand back (after calling `koan_suggest_next`).
 
 ---
 
-## koan_yield Blocking
+## Phase-Boundary Hand-Back
 
-`koan_yield` is the generic conversation primitive — the orchestrator calls it
-whenever it needs to yield control to the user for open-ended chat. It uses
-`AppState.yield_future` directly, not the `PendingInteraction` queue.
+The hand-back is a terminal-text turn -- not a tool call. When the
+turn-outcome resolver determines that a primary agent's steps are exhausted,
+`run_agent_loop` parks on a loop-owned `asyncio.Future` stored in
+`AppState.yield_future`:
 
 ```
-orchestrator calls koan_yield({ suggestions: [...] })
+Resolver: steps exhausted, primary agent -> hand back
   -> push_event("yield_started", {suggestions: [...]})
-     -> fold: appends YieldEntry to conversation, sets run.active_yield
+     -> fold: appends YieldEntry to agent conversation, sets run.active_yield
      -> browser renders suggestion pills
-  -> drain_user_messages(app_state)
-  -> if buffer empty:
-       future = asyncio.get_running_loop().create_future()
-       app_state.yield_future = future
-       await future              # HTTP connection held open
-     app_state.yield_future = None
-  -> messages = drain_user_messages(app_state)
-  -> returns format_user_messages(messages)
+  -> create asyncio.Future
+  -> AppState.yield_future = future
+  -> await future              # loop is parked
+
+user types in chat or clicks a suggestion pill
+  -> POST /api/chat { message: "..." }
+  -> api_chat: yield_future is set -> append to user_message_buffer -> set_result(True)
+  -> yield_future resolves
+
+loop resumes
+  -> AppState.yield_future = None
+  -> user message becomes the next turn's prompt
+  -> agent continues, eventually calls koan_set_phase or "done"
 ```
 
-The Future is resolved when the user sends a message via `POST /api/chat`.
+**Multi-turn conversation:** The loop parks after each terminal-text hand-back
+and resumes on the next user message. The orchestrator may continue the
+conversation across multiple turns before committing a phase transition.
 
-**Multi-turn conversation:** The orchestrator calls `koan_yield` repeatedly
-for as long as the user wants to chat. Each call blocks, waits for one message,
-returns it. No new `yield_started` event is emitted on subsequent calls unless
-the orchestrator provides updated suggestions; the `active_yield` pills remain
-visible.
+**If messages are already buffered** (user sent a message before the loop
+parked): the loop drains them immediately -- no Future is created.
 
-**If messages are already buffered** (user sent a message before the tool was
-called): `koan_yield` drains them and returns immediately — no Future is
-created.
-
-**Key asyncio invariant:** `api_chat` and `koan_yield` run in the same asyncio
-event loop. `api_chat` appends to `user_message_buffer` before calling
-`set_result()`. When `koan_yield` resumes, `drain_user_messages()` finds the
+**Key asyncio invariant:** `api_chat` and the loop's yield path run in the same
+asyncio event loop. `api_chat` appends to `user_message_buffer` before calling
+`set_result()`. When the loop resumes, `drain_user_messages()` finds the
 message in the buffer. No threads or locks are needed.
-
-**`yield_future` vs `PendingInteraction`:** `koan_yield` bypasses the
-interaction queue because it is not a structured question with a UI form — it
-is free-form chat. The PendingInteraction mechanism renders a specific UI widget
-(`koan_ask_question`); `koan_yield` renders suggestion pills via the projection
-(`yield_started` event). Both resolve via `asyncio.Future` but through
-independent code paths.
 
 ---
 
 ## Chat Message Delivery
 
-User messages are routed based on whether the orchestrator is waiting for them.
+User messages are routed based on whether the loop is parked at a hand-back:
 
 ```
 user types in chat input
   -> POST /api/chat { message: "..." }
   -> ChatMessage created with content + timestamp_ms
-  -> push_event("user_message", ...) — appears in activity feed
+  -> push_event("user_message", ...) -- appears in activity feed
   -> if app_state.yield_future is set and not done:
        user_message_buffer.append(msg)
-       yield_future.set_result(True)   -- unblocks koan_yield
+       yield_future.set_result(True)   -- unblocks the parked loop
   -> else:
        steering_queue.append(msg)
        push_event("steering_queued", ...) -- shown in SteeringBar above input
   -> returns { ok: true }
 ```
 
-**Phase-boundary messages** (sent while `koan_yield` is blocking): routed to
-`user_message_buffer`, delivered as the koan_yield return value.
+**Phase-boundary messages** (sent while the loop is parked): routed to
+`user_message_buffer`, delivered as the next turn's prompt.
 
-**Steering messages** (sent while the orchestrator is mid-step): routed to
-`steering_queue`, appended to the next tool response via
-`_drain_and_append_steering()`. The LLM integrates them without abandoning
-the current step.
+**Steering messages** (sent while the agent is mid-turn): routed to
+`steering_queue`, injected between graph nodes (after `CallToolsNode`) via
+`agent_run.enqueue()`. The LLM integrates them without abandoning the current
+step.
 
 The two queues are drained independently to prevent double-delivery:
 `drain_user_messages()` and `drain_steering_messages()` each clear their own
@@ -292,12 +277,13 @@ list atomically.
 
 ## Sequence Diagrams
 
-### koan_yield flow (phase boundary)
+### Phase-boundary hand-back
 
 ```
-Orchestrator                  Driver                    Web UI
+Orchestrator (loop)           Backend                   Web UI
   |                              |                        |
-  |--koan_yield(suggestions)--->|                        |
+  | end turn in terminal text    |                        |
+  +--(resolver: hand back)------>|                        |
   |                              |  push yield_started   |
   |                              |--SSE patch----------->|
   |                              |  (pills render)       |
@@ -308,40 +294,33 @@ Orchestrator                  Driver                    Web UI
   |                              |                        | user presses Enter
   |                              |<-POST /api/chat--------|
   |                              |  buffer + set_result   |
-  |<-tool result (msg text)------|                        |
-  |  (converses with user)       |                        |
-  |--koan_set_phase("plan-spec")->|                       |
-  |                              |  push yield_cleared   |
-  |                              |  push phase_started   |
-  |                              |--SSE patches--------->|
-  |<-"Phase set to plan-spec."---|                        |
+  |  next turn prompt (msg text) |                        |
+  |<-(loop resumes)--------------|                        |
+  |  (agent responds, calls      |                        |
+  |   koan_set_phase)            |                        |
 ```
 
-### Scout flow (inline blocking, no PendingInteraction)
+### Scout flow (inline, no PendingInteraction)
 
 ```
-Driver                         Scout CLI              Web UI
+Backend (orchestrator turn)    Scout task             Web UI
   |                                |                     |
-  |<--koan_request_scouts---------|                     |
-  |  emit scout_queued events     |                     |
-  |  asyncio.gather (semaphore)   |                     |
-  |  spawn scout processes------->|                     |
-  |                               |--koan_complete_step->|
-  |                               |<-step 1 guidance----|
-  |                               |  (does work)        |
-  |                               |--koan_complete_step->|
-  |                               |<-"Phase complete."--|
-  |  scout exits (exit_code 0)    |                     |
-  |  gather collects results      |                     |
-  |--tool result (findings)------>|                     |
+  |  koan_request_scouts           |                     |
+  |  emit scout_queued events      |                     |
+  |  asyncio.gather (semaphore)    |                     |
+  |  spawn scout tasks------------>|                     |
+  |                               (scout runs steps,     |
+  |                                ends turn, terminates)|
+  |  gather collects results       |                     |
+  |  return findings to agent      |                     |
 ```
 
 ### User interaction flow (blocking via PendingInteraction queue)
 
 ```
-Orchestrator                  Driver                    Web UI
+Orchestrator (tool core)      Backend                   Web UI
   |                              |                        |
-  |--koan_ask_question---------->|                        |
+  |  koan_ask_question---------->|                        |
   |                              |  create Future         |
   |                              |  enqueue interaction   |
   |                              |--SSE "ask" event------>|

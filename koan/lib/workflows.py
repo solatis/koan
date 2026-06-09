@@ -20,11 +20,18 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..phases import (
+    core_flows,
     curation,
+    exec_review as exec_review_phase,
     execute as execute_phase,
+    frame,
     intake,
+    milestone_review,
+    milestone_spec,
     plan_review,
     plan_spec,
+    tech_plan_review,
+    tech_plan_spec,
 )
 
 
@@ -46,6 +53,12 @@ class PhaseBinding:
     # here (not in the phase module) so the same module can be reused across
     # workflows with different retrieval intent.
     retrieval_directive: str = ""
+    # Recommended next phase for auto-advance. None means the phase yields
+    # with multi-option suggestions for user direction; a phase name means
+    # the phase auto-advances via koan_set_phase. Treat as guidance: the
+    # orchestrator may hand back to the user instead when findings warrant.
+    # Same module can have different next_phase across workflows.
+    next_phase: str | None = None
 
 
 @dataclass(frozen=True)
@@ -101,6 +114,45 @@ class Workflow:
         """Look up the phase module by phase name."""
         b = self.phases.get(name)
         return b.module if b else None
+
+
+# -- Exec-review guidance (injected as phase_instructions) --------------------
+#
+# Per-workflow guidance for the exec-review phase. The plan workflow routes
+# to curation or plan-spec; the milestones workflow routes to milestone-spec.
+
+_EXEC_REVIEW_PLAN_GUIDANCE = (
+    "## Exec-review context\n"
+    "\n"
+    "Review what the executor accomplished for this plan. After your assessment,\n"
+    "transition to `curation` to capture lessons. If the execution had significant\n"
+    "deviations that require replanning, transition to `plan-spec` instead.\n"
+)
+
+# M4: exec-review now owns both the plan artifact rewrite-or-loopback AND the
+# milestones.md UPDATE. milestone-spec UPDATE mode is retired; routine post-execution
+# bookkeeping happens here. milestone-spec is only entered for RE-DECOMPOSE.
+_EXEC_REVIEW_MILESTONES_GUIDANCE = (
+    "## Exec-review context\n"
+    "\n"
+    "Review what the executor accomplished for this milestone. After classifying\n"
+    "the outcome, apply two artifact updates in step 2:\n"
+    "\n"
+    "1. **Plan artifact rewrite-or-loop-back**: classify each deviation finding\n"
+    "   as internal vs new-files-needed; rewrite plan-milestone-N.md in place\n"
+    "   for internal findings; recommend loop-back to plan-spec for new-files.\n"
+    "\n"
+    "2. **milestones.md UPDATE**: mark the completed milestone `[done]`, append\n"
+    "   the four-subsection Outcome (Integration points / Patterns / Constraints\n"
+    "   / Deviations), advance the next `[pending]` milestone to `[in-progress]`,\n"
+    "   and adjust remaining milestone sketches if execution surfaced new\n"
+    "   constraints. Preserve all prior `[done]` Outcome sections intact.\n"
+    "\n"
+    "After both updates: yield. The orchestrator picks `plan-spec` to begin the\n"
+    "next milestone, `curation` if all milestones are done or skipped, or\n"
+    "`milestone-spec` for a manual RE-DECOMPOSE if the milestone graph itself\n"
+    "needs to change.\n"
+)
 
 
 # -- Curation directives (injected as phase_instructions) ---------------------
@@ -265,19 +317,23 @@ PLAN_WORKFLOW = Workflow(
                 " how this codebase is organized. Entries about subsystems the task"
                 " may touch, team conventions, and deployment invariants."
             ),
+            next_phase="plan-spec",
         ),
         "plan-spec": PhaseBinding(
             module=plan_spec,
-            description="Write a technical implementation plan grounded in the codebase",
+            description="Write or update a technical implementation plan grounded in the codebase",
+            guidance="Use `plan.md` as the artifact filename.",
             retrieval_directive=(
                 "Implementation decisions, procedures, and conventions that constrain"
                 " how changes are made in this codebase. Entries about coding patterns,"
                 " module layout rules, and past lessons from similar changes."
             ),
+            next_phase="plan-review",
         ),
         "plan-review": PhaseBinding(
             module=plan_review,
             description="Evaluate the plan for completeness, correctness, and risks",
+            guidance="Review `plan.md` -- the plan artifact for this workflow.",
             # Same directive as plan-spec: review evaluates against the same
             # implementation-level knowledge that spec used to write the plan.
             retrieval_directive=(
@@ -285,27 +341,45 @@ PLAN_WORKFLOW = Workflow(
                 " how changes are made in this codebase. Entries about coding patterns,"
                 " module layout rules, and past lessons from similar changes."
             ),
+            # None: review outcome requires user direction -- loop back to plan-spec
+            # or proceed to execute; cannot auto-advance.
+            next_phase=None,
         ),
         "execute": PhaseBinding(
             module=execute_phase,
             description="Hand off the plan to an executor agent for implementation",
+            # brief.md listed first so it is the highest-priority context for the
+            # executor; plan.md is the implementation plan that follows from it.
             guidance=(
                 "## What to hand off\n"
                 "Call `koan_request_executor` with:\n"
-                "- **artifacts**: `[\"plan.md\"]` -- the implementation plan.\n"
+                "- **artifacts**: `[\"brief.md\", \"plan.md\"]` -- brief.md provides initiative\n"
+                "  context (scope, decisions, constraints); plan.md is the implementation plan.\n"
                 "- **instructions**: Key decisions from plan-review, user clarifications,\n"
                 "  or constraints. Do NOT repeat plan.md contents -- the executor reads\n"
                 "  it directly. Instructions are for context that isn't in the files.\n"
                 "\n"
                 "## After execution\n"
-                "Report the result. If the executor failed or asked questions, relay\n"
-                "the situation to the user and suggest next steps."
+                "Report the result. Transition to `exec-review` to verify what was done."
             ),
             retrieval_directive=(
                 "Procedures, conventions, and past lessons related to the subsystems"
                 " being modified. Executor-facing rules about testing policy, secret"
                 " handling, file placement, and other coding-time constraints."
             ),
+            next_phase="exec-review",
+        ),
+        "exec-review": PhaseBinding(
+            module=exec_review_phase,
+            description="Review execution results and identify deviations from the plan",
+            guidance=_EXEC_REVIEW_PLAN_GUIDANCE,
+            retrieval_directive=(
+                "Past lessons about execution quality, common deviations, and"
+                " post-execution review patterns in this codebase."
+            ),
+            # None: review outcome requires user direction -- proceed to curation
+            # or loop back to plan-spec for replanning.
+            next_phase=None,
         ),
         "curation": PhaseBinding(
             module=curation,
@@ -314,6 +388,7 @@ PLAN_WORKFLOW = Workflow(
             # Curation already calls koan_memory_status which surfaces the full
             # entry listing. Mechanical injection would be redundant and noisy.
             retrieval_directive="",
+            next_phase=None,  # terminal phase -- workflow ends here
         ),
     },
     initial_phase="intake",
@@ -321,22 +396,64 @@ PLAN_WORKFLOW = Workflow(
         "intake":       ["plan-spec", "execute"],
         "plan-spec":    ["plan-review", "execute"],
         "plan-review":  ["plan-spec", "execute"],
-        "execute":      ["curation", "plan-review"],
+        "execute":      ["exec-review", "curation"],
+        "exec-review":  ["curation", "plan-spec"],
         "curation":     [],
     },
 )
 
 
-# -- Milestones workflow (stub) -----------------------------------------------
-# Runs intake only. Phase boundary reports the workflow is not yet implemented.
+# -- Milestones workflow -------------------------------------------------------
+# intake -> milestone-spec -> [milestone-review] -> plan-spec ->
+# [plan-review] -> execute -> exec-review -> milestone-spec (loop) -> curation
+
+_MILESTONES_PLAN_SPEC_GUIDANCE = (
+    "## Milestone plan-spec context\n"
+    "\n"
+    "Read `milestones.md` to identify the current milestone:\n"
+    "- The current milestone is the one marked `[in-progress]`.\n"
+    "- Write `plan-milestone-N.md` for that milestone (where N is the milestone number).\n"
+    "- The plan should be scoped to just that milestone's work.\n"
+    "\n"
+    "## Cross-milestone learning\n"
+    "\n"
+    "When planning milestone N > 1: before reading codebase files, read the Outcome\n"
+    "sections of all completed milestones in milestones.md. These describe what was\n"
+    "actually built, including integration points, patterns, and constraints\n"
+    "established by prior milestones that this plan must respect. If the Outcome\n"
+    "sections reference specific files or interfaces you will extend, read those\n"
+    "files in the codebase directly -- the code is the source of truth, not the plan.\n"
+)
+
+_MILESTONES_PLAN_REVIEW_GUIDANCE = (
+    "## Milestone plan-review context\n"
+    "\n"
+    "Review the most recently written `plan-milestone-N.md` artifact.\n"
+    "Check `milestones.md` to identify which milestone is `[in-progress]` and use\n"
+    "its number to determine the correct plan artifact filename.\n"
+)
+
+_MILESTONES_EXECUTE_GUIDANCE = (
+    "## Milestone execute context\n"
+    "\n"
+    "Hand off the current milestone's plan to the executor:\n"
+    "- **artifacts**: `[\"brief.md\", \"plan-milestone-N.md\", \"milestones.md\"]` (where N is\n"
+    "  the current `[in-progress]` milestone number). brief.md is the frozen initiative\n"
+    "  context; plan-milestone-N.md is the milestone-specific plan; milestones.md gives\n"
+    "  the broader initiative context with prior milestone Outcomes.\n"
+    "- **instructions**: Key findings from plan-review and any user clarifications.\n"
+    "\n"
+    "After execution, transition to `exec-review`.\n"
+)
 
 MILESTONES_WORKFLOW = Workflow(
     name="milestones",
-    description="Break work into milestones with phased delivery (coming soon)",
+    description="Break work into milestones and execute each with planning and review",
     phases={
         "intake": PhaseBinding(
             module=intake,
             description="Explore the codebase and align on requirements through Q&A",
+            next_phase="milestone-spec",
             guidance=(
                 "## Scope\n"
                 "This is a **milestones** workflow -- a broad initiative spanning\n"
@@ -371,9 +488,118 @@ MILESTONES_WORKFLOW = Workflow(
                 " may touch, team conventions, and deployment invariants."
             ),
         ),
+        "milestone-spec": PhaseBinding(
+            module=milestone_spec,
+            # M4: description updated to drop "update after execution" -- that is now exec-review's job.
+            description="Decompose the initiative into ordered milestones, or re-decompose after a major deviation",
+            guidance=(
+                "## Milestone-spec context\n"
+                "\n"
+                "If milestones.md does not exist, you are in CREATE mode: decompose the\n"
+                "initiative into milestones grounded in code structure.\n"
+                "\n"
+                "If milestones.md exists, you are in RE-DECOMPOSE mode: the user has\n"
+                "explicitly redirected here, typically after exec-review surfaced a major\n"
+                "deviation that requires changing the milestone graph itself. Revise\n"
+                "[pending] / [in-progress] milestone sketches; preserve all [done]\n"
+                "milestones and their Outcome sections intact. Routine post-execution\n"
+                "UPDATE work is owned by exec-review.\n"
+            ),
+            retrieval_directive=(
+                "Architectural decisions and constraints relevant to milestone scope"
+                " and ordering. Entries about subsystem boundaries and delivery sequencing."
+            ),
+            # Auto-advance to milestone-review after decomposition, mirroring
+            # plan-spec -> plan-review and execute -> exec-review. milestone-review
+            # then yields to the user to pick plan-spec or loop back.
+            next_phase="milestone-review",
+        ),
+        "milestone-review": PhaseBinding(
+            module=milestone_review,
+            description="Review the milestone decomposition for scope, ordering, and gaps",
+            guidance=(
+                "## Milestone-review context\n"
+                "\n"
+                "After reviewing, if you found Critical or Major issues, transition to\n"
+                "`milestone-spec` so the decomposition can be revised. If the decomposition\n"
+                "looks sound, transition to `plan-spec` to begin the first milestone.\n"
+            ),
+            retrieval_directive=(
+                "Past lessons about milestone decomposition, scope boundaries, and"
+                " sequencing decisions in similar initiatives."
+            ),
+            # None: review outcome determines next step (milestone-spec for revision
+            # or plan-spec to proceed); user direction is required.
+            next_phase=None,
+        ),
+        "plan-spec": PhaseBinding(
+            module=plan_spec,
+            description="Write a technical implementation plan for the current milestone",
+            guidance=_MILESTONES_PLAN_SPEC_GUIDANCE,
+            retrieval_directive=(
+                "Implementation decisions, procedures, and conventions that constrain"
+                " how changes are made in this codebase. Entries about coding patterns,"
+                " module layout rules, and past lessons from similar changes."
+            ),
+            next_phase="plan-review",
+        ),
+        "plan-review": PhaseBinding(
+            module=plan_review,
+            description="Evaluate the milestone plan for completeness, correctness, and risks",
+            guidance=_MILESTONES_PLAN_REVIEW_GUIDANCE,
+            retrieval_directive=(
+                "Implementation decisions, procedures, and conventions that constrain"
+                " how changes are made in this codebase. Entries about coding patterns,"
+                " module layout rules, and past lessons from similar changes."
+            ),
+            # None: review outcome requires user direction -- loop back to plan-spec
+            # or proceed to execute.
+            next_phase=None,
+        ),
+        "execute": PhaseBinding(
+            module=execute_phase,
+            description="Hand off the milestone plan to an executor agent for implementation",
+            guidance=_MILESTONES_EXECUTE_GUIDANCE,
+            retrieval_directive=(
+                "Procedures, conventions, and past lessons related to the subsystems"
+                " being modified. Executor-facing rules about testing policy, secret"
+                " handling, file placement, and other coding-time constraints."
+            ),
+            next_phase="exec-review",
+        ),
+        "exec-review": PhaseBinding(
+            module=exec_review_phase,
+            description="Review milestone execution results and identify deviations",
+            guidance=_EXEC_REVIEW_MILESTONES_GUIDANCE,
+            retrieval_directive=(
+                "Past lessons about execution quality, common deviations, and"
+                " post-execution review patterns in this codebase."
+            ),
+            # None: review outcome requires user direction -- milestone-spec loop
+            # or plan-spec for replanning; cannot auto-advance.
+            next_phase=None,
+        ),
+        "curation": PhaseBinding(
+            module=curation,
+            description="Capture lessons, decisions, and context from the completed initiative",
+            guidance=_POSTMORTEM_DIRECTIVE,
+            retrieval_directive="",
+            next_phase=None,  # terminal phase -- workflow ends here
+        ),
     },
     initial_phase="intake",
-    transitions={"intake": []},
+    transitions={
+        "intake":           ["milestone-spec"],
+        "milestone-spec":   ["milestone-review", "plan-spec"],
+        "milestone-review": ["milestone-spec", "plan-spec"],
+        "plan-spec":        ["plan-review", "execute"],
+        "plan-review":      ["plan-spec", "execute"],
+        "execute":          ["exec-review", "milestone-spec"],
+        # M4: reordered so the natural next-milestone path (plan-spec) comes first,
+        # then curation (all done), then milestone-spec (manual RE-DECOMPOSE override).
+        "exec-review":      ["plan-spec", "curation", "milestone-spec"],
+        "curation":         [],
+    },
 )
 
 
@@ -396,11 +622,383 @@ CURATION_WORKFLOW = Workflow(
 )
 
 
+# -- Initiative workflow guidance constants ------------------------------------
+# Per-workflow guidance for the initiative phases. These constants are injected
+# via PhaseBinding.guidance into ctx.phase_instructions at step 1 of each phase.
+
+_INITIATIVE_INTAKE_GUIDANCE = (
+    "## Scope\n"
+    "This is an **initiative** workflow -- a substantial undertaking that spans\n"
+    "multiple milestones, crosses architectural boundaries, and warrants a shared,\n"
+    "persistent record of design decisions made along the way.\n"
+    "\n"
+    "## Downstream\n"
+    "The understanding you build here feeds into four upstream artifacts:\n"
+    "`core-flows.md` (operational behavior), `tech-plan.md` (system architecture),\n"
+    "`milestones.md` (decomposition), and per-milestone plans. Downstream phases\n"
+    "will produce visualization-first artifacts; surface operational flows and\n"
+    "architectural decisions explicitly during intake so they are captured in\n"
+    "brief.md.\n"
+    "\n"
+    "## Investigation posture\n"
+    "- **Dispatch scouts broadly.** An initiative spans multiple subsystems.\n"
+    "  3-5 scouts is typical.\n"
+    "- **Also read directly** -- verify key scout findings against the actual\n"
+    "  code, especially integration points and existing data-model conventions.\n"
+    "\n"
+    "## Question posture\n"
+    "- Ask multiple rounds of questions. For broad initiatives, 2-3 rounds\n"
+    "  of 3-6 questions is typical.\n"
+    "- Surface assumptions early. Each answer may reveal new areas to probe.\n"
+    "- Probe cross-cutting concerns: shared patterns, naming conventions,\n"
+    "  error handling strategies, test coverage expectations.\n"
+    "\n"
+    "## User override\n"
+    "The user can always tell you to narrow scope or skip questions.\n"
+    "Follow their lead over these defaults."
+)
+
+_INITIATIVE_CORE_FLOWS_GUIDANCE = (
+    "## Initiative workflow context\n"
+    "\n"
+    "You are in the `core-flows` phase of the initiative workflow. The artifact\n"
+    "you produce (`core-flows.md`) will be read by EVERY downstream phase.\n"
+    "\n"
+    "This phase is yield-skippable. If the operational behavior is already settled\n"
+    "in the intake dialogue and writing it down adds nothing new, yield from intake\n"
+    "directly to tech-plan-spec.\n"
+)
+
+_INITIATIVE_TECH_PLAN_SPEC_GUIDANCE = (
+    "## Initiative workflow context\n"
+    "\n"
+    "You are in the `tech-plan-spec` phase of the initiative workflow. The\n"
+    "architecture you produce gates milestone decomposition: milestone-spec reads\n"
+    "tech-plan.md as authoritative for the architectural decisions that constrain\n"
+    "the decomposition and sequencing of milestones.\n"
+    "\n"
+    "Read `core-flows.md` if present (via `koan_artifact_read`). It is frozen and\n"
+    "authoritative for the actors and operational flows the architecture must support.\n"
+    "\n"
+    "Produce all three required sections: Architectural Approach, Data Model, and\n"
+    "Component Architecture.\n"
+)
+
+_INITIATIVE_TECH_PLAN_REVIEW_GUIDANCE = (
+    "## Initiative workflow context\n"
+    "\n"
+    "You are in the `tech-plan-review` phase of the initiative workflow. The\n"
+    "user's phase-switch decision after your yield is the implicit acceptance\n"
+    "moment. Not pushing back IS acceptance -- the user advancing to\n"
+    "`milestone-spec` is confirmation that the architecture is sound.\n"
+    "\n"
+    "If your review finds loop-back findings (new-files-needed), yield with\n"
+    "`tech-plan-spec` recommended. If the architecture passes review (all findings\n"
+    "internal and corrected), yield with `milestone-spec` recommended.\n"
+    "\n"
+    "Read `core-flows.md` (if present) in addition to brief.md and tech-plan.md.\n"
+)
+
+_INITIATIVE_MILESTONE_SPEC_GUIDANCE = (
+    "## Initiative milestone-spec context\n"
+    "\n"
+    "Read `tech-plan.md` first via `koan_artifact_read` before reading codebase\n"
+    "files. It contains the architectural decisions that constrain how work is\n"
+    "decomposed and sequenced.\n"
+    "\n"
+    "Also read `core-flows.md` (if present) via `koan_artifact_read`. The\n"
+    "milestones must collectively realize every operational flow described there.\n"
+    "\n"
+    "If milestones.md does not exist, you are in CREATE mode: decompose the\n"
+    "initiative into milestones grounded in code structure and consistent with\n"
+    "the architectural decisions in tech-plan.md.\n"
+    "\n"
+    "If milestones.md exists, you are in RE-DECOMPOSE mode: revise [pending] /\n"
+    "[in-progress] milestone sketches; preserve all [done] milestones intact.\n"
+)
+
+_INITIATIVE_MILESTONE_REVIEW_GUIDANCE = (
+    "## Initiative milestone-review context\n"
+    "\n"
+    "After reviewing, cross-check the milestone decomposition against\n"
+    "`tech-plan.md`: do the milestones collectively realize the architectural\n"
+    "decisions documented there? If not, that is a Major finding.\n"
+    "\n"
+    "If Critical or Major issues are found, transition to `milestone-spec` for\n"
+    "revision. If sound, transition to `plan-spec` to begin the first milestone.\n"
+)
+
+_INITIATIVE_PLAN_SPEC_GUIDANCE = (
+    "## Initiative plan-spec context\n"
+    "\n"
+    "Read `milestones.md` to identify the current milestone:\n"
+    "- The current milestone is the one marked `[in-progress]`.\n"
+    "- Write `plan-milestone-N.md` for that milestone.\n"
+    "\n"
+    "Before reading codebase files, read two upstream architectural artifacts:\n"
+    "\n"
+    "1. `tech-plan.md` (via `koan_artifact_read`): the architectural decisions\n"
+    "   that constrain how this milestone is implemented.\n"
+    "2. `core-flows.md` (via `koan_artifact_read`, if present): the operational\n"
+    "   flows this milestone must support or preserve.\n"
+    "\n"
+    "## Cross-milestone learning\n"
+    "\n"
+    "When planning milestone N > 1: before reading codebase files, read the Outcome\n"
+    "sections of all completed milestones in milestones.md.\n"
+)
+
+_INITIATIVE_PLAN_REVIEW_GUIDANCE = (
+    "## Initiative plan-review context\n"
+    "\n"
+    "Review the most recently written `plan-milestone-N.md` artifact.\n"
+    "Cross-check the plan against `tech-plan.md`: does the plan respect the\n"
+    "architectural decisions documented there? A plan that violates the\n"
+    "architecture is a Critical finding.\n"
+)
+
+_INITIATIVE_EXECUTE_GUIDANCE = (
+    "## Initiative execute context\n"
+    "\n"
+    "Hand off the current milestone's plan to the executor:\n"
+    "- **artifacts**: `[\"brief.md\", \"tech-plan.md\", \"core-flows.md\","
+    " \"plan-milestone-N.md\", \"milestones.md\"]` (omit `core-flows.md` if it\n"
+    "  does not exist in the run directory).\n"
+    "- **instructions**: Key findings from plan-review and any user clarifications.\n"
+    "\n"
+    "After execution, transition to `exec-review`.\n"
+)
+
+_INITIATIVE_EXEC_REVIEW_GUIDANCE = (
+    "## Initiative exec-review context\n"
+    "\n"
+    "Review what the executor accomplished for this milestone. After classifying\n"
+    "the outcome, apply two artifact updates in step 2:\n"
+    "\n"
+    "1. **Plan artifact rewrite-or-loop-back**.\n"
+    "2. **milestones.md UPDATE**: mark the completed milestone `[done]`, append\n"
+    "   the four-subsection Outcome, advance the next `[pending]` milestone.\n"
+    "\n"
+    "After both updates: yield. The orchestrator picks `plan-spec` to begin the\n"
+    "next milestone, `curation` if all milestones are done, `milestone-spec` for\n"
+    "a manual RE-DECOMPOSE, or `tech-plan-spec` for an architectural lookback.\n"
+)
+
+
+# -- Initiative workflow -------------------------------------------------------
+# intake -> core-flows -> tech-plan-spec -> tech-plan-review ->
+# milestone-spec -> [milestone-review] -> plan-spec -> [plan-review] ->
+# execute -> exec-review -> milestone-spec (loop) -> curation
+
+INITIATIVE_WORKFLOW = Workflow(
+    name="initiative",
+    description=(
+        "Full-ceremony initiative pipeline: intake, core-flows, tech-plan,"
+        " milestones, plans, executions, and curation"
+    ),
+    phases={
+        "intake": PhaseBinding(
+            module=intake,
+            description="Explore the codebase and align on requirements through Q&A",
+            next_phase="core-flows",
+            guidance=_INITIATIVE_INTAKE_GUIDANCE,
+            retrieval_directive=(
+                "Architectural decisions, constraints, and context entries that shape"
+                " how this codebase is organized."
+            ),
+        ),
+        "core-flows": PhaseBinding(
+            module=core_flows,
+            description=(
+                "Describe the system's externally visible behavior as mermaid"
+                " sequence diagrams plus step narratives"
+            ),
+            guidance=_INITIATIVE_CORE_FLOWS_GUIDANCE,
+            retrieval_directive=(
+                "Past decisions and lessons about the system's operational behavior."
+            ),
+            next_phase=None,
+        ),
+        "tech-plan-spec": PhaseBinding(
+            module=tech_plan_spec,
+            description=(
+                "Write the architecture artifact: Architectural Approach,"
+                " Data Model, Component Architecture"
+            ),
+            guidance=_INITIATIVE_TECH_PLAN_SPEC_GUIDANCE,
+            retrieval_directive=(
+                "Past architectural decisions and constraints relevant to the"
+                " new system's structure."
+            ),
+            next_phase="tech-plan-review",
+        ),
+        "tech-plan-review": PhaseBinding(
+            module=tech_plan_review,
+            description=(
+                "Adversarial check on the architecture artifact and diagram"
+                " accuracy"
+            ),
+            guidance=_INITIATIVE_TECH_PLAN_REVIEW_GUIDANCE,
+            retrieval_directive=(
+                "Past architectural decisions relevant to verification of the"
+                " new system's structure."
+            ),
+            next_phase=None,
+        ),
+        "milestone-spec": PhaseBinding(
+            module=milestone_spec,
+            description=(
+                "Decompose the initiative into ordered milestones, or"
+                " re-decompose after a major deviation"
+            ),
+            guidance=_INITIATIVE_MILESTONE_SPEC_GUIDANCE,
+            retrieval_directive=(
+                "Architectural decisions and constraints relevant to milestone"
+                " scope and ordering."
+            ),
+            next_phase="milestone-review",
+        ),
+        "milestone-review": PhaseBinding(
+            module=milestone_review,
+            description="Review the milestone decomposition for scope, ordering, and gaps",
+            guidance=_INITIATIVE_MILESTONE_REVIEW_GUIDANCE,
+            retrieval_directive=(
+                "Past lessons about milestone decomposition."
+            ),
+            next_phase=None,
+        ),
+        "plan-spec": PhaseBinding(
+            module=plan_spec,
+            description="Write a technical implementation plan for the current milestone",
+            guidance=_INITIATIVE_PLAN_SPEC_GUIDANCE,
+            retrieval_directive=(
+                "Implementation decisions, procedures, and conventions that"
+                " constrain how changes are made in this codebase."
+            ),
+            next_phase="plan-review",
+        ),
+        "plan-review": PhaseBinding(
+            module=plan_review,
+            description="Evaluate the milestone plan for completeness, correctness, and risks",
+            guidance=_INITIATIVE_PLAN_REVIEW_GUIDANCE,
+            retrieval_directive=(
+                "Implementation decisions, procedures, and conventions relevant"
+                " to plan review."
+            ),
+            next_phase=None,
+        ),
+        "execute": PhaseBinding(
+            module=execute_phase,
+            description="Hand off the milestone plan to an executor agent for implementation",
+            guidance=_INITIATIVE_EXECUTE_GUIDANCE,
+            retrieval_directive=(
+                "Procedures, conventions, and past lessons related to the"
+                " subsystems being modified."
+            ),
+            next_phase="exec-review",
+        ),
+        "exec-review": PhaseBinding(
+            module=exec_review_phase,
+            description="Review milestone execution results and identify deviations",
+            guidance=_INITIATIVE_EXEC_REVIEW_GUIDANCE,
+            retrieval_directive=(
+                "Past lessons about execution quality and post-execution review."
+            ),
+            next_phase=None,
+        ),
+        "curation": PhaseBinding(
+            module=curation,
+            description="Capture lessons, decisions, and context from the completed initiative",
+            guidance=_POSTMORTEM_DIRECTIVE,
+            retrieval_directive="",
+            next_phase=None,
+        ),
+    },
+    initial_phase="intake",
+    transitions={
+        "intake":           ["core-flows", "tech-plan-spec"],
+        "core-flows":       ["tech-plan-spec", "core-flows"],
+        "tech-plan-spec":   ["tech-plan-review"],
+        "tech-plan-review": ["milestone-spec", "tech-plan-spec"],
+        "milestone-spec":   ["milestone-review", "plan-spec"],
+        "milestone-review": ["milestone-spec", "plan-spec"],
+        "plan-spec":        ["plan-review", "execute"],
+        "plan-review":      ["plan-spec", "execute"],
+        "execute":          ["exec-review", "milestone-spec"],
+        "exec-review":      ["plan-spec", "curation", "milestone-spec", "tech-plan-spec"],
+        "curation":         [],
+    },
+)
+
+# -- Discovery workflow guidance constants -------------------------------------
+
+_DISCOVERY_FRAME_GUIDANCE = (
+    "## Discovery workflow context\n"
+    "\n"
+    "You are in the standalone `discovery` workflow. This workflow is a single\n"
+    "phase (`frame`) with no other phases and no fixed artifact. It is a\n"
+    "general-purpose stepping stone: the user may bring feature design questions,\n"
+    "bug hunting and troubleshooting sessions, or any general question. Refuse\n"
+    "nothing. Use `koan_ask_question` to clarify intent, `koan_reflect` and\n"
+    "`koan_search` to surface prior context, and investigate the codebase directly\n"
+    "when the question calls for it. Always end each turn with a plain-text\n"
+    "message and no tool call -- that hands control back to the user.\n"
+    "\n"
+    "Exit is user-driven. When the user signals they are ready, present three\n"
+    "options:\n"
+    "\n"
+    "1. Promote into another workflow via `koan_set_workflow` (e.g. 'initiative',\n"
+    "   'milestones', 'plan') -- the discovery transcript carries forward.\n"
+    "2. Transition to another phase within the current workflow via `koan_set_phase`\n"
+    "   (the discovery workflow has only `frame`, so this path ends the frame\n"
+    "   session without producing an artifact).\n"
+    "3. End the workflow via `koan_set_phase('done')`.\n"
+    "\n"
+    "There is no curation step at exit from discovery. If the user wants to\n"
+    "capture lessons from this session, they can switch to the `curation` workflow\n"
+    "via `koan_set_workflow('curation')`.\n"
+)
+
+
+# -- Discovery workflow --------------------------------------------------------
+# Single-phase standalone exploration workflow. Structurally identical to
+# CURATION_WORKFLOW in shape (single phase, no transitions).
+
+DISCOVERY_WORKFLOW = Workflow(
+    name="discovery",
+    description=(
+        "Single-phase, open-ended exploration -- feature design, bug hunting,"
+        " or general questions. The agent helps with whatever the user brings;"
+        " exit is user-driven."
+    ),
+    phases={
+        "frame": PhaseBinding(
+            module=frame,
+            description=(
+                "Open-ended exploration -- design questions, bug hunting and"
+                " troubleshooting, or general questions -- with user-driven exit"
+            ),
+            guidance=_DISCOVERY_FRAME_GUIDANCE,
+            retrieval_directive=(
+                "Past decisions, lessons, and context that may inform open-ended"
+                " exploration of intent. Broad coverage rather than a specific"
+                " subsystem."
+            ),
+            next_phase=None,
+        ),
+    },
+    initial_phase="frame",
+    transitions={"frame": []},
+)
+
+
 # -- Registry -----------------------------------------------------------------
 
 WORKFLOWS: dict[str, Workflow] = {
     "plan": PLAN_WORKFLOW,
     "milestones": MILESTONES_WORKFLOW,
+    "initiative": INITIATIVE_WORKFLOW,
+    "discovery": DISCOVERY_WORKFLOW,
     "curation": CURATION_WORKFLOW,
 }
 
@@ -416,6 +1014,31 @@ def get_workflow(name: str) -> Workflow:
 def get_suggested_phases(workflow: Workflow, phase: str) -> list[str]:
     """Return the ordered suggested next phases for the current phase."""
     return list(workflow.transitions.get(phase, []))
+
+
+def build_phase_suggestions(workflow: Workflow, phase: str) -> list[dict]:
+    """Build {id, label, command} hand-back suggestions for the yield UI.
+
+    Derived deterministically from the workflow's suggested next phases for the
+    current phase, plus a terminal "done" option -- this replaces the structured
+    suggestions koan_yield used to carry, now that the in-process loop's
+    terminal-text turn is the hand-back (M5b removed koan_yield; M7.5 restores
+    the YieldPanel options without requiring the model to call a tool).
+    """
+    suggestions: list[dict] = []
+    for p in get_suggested_phases(workflow, phase):
+        label = p.replace("-", " ").replace("_", " ").title()
+        suggestions.append({
+            "id": p,
+            "label": label,
+            "command": f"Proceed to the {p} phase.",
+        })
+    suggestions.append({
+        "id": "done",
+        "label": "End workflow",
+        "command": "The workflow is complete.",
+    })
+    return suggestions
 
 
 def is_valid_transition(workflow: Workflow, from_phase: str, to_phase: str) -> bool:

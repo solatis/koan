@@ -14,7 +14,7 @@ frontend/
 ├── AGENTS.md               # frontend-specific agent rules (read first)
 ├── package.json
 ├── tsconfig.json
-├── vite.config.ts          # proxies /api/*, /events, /mcp/* to Python in dev
+├── vite.config.ts          # proxies /api/*, /events to Python in dev
 ├── index.html              # Vite entry point
 ├── src/
 │   ├── main.tsx            # mounts <App /> into #root; imports global CSS
@@ -56,7 +56,7 @@ koan/web/static/app/        # Vite build target (committed build artifacts)
 **Development:** Vite dev server proxies all backend traffic.
 
 ```
-vite (:5173)  →  /api/*, /events, /mcp/*  →  python (:8000)
+vite (:5173)  ->  /api/*, /events  ->  python (:8000)
 ```
 
 SSE requires buffering disabled in the proxy — `vite.config.ts` sets
@@ -66,23 +66,22 @@ events arrive in batches rather than incrementally.
 **Production:** `uv run koan` only. Python serves the built bundle.
 
 ```
-python (:8000)  →  /static/app/*          →  frontend/dist/ (Vite build)
-                →  /api/*, /events, /mcp/* →  existing routes (unchanged)
-                →  /* (catch-all)          →  index.html (SPA fallback)
+python (:8000)  ->  /static/app/*     ->  frontend/dist/ (Vite build)
+                ->  /api/*, /events   ->  existing routes (unchanged)
+                ->  /* (catch-all)    ->  index.html (SPA fallback)
 ```
 
 Build command: `cd frontend && npm run build`
 Output: `koan/web/static/app/` (matches `base: '/static/app/'` in `vite.config.ts`)
 
-**Starlette route order** in `create_app()` is significant — first match wins:
+**Starlette route order** in `create_app()` is significant -- first match wins:
 
 ```
-/mcp            → MCP endpoint
-/api/*          → API handlers
-/events         → SSE stream
-/static/app     → StaticFiles (frontend/dist/)
-/static         → other static assets
-/{path:path}    → spa_fallback (index.html) — MUST be last
+/api/*          -> API handlers
+/events         -> SSE stream
+/static/app     -> StaticFiles (frontend/dist/)
+/static         -> other static assets
+/{path:path}    -> spa_fallback (index.html) -- MUST be last
 ```
 
 ---
@@ -99,7 +98,7 @@ Store slices:
 |---|---|---|
 | `connected` | `boolean` | EventSource open/error |
 | `lastVersion` | `number` | Snapshot/patch version |
-| `settings` | `Settings` | installations, profiles, defaultProfile, defaultScoutConcurrency |
+| `settings` | `Settings` | providerStatus, modelRegistry, profiles, defaultProfile, defaultScoutConcurrency |
 | `run` | `Run \| null` | config, phase, agents, focus, artifacts, completion |
 | `notifications` | `Notification[]` | message, level, timestampMs |
 | `settingsOpen` | `boolean` | Local UI state (not from server) |
@@ -186,9 +185,11 @@ No field name transformation is needed in the frontend.
 | `build_tool_called(call_id, tool, args, summary)` | `tool_called` | |
 | `build_tool_completed(call_id, tool, result)` | `tool_completed` | |
 
-Settings endpoints (`/api/settings/body`, `/api/settings/profile-form`,
-`/api/settings/installation-form`) return JSON. `SettingsOverlay.tsx` owns
-form state and cascade dropdown logic.
+The settings overlay reads provider/model state from the Zustand store
+(populated via `provider_status_listed` and `model_registry_listed` initial
+events). `POST /api/settings/validate-provider` performs a local model-
+construction credential check (never a live provider call). `SettingsOverlay.tsx`
+owns form state and cascade dropdown logic.
 
 ---
 
@@ -203,7 +204,7 @@ for development rules.
 | Organism | Store subscription | Wiring |
 |---|---|---|
 | `HeaderBar` | `run.phase`, `run.agents` (primary) | `useHeaderData()` hook in App.tsx |
-| `NewRunForm` | `settings.profiles`, `settings.installations` | Reads store directly |
+| `NewRunForm` | `settings.profiles` | Reads store directly |
 | `ElicitationPanel` | `run.focus` (questions) | `ElicitationView` in App.tsx |
 | `ArtifactsSidebar` | `run.artifacts` | `ConnectedSidebar` in App.tsx |
 | `ScoutBar` | `run.agents` (non-primary) | `ConnectedScoutBar` in App.tsx |

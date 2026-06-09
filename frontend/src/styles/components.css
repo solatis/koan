@@ -1613,3 +1613,10 @@
 .activity-boundary-message {
   font-style: italic;
 }
+
+/* ---- Completion actions (failure path only) ---- */
+/* Single-use container for the "Back to overview" button below the error banner.
+   Shown only when CompletionView receives onBackToOverview (failure branch). */
+.completion-actions {
+  margin-top: 16px;
+}

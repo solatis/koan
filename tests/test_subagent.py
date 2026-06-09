@@ -1,70 +1,73 @@
-# Tests for koan.subagent (spawn_subagent) and MCP tool handlers.
+# Tests for koan.subagent (spawn_subagent).
+#
+# M4: TestBuildClaudeToolLists, TestCodexPostBuildArgs, TestGeminiPostBuildArgs,
+# and the two xfail legacy-spawn tests removed (claude/codex/gemini agents deleted).
+# koan.runners.base import removed (runners package deleted).
+# FakeAgent/FakeAgentSuccess cleaned of legacy register_process/exit_code/stderr_output
+# members (those were already not in the Agent protocol after M9 docstring update).
 
 from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from koan.agents.base import Agent, AgentDiagnostic, AgentError
 from koan.audit import EventLog, Projection
-from koan.audit.events import RunnerDiagnosticEvent
+from koan.audit.events import AgentDiagnosticEvent
 from koan.phases import PhaseContext, StepGuidance
-from koan.runners.base import RunnerDiagnostic, StreamEvent
+# StreamEvent imported from koan.agents.events (relocated from koan.runners.base in M4).
+from koan.agents.events import StreamEvent
+from koan.state import AppState
 
 
-# -- Fixtures -----------------------------------------------------------------
+class FakeAgent:
+    """Agent test double that exits immediately (bootstrap failure).
 
-@dataclass
-class FakeConfig:
-    model_tiers: Any = None
-    scout_concurrency: int = 2
-
-
-@dataclass
-class FakeAppState:
-    agents: dict = field(default_factory=dict)
-    config: FakeConfig = field(default_factory=FakeConfig)
-    builtin_profiles: dict = field(default_factory=dict)
-    port: int = 9999
-    active_interaction: Any = None
-    interaction_queue: Any = field(default_factory=lambda: __import__("collections").deque())
-    interaction_queue_max: int = 8
-    run_dir: str | None = None
-    projection_store: object = field(default_factory=lambda: __import__('koan.projections', fromlist=['ProjectionStore']).ProjectionStore())
-    run_installations: dict = field(default_factory=dict)
-    _active_processes: dict = field(default_factory=dict)
-    yield_future: Any = None
-    steering_queue: list = field(default_factory=list)
-    phase: str = "intake"
-    project_dir: str = ""
-    task_description: str = ""
-
-
-class FakeRunner:
+    Yields nothing so spawn_subagent reaches the handshake gate with
+    handshake_observed=False, producing a bootstrap_failure diagnostic.
+    """
     name = "fake"
 
-    def build_command(self, boot_prompt, mcp_url, model, system_prompt="", **kwargs):
-        # Return a command that exits immediately with code 1
-        return ["python3", "-c", "import sys; sys.exit(1)"]
+    async def run(self, options):
+        return
+        yield  # noqa: unreachable -- makes this an async generator
 
-    def parse_stream_event(self, line):
-        return []
+    async def interrupt(self):
+        raise NotImplementedError
+
+    async def compact(self):
+        raise NotImplementedError
 
 
-class FakeRunnerSuccess:
-    """Runner that exits 0. Handshake is set via MCP path, not stream."""
+class FakeAgentSuccess:
+    """Agent test double that exits cleanly. Handshake set externally."""
     name = "fake"
 
-    def build_command(self, boot_prompt, mcp_url, model, system_prompt="", **kwargs):
-        return ["python3", "-c", "pass"]
+    async def run(self, options):
+        return
+        yield  # noqa: unreachable -- makes this an async generator
 
-    def parse_stream_event(self, line):
-        return []
+    async def interrupt(self):
+        raise NotImplementedError
+
+    async def compact(self):
+        raise NotImplementedError
+
+
+def FakeAppState(port: int = 9999, run_dir: str = "") -> AppState:
+    """Construct a real AppState with the given server port and run_dir.
+
+    Tests that previously used a FakeAppState dataclass now use real AppState
+    so they exercise the actual sub-state structure rather than a stub.
+    """
+    st = AppState()
+    st.server.port = port
+    st.run.run_dir = run_dir
+    return st
 
 
 def _fake_phase_module():
@@ -119,17 +122,17 @@ class TestEventLog:
         assert state["event_count"] == 3
 
     @pytest.mark.anyio
-    async def test_runner_diagnostic_fanout(self, tmp_path):
+    async def test_agent_diagnostic_fanout(self, tmp_path):
         log = EventLog(str(tmp_path), "scout", "scout")
         await log.open()
 
-        diag = RunnerDiagnostic(
+        diag = AgentDiagnostic(
             code="bootstrap_failure",
-            runner="claude",
+            agent="claude",
             stage="handshake",
-            message="Process exited before first koan_complete_step call",
+            message="Process exited before completing its first turn",
         )
-        await log.emit_runner_diagnostic(diag)
+        await log.emit_agent_diagnostic(diag)
         await log.close()
 
         # Check events.jsonl
@@ -137,106 +140,132 @@ class TestEventLog:
         lines = events_path.read_text().strip().split("\n")
         assert len(lines) == 1
         event = json.loads(lines[0])
-        assert event["kind"] == "runner_diagnostic"
+        assert event["kind"] == "agent_diagnostic"
         assert event["code"] == "bootstrap_failure"
 
         # Check state.json reflects failed status
         state = json.loads((tmp_path / "state.json").read_text())
         assert state["status"] == "failed"
-        assert "koan_complete_step" in state["error"]
+        assert "first turn" in state["error"]
 
 
-# -- koan_complete_step tests -------------------------------------------------
+# -- Step-machine core tests --------------------------------------------------
+# advance_step (koan_complete_step entrypoint) was removed in M6.
+# Tests now call _step_phase_handshake_core and _step_within_phase_core directly,
+# which are the same cores the resolver (resolve_turn_outcome) uses.
 
-class TestCompleteStep:
+class TestStepMachineCores:
     @pytest.mark.anyio
-    async def test_step_0_to_1_returns_guidance(self):
+    async def test_handshake_core_step_0_to_1_returns_guidance(self):
+        """_step_phase_handshake_core delivers step-1 guidance and sets step=1."""
         from koan.state import AgentState
+        from koan.tools.koan_tools import _step_phase_handshake_core
 
         phase_mod = _fake_phase_module()
         event_log = AsyncMock()
         event_log.emit_step_transition = AsyncMock()
 
+        app_state = AppState()
+        app_state.run.phase = "intake"
+
         agent = AgentState(
             agent_id="test-1",
-            role="intake",
+            role="orchestrator",
             subagent_dir="/tmp/test",
             step=0,
             phase_module=phase_mod,
             phase_ctx=PhaseContext(run_dir="/tmp", subagent_dir="/tmp/test"),
             event_log=event_log,
         )
+        app_state.agents[agent.agent_id] = agent
 
-        from koan.web.mcp_endpoint import _agent_ctx, koan_complete_step
-
-        token = _agent_ctx.set(agent)
-        try:
-            with patch("koan.web.mcp_endpoint._check_or_raise"):
-                result = await koan_complete_step(thoughts="")
-        finally:
-            _agent_ctx.reset(token)
+        # Core returns guidance string directly.
+        result = await _step_phase_handshake_core(agent, app_state)
 
         assert "Extract" in result
         assert agent.step == 1
         event_log.emit_step_transition.assert_called_once()
 
     @pytest.mark.anyio
-    async def test_validation_failure_raises(self):
+    async def test_within_phase_core_advances_step(self):
+        """_step_within_phase_core advances to the given next_step."""
         from koan.state import AgentState
+        from koan.tools.koan_tools import _step_within_phase_core
 
         phase_mod = _fake_phase_module()
-        phase_mod.validate_step_completion = MagicMock(return_value="Must write landscape.md first")
+        phase_mod.get_next_step = MagicMock(return_value=2)
+        phase_mod.TOTAL_STEPS = 3
+        phase_mod.STEP_NAMES = {1: "Extract", 2: "Scout", 3: "Write"}
+
+        app_state = AppState()
+        app_state.run.phase = "intake"
 
         agent = AgentState(
             agent_id="test-2",
-            role="intake",
+            role="orchestrator",
             subagent_dir="/tmp/test",
-            step=4,
+            step=1,
             phase_module=phase_mod,
             phase_ctx=PhaseContext(run_dir="/tmp", subagent_dir="/tmp/test"),
             event_log=AsyncMock(),
         )
+        app_state.agents[agent.agent_id] = agent
 
-        from fastmcp.exceptions import ToolError
+        await _step_within_phase_core(agent, app_state, phase_mod, agent.phase_ctx, 2)
 
-        from koan.web.mcp_endpoint import _agent_ctx, koan_complete_step
-
-        token = _agent_ctx.set(agent)
-        try:
-            with patch("koan.web.mcp_endpoint._check_or_raise"):
-                with pytest.raises(ToolError):
-                    await koan_complete_step(thoughts="")
-        finally:
-            _agent_ctx.reset(token)
+        assert agent.step == 2
 
     @pytest.mark.anyio
-    async def test_loop_back_calls_on_loop_back(self):
+    async def test_within_phase_core_loop_back_calls_on_loop_back(self):
+        """_step_within_phase_core calls on_loop_back when next_step <= current_step."""
         from koan.state import AgentState
+        from koan.tools.koan_tools import _step_within_phase_core
 
         phase_mod = _fake_phase_module()
         phase_mod.get_next_step = MagicMock(return_value=2)
 
+        app_state = AppState()
+        app_state.run.phase = "intake"
+
         agent = AgentState(
             agent_id="test-3",
-            role="intake",
+            role="orchestrator",
             subagent_dir="/tmp/test",
             step=4,
             phase_module=phase_mod,
             phase_ctx=PhaseContext(run_dir="/tmp", subagent_dir="/tmp/test"),
             event_log=AsyncMock(),
         )
+        app_state.agents[agent.agent_id] = agent
 
-        from koan.web.mcp_endpoint import _agent_ctx, koan_complete_step
-
-        token = _agent_ctx.set(agent)
-        try:
-            with patch("koan.web.mcp_endpoint._check_or_raise"):
-                await koan_complete_step(thoughts="")
-        finally:
-            _agent_ctx.reset(token)
+        await _step_within_phase_core(agent, app_state, phase_mod, agent.phase_ctx, 2)
 
         phase_mod.on_loop_back.assert_called_once_with(4, 2, agent.phase_ctx)
         assert agent.step == 2
+
+
+# -- _build_phase_ctx tests ---------------------------------------------------
+
+class TestBuildPhaseCtx:
+    def test_build_phase_ctx_reads_workflow_history(self):
+        """_build_phase_ctx resolves workflow_name from workflow_history."""
+        from koan.subagent import _build_phase_ctx
+
+        task = {
+            "run_dir": "/tmp/run",
+            "workflow_history": [
+                {"name": "milestones", "phase": "intake", "started_at": 1.0}
+            ],
+        }
+        ctx = _build_phase_ctx(task, "/tmp/sub")
+        assert ctx.workflow_name == "milestones"
+
+    def test_build_phase_ctx_defaults_when_history_missing(self):
+        """_build_phase_ctx returns empty workflow_name when workflow_history is absent."""
+        from koan.subagent import _build_phase_ctx
+
+        ctx = _build_phase_ctx({"run_dir": "/tmp/run"}, "/tmp/sub")
+        assert ctx.workflow_name == ""
 
 
 # -- spawn_subagent tests -----------------------------------------------------
@@ -257,21 +286,21 @@ class TestSpawnSubagent:
         with patch("koan.subagent.PHASE_MODULE_MAP", {"intake": _fake_phase_module()}):
             from koan.subagent import spawn_subagent
 
-            result = await spawn_subagent(task, app_state, runner=FakeRunner())
+            result = await spawn_subagent(task, app_state, agent_impl=FakeAgent())
 
         assert result.exit_code == 1
 
-        # Check that events.jsonl contains a runner_diagnostic
+        # Check that events.jsonl contains an agent_diagnostic
         events_path = Path(subagent_dir) / "events.jsonl"
         assert events_path.exists()
         lines = events_path.read_text().strip().split("\n")
-        diag_events = [json.loads(l) for l in lines if "runner_diagnostic" in l]
+        diag_events = [json.loads(l) for l in lines if "agent_diagnostic" in l]
         assert len(diag_events) >= 1
         assert diag_events[0]["code"] == "bootstrap_failure"
 
     @pytest.mark.anyio
-    async def test_successful_handshake_via_mcp(self, tmp_path):
-        """Handshake is detected via MCP path (agent.handshake_observed), not stream."""
+    async def test_successful_handshake_via_first_turn(self, tmp_path):
+        """Handshake is detected via first_turn_completed (set by run_agent_loop)."""
         app_state = FakeAppState(port=9999)
         subagent_dir = str(tmp_path / "sub")
         Path(subagent_dir).mkdir()
@@ -282,21 +311,39 @@ class TestSpawnSubagent:
             "subagent_dir": subagent_dir,
         }
 
-        # Simulate MCP-path handshake: after process spawns, set flag on agent
-        real_create_subprocess = asyncio.create_subprocess_exec
+        # Simulate the first-turn signal: set first_turn_completed on the
+        # AgentState during run(). With FakeAgent the run() body has direct
+        # access to app_state, replacing the removed koan_complete_step approach.
+        class _HandshakingAgent:
+            name = "fake"
 
-        async def patched_subprocess(*args, **kwargs):
-            proc = await real_create_subprocess(*args, **kwargs)
-            # Mark handshake for all registered agents (simulating MCP call)
-            for ag in app_state.agents.values():
-                ag.handshake_observed = True
-            return proc
+            async def run(self, options):
+                for ag in app_state.agents.values():
+                    ag.first_turn_completed = True
+                return
+                yield  # noqa: unreachable -- makes this an async generator
 
-        with patch("koan.subagent.PHASE_MODULE_MAP", {"intake": _fake_phase_module()}), \
-             patch("asyncio.create_subprocess_exec", side_effect=patched_subprocess):
+            def register_process(self, registry, agent_id):
+                pass
+
+            @property
+            def exit_code(self):
+                return 0
+
+            @property
+            def stderr_output(self):
+                return ""
+
+            async def interrupt(self):
+                raise NotImplementedError
+
+            async def compact(self):
+                raise NotImplementedError
+
+        with patch("koan.subagent.PHASE_MODULE_MAP", {"intake": _fake_phase_module()}):
             from koan.subagent import spawn_subagent
 
-            result = await spawn_subagent(task, app_state, runner=FakeRunnerSuccess())
+            result = await spawn_subagent(task, app_state, agent_impl=_HandshakingAgent())
 
         assert result.exit_code == 0
 
@@ -304,47 +351,8 @@ class TestSpawnSubagent:
         state = json.loads((Path(subagent_dir) / "state.json").read_text())
         assert state["status"] == "completed"
 
-    @pytest.mark.anyio
-    async def test_model_field_propagated_to_agent_state(self, tmp_path):
-        """AgentState.model is set via RunnerRegistry when runner is resolved."""
-        from koan.config import KoanConfig
-        from koan.types import AgentInstallation, Profile, ProfileTier
-
-        config = KoanConfig(
-            agent_installations=[
-                AgentInstallation(alias="fake", runner_type="claude", binary="python3"),
-            ],
-            profiles=[
-                Profile(name="test-profile", tiers={
-                    "strong": ProfileTier(runner_type="claude", model="test-model", thinking="disabled"),
-                }),
-            ],
-            active_profile="test-profile",
-        )
-
-        app_state = FakeAppState(port=9999)
-        app_state.config = config
-
-        subagent_dir = str(tmp_path / "sub")
-        Path(subagent_dir).mkdir()
-
-        task = {
-            "role": "intake",
-            "run_dir": str(tmp_path),
-            "subagent_dir": subagent_dir,
-        }
-
-        with patch("koan.subagent.PHASE_MODULE_MAP", {"intake": _fake_phase_module()}):
-            from koan.subagent import spawn_subagent
-
-            await spawn_subagent(task, app_state, runner=FakeRunner())
-
-        # When runner is provided directly, model is None (legacy path)
-        events = app_state.projection_store.events
-        agent_spawned = [e for e in events if e.event_type == "agent_spawned"]
-        assert len(agent_spawned) >= 1
-        assert agent_spawned[0].payload.get("model") is None, \
-            f"Expected None model for direct-runner path, got {agent_spawned[0].payload}"
+    # test_model_field_propagated_to_agent_state removed in M4: tested legacy
+    # AgentInstallation/runner_type spawn path which is deleted.
 
 
 # -- fold purity (supplementary) ----------------------------------------------
@@ -380,19 +388,20 @@ class TestRequestScouts:
     async def test_aggregation_ordering(self, tmp_path):
         """Scouts results are aggregated in request order."""
         from koan.state import AgentState
-        from koan.web.mcp_endpoint import _agent_ctx, _app_state, koan_request_scouts
+        from koan.tools.koan_tools import ToolDeps, request_scouts_core
 
         app_state = FakeAppState(port=9999, run_dir=str(tmp_path))
 
         agent = AgentState(
             agent_id="scout-parent",
-            role="intake",
+            role="orchestrator",
             subagent_dir=str(tmp_path),
             run_dir=str(tmp_path),
             phase_module=_fake_phase_module(),
             phase_ctx=PhaseContext(run_dir=str(tmp_path), subagent_dir=str(tmp_path)),
             event_log=AsyncMock(),
         )
+        app_state.agents[agent.agent_id] = agent
 
         findings = ["Finding A", "Finding B", "Finding C"]
         call_idx = 0
@@ -404,22 +413,16 @@ class TestRequestScouts:
             from koan.subagent import SubagentResult
             return SubagentResult(exit_code=0, final_response=findings[idx])
 
-        import koan.web.mcp_endpoint as mcp_mod
-        old_app_state = mcp_mod._app_state
-        mcp_mod._app_state = app_state
-
-        token = _agent_ctx.set(agent)
-        try:
-            with patch("koan.web.mcp_endpoint._check_or_raise"), \
-                 patch("koan.subagent.spawn_subagent", side_effect=fake_spawn):
-                result = await koan_request_scouts(questions=[
+        # Cores return a str directly (no content blocks).
+        with patch("koan.subagent.spawn_subagent", side_effect=fake_spawn):
+            result = await request_scouts_core(
+                ToolDeps(app_state=app_state, agent=agent),
+                questions=[
                     {"id": "a", "prompt": "Q1"},
                     {"id": "b", "prompt": "Q2"},
                     {"id": "c", "prompt": "Q3"},
-                ])
-        finally:
-            _agent_ctx.reset(token)
-            mcp_mod._app_state = old_app_state
+                ],
+            )
 
         assert "Finding A" in result
         assert "Finding B" in result
@@ -432,20 +435,21 @@ class TestRequestScouts:
     async def test_semaphore_bounds_concurrency(self, tmp_path):
         """Scout concurrency is bounded by semaphore from config."""
         from koan.state import AgentState
-        from koan.web.mcp_endpoint import _agent_ctx, koan_request_scouts
+        from koan.tools.koan_tools import ToolDeps, request_scouts_core
 
         app_state = FakeAppState(port=9999, run_dir=str(tmp_path))
-        app_state.config.scout_concurrency = 1  # serial execution
+        app_state.provider_config.config.scout_concurrency = 1
 
         agent = AgentState(
             agent_id="scout-parent",
-            role="intake",
+            role="orchestrator",
             subagent_dir=str(tmp_path),
             run_dir=str(tmp_path),
             phase_module=_fake_phase_module(),
             phase_ctx=PhaseContext(run_dir=str(tmp_path), subagent_dir=str(tmp_path)),
             event_log=AsyncMock(),
         )
+        app_state.agents[agent.agent_id] = agent
 
         max_concurrent = 0
         current_concurrent = 0
@@ -463,22 +467,15 @@ class TestRequestScouts:
             from koan.subagent import SubagentResult
             return SubagentResult(exit_code=0, final_response="ok")
 
-        import koan.web.mcp_endpoint as mcp_mod
-        old_app_state = mcp_mod._app_state
-        mcp_mod._app_state = app_state
-
-        token = _agent_ctx.set(agent)
-        try:
-            with patch("koan.web.mcp_endpoint._check_or_raise"), \
-                 patch("koan.subagent.spawn_subagent", side_effect=fake_spawn):
-                await koan_request_scouts(questions=[
+        with patch("koan.subagent.spawn_subagent", side_effect=fake_spawn):
+            await request_scouts_core(
+                ToolDeps(app_state=app_state, agent=agent),
+                questions=[
                     {"id": "x", "prompt": "Q1"},
                     {"id": "y", "prompt": "Q2"},
                     {"id": "z", "prompt": "Q3"},
-                ])
-        finally:
-            _agent_ctx.reset(token)
-            mcp_mod._app_state = old_app_state
+                ],
+            )
 
         assert max_concurrent <= 1, f"Expected max 1 concurrent, got {max_concurrent}"
 
@@ -486,39 +483,30 @@ class TestRequestScouts:
     async def test_missing_state_json_treated_as_failure(self, tmp_path):
         """Scout with missing state.json is unsuccessful even if exit code 0."""
         from koan.state import AgentState
-        from koan.web.mcp_endpoint import _agent_ctx, koan_request_scouts
+        from koan.tools.koan_tools import ToolDeps, request_scouts_core
 
         app_state = FakeAppState(port=9999, run_dir=str(tmp_path))
 
         agent = AgentState(
             agent_id="scout-parent",
-            role="intake",
+            role="orchestrator",
             subagent_dir=str(tmp_path),
             run_dir=str(tmp_path),
             phase_module=_fake_phase_module(),
             phase_ctx=PhaseContext(run_dir=str(tmp_path), subagent_dir=str(tmp_path)),
             event_log=AsyncMock(),
         )
+        app_state.agents[agent.agent_id] = agent
 
         async def fake_spawn(task, app, runner=None):
-            # Exit 0 but return no final_response — treated as no findings
             from koan.subagent import SubagentResult
             return SubagentResult(exit_code=0)
 
-        import koan.web.mcp_endpoint as mcp_mod
-        old_app_state = mcp_mod._app_state
-        mcp_mod._app_state = app_state
-
-        token = _agent_ctx.set(agent)
-        try:
-            with patch("koan.web.mcp_endpoint._check_or_raise"), \
-                 patch("koan.subagent.spawn_subagent", side_effect=fake_spawn):
-                result = await koan_request_scouts(questions=[
-                    {"id": "q", "prompt": "Q1"},
-                ])
-        finally:
-            _agent_ctx.reset(token)
-            mcp_mod._app_state = old_app_state
+        with patch("koan.subagent.spawn_subagent", side_effect=fake_spawn):
+            result = await request_scouts_core(
+                ToolDeps(app_state=app_state, agent=agent),
+                questions=[{"id": "q", "prompt": "Q1"}],
+            )
 
         assert result == "No findings returned."
 
@@ -532,21 +520,21 @@ class TestDiagnosticFanout:
         log = EventLog(str(tmp_path), "scout", "scout")
         await log.open()
 
-        diag = RunnerDiagnostic(
+        diag = AgentDiagnostic(
             code="bootstrap_failure",
-            runner="codex",
+            agent="codex",
             stage="handshake",
             message="Process exited before first koan_complete_step call",
             details={"stderr": "connection refused"},
         )
-        await log.emit_runner_diagnostic(diag)
+        await log.emit_agent_diagnostic(diag)
         await log.close()
 
         state = json.loads((tmp_path / "state.json").read_text())
         assert state["status"] == "failed"
         assert state["diagnostic"] is not None
         assert state["diagnostic"]["code"] == "bootstrap_failure"
-        assert state["diagnostic"]["runner"] == "codex"
+        assert state["diagnostic"]["agent"] == "codex"
         assert state["diagnostic"]["stage"] == "handshake"
         assert state["diagnostic"]["message"] == diag.message
         assert state["diagnostic"]["details"] == {"stderr": "connection refused"}
@@ -567,7 +555,7 @@ class TestDiagnosticFanout:
         with patch("koan.subagent.PHASE_MODULE_MAP", {"intake": _fake_phase_module()}):
             from koan.subagent import spawn_subagent
 
-            await spawn_subagent(task, app_state, runner=FakeRunner())
+            await spawn_subagent(task, app_state, agent_impl=FakeAgent())
 
         # Bootstrap failure is emitted as agent_exited with error="bootstrap_failure"
         # and the fold populates projection.notifications as Notification objects.
@@ -578,15 +566,15 @@ class TestDiagnosticFanout:
         assert notif.level == "error"
 
     def test_fold_populates_diagnostic_field(self):
-        """fold() sets diagnostic dict on runner_diagnostic events."""
+        """fold() sets diagnostic dict on agent_diagnostic events."""
         from koan.audit.fold import fold
 
         p = Projection(role="scout", phase="scout")
-        e = RunnerDiagnosticEvent(
+        e = AgentDiagnosticEvent(
             ts="2026-01-01T00:00:00Z",
             seq=1,
             code="bootstrap_failure",
-            runner="codex",
+            agent="codex",
             stage="handshake",
             message="failed",
             details={"stderr": "timeout"},
@@ -594,141 +582,13 @@ class TestDiagnosticFanout:
         r = fold(p, e)
         assert r.diagnostic is not None
         assert r.diagnostic["code"] == "bootstrap_failure"
-        assert r.diagnostic["runner"] == "codex"
+        assert r.diagnostic["agent"] == "codex"
         assert r.diagnostic["stage"] == "handshake"
         assert r.diagnostic["details"] == {"stderr": "timeout"}
         assert r.status == "failed"
 
 
-# -- spawn_subagent: binary not found (real integration) ----------------------
-
-class TestBinaryNotFoundSpawn:
-    @pytest.mark.anyio
-    async def test_missing_binary_returns_controlled_failure(self, tmp_path):
-        """spawn_subagent with a nonexistent binary returns exit 1 with diagnostics."""
-        from koan.config import KoanConfig
-        from koan.types import AgentInstallation, Profile, ProfileTier
-
-        config = KoanConfig(
-            agent_installations=[
-                AgentInstallation(
-                    alias="bad-claude", runner_type="claude",
-                    binary="/nonexistent/path/claude",
-                ),
-            ],
-            profiles=[
-                Profile(name="test-profile", tiers={
-                    "strong": ProfileTier(runner_type="claude", model="opus", thinking="high"),
-                }),
-            ],
-            active_profile="test-profile",
-        )
-
-        app_state = FakeAppState(port=9999)
-        app_state.config = config
-        subagent_dir = str(tmp_path / "sub")
-        Path(subagent_dir).mkdir()
-
-        task = {
-            "role": "intake",
-            "run_dir": str(tmp_path),
-            "subagent_dir": subagent_dir,
-        }
-
-        with patch("koan.subagent.PHASE_MODULE_MAP", {"intake": _fake_phase_module()}):
-            from koan.subagent import spawn_subagent
-
-            result = await spawn_subagent(task, app_state)
-
-        assert result.exit_code == 1
-
-        # Verify agent_spawn_failed event in projection notifications (new model: Notification objects)
-        notifs = app_state.projection_store.projection.notifications
-        spawn_fails = [n for n in notifs if n.level == "error"]
-        assert len(spawn_fails) >= 1
-        # Message should mention the binary_not_found error
-        assert any("not found" in n.message.lower() or "binary" in n.message.lower() for n in spawn_fails)
-
-        # Verify events.jsonl contains a runner_diagnostic
-        events_path = Path(subagent_dir) / "events.jsonl"
-        assert events_path.exists()
-        lines = events_path.read_text().strip().split("\n")
-        diag_events = [json.loads(l) for l in lines if "runner_diagnostic" in l]
-        assert len(diag_events) >= 1
-        assert diag_events[0]["code"] == "binary_not_found"
-
-
-# -- _claude_post_build_args --------------------------------------------------
-
-class TestClaudePostBuildArgs:
-    """Unit tests for the pure _claude_post_build_args helper.
-
-    The helper composes claude-only argv entries without I/O. Tests exercise
-    the full whitelist/dir/permission_mode combinations directly.
-    """
-
-    from koan.subagent import CLAUDE_TOOL_WHITELISTS as _WHITELISTS
-
-    def test_orchestrator_full_args(self):
-        from koan.subagent import _claude_post_build_args, CLAUDE_TOOL_WHITELISTS
-        args = _claude_post_build_args("orchestrator", "/run", "/proj")
-        assert "--tools" in args
-        tools_idx = args.index("--tools")
-        assert args[tools_idx + 1] == CLAUDE_TOOL_WHITELISTS["orchestrator"]
-        assert "--disable-slash-commands" in args
-        assert "--strict-mcp-config" in args
-        assert "--add-dir" in args
-        # Both dirs present
-        add_dir_indices = [i for i, a in enumerate(args) if a == "--add-dir"]
-        add_dirs = [args[i + 1] for i in add_dir_indices]
-        assert "/proj" in add_dirs
-        assert "/run" in add_dirs
-        assert "--permission-mode" in args
-        pm_idx = args.index("--permission-mode")
-        assert args[pm_idx + 1] == "acceptEdits"
-
-    def test_executor_gets_executor_whitelist(self):
-        from koan.subagent import _claude_post_build_args, CLAUDE_TOOL_WHITELISTS
-        args = _claude_post_build_args("executor", "/run", "/proj")
-        tools_idx = args.index("--tools")
-        assert args[tools_idx + 1] == CLAUDE_TOOL_WHITELISTS["executor"]
-
-    def test_scout_gets_scout_whitelist(self):
-        from koan.subagent import _claude_post_build_args, CLAUDE_TOOL_WHITELISTS
-        args = _claude_post_build_args("scout", "/run", "/proj")
-        tools_idx = args.index("--tools")
-        assert args[tools_idx + 1] == CLAUDE_TOOL_WHITELISTS["scout"]
-
-    def test_unknown_role_omits_tools_flag(self):
-        from koan.subagent import _claude_post_build_args
-        args = _claude_post_build_args("bogus", "/run", "/proj")
-        assert "--tools" not in args
-
-    def test_empty_run_dir_skipped(self):
-        from koan.subagent import _claude_post_build_args
-        args = _claude_post_build_args("orchestrator", "", "/proj")
-        add_dir_indices = [i for i, a in enumerate(args) if a == "--add-dir"]
-        add_dirs = [args[i + 1] for i in add_dir_indices]
-        assert "/proj" in add_dirs
-        assert "" not in add_dirs
-
-    def test_empty_project_dir_skipped(self):
-        from koan.subagent import _claude_post_build_args
-        args = _claude_post_build_args("orchestrator", "/run", "")
-        add_dir_indices = [i for i, a in enumerate(args) if a == "--add-dir"]
-        add_dirs = [args[i + 1] for i in add_dir_indices]
-        assert "/run" in add_dirs
-        assert "" not in add_dirs
-
-    def test_both_dirs_empty(self):
-        from koan.subagent import _claude_post_build_args
-        args = _claude_post_build_args("orchestrator", "", "")
-        assert "--add-dir" not in args
-
-    def test_permission_mode_always_present(self):
-        from koan.subagent import _claude_post_build_args
-        # Even with empty dirs and unknown role, permission mode is always set.
-        args = _claude_post_build_args("bogus", "", "")
-        assert "--permission-mode" in args
-        pm_idx = args.index("--permission-mode")
-        assert args[pm_idx + 1] == "acceptEdits"
+# TestBinaryNotFoundSpawn, TestBuildClaudeToolLists, TestCodexPostBuildArgs, and
+# TestGeminiPostBuildArgs removed in M4: all tested the deleted CLI agent path.
+# AgentInstallation, _build_claude_tool_lists, _codex_post_build_args, and
+# _gemini_post_build_args are all gone with the legacy agent modules.

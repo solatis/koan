@@ -1,0 +1,31 @@
+.atom-queue-state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-circle);
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.atom-queue-state--pending {
+  background: transparent;
+  border: 1.5px dashed var(--border-input);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+.atom-queue-state--approved {
+  background: var(--color-teal);
+  border: none;
+  color: white;
+}
+
+.atom-queue-state--rejected {
+  background: var(--status-failed);
+  border: none;
+  color: white;
+}

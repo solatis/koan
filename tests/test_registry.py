@@ -1,40 +1,19 @@
-# Unit tests for koan.runners.registry -- RunnerRegistry and compute_balanced_profile.
+# Unit tests for koan.agents.registry -- AgentRegistry and compute_balanced_profile.
+#
+# NOTE: TestGetInstallation, TestResolveInstallation, TestResolveAgentConfigThinking,
+# and TestComputeBalancedProfile removed in M4 -- their subjects (ProbeResult,
+# AgentInstallation, ModelInfo, get_installation, resolve_installation,
+# resolve_agent_config, compute_balanced_profile probe path) are all deleted.
+# Replacement coverage lives in tests/test_provider_config.py.
 
 import asyncio
-import json
 
 import pytest
+import yaml
 
+from koan.agents.base import AgentError
+from koan.agents.registry import AgentRegistry, _best_supported_thinking
 from koan.config import KoanConfig, save_koan_config
-from koan.probe import ProbeResult
-from koan.runners.base import RunnerError
-from koan.runners.registry import RunnerRegistry, compute_balanced_profile, _best_supported_thinking
-from koan.types import AgentInstallation, ModelInfo, Profile, ProfileTier
-
-
-# -- compute_balanced_profile --------------------------------------------------
-
-# -- helpers for building probe results with models ---------------------------
-
-def _codex_models() -> list[ModelInfo]:
-    return [
-        ModelInfo(alias="gpt-5", display_name="GPT-5", thinking_modes=frozenset({"disabled"}), tier_hint="strong"),
-        ModelInfo(alias="gpt-5-mini", display_name="GPT-5 Mini", thinking_modes=frozenset({"disabled"}), tier_hint="cheap"),
-    ]
-
-def _claude_models() -> list[ModelInfo]:
-    all_modes = frozenset({"disabled", "low", "medium", "high", "xhigh"})
-    return [
-        ModelInfo(alias="opus", display_name="Opus", thinking_modes=all_modes, tier_hint="strong"),
-        ModelInfo(alias="sonnet", display_name="Sonnet", thinking_modes=all_modes, tier_hint="standard"),
-        ModelInfo(alias="haiku", display_name="Haiku", thinking_modes=frozenset({"disabled", "low"}), tier_hint="cheap"),
-    ]
-
-def _gemini_models() -> list[ModelInfo]:
-    return [
-        ModelInfo(alias="gemini-pro", display_name="Gemini Pro", thinking_modes=frozenset({"disabled", "low", "medium", "high"}), tier_hint="strong"),
-        ModelInfo(alias="gemini-flash", display_name="Gemini Flash", thinking_modes=frozenset({"disabled", "low"}), tier_hint="cheap"),
-    ]
 
 
 # -- _best_supported_thinking --------------------------------------------------
@@ -53,173 +32,105 @@ class TestBestSupportedThinking:
         assert _best_supported_thinking(frozenset({"disabled", "low", "medium"}), "medium") == "medium"
 
 
-# -- compute_balanced_profile --------------------------------------------------
-
-class TestComputeBalancedProfile:
-    def test_all_available_with_models(self):
-        probes = [
-            ProbeResult(runner_type="claude", available=True, models=_claude_models()),
-            ProbeResult(runner_type="codex", available=True, models=_codex_models()),
-            ProbeResult(runner_type="gemini", available=True, models=_gemini_models()),
-        ]
-        p = compute_balanced_profile(probes)
-        assert p.name == "balanced"
-        assert p.tiers["strong"].runner_type == "claude"
-        assert p.tiers["strong"].model == "sonnet"
-        assert p.tiers["strong"].thinking == "high"
-        assert p.tiers["standard"].runner_type == "claude"
-        assert p.tiers["standard"].model == "sonnet"
-        assert p.tiers["standard"].thinking == "medium"
-        assert p.tiers["cheap"].runner_type == "claude"
-        assert p.tiers["cheap"].model == "haiku"
-        assert p.tiers["cheap"].thinking == "disabled"
-
-    def test_all_available_without_models_uses_defaults(self):
-        """When probe results lack model info, default thinking is kept."""
-        probes = [
-            ProbeResult(runner_type="claude", available=True),
-            ProbeResult(runner_type="codex", available=True),
-            ProbeResult(runner_type="gemini", available=True),
-        ]
-        p = compute_balanced_profile(probes)
-        assert p.tiers["strong"].runner_type == "claude"
-        assert p.tiers["strong"].thinking == "high"  # no model info -> default
-
-    def test_only_claude_available(self):
-        probes = [
-            ProbeResult(runner_type="claude", available=True, models=_claude_models()),
-            ProbeResult(runner_type="codex", available=False),
-            ProbeResult(runner_type="gemini", available=False),
-        ]
-        p = compute_balanced_profile(probes)
-        assert p.tiers["strong"].runner_type == "claude"
-        assert p.tiers["strong"].model == "sonnet"
-        assert p.tiers["strong"].thinking == "high"  # claude/opus supports high
-        assert p.tiers["standard"].runner_type == "claude"
-        assert p.tiers["standard"].model == "sonnet"
-        assert p.tiers["cheap"].runner_type == "claude"
-        assert p.tiers["cheap"].model == "haiku"
-
-    def test_only_gemini_available(self):
-        probes = [
-            ProbeResult(runner_type="claude", available=False),
-            ProbeResult(runner_type="codex", available=False),
-            ProbeResult(runner_type="gemini", available=True),
-        ]
-        p = compute_balanced_profile(probes)
-        for tier in ("strong", "standard", "cheap"):
-            assert p.tiers[tier].runner_type == "gemini"
-
-    def test_no_runners_available(self):
-        probes = [
-            ProbeResult(runner_type="claude", available=False),
-            ProbeResult(runner_type="codex", available=False),
-            ProbeResult(runner_type="gemini", available=False),
-        ]
-        p = compute_balanced_profile(probes)
-        assert p.name == "balanced"
-        assert p.tiers == {}
-
-    def test_claude_preferred_for_strong(self):
-        probes = [
-            ProbeResult(runner_type="claude", available=True, models=_claude_models()),
-            ProbeResult(runner_type="codex", available=True, models=_codex_models()),
-        ]
-        p = compute_balanced_profile(probes)
-        assert p.tiers["strong"].runner_type == "claude"
-        assert p.tiers["strong"].model == "sonnet"
-
-    def test_claude_preferred_for_standard(self):
-        probes = [
-            ProbeResult(runner_type="claude", available=True, models=_claude_models()),
-            ProbeResult(runner_type="codex", available=True, models=_codex_models()),
-        ]
-        p = compute_balanced_profile(probes)
-        assert p.tiers["standard"].runner_type == "claude"
 
 
-# -- RunnerRegistry.get_installation ------------------------------------------
+# -- resolve_model_spec thinking clamp ----------------------------------------
 
-class TestGetInstallation:
-    def _make_config(self, installations):
-        return KoanConfig(agent_installations=installations)
+class TestResolveModelSpecThinkingClamp:
+    """Verify that resolve_model_spec clamps over-requested thinking modes and logs."""
 
-    def test_run_installation_resolved(self):
-        inst = AgentInstallation(alias="my-claude", runner_type="claude", binary="/fake/bin/claude")
-        config = self._make_config([inst])
-        reg = RunnerRegistry()
-        result = reg.get_installation("claude", config, run_installations={"claude": "my-claude"})
-        assert result is inst
+    def _make_config(self, thinking: str, model_id: str = "claude-opus-4-0", provider_type: str = "anthropic"):
+        """Build a minimal KoanConfig with one connection, one model, and one slot."""
+        from koan.types import (
+            CachingPolicy, ConfiguredModel, Connection, Preset, SlotAssignment,
+        )
+        conn = Connection(id="test-conn", type=provider_type)
+        cm = ConfiguredModel(id="test-cm", connection_id="test-conn", model_id=model_id)
+        slot = SlotAssignment(
+            configured_model_id="test-cm",
+            thinking=thinking,
+            caching=CachingPolicy(),
+        )
+        from koan.config import KoanConfig
+        return KoanConfig(
+            connections=[conn],
+            configured_models=[cm],
+            presets={"$last": Preset(slots={"strong": slot})},
+            active="$last",
+        )
 
-    def test_fallback_to_first_installation(self):
-        inst = AgentInstallation(alias="default-codex", runner_type="codex", binary="/fake/bin/codex")
-        config = self._make_config([inst])
-        reg = RunnerRegistry()
-        result = reg.get_installation("codex", config)
-        assert result is inst
+    def test_thinking_clamped_when_above_supported_set(self, caplog):
+        """resolve_model_spec clamps 'xhigh' to 'high' for claude-opus-4-0 (max supported)."""
+        import logging
+        registry = AgentRegistry()
+        config = self._make_config(thinking="xhigh")
+        with caplog.at_level(logging.INFO, logger="koan.agent_registry"):
+            spec = registry.resolve_model_spec("orchestrator", config)
+        # claude-opus-4-0 thinking_modes from MODEL_CAPABILITIES = ["medium", "high"]
+        assert spec.thinking == "high"
+        assert "clamped" in caplog.text
 
-    def test_missing_installation_raises(self):
-        config = self._make_config([])
-        reg = RunnerRegistry()
-        with pytest.raises(RunnerError) as exc_info:
-            reg.get_installation("claude", config)
-        assert exc_info.value.diagnostic.code == "no_installation"
+    def test_no_clamp_when_mode_is_supported(self, caplog):
+        """resolve_model_spec passes through 'medium' unchanged for claude-opus-4-0."""
+        import logging
+        registry = AgentRegistry()
+        config = self._make_config(thinking="medium")
+        with caplog.at_level(logging.INFO, logger="koan.agent_registry"):
+            spec = registry.resolve_model_spec("orchestrator", config)
+        assert spec.thinking == "medium"
+        assert "clamped" not in caplog.text
 
-    def test_run_alias_configured_but_missing_raises(self):
-        inst = AgentInstallation(alias="real-claude", runner_type="claude", binary="/fake/bin/claude")
-        config = self._make_config([inst])
-        reg = RunnerRegistry()
-        with pytest.raises(RunnerError) as exc_info:
-            reg.get_installation("claude", config, run_installations={"claude": "ghost-alias"})
-        assert exc_info.value.diagnostic.code == "no_installation"
-        assert "ghost-alias" in exc_info.value.diagnostic.message
+    def test_disabled_always_allowed(self):
+        """resolve_model_spec allows 'disabled' even when model has non-empty thinking_modes."""
+        registry = AgentRegistry()
+        config = self._make_config(thinking="disabled")
+        spec = registry.resolve_model_spec("orchestrator", config)
+        assert spec.thinking == "disabled"
 
-    def test_fallback_only_when_no_active_alias(self):
-        inst = AgentInstallation(alias="default-codex", runner_type="codex", binary="/fake/bin/codex")
-        config = self._make_config([inst])
-        reg = RunnerRegistry()
-        result = reg.get_installation("codex", config)
-        assert result is inst
+    def test_variant_context_window_used_when_advertised(self):
+        """resolve_model_spec uses slot.context_window when it matches an advertised variant."""
+        # Temporarily inject a variant for the test model so we can verify selection.
+        from koan.agents import model_catalog
+        original = dict(model_catalog.CONTEXT_WINDOW_VARIANTS)
+        model_catalog.CONTEXT_WINDOW_VARIANTS[("anthropic", "claude-opus-4-0")] = [1_000_000]
+        try:
+            from koan.types import CachingPolicy, ConfiguredModel, Connection, Preset, SlotAssignment
+            from koan.config import KoanConfig
+            conn = Connection(id="test-conn2", type="anthropic")
+            cm = ConfiguredModel(id="test-cm2", connection_id="test-conn2", model_id="claude-opus-4-0")
+            slot = SlotAssignment(
+                configured_model_id="test-cm2",
+                thinking="disabled",
+                caching=CachingPolicy(),
+                context_window=1_000_000,
+            )
+            config = KoanConfig(
+                connections=[conn],
+                configured_models=[cm],
+                presets={"$last": Preset(slots={"strong": slot})},
+                active="$last",
+            )
+            registry = AgentRegistry()
+            spec = registry.resolve_model_spec("orchestrator", config)
+            assert spec.context_window == 1_000_000
+        finally:
+            model_catalog.CONTEXT_WINDOW_VARIANTS.clear()
+            model_catalog.CONTEXT_WINDOW_VARIANTS.update(original)
 
-
-# -- RunnerRegistry.resolve_installation ---------------------------------------
-
-class TestResolveInstallation:
-    def _make_config(self, installations):
-        return KoanConfig(agent_installations=installations)
-
-    def test_returns_installation_when_binary_exists(self, tmp_path):
-        binary = tmp_path / "claude"
-        binary.touch()
-        inst = AgentInstallation(alias="my-claude", runner_type="claude", binary=str(binary))
-        config = self._make_config([inst])
-        reg = RunnerRegistry()
-        result = reg.resolve_installation("claude", config, run_installations={"claude": "my-claude"})
-        assert result is inst
-
-    def test_raises_when_binary_missing(self):
-        inst = AgentInstallation(alias="bad", runner_type="claude", binary="/nonexistent/claude")
-        config = self._make_config([inst])
-        reg = RunnerRegistry()
-        with pytest.raises(RunnerError) as exc_info:
-            reg.resolve_installation("claude", config)
-        assert exc_info.value.diagnostic.code == "binary_not_found"
-        assert "bad" in exc_info.value.diagnostic.message
-        assert "/nonexistent/claude" in exc_info.value.diagnostic.message
-
-    def test_raises_when_no_installations(self):
-        config = self._make_config([])
-        reg = RunnerRegistry()
-        with pytest.raises(RunnerError) as exc_info:
-            reg.resolve_installation("claude", config)
-        assert exc_info.value.diagnostic.code == "no_installation"
+    def test_base_context_window_used_when_no_variant(self):
+        """resolve_model_spec falls back to the resolved base context window."""
+        registry = AgentRegistry()
+        config = self._make_config(thinking="disabled")
+        spec = registry.resolve_model_spec("orchestrator", config)
+        # claude-opus-4-0 has 200_000 base context window in MODEL_CAPABILITIES.
+        assert spec.context_window == 200_000
 
 
 # -- save_koan_config write lock -----------------------------------------------
 
 class TestWriteLock:
     def test_sequential_writes(self, tmp_path, monkeypatch):
-        config_path = tmp_path / "config.json"
+        config_path = tmp_path / "config.yaml"
         monkeypatch.setattr("koan.config.CONFIG_PATH", config_path)
         # Reset module-level lock so it gets created fresh
         monkeypatch.setattr("koan.config._config_write_lock", None)
@@ -235,8 +146,8 @@ class TestWriteLock:
 
         asyncio.run(run())
 
-        result = json.loads(config_path.read_text("utf-8"))
+        result = yaml.safe_load(config_path.read_text("utf-8"))
         # Both writes completed; final value is one of {4, 16}
-        assert result["scoutConcurrency"] in (4, 16)
+        assert result["scout_concurrency"] in (4, 16)
         # File is valid JSON (not corrupted by concurrent writes)
         assert isinstance(result, dict)

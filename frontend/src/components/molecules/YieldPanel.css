@@ -80,3 +80,34 @@
   flex: 1;
   min-width: 0;
 }
+
+/* ---- Changed-artifacts section (shown above suggestion rows) ---- */
+
+/* Single-use: container for the "changed since last touchpoint" list.
+   Sits between the prompt header and the suggestion rows to frame the
+   proceed-or-review decision. */
+.yp-changed {
+  padding: 12px 20px;
+  border-bottom: 0.5px solid var(--border-divider-light);
+}
+
+/* Single-use label: uses --text-muted (same as yp-desc) to keep visual
+   weight below the prompt header. 12px matches the breadcrumb scale. */
+.yp-changed-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.yp-changed-list {
+  margin: 0;
+  padding-left: 16px;
+}
+
+/* Single-use: monospaced so artifact paths align with their sidebar
+   representation. Uses --text-primary for legibility over muted. */
+.yp-changed-item {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-primary);
+}

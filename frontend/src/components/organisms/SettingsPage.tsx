@@ -5,14 +5,17 @@
  * The parent connects the store. Single centered scrollable column
  * matching the NewRunForm layout pattern.
  *
- * Used in: app shell, replaces SettingsOverlay for the new design.
+ * Sections: Profiles card, Providers card (M4: manage API keys and
+ * non-secret config per provider), Runtime card.
+ *
+ * Used in: app shell settings route.
  */
 
 import { useState, useRef, useEffect } from 'react'
 import { EntityRow } from '../molecules/EntityRow'
 import { InlineForm } from '../molecules/InlineForm'
 import { FormRow } from '../molecules/FormRow'
-import { TabBar } from '../molecules/TabBar'
+// TabBar removed in M4: agent installation tabs deleted with the installation section.
 import { SettingRow } from '../molecules/SettingRow'
 import { TextInput } from '../atoms/TextInput'
 import { Select } from '../atoms/Select'
@@ -38,14 +41,14 @@ export interface Profile {
   tiers: { strong: TierConfig; standard: TierConfig; cheap: TierConfig }
 }
 
-export interface Installation {
-  id: string
-  alias: string
-  runner: string
-  binary: string
-  extraArgs?: string
-  isDefault?: boolean
-  available?: boolean
+// Installation interface removed in M4: agent installation concept deleted.
+
+/** Presentational view of one provider's non-secret status and config. */
+export interface ProviderConfigView {
+  provider: string
+  available: boolean
+  region: string | null
+  baseUrl: string | null
 }
 
 export interface SettingsPageProps {
@@ -54,12 +57,17 @@ export interface SettingsPageProps {
   onUpdateProfile: (id: string, profile: Partial<Profile>) => Promise<void>
   onDeleteProfile: (id: string) => void
 
-  installations: Installation[]
-  runnerTypes: string[]
-  onCreateInstallation: (install: Omit<Installation, 'id'>) => Promise<void>
-  onUpdateInstallation: (id: string, install: Partial<Installation>) => Promise<void>
-  onDeleteInstallation: (id: string) => void
-  onDetectBinary: (runner: string) => Promise<string | null>
+  // installations/runnerTypes/onCreateInstallation/onUpdateInstallation/
+  // onDeleteInstallation/onDetectBinary removed in M4: installation concept deleted.
+
+  providers: ProviderConfigView[]
+  onSaveProvider: (provider: string, fields: { secret?: string; region?: string; baseUrl?: string }) => Promise<void>
+  onDeleteProvider: (provider: string) => Promise<void>
+  /**
+   * Test connectivity and model listing for a provider with candidate form values.
+   * Called pre-save; returns the green/red result payload. Never throws.
+   */
+  onTestProvider: (provider: string, fields: { secret?: string; region?: string; baseUrl?: string }) => Promise<{ ok: boolean; count?: number; message?: string }>
 
   scoutConcurrency: number
   onScoutConcurrencyChange: (n: number) => void
@@ -81,6 +89,30 @@ function tierSummary(tiers: Profile['tiers']): string {
 
 function emptyTier(): TierConfig {
   return { runner: '', model: '', thinking: '' }
+}
+
+/**
+ * Per-provider field policy: which optional fields are shown in the edit form.
+ * bedrock requires a region and supports an endpoint; openai/anthropic support
+ * an endpoint only; lmstudio is keyless and shows only the base URL;
+ * google/voyage are key-only (matches backend brief D5).
+ */
+function providerFields(provider: string): { region: boolean; baseUrl: boolean } {
+  if (provider === 'bedrock') return { region: true, baseUrl: true }
+  if (provider === 'openai' || provider === 'anthropic') return { region: false, baseUrl: true }
+  if (provider === 'lmstudio') return { region: false, baseUrl: true }
+  return { region: false, baseUrl: false }
+}
+
+/** Providers for which the Test button is shown (model-listing capable). */
+const LISTING_CAPABLE_PROVIDERS = new Set(['openai', 'anthropic', 'google', 'lmstudio'])
+
+/** Build the non-secret config summary line for the EntityRow meta. */
+function providerMeta(p: ProviderConfigView): string | undefined {
+  const parts: string[] = []
+  if (p.region) parts.push(`region: ${p.region}`)
+  if (p.baseUrl) parts.push(`endpoint: ${p.baseUrl}`)
+  return parts.length > 0 ? parts.join(' · ') : undefined
 }
 
 // ---------------------------------------------------------------------------
@@ -116,28 +148,26 @@ function TierFormRows({
 export function SettingsPage(props: SettingsPageProps) {
   const {
     profiles, onCreateProfile, onUpdateProfile, onDeleteProfile,
-    installations, runnerTypes, onCreateInstallation, onUpdateInstallation, onDeleteInstallation, onDetectBinary,
+    // installations/runnerTypes/onCreateInstallation/onUpdateInstallation/
+    // onDeleteInstallation/onDetectBinary removed in M4: installation concept deleted.
+    providers, onSaveProvider, onDeleteProvider, onTestProvider,
     scoutConcurrency, onScoutConcurrencyChange,
     runnerOptions, modelOptionsForRunner, thinkingOptionsForModel,
   } = props
 
-  // Agents tab
-  const [activeTab, setActiveTab] = useState(runnerTypes[0] || '')
-
-  // Inline form state — only one open at a time across all sections
+  // Inline form state -- only one open at a time across all cards
   const [editingProfileId, setEditingProfileId] = useState<string | null>(null)
-  const [editingInstallationId, setEditingInstallationId] = useState<string | null>(null)
   const [creatingProfile, setCreatingProfile] = useState(false)
-  const [creatingInstallation, setCreatingInstallation] = useState(false)
+  const [editingProvider, setEditingProvider] = useState<string | null>(null)
 
   // Auto-scroll to the active inline form when it opens
   const activeFormRef = useRef<HTMLDivElement>(null)
-  const formOpen = editingProfileId || editingInstallationId || creatingProfile || creatingInstallation
+  const formOpen = editingProfileId || creatingProfile || editingProvider
   useEffect(() => {
     if (formOpen && activeFormRef.current) {
       activeFormRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     }
-  }, [formOpen, editingProfileId, editingInstallationId, creatingProfile, creatingInstallation])
+  }, [formOpen, editingProfileId, creatingProfile, editingProvider])
 
   // Profile form fields
   const [pfName, setPfName] = useState('')
@@ -145,22 +175,26 @@ export function SettingsPage(props: SettingsPageProps) {
     strong: emptyTier(), standard: emptyTier(), cheap: emptyTier(),
   })
 
-  // Installation form fields
-  const [ifAlias, setIfAlias] = useState('')
-  const [ifRunner, setIfRunner] = useState('')
-  const [ifBinary, setIfBinary] = useState('')
-  const [ifExtra, setIfExtra] = useState('')
+  // Provider form fields -- key is write-only, never pre-filled from stored value
+  const [pvKey, setPvKey] = useState('')
+  const [pvRegion, setPvRegion] = useState('')
+  const [pvBaseUrl, setPvBaseUrl] = useState('')
+  const [pvError, setPvError] = useState<string | null>(null)
+  // Test connection state: 'idle' | 'testing' | 'ok' | 'fail'
+  const [pvTestState, setPvTestState] = useState<'idle' | 'testing' | 'ok' | 'fail'>('idle')
+  const [pvTestMsg, setPvTestMsg] = useState('')
 
   const closeAllForms = () => {
     setEditingProfileId(null)
-    setEditingInstallationId(null)
     setCreatingProfile(false)
-    setCreatingInstallation(false)
-  }
-
-  const switchTab = (tab: string) => {
-    closeAllForms()
-    setActiveTab(tab)
+    setEditingProvider(null)
+    setPvKey('')
+    setPvRegion('')
+    setPvBaseUrl('')
+    setPvError(null)
+    // Reset test result when form closes
+    setPvTestState('idle')
+    setPvTestMsg('')
   }
 
   // Profile form helpers
@@ -189,81 +223,93 @@ export function SettingsPage(props: SettingsPageProps) {
       else await onCreateProfile(data)
       closeAllForms()
     } catch {
-      /* API error — keep form open so user can retry */
+      /* API error -- keep form open so user can retry */
     }
   }
 
-  // Installation form helpers
-  const openInstallEdit = (inst: Installation) => {
+  // Provider form helpers
+  const openProviderEdit = (p: ProviderConfigView) => {
     closeAllForms()
-    setEditingInstallationId(inst.id)
-    setIfAlias(inst.alias)
-    setIfRunner(inst.runner)
-    setIfBinary(inst.binary)
-    setIfExtra(inst.extraArgs || '')
+    setEditingProvider(p.provider)
+    // Pre-fill non-secret fields; key is always empty (write-only -- never returned by backend)
+    setPvRegion(p.region ?? '')
+    setPvBaseUrl(p.baseUrl ?? '')
+    // Reset test result when opening a new provider form
+    setPvTestState('idle')
+    setPvTestMsg('')
   }
 
-  const openInstallCreate = () => {
-    closeAllForms()
-    setCreatingInstallation(true)
-    setIfAlias('')
-    setIfRunner(activeTab)
-    setIfBinary('')
-    setIfExtra('')
-  }
+  /**
+   * Save provider config. Builds a fields object that omits `secret` when the
+   * user left the key input empty (preserves existing key). Requires a non-empty
+   * region for bedrock client-side; also keeps the form open on a backend 422.
+   */
+  const saveProvider = async () => {
+    if (!editingProvider) return
+    const fields = providerFields(editingProvider)
 
-  const saveInstallation = async () => {
-    const data = { alias: ifAlias, runner: ifRunner, binary: ifBinary, extraArgs: ifExtra }
+    // Client-side bedrock region guard -- backend would return 422 but a
+    // clear inline message is better UX than a thrown error.
+    if (fields.region && !pvRegion.trim()) {
+      setPvError('Region is required for bedrock')
+      return
+    }
+
+    const body: { secret?: string; region?: string; baseUrl?: string } = {}
+    if (pvKey.trim()) body.secret = pvKey.trim()
+    if (fields.region) body.region = pvRegion.trim()
+    if (fields.baseUrl) body.baseUrl = pvBaseUrl.trim()
+
     try {
-      if (editingInstallationId) await onUpdateInstallation(editingInstallationId, data)
-      else await onCreateInstallation(data)
+      await onSaveProvider(editingProvider, body)
       closeAllForms()
-    } catch {
-      /* API error — keep form open so user can retry */
+    } catch (e) {
+      // Backend 422 or other error: surface the message and keep the form open
+      setPvError(e instanceof Error ? e.message : 'Failed to save provider config')
     }
   }
 
-  // Shared form content
+  /**
+   * Build the same body as saveProvider and call onTestProvider with it.
+   * Shows a green Badge on success or a red Badge on failure.
+   */
+  const testProvider = async () => {
+    if (!editingProvider) return
+    const fields = providerFields(editingProvider)
+    const body: { secret?: string; region?: string; baseUrl?: string } = {}
+    if (pvKey.trim()) body.secret = pvKey.trim()
+    if (fields.region && pvRegion.trim()) body.region = pvRegion.trim()
+    if (fields.baseUrl && pvBaseUrl.trim()) body.baseUrl = pvBaseUrl.trim()
+
+    setPvTestState('testing')
+    setPvTestMsg('')
+    const result = await onTestProvider(editingProvider, body)
+    if (result.ok) {
+      setPvTestState('ok')
+      setPvTestMsg(`Success! ${result.count ?? 0} models`)
+    } else {
+      setPvTestState('fail')
+      setPvTestMsg(result.message ?? 'Failed')
+    }
+  }
+
+  // Profile form content
   const profileFormContent = (
     <>
       <FormRow label="Name">
-        {/* Profile rename requires delete + recreate — not supported in current API */}
+        {/* Profile rename requires delete + recreate -- not supported in current API */}
         <TextInput value={pfName} onChange={setPfName} placeholder="profile name" disabled={!!editingProfileId} />
       </FormRow>
       <TierFormRows tiers={pfTiers} onChange={handleTierChange} runnerOptions={runnerOptions} modelOptionsForRunner={modelOptionsForRunner} thinkingOptionsForModel={thinkingOptionsForModel} />
     </>
   )
 
-  const installFormContent = (
-    <>
-      <FormRow label="Alias">
-        {/* Installation alias is the API identifier — not editable on update */}
-        <TextInput value={ifAlias} onChange={setIfAlias} placeholder="installation name" disabled={!!editingInstallationId} />
-      </FormRow>
-      <FormRow label="Runner">
-        <Select value={ifRunner} onChange={setIfRunner} options={runnerOptions} mono />
-      </FormRow>
-      <FormRow label="Binary">
-        <TextInput value={ifBinary} onChange={setIfBinary} mono />
-        <Button variant="teal" size="sm" onClick={async () => {
-          const path = await onDetectBinary(ifRunner)
-          if (path) setIfBinary(path)
-        }}>Detect</Button>
-      </FormRow>
-      <FormRow label="Extra args">
-        <TextInput value={ifExtra} onChange={setIfExtra} mono />
-      </FormRow>
-    </>
-  )
-
-  const tabInstallations = installations.filter(i => i.runner === activeTab)
-
   return (
     <div className="settings-page">
       <div className="settings-content">
         <h1 className="settings-title">Settings</h1>
 
-        {/* ═══ PROFILES ═══ */}
+        {/* === PROFILES === */}
         <div className="settings-card">
           <div className="settings-card-title">Profiles</div>
           {profiles.map(p => (
@@ -296,37 +342,86 @@ export function SettingsPage(props: SettingsPageProps) {
           </div>
         </div>
 
-        {/* ═══ AGENT INSTALLATIONS ═══ */}
+        {/* === PROVIDERS === */}
         <div className="settings-card">
-          <div className="settings-card-title">Agent Installations</div>
-          <TabBar tabs={runnerTypes} activeTab={activeTab} onChange={switchTab} />
-          {tabInstallations.map(inst => (
-            <div key={inst.id}>
-              <EntityRow name={inst.alias} mono meta={inst.binary + (inst.extraArgs ? ' ' + inst.extraArgs : '')} active={editingInstallationId === inst.id}>
-                {inst.isDefault && <Badge variant="default">default</Badge>}
-                {inst.available ? <Badge variant="success">available</Badge> : <Badge variant="error">unavailable</Badge>}
+          <div className="settings-card-title">Providers</div>
+          {providers.map(p => (
+            <div key={p.provider}>
+              <EntityRow
+                name={p.provider}
+                meta={providerMeta(p)}
+                active={editingProvider === p.provider}
+              >
                 <span style={{ flex: 1 }} />
-                <Button variant="secondary" size="xs" onClick={() => openInstallEdit(inst)}>Edit</Button>
-                {!inst.isDefault && <Button variant="danger" size="xs" onClick={() => onDeleteInstallation(inst.id)}>Delete</Button>}
+                <Badge variant={p.available ? 'success' : 'neutral'}>
+                  {p.available ? 'configured' : 'not set'}
+                </Badge>
+                <Button variant="secondary" size="xs" onClick={() => openProviderEdit(p)}>Edit</Button>
+                {(p.available || p.region || p.baseUrl) && (
+                  <Button variant="danger" size="xs" onClick={() => onDeleteProvider(p.provider)}>Delete</Button>
+                )}
               </EntityRow>
-              {editingInstallationId === inst.id && (
+              {editingProvider === p.provider && (
                 <div ref={activeFormRef}>
-                  <InlineForm onSave={saveInstallation} onCancel={closeAllForms}>{installFormContent}</InlineForm>
+                  <InlineForm onSave={saveProvider} onCancel={closeAllForms}>
+                    {/* lmstudio is keyless: hide API key field entirely */}
+                    {p.provider !== 'lmstudio' && (
+                      <FormRow label="API key">
+                        <TextInput
+                          value={pvKey}
+                          onChange={setPvKey}
+                          placeholder={p.available ? 'configured -- enter to replace' : 'enter API key'}
+                        />
+                      </FormRow>
+                    )}
+                    {providerFields(p.provider).region && (
+                      <FormRow label="Region">
+                        <TextInput
+                          value={pvRegion}
+                          onChange={setPvRegion}
+                          placeholder="e.g. us-east-1"
+                        />
+                      </FormRow>
+                    )}
+                    {providerFields(p.provider).baseUrl && (
+                      <FormRow label="Endpoint">
+                        <TextInput
+                          value={pvBaseUrl}
+                          onChange={setPvBaseUrl}
+                          placeholder={p.provider === 'lmstudio' ? 'http://localhost:1234/v1' : 'optional base URL override'}
+                        />
+                      </FormRow>
+                    )}
+                    {pvError && (
+                      <div className="settings-provider-error">{pvError}</div>
+                    )}
+                    {/* Test button: only for listing-capable providers (not bedrock/voyage) */}
+                    {LISTING_CAPABLE_PROVIDERS.has(p.provider) && (
+                      <FormRow label="">
+                        <Button
+                          variant="secondary"
+                          size="xs"
+                          onClick={testProvider}
+                          disabled={pvTestState === 'testing'}
+                        >
+                          {pvTestState === 'testing' ? 'Testing...' : 'Test connection'}
+                        </Button>
+                        {pvTestState === 'ok' && (
+                          <Badge variant="success">{pvTestMsg}</Badge>
+                        )}
+                        {pvTestState === 'fail' && (
+                          <Badge variant="error">Fail -- {pvTestMsg}</Badge>
+                        )}
+                      </FormRow>
+                    )}
+                  </InlineForm>
                 </div>
               )}
             </div>
           ))}
-          {creatingInstallation && (
-            <div ref={activeFormRef}>
-              <InlineForm onSave={saveInstallation} onCancel={closeAllForms}>{installFormContent}</InlineForm>
-            </div>
-          )}
-          <div className="settings-add-trigger">
-            <Button variant="text" onClick={openInstallCreate}>+ Add {activeTab} installation</Button>
-          </div>
         </div>
 
-        {/* ═══ RUNTIME ═══ */}
+        {/* === RUNTIME === */}
         <div className="settings-card">
           <div className="settings-card-title">Runtime</div>
           <SettingRow label="Scout concurrency" description="Maximum number of parallel scout agents">

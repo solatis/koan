@@ -10,9 +10,11 @@
  * Used in: app shell, rendered above all content views.
  */
 
+import { Fragment } from 'react'
 import { LogoMark } from '../atoms/LogoMark'
 import { StatusDot } from '../atoms/StatusDot'
 import { BreadcrumbNav } from '../molecules/BreadcrumbNav'
+import { UsageGauge } from '../molecules/UsageGauge'
 import './HeaderBar.css'
 
 interface HeaderBarProps {
@@ -23,6 +25,14 @@ interface HeaderBarProps {
   currentStep: number
   orchestratorModel?: string
   elapsed?: string
+  usage?: {
+    inputTokens: number
+    outputTokens: number
+    cacheReadTokens: number
+    cacheWriteTokens: number
+    totalCostUsd: number
+    contextWindowPercent: number
+  }
   onSettingsClick?: () => void
 
   // Mode switching
@@ -30,6 +40,11 @@ interface HeaderBarProps {
   navItems?: { label: string; key: string }[]
   activeNav?: string
   onNavChange?: (key: string) => void
+
+  // Optional sub-page breadcrumb shown in navigation mode after the nav links.
+  // Each crumb has a label and an optional href; the last crumb is typically
+  // label-only (current page). Uses inline chevron separator (\u203a).
+  crumbs?: { label: string; href?: string }[]
 }
 
 const GearIcon = () => (
@@ -48,11 +63,13 @@ export function HeaderBar({
   currentStep,
   orchestratorModel,
   elapsed,
+  usage,
   onSettingsClick,
   mode = 'workflow',
   navItems,
   activeNav,
   onNavChange,
+  crumbs,
 }: HeaderBarProps) {
   return (
     <header className="hb">
@@ -72,18 +89,32 @@ export function HeaderBar({
               currentStep={currentStep}
             />
           ) : (
-            <div className="hb-nav">
-              {navItems?.map(item => (
-                <button
-                  key={item.key}
-                  type="button"
-                  className={`hb-nav-link${item.key === activeNav ? ' hb-nav-link--active' : ''}`}
-                  onClick={() => onNavChange?.(item.key)}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
+            <>
+              <div className="hb-nav">
+                {navItems?.map(item => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    className={`hb-nav-link${item.key === activeNav ? ' hb-nav-link--active' : ''}`}
+                    onClick={() => onNavChange?.(item.key)}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+              {crumbs && crumbs.length > 0 && (
+                <nav className="hb-crumbs" aria-label="Sub-page">
+                  {crumbs.map((c, i) => (
+                    <Fragment key={i}>
+                      {i > 0 && <span className="hb-crumb-sep">{'\u203a'}</span>}
+                      {c.href
+                        ? <a className="hb-crumb-link" href={c.href}>{c.label}</a>
+                        : <span className="hb-crumb-label">{c.label}</span>}
+                    </Fragment>
+                  ))}
+                </nav>
+              )}
+            </>
           )}
         </div>
 
@@ -94,6 +125,16 @@ export function HeaderBar({
                 <StatusDot status="done" size="sm" />
                 <span className="hb-model">{orchestratorModel}</span>
               </div>
+            )}
+            {usage && (usage.inputTokens > 0 || usage.outputTokens > 0) && (
+              <UsageGauge
+                inputTokens={usage.inputTokens}
+                outputTokens={usage.outputTokens}
+                cacheReadTokens={usage.cacheReadTokens}
+                cacheWriteTokens={usage.cacheWriteTokens}
+                totalCostUsd={usage.totalCostUsd}
+                contextWindowPercent={usage.contextWindowPercent}
+              />
             )}
             {elapsed && <span className="hb-elapsed">{elapsed}</span>}
             <button

@@ -1,10 +1,11 @@
 ---
-title: Permission fence impractical across LLM backends; planned for removal
+title: Permission fence impractical across LLM backends; replaced by construction-time
+  toolset composition
 type: lesson
 created: '2026-04-16T08:34:06Z'
-modified: '2026-04-16T08:34:06Z'
+modified: '2026-06-04T14:26:17Z'
 related:
-- 0001-persistent-orchestrator-over-per-phase-cli.md
+- 0157-tool-vocabulary-is-restricted-at-toolset.md
 ---
 
-The permission fence in koan (`koan/lib/permissions.py`) was initially designed as a load-bearing default-deny gate enforced on every MCP tool call. On 2026-02-10, Leon established it as Invariant 4 in `docs/architecture.md`, describing it as a load-bearing rule that blocked unknown roles and tools. By approximately 2026-04-08, Leon reversed this assessment, stating in a Claude Code project memory note that the fence is "probably not worth maintaining" because many coding agents do not support accurately disabling tool features, making the gate impractical to enforce reliably across different LLM backends. Leon identified the root cause: enforcement does not work reliably across LLM backends, and the maintenance cost outweighs the benefit. Leon directed that no effort should be invested in extending or hardening the permission fence and that it may be completely removed in a future update. The fence still exists in the codebase as of 2026-04-16, but is deprioritized; the architecture documentation was not updated to reflect this direction change and still describes it as load-bearing.
+The permission fence in koan (`koan/lib/permissions.py`) was first designed as a load-bearing default-deny gate (`check_permission`) enforced on every MCP tool call, documented as a load-bearing invariant in `docs/architecture.md`. Leon later reversed that assessment: the gate is impractical to enforce reliably across different LLM backends because many coding agents do not support accurately disabling tool features, so the maintenance cost outweighs the benefit. Root cause: runtime per-call enforcement does not work uniformly across backends. The resolution is now in place on the agent path: tool vocabulary is restricted at toolset-construction time -- `compose_toolset` in `koan/tools/tool_policy.py` composes the exact tool set per (role, phase) so a disallowed tool is never registered into the model's context -- rather than gated on each call. The allowlist data survives as a `ToolPolicy`; only the call-time gate is retired. The lesson that generalizes: enforce capability restrictions by construction (never offering the capability) rather than by a runtime gate that depends on backend cooperation.

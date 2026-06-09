@@ -14,17 +14,19 @@
 from __future__ import annotations
 
 import asyncio
-import logging
+import json
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 
 import jsonpatch
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 from .lib.workflows import WORKFLOWS
+from .logger import get_logger
+from .agents.events import KOAN_MCP_TOOLS
 
-log = logging.getLogger("koan.projections")
+log = get_logger("projections")
 
 # ---------------------------------------------------------------------------
 # Event type registry
@@ -39,8 +41,10 @@ EventType = Literal[
     "agent_step_advanced",
     "agent_exited",
     "workflow_completed",
+    "run_cleared",
     "workflow_selected",
     "scout_queued",
+    "agents_cleared",
     # Activity
     "tool_started",
     "tool_stopped",
@@ -52,7 +56,15 @@ EventType = Literal[
     "tool_bash",
     "tool_grep",
     "tool_ls",
+    "tool_request",
+    "tool_input_delta",
+    "tool_result",
     "tool_result_captured",
+    # Domain events correlated by agent_id (not call_id): target the in-flight
+    # tool entry for the agent. reflect_delta streams internal-LLM text output;
+    # tool_attachments carries koan-side upload manifests from MCP handlers.
+    "reflect_delta",
+    "tool_attachments",
     "thinking",
     "stream_delta",
     "stream_cleared",
@@ -63,7 +75,6 @@ EventType = Literal[
     # Yield — orchestrator hands control back to the user
     "yield_started",
     "yield_cleared",
-    "phase_summary_captured",
     # Steering
     "steering_queued",
     "steering_delivered",
@@ -75,15 +86,39 @@ EventType = Literal[
     "artifact_modified",
     "artifact_removed",
     # Settings
-    "probe_completed",
-    "installation_created",
-    "installation_modified",
-    "installation_removed",
-    "profile_created",
-    "profile_modified",
-    "profile_removed",
-    "default_profile_changed",
+    # probe_completed / installation_* removed in M4: installation concept and
+    # CLI binary probe deleted; provider credentials are the availability model.
+    # profile_created/modified/removed/default_profile_changed removed in M5:
+    # profile types deleted; replaced by connections/presets config events.
     "default_scout_concurrency_changed",
+    "workflows_listed",
+    # M2: model catalog initial event (kept; provider_status_listed reshaped M5)
+    "model_registry_listed",
+    # Dynamic per-provider model overlay (LM Studio + cloud providers)
+    "provider_models_listed",
+    # M5: new config entity events (replace profile events)
+    "connections_listed",
+    "configured_models_listed",
+    "presets_listed",
+    "active_changed",
+    "memory_bindings_listed",
+    # M5: provider_status_listed retained but reshaped to per-connection
+    "provider_status_listed",
+    # Memory curation — orchestrator blocked in koan_memory_propose
+    "memory_curation_started",
+    "memory_curation_cleared",
+    # Memory mutation — emitted by koan_memorize / koan_forget / koan_memory_status
+    "memory_entry_created",
+    "memory_entry_updated",
+    "memory_entry_deleted",
+    "memory_summary_updated",
+    # Reflect — background task lifecycle
+    "reflect_started",
+    "reflect_trace",
+    "reflect_done",
+    "reflect_cancelled",
+    "reflect_failed",
+    "reflect_cleared",
 ]
 
 
@@ -148,10 +183,40 @@ class UserMessageEntry(KoanBaseModel):
     content: str
     timestamp_ms: int
 
+class AttachmentEntry(KoanBaseModel):
+    """Wire shape for a committed upload attached to a tool call.
+
+    Pydantic's to_camel alias yields uploadId/contentType on the wire,
+    matching what the frontend AttachmentEntry interface declares.
+
+    upload_id and path are required again post-M3: the tool_attachments domain
+    event from MCP handlers carries full manifests with both fields. Runner-
+    extracted partial manifests in tool_result content blocks (which lack
+    koan-side fields) are silently dropped via the AttachmentEntry(**a)
+    try/except guard in the tool_result and tool_completed fold cases (M1).
+    """
+    upload_id: str
+    filename: str = Field(default="")
+    size: int = Field(default=0)
+    content_type: str = Field(default="")
+    path: str
+
+
 class BaseToolEntry(KoanBaseModel):
     """Shared fields for all tool entries and aggregate children."""
     call_id: str                           # unique per tool invocation
-    in_flight: bool                        # True until tool_completed
+    in_flight: bool                        # True until tool_result
+    # Populated by tool_completed when the backend committed uploads were
+    # attached to this tool call (via build_tool_completed attachments arg).
+    attachments: list[AttachmentEntry] | None = None
+    # Streaming input accumulation: tool_input is the server-side aggregate of
+    # all received deltas (most-complete known input); tool_input_delta is the
+    # last raw chunk received (a partial JSON string from the Anthropic API).
+    # The type is str | None rather than dict | None because the Anthropic
+    # streaming API delivers input_json_delta as a string fragment, not a
+    # parsed dict. tool_input (the aggregate) is always a dict when present.
+    tool_input: dict | None = None
+    tool_input_delta: str | None = None
 
 class ToolWriteEntry(BaseToolEntry):
     type: Literal["tool_write"] = "tool_write"
@@ -170,6 +235,13 @@ class ToolGenericEntry(BaseToolEntry):
     type: Literal["tool_generic"] = "tool_generic"
     tool_name: str                         # original tool name from the LLM
     summary: str = ""                      # human-readable one-liner from the runner parser
+
+class ToolKoanEntry(BaseToolEntry):
+    """Koan MCP tool with structured args and result for rich frontend rendering."""
+    type: Literal["tool_koan"] = "tool_koan"
+    tool_name: str
+    args: dict = {}
+    result: dict | None = None
 
 # ---------------------------------------------------------------------------
 # Aggregate children — exploration tools (read, grep, ls) never appear as
@@ -201,8 +273,20 @@ class AggregateLsChild(BaseToolEntry):
     entries: int | None = None             # attached by tool_result_captured
     directories: int | None = None         # attached by tool_result_captured
 
+# M4: glob is a built-in file-search tool analogous to grep; it uses the
+# same metrics shape (matches / files_matched) since each matched path is
+# one match and one file. Separate discriminator value keeps the fold's
+# dispatch clean and lets the frontend render glob entries distinctly later.
+class AggregateGlobChild(BaseToolEntry):
+    tool: Literal["glob"] = "glob"
+    pattern: str                           # glob pattern searched
+    started_at_ms: int = 0
+    completed_at_ms: int | None = None
+    matches: int | None = None             # attached by tool_result_captured
+    files_matched: int | None = None       # attached by tool_result_captured
+
 AggregateChild = Annotated[
-    AggregateReadChild | AggregateGrepChild | AggregateLsChild,
+    AggregateReadChild | AggregateGrepChild | AggregateLsChild | AggregateGlobChild,
     Field(discriminator="tool"),
 ]
 
@@ -252,7 +336,7 @@ class ActiveYield(KoanBaseModel):
 ConversationEntry = Annotated[
     ThinkingEntry | TextEntry | StepEntry | UserMessageEntry |
     ToolWriteEntry | ToolEditEntry | ToolBashEntry | ToolGenericEntry |
-    ToolAggregateEntry |
+    ToolKoanEntry | ToolAggregateEntry |
     DebugStepGuidanceEntry | PhaseBoundaryEntry | YieldEntry,
     Field(discriminator="type"),
 ]
@@ -269,6 +353,14 @@ class Conversation(KoanBaseModel):
     is_thinking: bool = False              # True while thinking deltas are arriving
     input_tokens: int = 0                  # accumulated from agent_step_advanced usage
     output_tokens: int = 0
+    # M5: cache token facts (folded from turn_complete RequestUsage, cumulative sums).
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    # M5: derived fields -- computed in the fold, not recorded as event facts.
+    # total_cost_usd: genai-prices bundled snapshot via price_for_usage (cumulative tokens).
+    # context_window_percent: latest request's input / context_window, clamped 0-100.
+    total_cost_usd: float = 0.0
+    context_window_percent: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +396,10 @@ class Agent(KoanBaseModel):
     label: str = ""
     model: str | None = None
     is_primary: bool = False
+    # M5: provider + context_window carried from agent_spawned so the fold can
+    # derive cost and context-window percent without live config lookups.
+    provider: str | None = None
+    context_window: int = 0
 
     # Lifecycle — state machine: queued → running → done | failed
     status: Literal["queued", "running", "done", "failed"] = "queued"
@@ -324,36 +420,246 @@ class Agent(KoanBaseModel):
 # Settings and run configuration
 # ---------------------------------------------------------------------------
 
-class Installation(KoanBaseModel):
-    """A configured LLM CLI installation."""
-    alias: str
-    runner_type: str
-    binary: str
-    extra_args: list[str] = []
-    available: bool = False                # probe result: binary exists and responds
+# Installation model removed in M4: the agent installation concept is deleted.
+# CLI binary configurations are replaced by provider credential availability.
+# ProfileTierWire, Profile (wire), ProviderStatusWire removed in M5: profile
+# types deleted; replaced by ConnectionWire, ConnectionStatusWire, etc. (plan-milestone-5.md).
 
-class Profile(KoanBaseModel):
-    """Maps roles to installations for a workflow run."""
-    name: str
-    read_only: bool = False
-    tiers: dict[str, str] = {}             # role → installation alias
+
+class ConnectionStatusWire(KoanBaseModel):
+    """Wire representation of per-connection availability (M5).
+
+    Replaces ProviderStatusWire (which was per-type).  Payload shape:
+    {connections: [{connection_id, connection_type, available}, ...]}.
+    Fold sets Settings.provider_status from the connections list.
+    """
+
+    connection_id: str
+    connection_type: str
+    available: bool
+
+
+class ConnectionWire(KoanBaseModel):
+    """Wire representation of a Connection from config (M5).
+
+    Carries non-secret endpoint settings only; the credential lives in the
+    credential store keyed by connection_id (brief D3).
+    """
+
+    id: str
+    connection_type: str
+    base_url: str | None = None
+    region: str | None = None
+
+
+class ConfiguredModelWire(KoanBaseModel):
+    """Wire representation of a ConfiguredModel from config (M5).
+
+    A (connection, model-id) pair; global, referenced by slot assignments.
+    """
+
+    id: str
+    connection_id: str
+    model_id: str
+    resolved_from: str | None = None
+
+
+class ResolvedCapabilitiesWire(KoanBaseModel):
+    """Read-only resolved capability snapshot for one configured model (M6).
+
+    Populated by resolve_capabilities(conn.type, cm.model_id) and surfaced via
+    Settings.model_capabilities.  Never persisted and never asked -- computed
+    from the PydanticAI profile + koan bundled knowledge + recognition parse
+    (brief D4/D5).  Keyed by configured_model_id so the UI can join against the
+    configured_models list without an extra lookup.
+    """
+
+    configured_model_id: str
+    thinking_supported: bool = False
+    thinking_modes: list[str] = []
+    thinking_shape: str = "none"
+    supports_web_search: bool = False
+    supports_tools: bool = True
+    context_window: int = 0
+    context_window_variants: list[int] = []
+    supports_prompt_caching: bool = False
+    tier_hint: str | None = None
+    recognized: bool = True
+
+
+class SlotAssignmentWire(KoanBaseModel):
+    """Wire representation of a SlotAssignment inside a preset (M5)."""
+
+    configured_model_id: str
+    thinking: str = "disabled"
+
+
+class PresetWire(KoanBaseModel):
+    """Wire representation of a Preset (M5).
+
+    slots maps role-slot names (strong/standard/cheap) to SlotAssignmentWire.
+    """
+
+    slots: dict[str, SlotAssignmentWire] = {}
+
+
+class ModelRegistryEntryWire(KoanBaseModel):
+    """Wire representation of ModelRegistryEntry pushed by the model_registry_listed event.
+
+    Payload shape: {models: [{provider, model, display_name, context_window,
+    thinking_modes, tier_hint}, ...]}.
+    Fold sets Settings.model_registry from the models list.
+    """
+
+    provider: str
+    model: str
+    display_name: str
+    context_window: int
+    thinking_modes: list[str] = []
+    tier_hint: str | None = None
+
+
+class ProviderModelWire(KoanBaseModel):
+    """Wire representation of ProviderModel pushed by the provider_models_listed event.
+
+    Payload shape: {models: [{provider, model, display_name, context_window}, ...]}.
+    The alias_generator=to_camel emits displayName/contextWindow on the wire.
+    Fold sets Settings.provider_models from the flat cross-provider models list;
+    replace-all semantics (same as model_registry_listed).
+    """
+
+    provider: str
+    model: str
+    display_name: str
+    context_window: int = 0
+
 
 class Settings(KoanBaseModel):
-    installations: dict[str, Installation] = {}   # alias → Installation
-    profiles: dict[str, Profile] = {}             # name → Profile
-    default_profile: str = "balanced"
+    """Top-level projection settings populated at server startup.
+
+    workflows is static for the process lifetime: it is populated once by the
+    workflows_listed initial event and never updated after that. It is placed
+    here (rather than on Run) so the frontend can read it before any run starts.
+
+    M5: profiles/default_profile removed; replaced by connections, configured_models,
+    presets, active, memory_bindings (the new config entity surfaces).
+    provider_status reshaped to per-connection ConnectionStatusWire (brief D3).
+    model_registry and provider_models kept; they are capability/listing surfaces
+    owned by M6.
+    """
+    # M5: new config entity surfaces (replace profiles/default_profile)
+    connections: list[ConnectionWire] = []
+    configured_models: list[ConfiguredModelWire] = []
+    presets: dict[str, PresetWire] = {}
+    active: str = "$last"
+    # memory_bindings stored as opaque dict; M6 will add a typed wire shape.
+    memory_bindings: dict | None = None
+    # M5: per-connection availability (replaces per-type provider_status from M2)
+    provider_status: list[ConnectionStatusWire] = []
     default_scout_concurrency: int = 8
+    workflows: list[WorkflowInfo] = []            # populated once by workflows_listed at startup
+    # M2: all-providers model registry (capability/listing surface; M6 owns reshape)
+    model_registry: list[ModelRegistryEntryWire] = []
+    # Dynamic per-provider model overlay; populated by provider_models_listed events.
+    provider_models: list[ProviderModelWire] = []
+    # M6: read-only per-configured-model capability snapshot; populated by
+    # model_capabilities_listed.  Recomputed on startup and on any mutation
+    # that touches connections or configured_models (a connection's type
+    # determines its models' resolved capabilities).
+    model_capabilities: list[ResolvedCapabilitiesWire] = []
+
 
 class RunConfig(KoanBaseModel):
-    """Resolved configuration frozen at run start."""
-    profile: str
-    installations: dict[str, str] = {}     # role → installation alias
+    """Resolved configuration frozen at run start.
+
+    M5: 'profile' renamed to 'active_preset'; installations dropped (removed M4).
+    """
+    active_preset: str  # name of the preset active when the run started
+    # installations removed in M4: agent installation concept deleted.
     scout_concurrency: int = 8
 
 
 # ---------------------------------------------------------------------------
 # Supporting types
 # ---------------------------------------------------------------------------
+
+# -- Memory types -------------------------------------------------------------
+# Flat optional strings rather than a discriminated union so the wire shape
+# maps directly to MemoryCurationPage.tsx proposal types without a discriminator.
+
+def _coerce_str(v: object) -> str:
+    if isinstance(v, str):
+        return v
+    if isinstance(v, dict):
+        return json.dumps(v)
+    return str(v)
+
+class Proposal(KoanBaseModel):
+    id: str
+    op: Literal["add", "update", "deprecate"]
+    type: Literal["decision", "context", "lesson", "procedure"]
+    seq: Annotated[str, BeforeValidator(_coerce_str)] = ""
+    title: str
+    meta: Annotated[str, BeforeValidator(_coerce_str)] = ""
+    rationale: str
+    body: str = ""       # used by add and deprecate
+    before: str = ""     # used by update
+    after: str = ""      # used by update
+
+class ActiveCurationBatch(KoanBaseModel):
+    proposals: list[Proposal]
+    batch_id: str
+    context_note: str = ""
+
+class MemoryEntrySummary(KoanBaseModel):
+    seq: str
+    type: Literal["decision", "context", "lesson", "procedure"]
+    title: str
+    created_ms: int
+    modified_ms: int
+
+class MemoryState(KoanBaseModel):
+    # Keyed by seq string (e.g. "0042"). Projection is project-scoped, not
+    # run-scoped, so it persists across workflow boundaries.
+    entries: dict[str, MemoryEntrySummary] = {}
+    summary: str = ""
+
+# -- Reflect types ------------------------------------------------------------
+
+class ReflectCitation(KoanBaseModel):
+    id: int
+    title: str
+    type: Literal["decision", "context", "lesson", "procedure"]
+    modified_ms: int
+
+class ReflectTrace(KoanBaseModel):
+    iteration: int
+    # Discriminator: "search"/"done" are tool calls; "thinking"/"text" are
+    # streaming model output deltas. All ride in the same "reflect_trace" event
+    # so the frontend receives one ordered list without separate event types.
+    kind: Literal["search", "done", "thinking", "text"]
+    # search-only fields
+    query: str = ""
+    type_filter: str = ""
+    result_count: int | None = None
+    # thinking / text delta
+    delta: str = ""
+
+class ReflectRun(KoanBaseModel):
+    session_id: str
+    question: str
+    status: Literal["in_progress", "done", "cancelled", "failed"]
+    started_at_ms: int
+    completed_at_ms: int | None = None
+    iteration: int = 0
+    max_iterations: int = 10
+    model: str = ""
+    traces: list[ReflectTrace] = []
+    answer: str = ""
+    citations: list[ReflectCitation] = []
+    error: str = ""
+
+# -- Basic projection types ---------------------------------------------------
 
 class ArtifactInfo(KoanBaseModel):
     path: str
@@ -376,33 +682,60 @@ class Notification(KoanBaseModel):
 # ---------------------------------------------------------------------------
 
 class SteeringMessage(KoanBaseModel):
+    """A pending steering message shown above the chat input.
+
+    timestamp_ms is the enqueue wall-clock time (milliseconds since epoch),
+    carried from the steering_queued event payload. None for events recorded
+    before this field was introduced -- callers must treat None as "not
+    available" rather than zero to avoid spurious zero-latency readings.
+    """
     content: str
+    timestamp_ms: int | None = None
 
 class PhaseInfo(KoanBaseModel):
     """A phase the user can transition to, as shown in the command palette."""
     id: str                                # phase key (e.g. "plan-spec")
     description: str                       # one-line description from the workflow
 
+class WorkflowInfo(KoanBaseModel):
+    """A workflow entry used in two contexts:
+    - Settings.workflows: static list populated once at server startup via
+      the workflows_listed initial event; read by NewRunForm for selection
+      and by App.tsx for the /workflow:<name> command palette.
+    - Previously also populated per-run in Run.available_workflows; that
+      field was removed -- the registry now lives exclusively at Settings.workflows.
+
+    phases and initial_phase are present in both contexts.
+    """
+    id: str                       # workflow name (e.g. "plan", "milestones", "curation")
+    description: str              # one-line description from Workflow.description
+    phases: list[PhaseInfo] = []  # ordered list of phases in this workflow
+    initial_phase: str = ""       # first phase the orchestrator enters
+
 class Run(KoanBaseModel):
     config: RunConfig
     phase: str = ""
     workflow: str = ""    # active workflow name
-    available_phases: list[PhaseInfo] = []  # populated on workflow_selected; drives the / command palette
+    available_phases: list[PhaseInfo] = []      # populated on workflow_selected; drives the / command palette
+    # available_workflows removed: the workflows registry now lives at Settings.workflows,
+    # populated once by the workflows_listed initial event.
     agents: dict[str, Agent] = {}          # all agents by ID — queued, running, done, failed
     focus: Focus | None = None             # None before first agent spawns
     artifacts: dict[str, ArtifactInfo] = {}
     completion: CompletionInfo | None = None
     steering: list[SteeringMessage] = []   # pending steering messages shown above chat
     active_yield: ActiveYield | None = None  # non-None while orchestrator is in koan_yield
-    # Keyed by phase name. Populated on the first koan_yield of each phase
-    # from the orchestrator's last assistant text. Used as context anchor for
-    # the next phase's mechanical RAG injection. Wire-visible; frontend ignores.
-    phase_summaries: dict[str, str] = {}
+    active_curation_batch: ActiveCurationBatch | None = None  # non-None while orchestrator is in koan_memory_propose
 
 class Projection(KoanBaseModel):
     settings: Settings = Field(default_factory=Settings)
     run: Run | None = None                 # None → show landing page
     notifications: list[Notification] = []
+    # Memory is project-scoped, not run-scoped: persists across workflow
+    # boundaries and is reachable even when run is None.
+    memory: MemoryState = Field(default_factory=MemoryState)
+    # Reflect is project-scoped: not tied to a workflow run.
+    reflect: ReflectRun | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -516,6 +849,68 @@ def _update_agent_conversation(run: Run, agent_id: str, new_conv: Conversation, 
     return run.model_copy(update={"agents": new_agents})
 
 
+# RENDERABLE_KOAN_TOOLS removed in M1: every koan MCP tool now follows the
+# same lifecycle (tool_request -> tool_input_delta -> tool_result) and
+# produces ToolKoanEntry. Selection happens in the fold's tool_request case
+# by membership in KOAN_MCP_TOOLS (imported from koan.agents.events).
+
+
+def _derive_usage(conv: "Conversation", agent: "Agent", usage: dict) -> "Conversation":
+    """Accumulate cache token facts and derive cost + context-window percent.
+
+    Called from both agent_exited and agent_step_advanced usage blocks so the
+    derivation logic is in one place (mirrors the existing input/output dual-fold
+    pattern). cache_read/write_tokens are folded facts (cumulative sums from the
+    usage dict). total_cost_usd and context_window_percent are derived values:
+    they are never recorded as event facts and belong entirely to the fold.
+
+    Fold-safety contract:
+    - price_for_usage is imported lazily (bundled snapshot only; no network).
+    - try/except around price_for_usage: keeps the prior cost on any failure
+      (e.g. unresolvable model, missing provider) rather than raising.
+    - context_window_percent is only computed when agent.context_window > 0
+      to avoid zero-division.
+    """
+    # Accumulate cache token facts (cumulative sums).
+    new_cache_read = conv.cache_read_tokens + usage.get("cache_read_tokens", 0)
+    new_cache_write = conv.cache_write_tokens + usage.get("cache_write_tokens", 0)
+
+    conv = conv.model_copy(update={
+        "input_tokens": conv.input_tokens + usage.get("input_tokens", 0),
+        "output_tokens": conv.output_tokens + usage.get("output_tokens", 0),
+        "cache_read_tokens": new_cache_read,
+        "cache_write_tokens": new_cache_write,
+    })
+
+    # Derive total_cost_usd from the updated cumulative totals.
+    # Wrapped in try/except so an unresolvable model never raises in the fold.
+    if agent.provider and agent.model:
+        try:
+            from .agents.model_catalog import price_for_usage
+            total_cost = float(price_for_usage(
+                agent.provider,
+                agent.model,
+                conv.input_tokens,
+                conv.output_tokens,
+                conv.cache_read_tokens,
+                conv.cache_write_tokens,
+            ))
+            conv = conv.model_copy(update={"total_cost_usd": total_cost})
+        except Exception:
+            # Keep the prior total_cost_usd on failure (e.g. unknown model).
+            pass
+
+    # Derive context_window_percent from the most recent turn's input tokens.
+    # last_input_tokens is overwritten each turn (not summed) so it reflects
+    # current context fullness rather than a double-counted cumulative sum.
+    if agent.context_window > 0:
+        last_input = usage.get("last_input_tokens", 0)
+        percent = round(min(100.0, last_input / agent.context_window * 100), 1)
+        conv = conv.model_copy(update={"context_window_percent": percent})
+
+    return conv
+
+
 # ---------------------------------------------------------------------------
 # Fold
 # ---------------------------------------------------------------------------
@@ -536,9 +931,9 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
             # ── Run lifecycle ──────────────────────────────────────────────
 
             case "run_started":
+                # M5: 'profile' renamed to 'active_preset' in payload and RunConfig.
                 config = RunConfig(
-                    profile=payload.get("profile", ""),
-                    installations=payload.get("installations", {}),
+                    active_preset=payload.get("active_preset", ""),
                     scout_concurrency=payload.get("scout_concurrency", 8),
                 )
                 return projection.model_copy(update={"run": Run(config=config)})
@@ -556,6 +951,8 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                         PhaseInfo(id=p, description=workflow.phase_descriptions.get(p, ""))
                         for p in workflow.available_phases
                     ]
+                # Workflows registry now lives at Settings.workflows, populated once
+                # by the workflows_listed initial event -- no longer rebuilt here.
                 new_run = projection.run.model_copy(update={
                     "workflow": workflow_name,
                     "available_phases": available_phases,
@@ -568,7 +965,8 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                     return projection
                 new_run = projection.run.model_copy(update={
                     "phase": payload.get("phase", ""),
-                    "active_yield": None,  # clear yield when a new phase starts
+                    "active_yield": None,          # clear yield when a new phase starts
+                    "active_curation_batch": None,  # clear any pending curation on phase transition
                 })
                 return projection.model_copy(update={"run": new_run})
 
@@ -583,11 +981,26 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 )
                 new_run = projection.run.model_copy(update={
                     "completion": completion,
-                    "active_yield": None,  # clear yield on completion
+                    "active_yield": None,          # clear yield on completion
+                    "active_curation_batch": None,  # clear any pending curation on completion
                 })
                 return projection.model_copy(update={"run": new_run})
 
+            case "run_cleared":
+                # Idempotent: no-op when the run is already gone. This is an
+                # expected call path (e.g. double-clear), not a bug, so no warning.
+                if projection.run is None:
+                    return projection
+                return projection.model_copy(update={"run": None})
+
             # ── Agent lifecycle ────────────────────────────────────────────
+
+            case "agents_cleared":
+                if projection.run is None:
+                    return projection
+                new_agents = {k: v for k, v in projection.run.agents.items() if v.is_primary}
+                new_run = projection.run.model_copy(update={"agents": new_agents})
+                return projection.model_copy(update={"run": new_run})
 
             case "scout_queued":
                 if projection.run is None:
@@ -641,6 +1054,8 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                         "role": payload.get("role", existing.role),
                         "label": payload.get("label", existing.label),
                         "model": payload.get("model", existing.model),
+                        "provider": payload.get("provider"),
+                        "context_window": payload.get("context_window", 0),
                     })
                 else:
                     # New agent (primary agents are always new)
@@ -652,6 +1067,8 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                         is_primary=is_primary,
                         status="running",
                         started_at_ms=payload.get("started_at_ms", 0),
+                        provider=payload.get("provider"),
+                        context_window=payload.get("context_window", 0),
                     )
 
                 new_run = projection.run.model_copy(update={"agents": new_agents})
@@ -689,13 +1106,12 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 usage = payload.get("usage")
                 status: Literal["done", "failed"] = "failed" if error or exit_code != 0 else "done"
 
-                # Accumulate final usage into conversation
+                # Accumulate final usage into conversation and derive cost/context%.
+                # _derive_usage handles input/output/cache accumulation and
+                # derives total_cost_usd + context_window_percent in one call.
                 new_conv = agent.conversation
                 if usage:
-                    new_conv = new_conv.model_copy(update={
-                        "input_tokens": new_conv.input_tokens + usage.get("input_tokens", 0),
-                        "output_tokens": new_conv.output_tokens + usage.get("output_tokens", 0),
-                    })
+                    new_conv = _derive_usage(new_conv, agent, usage)
 
                 new_agent = agent.model_copy(update={
                     "status": status,
@@ -706,19 +1122,10 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 new_agents = dict(projection.run.agents)
                 new_agents[agent_id] = new_agent
                 new_run = projection.run.model_copy(update={"agents": new_agents})
-                new_projection = projection.model_copy(update={"run": new_run})
-
-                # Append error notification
-                if error:
-                    notif = Notification(
-                        message=f"Agent {agent_id} exited with error: {error}",
-                        level="error",
-                        timestamp_ms=int(datetime.now(timezone.utc).timestamp() * 1000),
-                    )
-                    new_projection = new_projection.model_copy(update={
-                        "notifications": [*new_projection.notifications, notif],
-                    })
-                return new_projection
+                # Executor failures surface in the orchestrator's koan_request_executor
+                # tool result (see ExecutorCard); failed agent status persists on
+                # agent.status/agent.error. No transient notification toast.
+                return projection.model_copy(update={"run": new_run})
 
             case "agent_spawn_failed":
                 notif = Notification(
@@ -833,7 +1240,33 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 if agent is None:
                     return projection
                 tool_name = payload.get("tool", "")
-                # Skip koan MCP tools — they are infrastructure, not user-visible activity
+                # Legacy tool_called fold case retains the historical gate so
+                # existing test fixtures and replay logs are not broken. New
+                # code emits tool_request (handled below) not tool_called.
+                if tool_name == "koan_reflect":
+                    call_id = payload.get("call_id", "")
+                    raw_args = payload.get("args", {})
+                    if isinstance(raw_args, str):
+                        try:
+                            raw_args = json.loads(raw_args)
+                        except (json.JSONDecodeError, TypeError):
+                            raw_args = {"raw": raw_args}
+                    summary = payload.get("summary", "")
+                    last_tool = f"{tool_name} {summary}".strip() if summary else tool_name
+                    new_conv = _flush_conversation(agent.conversation)
+                    new_entry = ToolKoanEntry(
+                        call_id=call_id,
+                        in_flight=True,
+                        tool_name=tool_name,
+                        args=raw_args,
+                    )
+                    new_conv = new_conv.model_copy(update={
+                        "entries": [*new_conv.entries, new_entry],
+                    })
+                    return projection.model_copy(update={
+                        "run": _update_agent_conversation(projection.run, agent_id, new_conv,
+                                                          last_tool=last_tool),
+                    })
                 if tool_name.startswith("koan_") or tool_name.startswith("mcp__koan"):
                     return projection
                 call_id = payload.get("call_id", "")
@@ -993,13 +1426,34 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 # event may target either — the runner does not know which.
                 new_entries = []
                 found = False
+                # Parse attachment manifest from the event once; applied to the
+                # matched entry regardless of type (koan, bash, write, etc.).
+                raw_attachments = payload.get("attachments")
+                parsed_attachments: list[AttachmentEntry] | None = None
+                if raw_attachments and isinstance(raw_attachments, list):
+                    try:
+                        parsed_attachments = [AttachmentEntry(**a) for a in raw_attachments]
+                    except Exception:
+                        pass  # malformed manifest; degrade silently
                 for entry in agent.conversation.entries:
                     if (
                         isinstance(entry, BaseToolEntry)
                         and entry.call_id == call_id
                         and not isinstance(entry, ToolAggregateEntry)
                     ):
-                        new_entries.append(entry.model_copy(update={"in_flight": False}))
+                        update: dict = {"in_flight": False}
+                        if isinstance(entry, ToolKoanEntry):
+                            raw_result = payload.get("result")
+                            if raw_result and isinstance(raw_result, str):
+                                try:
+                                    update["result"] = json.loads(raw_result)
+                                except (json.JSONDecodeError, TypeError):
+                                    update["result"] = {"raw": raw_result}
+                            elif isinstance(raw_result, dict):
+                                update["result"] = raw_result
+                        if parsed_attachments:
+                            update["attachments"] = parsed_attachments
+                        new_entries.append(entry.model_copy(update=update))
                         found = True
                     elif isinstance(entry, ToolAggregateEntry):
                         new_children = []
@@ -1072,6 +1526,12 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                                 update["entries"] = metrics["entries"]
                             if "directories" in metrics:
                                 update["directories"] = metrics["directories"]
+                        elif isinstance(child, AggregateGlobChild):
+                            # M4: glob uses same metrics shape as grep.
+                            if "matches" in metrics:
+                                update["matches"] = metrics["matches"]
+                            if "files_matched" in metrics:
+                                update["files_matched"] = metrics["files_matched"]
                         if update:
                             new_children.append(child.model_copy(update=update))
                         else:
@@ -1088,6 +1548,360 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                         call_id, agent_id,
                     )
                     return projection
+                new_conv = agent.conversation.model_copy(update={"entries": new_entries})
+                return projection.model_copy(update={
+                    "run": _update_agent_conversation(projection.run, agent_id, new_conv),
+                })
+
+            case "tool_request":
+                # Single entry-creation event for all tool types. Replaces
+                # tool_started / tool_called / tool_read / tool_bash / etc.
+                # Branch on tool_name once here; all subsequent events use
+                # call_id for correlation without tool-name branching.
+                if projection.run is None or not agent_id:
+                    return projection
+                agent = projection.run.agents.get(agent_id)
+                if agent is None:
+                    return projection
+                tool_name = payload.get("tool", "")
+                call_id = payload.get("call_id", "")
+                if tool_name in KOAN_MCP_TOOLS:
+                    new_conv = _flush_conversation(agent.conversation)
+                    new_entry = ToolKoanEntry(
+                        call_id=call_id, in_flight=True,
+                        tool_name=tool_name, args={}, result=None,
+                    )
+                    new_conv = new_conv.model_copy(update={
+                        "entries": [*new_conv.entries, new_entry],
+                    })
+                    return projection.model_copy(update={
+                        "run": _update_agent_conversation(
+                            projection.run, agent_id, new_conv,
+                            last_tool=tool_name,
+                        ),
+                    })
+                if tool_name == "write":
+                    new_conv = _flush_conversation(agent.conversation)
+                    new_entry = ToolWriteEntry(call_id=call_id, in_flight=True, file="")
+                    new_conv = new_conv.model_copy(update={
+                        "entries": [*new_conv.entries, new_entry],
+                    })
+                    return projection.model_copy(update={
+                        "run": _update_agent_conversation(
+                            projection.run, agent_id, new_conv, last_tool="write",
+                        ),
+                    })
+                if tool_name == "edit":
+                    new_conv = _flush_conversation(agent.conversation)
+                    new_entry = ToolEditEntry(call_id=call_id, in_flight=True, file="")
+                    new_conv = new_conv.model_copy(update={
+                        "entries": [*new_conv.entries, new_entry],
+                    })
+                    return projection.model_copy(update={
+                        "run": _update_agent_conversation(
+                            projection.run, agent_id, new_conv, last_tool="edit",
+                        ),
+                    })
+                if tool_name == "bash":
+                    new_conv = _flush_conversation(agent.conversation)
+                    new_entry = ToolBashEntry(call_id=call_id, in_flight=True, command="")
+                    new_conv = new_conv.model_copy(update={
+                        "entries": [*new_conv.entries, new_entry],
+                    })
+                    return projection.model_copy(update={
+                        "run": _update_agent_conversation(
+                            projection.run, agent_id, new_conv, last_tool="bash",
+                        ),
+                    })
+                if tool_name in ("read", "grep", "ls", "glob"):
+                    # Exploration tools aggregate into ToolAggregateEntry.
+                    # Typed fields start empty; tool_input_delta fills them in.
+                    # glob is treated like grep (file-search returning matches +
+                    # files_matched); added in M4 when the built-in glob tool landed.
+                    ts_ms = 0
+                    if tool_name == "read":
+                        child: AggregateChild = AggregateReadChild(
+                            call_id=call_id, in_flight=True,
+                            file="", lines="", started_at_ms=ts_ms,
+                        )
+                    elif tool_name == "grep":
+                        child = AggregateGrepChild(
+                            call_id=call_id, in_flight=True,
+                            pattern="", started_at_ms=ts_ms,
+                        )
+                    elif tool_name == "glob":
+                        child = AggregateGlobChild(
+                            call_id=call_id, in_flight=True,
+                            pattern="", started_at_ms=ts_ms,
+                        )
+                    else:  # ls
+                        child = AggregateLsChild(
+                            call_id=call_id, in_flight=True,
+                            path="", started_at_ms=ts_ms,
+                        )
+                    new_conv = _append_exploration_child(agent.conversation, child, ts_ms)
+                    return projection.model_copy(update={
+                        "run": _update_agent_conversation(
+                            projection.run, agent_id, new_conv, last_tool=tool_name,
+                        ),
+                    })
+                # Unrecognised tool: generic fallback.
+                new_conv = _flush_conversation(agent.conversation)
+                new_entry_g = ToolGenericEntry(
+                    call_id=call_id, in_flight=True, tool_name=tool_name, summary="",
+                )
+                new_conv = new_conv.model_copy(update={
+                    "entries": [*new_conv.entries, new_entry_g],
+                })
+                return projection.model_copy(update={
+                    "run": _update_agent_conversation(
+                        projection.run, agent_id, new_conv, last_tool=tool_name,
+                    ),
+                })
+
+            case "tool_input_delta":
+                # Update the in-flight entry with the latest aggregate input dict
+                # and the just-arrived raw chunk. Also derive typed convenience
+                # fields (file, command, pattern, path, args) so the frontend
+                # renders live partial data without waiting for tool_result.
+                if projection.run is None or not agent_id:
+                    return projection
+                agent = projection.run.agents.get(agent_id)
+                if agent is None:
+                    return projection
+                call_id = payload.get("call_id", "")
+                new_tool_input: dict | None = payload.get("tool_input")
+                new_delta = payload.get("delta")
+                new_entries = []
+                found = False
+                for entry in agent.conversation.entries:
+                    if isinstance(entry, ToolAggregateEntry):
+                        new_children = []
+                        child_found = False
+                        for child in entry.children:
+                            if child.call_id == call_id:
+                                ti = new_tool_input if new_tool_input is not None else (child.tool_input or {})
+                                upd: dict = {
+                                    "tool_input": ti,
+                                    "tool_input_delta": new_delta,
+                                }
+                                if isinstance(child, AggregateReadChild):
+                                    upd["file"] = ti.get("file_path", "") or ti.get("path", "")
+                                elif isinstance(child, AggregateGrepChild):
+                                    upd["pattern"] = ti.get("pattern", "") or ti.get("query", "")
+                                elif isinstance(child, AggregateLsChild):
+                                    upd["path"] = ti.get("path", "") or ti.get("directory", "")
+                                new_children.append(child.model_copy(update=upd))
+                                child_found = True
+                            else:
+                                new_children.append(child)
+                        if child_found:
+                            found = True
+                            new_entries.append(entry.model_copy(update={"children": new_children}))
+                        else:
+                            new_entries.append(entry)
+                    elif isinstance(entry, BaseToolEntry) and entry.call_id == call_id:
+                        ti = new_tool_input if new_tool_input is not None else (entry.tool_input or {})
+                        upd = {"tool_input": ti, "tool_input_delta": new_delta}
+                        if isinstance(entry, (ToolWriteEntry, ToolEditEntry)):
+                            upd["file"] = ti.get("file_path", "") or ti.get("path", "")
+                        elif isinstance(entry, ToolBashEntry):
+                            upd["command"] = ti.get("command", "")
+                        elif isinstance(entry, ToolKoanEntry):
+                            # args is the canonical "latest known input" for koan tools
+                            upd["args"] = ti
+                        new_entries.append(entry.model_copy(update=upd))
+                        found = True
+                    else:
+                        new_entries.append(entry)
+                if not found:
+                    log.warning(
+                        "fold: tool_input_delta for unknown call_id=%r agent=%r",
+                        call_id, agent_id,
+                    )
+                    return projection
+                new_conv = agent.conversation.model_copy(update={"entries": new_entries})
+                return projection.model_copy(update={
+                    "run": _update_agent_conversation(projection.run, agent_id, new_conv),
+                })
+
+            case "tool_result":
+                # Mirrors tool_completed semantics: set in_flight=False, attach
+                # result/attachments. For exploration aggregate children also sets
+                # completed_at_ms and applies metrics when present (same metrics
+                # that tool_result_captured carries; whichever arrives first wins).
+                if projection.run is None or not agent_id:
+                    return projection
+                agent = projection.run.agents.get(agent_id)
+                if agent is None:
+                    return projection
+                call_id = payload.get("call_id", "")
+                ts_ms = payload.get("ts_ms", 0)
+                metrics = payload.get("metrics")
+                raw_attachments = payload.get("attachments")
+                parsed_attachments: list[AttachmentEntry] | None = None
+                if raw_attachments and isinstance(raw_attachments, list):
+                    try:
+                        parsed_attachments = [AttachmentEntry(**a) for a in raw_attachments]
+                    except Exception:
+                        pass  # malformed manifest; degrade silently
+                new_entries = []
+                found = False
+                for entry in agent.conversation.entries:
+                    if (
+                        isinstance(entry, BaseToolEntry)
+                        and entry.call_id == call_id
+                        and not isinstance(entry, ToolAggregateEntry)
+                    ):
+                        upd = {"in_flight": False}
+                        if isinstance(entry, ToolKoanEntry):
+                            raw_result = payload.get("result")
+                            if raw_result and isinstance(raw_result, str):
+                                try:
+                                    upd["result"] = json.loads(raw_result)
+                                except (json.JSONDecodeError, TypeError):
+                                    upd["result"] = {"raw": raw_result}
+                            elif isinstance(raw_result, dict):
+                                upd["result"] = raw_result
+                        if parsed_attachments:
+                            upd["attachments"] = parsed_attachments
+                        new_entries.append(entry.model_copy(update=upd))
+                        found = True
+                    elif isinstance(entry, ToolAggregateEntry):
+                        new_children = []
+                        child_found = False
+                        for child in entry.children:
+                            if child.call_id == call_id:
+                                child_upd: dict = {
+                                    "in_flight": False,
+                                    "completed_at_ms": ts_ms or None,
+                                }
+                                # Apply metrics when present so exploration children
+                                # are complete after a single tool_result event;
+                                # tool_result_captured may still arrive and is no-op.
+                                if metrics and isinstance(metrics, dict):
+                                    if isinstance(child, AggregateReadChild):
+                                        if "lines_read" in metrics:
+                                            child_upd["lines_read"] = metrics["lines_read"]
+                                        if "bytes_read" in metrics:
+                                            child_upd["bytes_read"] = metrics["bytes_read"]
+                                    elif isinstance(child, AggregateGrepChild):
+                                        if "matches" in metrics:
+                                            child_upd["matches"] = metrics["matches"]
+                                        if "files_matched" in metrics:
+                                            child_upd["files_matched"] = metrics["files_matched"]
+                                    elif isinstance(child, AggregateLsChild):
+                                        if "entries" in metrics:
+                                            child_upd["entries"] = metrics["entries"]
+                                        if "directories" in metrics:
+                                            child_upd["directories"] = metrics["directories"]
+                                    elif isinstance(child, AggregateGlobChild):
+                                        # M4: glob reuses grep's metrics shape.
+                                        if "matches" in metrics:
+                                            child_upd["matches"] = metrics["matches"]
+                                        if "files_matched" in metrics:
+                                            child_upd["files_matched"] = metrics["files_matched"]
+                                new_children.append(child.model_copy(update=child_upd))
+                                child_found = True
+                            else:
+                                new_children.append(child)
+                        if child_found:
+                            found = True
+                            new_entries.append(entry.model_copy(update={"children": new_children}))
+                        else:
+                            new_entries.append(entry)
+                    else:
+                        new_entries.append(entry)
+                if not found:
+                    log.warning(
+                        "fold: tool_result for unknown call_id=%r agent=%r",
+                        call_id, agent_id,
+                    )
+                    return projection
+                new_conv = agent.conversation.model_copy(update={"entries": new_entries})
+                return projection.model_copy(update={
+                    "run": _update_agent_conversation(projection.run, agent_id, new_conv),
+                })
+
+            case "reflect_delta":
+                # Domain event: forward internal-LLM text fragments to the in-flight
+                # ToolKoanEntry for this agent. Correlated by agent_id only per
+                # intake decision 4 -- koan MCP tools block, so at most one in-flight
+                # koan entry per agent. Other ReflectTraceEvent kinds (search, done,
+                # thinking) stay on the project-scoped reflect projection; they do not
+                # flow into the agent's conversation (M3 decision 3).
+                if projection.run is None or not agent_id:
+                    return projection
+                agent = projection.run.agents.get(agent_id)
+                if agent is None:
+                    return projection
+                delta = payload.get("delta", "")
+                if not delta:
+                    return projection
+                new_entries = list(agent.conversation.entries)
+                target_idx: int | None = None
+                for i, entry in enumerate(new_entries):
+                    if isinstance(entry, ToolKoanEntry) and entry.in_flight:
+                        target_idx = i
+                        break
+                if target_idx is None:
+                    log.warning(
+                        "fold reflect_delta: no in-flight ToolKoanEntry for agent=%r",
+                        agent_id,
+                    )
+                    return projection
+                target = new_entries[target_idx]
+                existing_result = target.result or {}
+                existing_answer = existing_result.get("answer", "") or ""
+                new_result = {**existing_result, "answer": existing_answer + delta}
+                new_entries[target_idx] = target.model_copy(update={"result": new_result})
+                new_conv = agent.conversation.model_copy(update={"entries": new_entries})
+                return projection.model_copy(update={
+                    "run": _update_agent_conversation(projection.run, agent_id, new_conv),
+                })
+
+            case "tool_attachments":
+                # Domain event: overwrite the in-flight tool entry's attachments with
+                # a koan-side manifest carrying full upload_id and path fields. Emitted
+                # by MCP handlers that have committed uploads. Correlated by agent_id
+                # only -- same uniqueness invariant as reflect_delta.
+                if projection.run is None or not agent_id:
+                    return projection
+                agent = projection.run.agents.get(agent_id)
+                if agent is None:
+                    return projection
+                raw_attachments = payload.get("attachments")
+                if not raw_attachments or not isinstance(raw_attachments, list):
+                    return projection
+                try:
+                    parsed = [AttachmentEntry(**a) for a in raw_attachments]
+                except Exception:
+                    log.warning(
+                        "fold tool_attachments: malformed manifest for agent=%r",
+                        agent_id,
+                    )
+                    return projection
+                # Find the unique in-flight non-aggregate tool entry.
+                # ToolAggregateEntry has no in_flight field; only its children do.
+                new_entries = list(agent.conversation.entries)
+                target_idx = None
+                for i, entry in enumerate(new_entries):
+                    if (
+                        isinstance(entry, BaseToolEntry)
+                        and not isinstance(entry, ToolAggregateEntry)
+                        and entry.in_flight
+                    ):
+                        target_idx = i
+                        break
+                if target_idx is None:
+                    log.warning(
+                        "fold tool_attachments: no in-flight tool entry for agent=%r",
+                        agent_id,
+                    )
+                    return projection
+                new_entries[target_idx] = new_entries[target_idx].model_copy(
+                    update={"attachments": parsed}
+                )
                 new_conv = agent.conversation.model_copy(update={"entries": new_entries})
                 return projection.model_copy(update={
                     "run": _update_agent_conversation(projection.run, agent_id, new_conv),
@@ -1149,7 +1963,12 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
             case "steering_queued":
                 if projection.run is None:
                     return projection
-                entry = SteeringMessage(content=payload.get("content", ""))
+                # timestamp_ms is optional: absent on legacy events.jsonl entries.
+                # Treat None as "not available" (not 0) to avoid false zero-latency.
+                entry = SteeringMessage(
+                    content=payload.get("content", ""),
+                    timestamp_ms=payload.get("timestamp_ms"),
+                )
                 return projection.model_copy(update={
                     "run": projection.run.model_copy(update={
                         "steering": [*projection.run.steering, entry],
@@ -1159,6 +1978,9 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
             case "steering_delivered":
                 if projection.run is None:
                     return projection
+                # enqueue_ts_ms_list and delivery_ts_ms exist on the wire event
+                # for replay/latency analysis only; they are not stored in the
+                # live projection -- no in-memory consumer reads them here.
                 return projection.model_copy(update={
                     "run": projection.run.model_copy(update={"steering": []}),
                 })
@@ -1188,12 +2010,11 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                         )],
                     })
 
-                # Accumulate token usage from step
+                # Accumulate token usage from step (including cache facts and
+                # derived cost/context%). agent_step_advanced carries no usage today
+                # so this is a defensive no-op consistent with agent_exited's pattern.
                 if usage:
-                    new_conv = new_conv.model_copy(update={
-                        "input_tokens": new_conv.input_tokens + usage.get("input_tokens", 0),
-                        "output_tokens": new_conv.output_tokens + usage.get("output_tokens", 0),
-                    })
+                    new_conv = _derive_usage(new_conv, agent, usage)
 
                 return projection.model_copy(update={
                     "run": _update_agent_conversation(projection.run, agent_id, new_conv,
@@ -1266,107 +2087,72 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
 
             # ── Settings ──────────────────────────────────────────────────
 
-            case "probe_completed":
-                # Payload: {results: {alias: bool, ...}}
-                results: dict[str, bool] = payload.get("results", {})
-                new_insts = dict(projection.settings.installations)
-                for alias, available in results.items():
-                    if alias in new_insts:
-                        new_insts[alias] = new_insts[alias].model_copy(update={"available": available})
-                new_settings = projection.settings.model_copy(update={"installations": new_insts})
+            # probe_completed / installation_* fold cases removed in M4:
+            # installation concept and CLI binary probe deleted.
+            # profile_created/modified/removed/default_profile_changed removed in M5:
+            # profile types deleted; replaced by connections/presets fold cases below.
+
+            case "connections_listed":
+                # Replace-all: {connections: [{id, connection_type, base_url, region}, ...]}.
+                raw_conns = payload.get("connections", [])
+                new_conns = [
+                    ConnectionWire(
+                        id=c.get("id", ""),
+                        connection_type=c.get("connection_type", ""),
+                        base_url=c.get("base_url"),
+                        region=c.get("region"),
+                    )
+                    for c in raw_conns
+                ]
+                new_settings = projection.settings.model_copy(update={"connections": new_conns})
                 return projection.model_copy(update={"settings": new_settings})
 
-            case "installation_created":
-                alias = payload.get("alias", "")
-                inst = Installation(
-                    alias=alias,
-                    runner_type=payload.get("runner_type", ""),
-                    binary=payload.get("binary", ""),
-                    extra_args=payload.get("extra_args", []),
-                    available=False,  # availability set by probe_completed
-                )
-                new_insts = dict(projection.settings.installations)
-                new_insts[alias] = inst
-                new_settings = projection.settings.model_copy(update={"installations": new_insts})
+            case "configured_models_listed":
+                # Replace-all: {configured_models: [{id, connection_id, model_id, resolved_from}, ...]}.
+                raw_cms = payload.get("configured_models", [])
+                new_cms = [
+                    ConfiguredModelWire(
+                        id=m.get("id", ""),
+                        connection_id=m.get("connection_id", ""),
+                        model_id=m.get("model_id", ""),
+                        resolved_from=m.get("resolved_from"),
+                    )
+                    for m in raw_cms
+                ]
+                new_settings = projection.settings.model_copy(update={"configured_models": new_cms})
                 return projection.model_copy(update={"settings": new_settings})
 
-            case "installation_modified":
-                alias = payload.get("alias", "")
-                existing = projection.settings.installations.get(alias)
-                available = existing.available if existing else False
-                inst = Installation(
-                    alias=alias,
-                    runner_type=payload.get("runner_type", ""),
-                    binary=payload.get("binary", ""),
-                    extra_args=payload.get("extra_args", []),
-                    available=available,  # preserve probe result
-                )
-                new_insts = dict(projection.settings.installations)
-                new_insts[alias] = inst
-                new_settings = projection.settings.model_copy(update={"installations": new_insts})
+            case "presets_listed":
+                # Replace-all: {presets: {name: {slots: {slot_name: {configured_model_id, thinking}}}}}.
+                raw_presets = payload.get("presets", {})
+                new_presets: dict[str, PresetWire] = {}
+                for preset_name, preset_raw in raw_presets.items():
+                    if not isinstance(preset_raw, dict):
+                        continue
+                    slots_raw = preset_raw.get("slots", {})
+                    slots: dict[str, SlotAssignmentWire] = {}
+                    for slot_name, slot_raw in (slots_raw.items() if isinstance(slots_raw, dict) else []):
+                        if isinstance(slot_raw, dict):
+                            slots[slot_name] = SlotAssignmentWire(
+                                configured_model_id=slot_raw.get("configured_model_id", ""),
+                                thinking=slot_raw.get("thinking", "disabled"),
+                            )
+                    new_presets[preset_name] = PresetWire(slots=slots)
+                new_settings = projection.settings.model_copy(update={"presets": new_presets})
                 return projection.model_copy(update={"settings": new_settings})
 
-            case "installation_removed":
-                alias = payload.get("alias", "")
-                new_insts = {k: v for k, v in projection.settings.installations.items() if k != alias}
-                new_settings = projection.settings.model_copy(update={"installations": new_insts})
-                return projection.model_copy(update={"settings": new_settings})
-
-            case "profile_created":
-                name = payload.get("name", "")
-                # tiers in the projection are stored as dict[str, str] (role → alias).
-                # The payload tiers may be nested dicts from the old ProfileTier structure
-                # or simple string values from the new structure. Normalise to str.
-                raw_tiers = payload.get("tiers", {})
-                tiers: dict[str, str] = {}
-                for role, val in raw_tiers.items():
-                    if isinstance(val, str):
-                        tiers[role] = val
-                    elif isinstance(val, dict):
-                        # Legacy: extract alias or runner_type as a best-effort fallback
-                        tiers[role] = val.get("alias", val.get("runner_type", str(val)))
-                    else:
-                        tiers[role] = str(val)
-                profile = Profile(
-                    name=name,
-                    read_only=payload.get("read_only", False),
-                    tiers=tiers,
-                )
-                new_profiles = dict(projection.settings.profiles)
-                new_profiles[name] = profile
-                new_settings = projection.settings.model_copy(update={"profiles": new_profiles})
-                return projection.model_copy(update={"settings": new_settings})
-
-            case "profile_modified":
-                name = payload.get("name", "")
-                raw_tiers = payload.get("tiers", {})
-                tiers = {}
-                for role, val in raw_tiers.items():
-                    if isinstance(val, str):
-                        tiers[role] = val
-                    elif isinstance(val, dict):
-                        tiers[role] = val.get("alias", val.get("runner_type", str(val)))
-                    else:
-                        tiers[role] = str(val)
-                profile = Profile(
-                    name=name,
-                    read_only=payload.get("read_only", False),
-                    tiers=tiers,
-                )
-                new_profiles = dict(projection.settings.profiles)
-                new_profiles[name] = profile
-                new_settings = projection.settings.model_copy(update={"profiles": new_profiles})
-                return projection.model_copy(update={"settings": new_settings})
-
-            case "profile_removed":
-                name = payload.get("name", "")
-                new_profiles = {k: v for k, v in projection.settings.profiles.items() if k != name}
-                new_settings = projection.settings.model_copy(update={"profiles": new_profiles})
-                return projection.model_copy(update={"settings": new_settings})
-
-            case "default_profile_changed":
+            case "active_changed":
+                # Payload {active: str}: update the active preset pointer.
                 new_settings = projection.settings.model_copy(update={
-                    "default_profile": payload.get("name", "balanced"),
+                    "active": payload.get("active", "$last"),
+                })
+                return projection.model_copy(update={"settings": new_settings})
+
+            case "memory_bindings_listed":
+                # Payload {memory_bindings: dict | None}: stored opaque for now;
+                # M6 may add a proper wire subtype when the mutation surface lands.
+                new_settings = projection.settings.model_copy(update={
+                    "memory_bindings": payload.get("memory_bindings"),
                 })
                 return projection.model_copy(update={"settings": new_settings})
 
@@ -1374,6 +2160,97 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 new_settings = projection.settings.model_copy(update={
                     "default_scout_concurrency": payload.get("value", 8),
                 })
+                return projection.model_copy(update={"settings": new_settings})
+
+            case "workflows_listed":
+                # Build the WorkflowInfo list from the payload. The payload uses
+                # snake_case keys (id, description, phases, initial_phase) so that
+                # WorkflowInfo(**entry) constructs cleanly without alias resolution.
+                raw_workflows = payload.get("workflows", [])
+                new_workflows: list[WorkflowInfo] = []
+                for entry in raw_workflows:
+                    try:
+                        new_workflows.append(WorkflowInfo(**entry))
+                    except Exception:
+                        log.warning("fold workflows_listed: skipping malformed entry %r", entry)
+                new_settings = projection.settings.model_copy(update={"workflows": new_workflows})
+                return projection.model_copy(update={"settings": new_settings})
+
+            case "provider_status_listed":
+                # M5: payload reshaped from {providers: [{provider, available, ...}]} to
+                # {connections: [{connection_id, connection_type, available}]}.
+                raw_conns = payload.get("connections", [])
+                new_ps = [
+                    ConnectionStatusWire(
+                        connection_id=c.get("connection_id", ""),
+                        connection_type=c.get("connection_type", ""),
+                        available=c.get("available", False),
+                    )
+                    for c in raw_conns
+                ]
+                new_settings = projection.settings.model_copy(update={"provider_status": new_ps})
+                return projection.model_copy(update={"settings": new_settings})
+
+            case "model_registry_listed":
+                # Payload: {models: [{provider, model, display_name, context_window,
+                # thinking_modes, tier_hint}, ...]}.
+                # Populates the all-providers model catalog in the Settings projection.
+                raw_models = payload.get("models", [])
+                new_mr = [
+                    ModelRegistryEntryWire(
+                        provider=m.get("provider", ""),
+                        model=m.get("model", ""),
+                        display_name=m.get("display_name", ""),
+                        context_window=m.get("context_window", 0),
+                        thinking_modes=m.get("thinking_modes", []),
+                        tier_hint=m.get("tier_hint"),
+                    )
+                    for m in raw_models
+                ]
+                new_settings = projection.settings.model_copy(update={"model_registry": new_mr})
+                return projection.model_copy(update={"settings": new_settings})
+
+            case "provider_models_listed":
+                # Payload: {models: [{provider, model, display_name, context_window}, ...]}.
+                # Flat cross-provider list; replace-all semantics (same as model_registry_listed).
+                # Populated by the eager startup task and refreshed on Test/save.
+                raw_pm = payload.get("models", [])
+                new_pm = [
+                    ProviderModelWire(
+                        provider=m.get("provider", ""),
+                        model=m.get("model", ""),
+                        display_name=m.get("display_name", ""),
+                        context_window=m.get("context_window", 0),
+                    )
+                    for m in raw_pm
+                ]
+                new_settings = projection.settings.model_copy(update={"provider_models": new_pm})
+                return projection.model_copy(update={"settings": new_settings})
+
+            case "model_capabilities_listed":
+                # Replace-all: {capabilities: [{configured_model_id, thinking_supported,
+                # thinking_modes, thinking_shape, supports_web_search, supports_tools,
+                # context_window, context_window_variants, supports_prompt_caching,
+                # tier_hint, recognized}, ...]}.
+                # Recomputed on startup and on any connection/configured-model mutation.
+                raw_caps = payload.get("capabilities", [])
+                new_caps = [
+                    ResolvedCapabilitiesWire(
+                        configured_model_id=c.get("configured_model_id", ""),
+                        thinking_supported=c.get("thinking_supported", False),
+                        thinking_modes=c.get("thinking_modes", []),
+                        thinking_shape=c.get("thinking_shape", "none"),
+                        supports_web_search=c.get("supports_web_search", False),
+                        supports_tools=c.get("supports_tools", True),
+                        context_window=c.get("context_window", 0),
+                        context_window_variants=c.get("context_window_variants", []),
+                        supports_prompt_caching=c.get("supports_prompt_caching", False),
+                        tier_hint=c.get("tier_hint"),
+                        recognized=c.get("recognized", True),
+                    )
+                    for c in raw_caps
+                ]
+                new_settings = projection.settings.model_copy(update={"model_capabilities": new_caps})
                 return projection.model_copy(update={"settings": new_settings})
 
             case "yield_started":
@@ -1409,18 +2286,113 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 new_run = projection.run.model_copy(update={"active_yield": None})
                 return projection.model_copy(update={"run": new_run})
 
-            case "phase_summary_captured":
-                # agent_id is carried for audit only; phase_summaries is run-scoped.
+            # ── Memory curation ────────────────────────────────────────────
+
+            case "memory_curation_started":
                 if projection.run is None:
                     return projection
-                phase = payload.get("phase", "")
-                summary = payload.get("summary", "")
-                if not phase:
-                    return projection
-                new_summaries = dict(projection.run.phase_summaries)
-                new_summaries[phase] = summary
-                new_run = projection.run.model_copy(update={"phase_summaries": new_summaries})
+                batch = ActiveCurationBatch.model_validate(payload["batch"])
+                new_run = projection.run.model_copy(update={
+                    "active_curation_batch": batch,
+                })
                 return projection.model_copy(update={"run": new_run})
+
+            case "memory_curation_cleared":
+                if projection.run is None:
+                    return projection
+                new_run = projection.run.model_copy(update={
+                    "active_curation_batch": None,
+                })
+                return projection.model_copy(update={"run": new_run})
+
+            # ── Memory mutations ───────────────────────────────────────────
+
+            case "memory_entry_created" | "memory_entry_updated":
+                # No run guard: memory is project-scoped.
+                summary = MemoryEntrySummary.model_validate(payload)
+                new_entries = dict(projection.memory.entries)
+                new_entries[summary.seq] = summary
+                new_memory = projection.memory.model_copy(update={"entries": new_entries})
+                return projection.model_copy(update={"memory": new_memory})
+
+            case "memory_entry_deleted":
+                seq = payload.get("seq", "")
+                new_entries = dict(projection.memory.entries)
+                new_entries.pop(seq, None)
+                new_memory = projection.memory.model_copy(update={"entries": new_entries})
+                return projection.model_copy(update={"memory": new_memory})
+
+            case "memory_summary_updated":
+                new_memory = projection.memory.model_copy(update={
+                    "summary": payload.get("summary", ""),
+                })
+                return projection.model_copy(update={"memory": new_memory})
+
+            # ── Reflect ───────────────────────────────────────────────────
+
+            case "reflect_started":
+                new_reflect = ReflectRun(
+                    session_id=payload["session_id"],
+                    question=payload.get("question", ""),
+                    status="in_progress",
+                    started_at_ms=payload.get("started_at_ms", 0),
+                    max_iterations=payload.get("max_iterations", 10),
+                    model=payload.get("model", ""),
+                )
+                return projection.model_copy(update={"reflect": new_reflect})
+
+            case "reflect_trace":
+                r = projection.reflect
+                if r is None or r.session_id != payload.get("session_id"):
+                    return projection
+                trace = ReflectTrace.model_validate(payload.get("trace", {}))
+                new_traces = list(r.traces) + [trace]
+                new_reflect = r.model_copy(update={
+                    "traces": new_traces,
+                    "iteration": trace.iteration,
+                })
+                return projection.model_copy(update={"reflect": new_reflect})
+
+            case "reflect_done":
+                r = projection.reflect
+                if r is None or r.session_id != payload.get("session_id"):
+                    return projection
+                citations = [
+                    ReflectCitation.model_validate(c)
+                    for c in payload.get("citations", [])
+                ]
+                new_reflect = r.model_copy(update={
+                    "status": "done",
+                    "answer": payload.get("answer", ""),
+                    "citations": citations,
+                    "completed_at_ms": payload.get("completed_at_ms"),
+                    "iteration": payload.get("iterations", r.iteration),
+                })
+                return projection.model_copy(update={"reflect": new_reflect})
+
+            case "reflect_cancelled":
+                r = projection.reflect
+                if r is None or r.session_id != payload.get("session_id"):
+                    return projection
+                new_reflect = r.model_copy(update={
+                    "status": "cancelled",
+                    "completed_at_ms": payload.get("completed_at_ms"),
+                })
+                return projection.model_copy(update={"reflect": new_reflect})
+
+            case "reflect_failed":
+                r = projection.reflect
+                if r is None or r.session_id != payload.get("session_id"):
+                    return projection
+                new_reflect = r.model_copy(update={
+                    "status": "failed",
+                    "error": payload.get("error", ""),
+                    "completed_at_ms": payload.get("completed_at_ms"),
+                })
+                return projection.model_copy(update={"reflect": new_reflect})
+
+            case "reflect_cleared":
+                return projection.model_copy(update={"reflect": None})
 
             case _:
                 log.warning("fold: unknown event_type=%r", event_type)
@@ -1465,6 +2437,10 @@ class ProjectionStore:
         agent_id: str | None = None,
     ) -> VersionedEvent:
         """Append event, fold into projection, compute patch, broadcast to subscribers."""
+        log.debug(
+            "push_event: type=%s agent_id=%s",
+            event_type, (agent_id or "")[:8],
+        )
         self.version += 1
         event = VersionedEvent(
             version=self.version,

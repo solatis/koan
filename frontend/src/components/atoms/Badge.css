@@ -22,3 +22,14 @@
   background: var(--bg-danger);
   color: var(--status-failed);
 }
+
+/* Memory type variants — intentionally identical; color encoding lives in MemoryTypeIcon */
+.atom-badge--decision  { background: var(--bg-tool-row); color: var(--text-subtle); }
+.atom-badge--lesson    { background: var(--bg-tool-row); color: var(--text-subtle); }
+.atom-badge--context   { background: var(--bg-tool-row); color: var(--text-subtle); }
+.atom-badge--procedure { background: var(--bg-tool-row); color: var(--text-subtle); }
+
+/* Operation variants */
+.atom-badge--add       { background: var(--bg-completion); color: var(--text-completion); }
+.atom-badge--update    { background: #fdf2ee; color: #c06030; }
+.atom-badge--deprecate { background: var(--bg-danger);     color: var(--text-danger); }

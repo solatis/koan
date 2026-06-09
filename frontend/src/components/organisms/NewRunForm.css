@@ -144,6 +144,44 @@
   border-color: var(--color-orange);
 }
 
+.nrf-textarea-wrap {
+  position: relative;
+}
+
+.nrf-attach-btn {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  background: none;
+  border: none;
+  padding: 4px;
+  cursor: pointer;
+  color: var(--text-hint);
+  display: flex;
+  align-items: center;
+  opacity: 0.6;
+  transition: opacity var(--duration-fast);
+}
+
+.nrf-attach-btn:hover {
+  opacity: 1;
+}
+
+.nrf-file-input {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  opacity: 0;
+}
+
+.nrf-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
 /* ---- Configuration ---- */
 .nrf-config-fields {
   display: flex;
@@ -208,36 +246,6 @@
   color: var(--text-thinking); /* dark purple — ties to thinking/agent palette */
 }
 
-/* Scout concurrency */
-.nrf-concurrency-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.nrf-concurrency-input {
-  width: 60px;
-  padding: 10px 14px;
-  background: var(--bg-base);
-  border: 1.5px solid var(--border-input);
-  border-radius: var(--radius-lg);
-  font-family: var(--font-mono);
-  font-size: var(--type-body);
-  color: var(--text-primary);
-  text-align: center;
-  outline: none;
-  box-sizing: border-box;
-}
-
-.nrf-concurrency-input:focus {
-  border-color: var(--color-orange);
-}
-
-.nrf-concurrency-hint {
-  font-size: 13px;
-  color: var(--text-muted);
-}
-
 /* ---- Real select dropdown (replaces static display div) ---- */
 .nrf-real-select {
   display: block;
@@ -287,4 +295,53 @@
   font-family: var(--font-mono);
   font-size: var(--type-label);
   color: var(--status-failed);
+}
+
+/* ---- Last-completion banner ---- */
+/* Shown after a completed run navigates to the overview. Dismissed by the user.
+   Colors hardcoded (single-use); not promoted to variables.css. */
+.nrf-last-completion {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: var(--radius-xl);
+  font-size: var(--type-breadcrumb);
+  line-height: 1.4;
+}
+
+.nrf-last-completion--success {
+  /* Muted teal: matches the success/completion palette without reusing tokens. */
+  background: rgba(56, 178, 172, 0.08);
+  border: 1px solid rgba(56, 178, 172, 0.25);
+  color: #2c7a7b;
+}
+
+.nrf-last-completion--error {
+  /* Muted red: matches --status-failed palette without promoting to a token. */
+  background: rgba(229, 62, 62, 0.06);
+  border: 1px solid rgba(229, 62, 62, 0.2);
+  color: #c53030;
+}
+
+.nrf-last-completion-msg {
+  flex: 1;
+}
+
+.nrf-last-completion-dismiss {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  padding: 0 4px;
+  cursor: pointer;
+  color: inherit;
+  opacity: 0.6;
+  font-size: 16px;
+  line-height: 1;
+  font-family: var(--font-mono);
+}
+
+.nrf-last-completion-dismiss:hover {
+  opacity: 1;
 }

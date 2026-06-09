@@ -4,22 +4,25 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "starlette",
+    "python-multipart",
     "uvicorn[standard]",
-    "fastmcp",
     "aiofiles",
     "jsonpatch",
     "pyyaml",
-    "google-genai>=1.0",
     "json-repair>=0.59.4",
     "voyageai>=0.3",
     "lancedb>=0.20",
+    "cryptography",
+    "pydantic-ai-slim[anthropic,bedrock,google,openai,duckduckgo]==2.0.0b6",
+    "genai-prices>=0.0.64",
+    "mcp",
 ]
 
 [project.scripts]
 koan = "koan.__main__:main"
 
 [dependency-groups]
-dev = ["pytest>=8.0", "anyio>=4.0", "inspect-ai", "httpx"]
+dev = ["pytest>=8.0", "anyio>=4.0", "httpx", "deepeval>=3.9.7"]
 
 [build-system]
 requires = ["hatchling"]
@@ -30,3 +33,4 @@ packages = ["koan"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--ignore=tests/evals"

@@ -1,7 +1,8 @@
-# Tests for koan_memorize / koan_forget / koan_memory_status MCP tools.
+# Tests for memorize_core / forget_core / memory_status_core.
 #
-# Exercises the raw handler functions (unwrapped from the FastMCP decorator),
-# after wiring up a minimal AgentState + AppState + agent context var.
+# Calls the in-process cores directly via ToolDeps, bypassing the deleted
+# HTTP MCP transport. Cores return a JSON string; errors are raised as
+# ValueError / EntryNotFoundError / TypeMismatchError (not ToolError).
 
 from __future__ import annotations
 
@@ -10,41 +11,31 @@ import time
 from unittest.mock import patch
 
 import pytest
-from fastmcp.exceptions import ToolError
 
 from koan.state import AgentState, AppState
-from koan.web import mcp_endpoint
+
+
+def _json(result: str) -> dict:
+    """JSON-decode a core result string."""
+    return json.loads(result)
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-def _unwrap(tool):
-    """Extract the underlying async function from a FastMCP-decorated tool."""
-    for attr in ("fn", "func", "_fn", "_func", "__wrapped__", "callback"):
-        candidate = getattr(tool, attr, None)
-        if callable(candidate):
-            return candidate
-    if callable(tool):
-        return tool
-    raise RuntimeError(f"Cannot unwrap FastMCP tool: {tool!r}")
-
-
-memorize = _unwrap(mcp_endpoint.koan_memorize)
-forget = _unwrap(mcp_endpoint.koan_forget)
-memory_status = _unwrap(mcp_endpoint.koan_memory_status)
-
-
 @pytest.fixture
-def mem_env(tmp_path, monkeypatch):
-    """Set up a minimal MCP environment with a tmp project directory.
+def mem_env(tmp_path):
+    """Set up a minimal in-process environment with a tmp project directory.
 
-    Returns a dict with the agent, app_state, and project_dir.
+    Builds ToolDeps directly so tests call core functions without fastmcp.
+    Exposes deps, agent, app_state, and project_dir.
     """
+    from koan.tools.koan_tools import ToolDeps
+
     app_state = AppState()
-    app_state.project_dir = str(tmp_path)
-    app_state.phase = "curation"
+    app_state.run.project_dir = str(tmp_path)
+    app_state.run.phase = "curation"
 
     agent = AgentState(
         agent_id="test-agent-0001",
@@ -54,50 +45,48 @@ def mem_env(tmp_path, monkeypatch):
     agent.run_dir = str(tmp_path)
     agent.step = 1
     app_state.agents[agent.agent_id] = agent
+    app_state.init_memory_services()
 
-    # Wire module state + agent context var
-    monkeypatch.setattr(mcp_endpoint, "_app_state", app_state)
-    monkeypatch.setattr(mcp_endpoint, "_memory_store", None)
-    token = mcp_endpoint._agent_ctx.set(agent)
+    deps = ToolDeps(app_state=app_state, agent=agent)
 
     yield {
         "agent": agent,
         "app_state": app_state,
         "project_dir": tmp_path,
+        "deps": deps,
     }
-
-    mcp_endpoint._agent_ctx.reset(token)
-    mcp_endpoint._reset_memory_store()
 
 
 # ---------------------------------------------------------------------------
-# koan_memorize
+# memorize_core
 # ---------------------------------------------------------------------------
 
 class TestMemorize:
     @pytest.mark.anyio
     async def test_create_writes_to_flat_directory(self, mem_env):
-        result_str = await memorize(
+        from koan.tools.koan_tools import memorize_core
+        result = _json(await memorize_core(
+            mem_env["deps"],
             type="decision",
             title="Use PostgreSQL",
             body="Documents the DB choice. Chose PostgreSQL 16.2 over SQLite.",
-        )
-        result = json.loads(result_str)
+        ))
         assert result["op"] == "created"
         assert result["type"] == "decision"
         assert result["entry_id"] == 1
         assert result["created"] != ""
         assert result["modified"] != ""
-        # File should exist in the flat .koan/memory/ directory
         project_dir = mem_env["project_dir"]
         target = project_dir / ".koan" / "memory" / "0001-use-postgresql.md"
         assert target.exists()
 
     @pytest.mark.anyio
     async def test_global_sequence_across_types(self, mem_env):
-        r1 = json.loads(await memorize(type="decision", title="D1", body="Body."))
-        r2 = json.loads(await memorize(type="lesson", title="L1", body="Body."))
-        r3 = json.loads(await memorize(type="context", title="C1", body="Body."))
+        from koan.tools.koan_tools import memorize_core
+        deps = mem_env["deps"]
+        r1 = _json(await memorize_core(deps, type="decision", title="D1", body="Body."))
+        r2 = _json(await memorize_core(deps, type="lesson", title="L1", body="Body."))
+        r3 = _json(await memorize_core(deps, type="context", title="C1", body="Body."))
         assert r1["entry_id"] == 1
         assert r2["entry_id"] == 2
         assert r3["entry_id"] == 3
@@ -109,14 +98,18 @@ class TestMemorize:
 
     @pytest.mark.anyio
     async def test_update_preserves_created(self, mem_env):
-        create_result = json.loads(await memorize(
+        from koan.tools.koan_tools import memorize_core
+        deps = mem_env["deps"]
+        create_result = _json(await memorize_core(
+            deps,
             type="decision",
             title="First",
             body="Body of first entry documenting a decision.",
         ))
         original_created = create_result["created"]
 
-        update_result = json.loads(await memorize(
+        update_result = _json(await memorize_core(
+            deps,
             type="decision",
             title="First Updated",
             body="Body of first entry documenting a decision, now revised.",
@@ -128,47 +121,54 @@ class TestMemorize:
 
     @pytest.mark.anyio
     async def test_invalid_type_raises(self, mem_env):
-        with pytest.raises(ToolError) as exc:
-            await memorize(type="opinion", title="X", body="Body.")
-        body = json.loads(str(exc.value))
-        assert body["error"] == "invalid_type"
+        from koan.tools.koan_tools import memorize_core
+        with pytest.raises(ValueError) as exc:
+            await memorize_core(
+                mem_env["deps"], type="opinion", title="X", body="Body."
+            )
+        assert "invalid" in str(exc.value).lower() or "opinion" in str(exc.value)
 
     @pytest.mark.anyio
     async def test_update_nonexistent_raises(self, mem_env):
-        with pytest.raises(ToolError) as exc:
-            await memorize(
+        from koan.memory.ops import EntryNotFoundError
+        from koan.tools.koan_tools import memorize_core
+        with pytest.raises(EntryNotFoundError):
+            await memorize_core(
+                mem_env["deps"],
                 type="decision",
                 title="Nope",
                 body="Body.",
                 entry_id=999,
             )
-        body = json.loads(str(exc.value))
-        assert body["error"] == "entry_not_found"
 
     @pytest.mark.anyio
     async def test_update_type_mismatch_raises(self, mem_env):
-        await memorize(type="decision", title="D1", body="Body.")
-        with pytest.raises(ToolError) as exc:
-            await memorize(
+        from koan.memory.ops import TypeMismatchError
+        from koan.tools.koan_tools import memorize_core
+        deps = mem_env["deps"]
+        await memorize_core(deps, type="decision", title="D1", body="Body.")
+        with pytest.raises(TypeMismatchError):
+            await memorize_core(
+                deps,
                 type="lesson",
                 title="Wrong type",
                 body="Body.",
                 entry_id=1,
             )
-        body = json.loads(str(exc.value))
-        assert body["error"] == "type_mismatch"
 
 
 # ---------------------------------------------------------------------------
-# koan_forget
+# forget_core
 # ---------------------------------------------------------------------------
 
 class TestForget:
     @pytest.mark.anyio
     async def test_deletes_entry_by_id_without_type(self, mem_env):
-        await memorize(type="decision", title="D1", body="Body.")
+        from koan.tools.koan_tools import forget_core, memorize_core
+        deps = mem_env["deps"]
+        await memorize_core(deps, type="decision", title="D1", body="Body.")
 
-        result = json.loads(await forget(entry_id=1))
+        result = _json(await forget_core(deps, entry_id=1))
         assert result["op"] == "forgotten"
         assert result["entry_id"] == 1
         assert result["type"] == "decision"
@@ -179,50 +179,53 @@ class TestForget:
 
     @pytest.mark.anyio
     async def test_deletes_with_matching_type(self, mem_env):
-        await memorize(type="decision", title="D1", body="Body.")
-        result = json.loads(await forget(entry_id=1, type="decision"))
+        from koan.tools.koan_tools import forget_core, memorize_core
+        deps = mem_env["deps"]
+        await memorize_core(deps, type="decision", title="D1", body="Body.")
+        result = _json(await forget_core(deps, entry_id=1, type="decision"))
         assert result["op"] == "forgotten"
         assert result["entry_id"] == 1
 
     @pytest.mark.anyio
     async def test_type_mismatch_raises(self, mem_env):
-        await memorize(type="decision", title="D1", body="Body.")
-        with pytest.raises(ToolError) as exc:
-            await forget(entry_id=1, type="lesson")
-        body = json.loads(str(exc.value))
-        assert body["error"] == "type_mismatch"
+        from koan.memory.ops import TypeMismatchError
+        from koan.tools.koan_tools import forget_core, memorize_core
+        deps = mem_env["deps"]
+        await memorize_core(deps, type="decision", title="D1", body="Body.")
+        with pytest.raises(TypeMismatchError):
+            await forget_core(deps, entry_id=1, type="lesson")
 
     @pytest.mark.anyio
     async def test_nonexistent_raises(self, mem_env):
-        with pytest.raises(ToolError) as exc:
-            await forget(entry_id=42)
-        body = json.loads(str(exc.value))
-        assert body["error"] == "entry_not_found"
+        from koan.memory.ops import EntryNotFoundError
+        from koan.tools.koan_tools import forget_core
+        with pytest.raises(EntryNotFoundError):
+            await forget_core(mem_env["deps"], entry_id=42)
 
     @pytest.mark.anyio
     async def test_invalid_type_raises(self, mem_env):
-        with pytest.raises(ToolError) as exc:
-            await forget(entry_id=1, type="wrong")
-        body = json.loads(str(exc.value))
-        assert body["error"] == "invalid_type"
+        from koan.tools.koan_tools import forget_core
+        with pytest.raises(ValueError):
+            await forget_core(mem_env["deps"], entry_id=1, type="wrong")
 
 
 # ---------------------------------------------------------------------------
-# koan_memory_status
+# memory_status_core
 # ---------------------------------------------------------------------------
 
 class TestMemoryStatus:
     @pytest.mark.anyio
     async def test_returns_summary_and_flat_entries(self, mem_env):
-        await memorize(type="decision", title="D1", body="Body of decision one.")
-        await memorize(type="lesson", title="L1", body="Body of lesson one.")
+        from koan.tools.koan_tools import memorize_core, memory_status_core
+        deps = mem_env["deps"]
+        await memorize_core(deps, type="decision", title="D1", body="Body of decision one.")
+        await memorize_core(deps, type="lesson", title="L1", body="Body of lesson one.")
 
         async def fake_generate(prompt, system="", max_tokens=1024):
             return "mocked summary body"
 
         with patch("koan.memory.summarize.generate", side_effect=fake_generate):
-            raw = await memory_status()
-        result = json.loads(raw)
+            result = _json(await memory_status_core(deps))
 
         assert "summary" in result
         assert "entries" in result
@@ -234,64 +237,59 @@ class TestMemoryStatus:
         types = [e["type"] for e in result["entries"]]
         assert titles == ["D1", "L1"]
         assert types == ["decision", "lesson"]
-        # Each entry exposes id + timestamps
         assert result["entries"][0]["entry_id"] == 1
         assert result["entries"][0]["created"] != ""
         assert result["entries"][0]["modified"] != ""
 
     @pytest.mark.anyio
     async def test_type_filter(self, mem_env):
-        await memorize(type="decision", title="D1", body="Decision body.")
-        await memorize(type="lesson", title="L1", body="Lesson body.")
+        from koan.tools.koan_tools import memorize_core, memory_status_core
+        deps = mem_env["deps"]
+        await memorize_core(deps, type="decision", title="D1", body="Decision body.")
+        await memorize_core(deps, type="lesson", title="L1", body="Lesson body.")
 
         async def fake_generate(prompt, system="", max_tokens=1024):
             return "mocked"
 
         with patch("koan.memory.summarize.generate", side_effect=fake_generate):
-            raw = await memory_status(type="decision")
-        result = json.loads(raw)
+            result = _json(await memory_status_core(deps, type="decision"))
         titles = [e["title"] for e in result["entries"]]
         assert titles == ["D1"]
-        # Summary is project-wide regardless of filter
         assert "summary" in result
 
     @pytest.mark.anyio
     async def test_staleness_detection(self, mem_env):
+        from koan.tools.koan_tools import memorize_core, memory_status_core
+        deps = mem_env["deps"]
+
         async def fake_generate(prompt, system="", max_tokens=1024):
             return "mocked"
 
-        # First call: no entries, no summary -> not stale, not regenerated
         with patch("koan.memory.summarize.generate", side_effect=fake_generate):
-            first = json.loads(await memory_status())
+            first = _json(await memory_status_core(deps))
         assert first["regenerated"] is False
         assert first["entries"] == []
 
-        # Add an entry -> stale -> regenerate
-        await memorize(type="decision", title="D1", body="First.")
+        await memorize_core(deps, type="decision", title="D1", body="First.")
         with patch("koan.memory.summarize.generate", side_effect=fake_generate):
-            second = json.loads(await memory_status())
+            second = _json(await memory_status_core(deps))
         assert second["regenerated"] is True
 
-        # Third call without changes -> summary is fresh -> no regeneration
         with patch("koan.memory.summarize.generate", side_effect=fake_generate):
-            third = json.loads(await memory_status())
+            third = _json(await memory_status_core(deps))
         assert third["regenerated"] is False
 
-        # Give filesystem mtime a chance to advance past the summary mtime
         time.sleep(0.02)
 
-        # Add another entry -> stale -> regenerate
-        await memorize(type="decision", title="D2", body="Second.")
+        await memorize_core(deps, type="decision", title="D2", body="Second.")
         with patch("koan.memory.summarize.generate", side_effect=fake_generate):
-            fourth = json.loads(await memory_status())
+            fourth = _json(await memory_status_core(deps))
         assert fourth["regenerated"] is True
 
     @pytest.mark.anyio
     async def test_empty_memory_no_regeneration(self, mem_env):
-        # Empty memory should return an empty entries list without calling
-        # the LLM, so no patch is needed.
-        raw = await memory_status()
-        result = json.loads(raw)
+        from koan.tools.koan_tools import memory_status_core
+        result = _json(await memory_status_core(mem_env["deps"]))
         assert result["entries"] == []
         assert result["regenerated"] is False
         assert result["summary"] == ""

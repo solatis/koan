@@ -18,6 +18,9 @@ interface ArtifactEntry {
   filename: string
   modifiedAgo: string
   variant?: 'recent' | 'stable'
+  // True when modified after the last yield resolution; parent computes from
+  // artifact.modifiedAt vs lastTouchpointMs.
+  changed?: boolean
 }
 
 interface ArtifactsSidebarProps {
@@ -42,6 +45,7 @@ export function ArtifactsSidebar({ artifacts, activePath, onArtifactClick }: Art
               filename={a.filename}
               modifiedAgo={a.modifiedAgo}
               variant={a.variant}
+              changed={a.changed}
               active={activePath === a.path}
               onClick={onArtifactClick ? () => onArtifactClick(a.path) : undefined}
             />

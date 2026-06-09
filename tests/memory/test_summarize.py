@@ -1,5 +1,7 @@
 # Tests for koan.memory.summarize
-# Unit tests mock the LLM; integration tests require GEMINI_API_KEY.
+# Unit tests mock the LLM; integration tests require GEMINI_API_KEY or GOOGLE_API_KEY.
+# After the credential-store migration, integration tests use the real_credential_store
+# fixture to initialize the active store from env vars before any memory operation.
 
 from __future__ import annotations
 
@@ -180,21 +182,23 @@ class TestStoreRegenerateSummary:
 # Integration tests (require API key)
 # ---------------------------------------------------------------------------
 
+# Gate on either key name so the test runs when GOOGLE_API_KEY is set.
 _SKIP_NO_KEY = pytest.mark.skipif(
-    not os.environ.get("GEMINI_API_KEY"),
-    reason="GEMINI_API_KEY not set",
+    not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")),
+    reason="GEMINI_API_KEY or GOOGLE_API_KEY not set",
 )
-
-# gemini-3-flash-lite is the spec default but may not be available yet;
-# fall back to the latest available lite model for integration tests.
-_INTEGRATION_MODEL = os.environ.get("KOAN_LLM_MODEL") or "gemini-2.5-flash-lite"
 
 
 @_SKIP_NO_KEY
 class TestIntegrationSummary:
     @pytest.mark.anyio
-    async def test_produces_coherent_overview(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("KOAN_LLM_MODEL", _INTEGRATION_MODEL)
+    async def test_produces_coherent_overview(self, tmp_path, real_credential_store):
+        """generate_summary produces a non-trivial result using the memory_llm binding.
+
+        real_credential_store sets up the active provider config (google-1 connection,
+        memory_llm binding pointing at gemini-2.0-flash-lite) and seeds the credential
+        store from env.  M4: model is driven by the binding, not KOAN_LLM_MODEL.
+        """
         store = _populated_store(tmp_path)
         summary = await generate_summary(store, project_name="TrapperKeeper")
         assert len(summary) > 50

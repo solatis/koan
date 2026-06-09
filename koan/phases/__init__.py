@@ -22,8 +22,10 @@ class PhaseContext:
     run_dir: str
     subagent_dir: str
     project_dir: str = ""
+    # Additional roots passed via --add-dir at koan run startup; primary root remains project_dir.
+    additional_dirs: list[str] = field(default_factory=list)
     task_description: str = ""
-    workflow_name: str = ""              # populated from task["workflow"]
+    workflow_name: str = ""              # populated from task["workflow_history"][-1]["name"]
     phase_instructions: str | None = None
     executor_artifacts: list[str] = field(default_factory=list)  # for executor subagent
     proposal_made: bool = False
@@ -39,6 +41,16 @@ class PhaseContext:
     # prepend this to step 1 guidance. Empty string means no injection (either
     # no directive on the binding or retrieval failed gracefully).
     memory_injection: str = ""
+    # Populated at step-1 handshake from PhaseBinding.next_phase. Consumed by
+    # terminal_invoke() in each phase module's last-step invoke_after. None
+    # means the phase yields with multi-option suggestions; a phase name means
+    # the phase auto-advances via koan_set_phase.
+    next_phase: str | None = None
+    # Populated at step-1 handshake from workflow.transitions[current_phase].
+    # Used by terminal_invoke() to render the suggestions hint when next_phase
+    # is None (full-yield path). Distinct from available_phases (the workflow's
+    # full set) -- this is the per-phase ordered successor list.
+    suggested_phases: list[str] = field(default_factory=list)
 
 
 @runtime_checkable

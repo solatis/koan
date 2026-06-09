@@ -3,11 +3,11 @@
 from copy import copy
 
 from koan.audit.events import (
+    AgentDiagnosticEvent,
     HeartbeatEvent,
     PhaseEndEvent,
     PhaseStartEvent,
     Projection,
-    RunnerDiagnosticEvent,
     StepTransitionEvent,
     ThinkingEvent,
     ToolCallEvent,
@@ -90,15 +90,21 @@ class TestToolCall:
         assert r.last_action == "read /foo.py"
         assert r.current_tool_call_id == "tc-1"
 
-    def test_complete_step_captures_summary(self):
+    def test_complete_step_no_longer_captures_summary(self):
+        """koan_complete_step was removed in M6; its thoughts->completion_summary fold
+        branch is deleted. A tool_call event for a non-koan_complete_step tool does
+        not set completion_summary, and koan_complete_step is no longer registered.
+        """
         p = _base_projection()
+        # Use a generic tool -- completion_summary stays None for non-koan_complete_step calls.
         e = ToolCallEvent(
             ts="2026-01-01T00:04:00Z", seq=3,
-            tool_call_id="tc-2", tool="koan_complete_step",
-            input={"thoughts": "I analyzed the code and found three patterns."},
+            tool_call_id="tc-2", tool="koan_suggest_next",
+            input={"suggestions": []},
         )
         r = fold(p, e)
-        assert r.completion_summary == "I analyzed the code and found three patterns."
+        # completion_summary is not set by any current fold path (koan_complete_step removed).
+        assert r.completion_summary is None
 
     def test_bash_summarization(self):
         p = _base_projection()
@@ -125,23 +131,28 @@ class TestToolResult:
         assert "read" in r.last_action
 
 
-class TestRunnerDiagnostic:
+class TestAgentDiagnostic:
     def test_fatal_code_sets_failed(self):
+        """bootstrap_failure is a fatal code; the fold sets status=failed.
+
+        Message updated from the removed koan_complete_step wording to the
+        M6 first-turn-completed signal wording.
+        """
         p = _base_projection()
-        e = RunnerDiagnosticEvent(
+        e = AgentDiagnosticEvent(
             ts="2026-01-01T00:06:00Z", seq=5,
-            code="bootstrap_failure", runner="claude", stage="handshake",
-            message="Process exited before first koan_complete_step call",
+            code="bootstrap_failure", agent="claude", stage="handshake",
+            message="Process exited before completing its first turn",
         )
         r = fold(p, e)
         assert r.status == "failed"
-        assert r.error == "Process exited before first koan_complete_step call"
+        assert r.error == "Process exited before completing its first turn"
 
     def test_non_fatal_code_preserves_status(self):
         p = _base_projection()
-        e = RunnerDiagnosticEvent(
+        e = AgentDiagnosticEvent(
             ts="2026-01-01T00:06:00Z", seq=5,
-            code="model_rate_limit", runner="claude", stage="request",
+            code="model_rate_limit", agent="claude", stage="request",
             message="Rate limited, retrying",
         )
         r = fold(p, e)

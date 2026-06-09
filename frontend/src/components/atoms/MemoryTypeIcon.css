@@ -1,0 +1,19 @@
+.atom-memory-type-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-md);
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: white;
+  line-height: 1;
+}
+
+.atom-memory-type-icon--decision  { background: var(--color-navy); }
+.atom-memory-type-icon--lesson    { background: var(--color-orange); }
+.atom-memory-type-icon--context   { background: var(--color-teal); }
+.atom-memory-type-icon--procedure { background: var(--color-purple); }

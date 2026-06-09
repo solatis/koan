@@ -1,0 +1,58 @@
+/* MermaidBlock -- namespace prefix: .mb-
+ * All values reference design tokens from variables.css. */
+
+/* Wrapper for both the SVG output and the error state. Matches the
+ * spacing and visual weight of adjacent .markdown pre blocks. */
+.mb-container {
+  margin: 0.6em 0;
+  padding: 8px 12px;
+  background: var(--bg-tool-row);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-md);
+}
+
+/* SVG container -- allow horizontal scroll for wide diagrams; center
+ * narrower diagrams so they do not pin to the left edge. */
+.mb-svg {
+  overflow-x: auto;
+  text-align: center;
+}
+
+/* Ensure the SVG itself does not overflow its container. */
+.mb-svg svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Error banner uses the danger token family so the failure state is
+ * visually distinct from normal content without a hardcoded colour. */
+.mb-error-container {
+  margin: 0.6em 0;
+  padding: 8px 12px;
+  background: var(--bg-danger);
+  border: 1px solid var(--border-danger);
+  border-radius: var(--radius-md);
+}
+
+.mb-error-banner {
+  color: var(--text-danger-body);
+  font-family: var(--font-mono);
+  font-size: var(--type-breadcrumb);
+  margin-bottom: 6px;
+}
+
+/* Raw source block below the banner -- matches .markdown pre visually
+ * so the user sees the same code-block chrome they expect. */
+.mb-error-source {
+  margin: 0;
+  padding: 8px 12px;
+  background: var(--bg-tool-row);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  font-family: var(--font-mono);
+  font-size: var(--type-breadcrumb);
+  line-height: 1.5;
+  color: var(--text-primary);
+}

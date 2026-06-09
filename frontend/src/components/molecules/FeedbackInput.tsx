@@ -1,26 +1,8 @@
-/**
- * FeedbackInput -- text input for sending feedback/messages to the agent.
- *
- * Sits at the bottom of the content stream. Enter sends, Shift+Enter
- * inserts a newline. Uses the Button atom for the send action.
- *
- * Watches the chatDraft store field: when a YieldPanel row is selected,
- * the parent sets chatDraft to "/<phase-id> ", which FeedbackInput picks
- * up via useEffect, populates the textarea, and focuses it. The user
- * reviews and presses Send -- no auto-submit.
- *
- * /-command support: when availableCommands is provided and the textarea
- * starts with "/", a CommandPalette floats above showing filterable phase
- * commands. Selecting a command inserts "/<id> " into the textarea. On
- * send, /-commands are rewritten into a natural-language instruction
- * before calling onSend.
- *
- * Used in: content stream footer.
- */
-
 import { useState, useRef, useEffect, type KeyboardEvent } from 'react'
 import { useStore } from '../../store/index'
+import { useFileAttachment } from '../../hooks/useFileAttachment'
 import { Button } from '../atoms/Button'
+import { FileChip } from '../atoms/FileChip'
 import { CommandPalette } from './CommandPalette'
 import './FeedbackInput.css'
 
@@ -31,25 +13,59 @@ interface Command {
 
 interface FeedbackInputProps {
   placeholder?: string
-  onSend?: (text: string) => void
+  onSend?: (text: string, attachments?: string[]) => void
   disabled?: boolean
   availableCommands?: Command[]
   onPaletteToggle?: (open: boolean) => void
 }
 
-// Parse "/<cmd> <instruction>" and rewrite into a phase-transition message.
-// Non-slash input passes through unchanged.
+/**
+ * Transform a slash-command input into a structured chat message
+ * the orchestrator (an LLM) parses to decide which MCP tool to call.
+ *
+ * - Phase commands (e.g. `/plan-spec instruction`) become
+ *   "The user wishes to transition to phase `plan-spec` ..."
+ * - Workflow commands (e.g. `/workflow:plan instruction`) become
+ *   "The user wishes to switch to workflow `plan` ..."
+ *
+ * Non-slash text passes through unchanged.
+ */
 function transformCommand(text: string): string {
   if (!text.startsWith('/')) return text
   const body = text.slice(1)
   const space = body.indexOf(' ')
   const cmd = space === -1 ? body : body.slice(0, space)
   const instruction = space === -1 ? '' : body.slice(space + 1).trim()
+
+  // Workflow commands have the form "workflow:<name>".
+  const WORKFLOW_PREFIX = 'workflow:'
+  if (cmd.startsWith(WORKFLOW_PREFIX)) {
+    const workflow = cmd.slice(WORKFLOW_PREFIX.length)
+    if (instruction) {
+      return `The user wishes to switch to workflow \`${workflow}\` with instruction: ${instruction}`
+    }
+    return `The user wishes to switch to workflow \`${workflow}\`.`
+  }
+
   if (instruction) {
     return `The user wishes to transition to phase \`${cmd}\` with instruction: ${instruction}`
   }
   return `The user wishes to transition to phase \`${cmd}\`.`
 }
+
+const PaperclipIcon = () => (
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.49" />
+  </svg>
+)
+
+const UploadIcon = () => (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+    <polyline points="17 8 12 3 7 8" />
+    <line x1="12" y1="3" x2="12" y2="15" />
+  </svg>
+)
 
 export function FeedbackInput({
   placeholder = 'Send feedback...',
@@ -65,7 +81,8 @@ export function FeedbackInput({
   const chatDraft = useStore(s => s.chatDraft)
   const setChatDraft = useStore(s => s.setChatDraft)
 
-  // Pick up draft set by YieldPanel row selections
+  const attach = useFileAttachment()
+
   useEffect(() => {
     if (chatDraft) {
       setText(chatDraft)
@@ -74,9 +91,6 @@ export function FeedbackInput({
     }
   }, [chatDraft, setChatDraft])
 
-  // Palette open rule: text begins with "/" AND the body (post-slash) has
-  // no space. Once a command is selected we insert "/<id> " with a space,
-  // which naturally closes the palette so the user can type instructions.
   const paletteOpen = !!(
     availableCommands &&
     availableCommands.length > 0 &&
@@ -89,12 +103,10 @@ export function FeedbackInput({
     ? (availableCommands ?? []).filter(c => c.id.startsWith(filter))
     : []
 
-  // Reset active index when filter changes so the first match is always highlighted.
   useEffect(() => {
     setActiveIndex(0)
   }, [filter])
 
-  // Notify parent whenever palette toggles.
   useEffect(() => {
     onPaletteToggle?.(paletteOpen)
   }, [paletteOpen, onPaletteToggle])
@@ -102,15 +114,16 @@ export function FeedbackInput({
   const send = () => {
     const trimmed = text.trim()
     if (!trimmed || disabled) return
-    onSend?.(transformCommand(trimmed))
+    const ids = attach.fileIds.length > 0 ? attach.fileIds : undefined
+    onSend?.(transformCommand(trimmed), ids)
     setText('')
+    attach.clearFiles()
     ref.current?.focus()
   }
 
   const selectCommand = (cmd: Command) => {
     const next = `/${cmd.id} `
     setText(next)
-    // Re-focus and move the cursor past the trailing space.
     requestAnimationFrame(() => {
       const el = ref.current
       if (el) {
@@ -147,7 +160,6 @@ export function FeedbackInput({
         setText('')
         return
       }
-      // Any other key: default textarea behavior (updates filter).
       return
     }
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -156,8 +168,15 @@ export function FeedbackInput({
     }
   }
 
+  const cls = [
+    'fi',
+    disabled && 'fi--disabled',
+    paletteOpen && 'fi--focused',
+    attach.dragging && 'fi--dragging',
+  ].filter(Boolean).join(' ')
+
   return (
-    <div className={`fi${disabled ? ' fi--disabled' : ''}${paletteOpen ? ' fi--focused' : ''}`}>
+    <div className={cls} {...attach.dragProps}>
       {paletteOpen && (
         <CommandPalette
           commands={availableCommands ?? []}
@@ -168,21 +187,64 @@ export function FeedbackInput({
           onDismiss={() => setText('')}
         />
       )}
-      <textarea
-        ref={ref}
-        className="fi-textarea"
-        placeholder={placeholder}
-        value={text}
-        onChange={e => setText(e.target.value)}
-        onKeyDown={onKey}
-        disabled={disabled}
-        rows={1}
-      />
+
+      {attach.dragging && (
+        <div className="fi-drop-overlay">
+          <UploadIcon />
+          <span className="fi-drop-label">Drop to attach</span>
+        </div>
+      )}
+
+      <div className="fi-textarea-wrap">
+        <textarea
+          ref={ref}
+          className="fi-textarea"
+          placeholder={placeholder}
+          value={text}
+          onChange={e => setText(e.target.value)}
+          onKeyDown={onKey}
+          onPaste={attach.onPaste}
+          disabled={disabled}
+          rows={1}
+        />
+        <button
+          className="fi-attach-btn"
+          onClick={attach.openPicker}
+          title="Attach files"
+          type="button"
+          disabled={disabled}
+        >
+          <PaperclipIcon />
+        </button>
+        <input
+          ref={attach.inputRef}
+          type="file"
+          multiple
+          className="fi-file-input"
+          onChange={attach.onInputChange}
+          tabIndex={-1}
+        />
+      </div>
+
+      {attach.files.length > 0 && (
+        <div className="fi-chips">
+          {attach.files.map(f => (
+            <FileChip
+              key={f.id}
+              name={f.name}
+              size={f.size}
+              state={f.state}
+              onRemove={() => attach.removeFile(f.id)}
+            />
+          ))}
+        </div>
+      )}
+
       <div className="fi-footer">
         <span className="fi-hint">
           {paletteOpen
-            ? '\u2191\u2193 navigate \u00b7 Enter select \u00b7 Esc dismiss'
-            : 'Enter to send \u00b7 Shift+Enter for newline'}
+            ? '↑↓ navigate · Enter select · Esc dismiss'
+            : 'Enter to send · Shift+Enter for newline'}
         </span>
         <Button
           variant="primary"

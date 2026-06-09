@@ -14,11 +14,11 @@ from typing import TYPE_CHECKING, Any
 
 import aiofiles
 
-from .events import Projection, RunnerDiagnosticEvent
+from .events import AgentDiagnosticEvent, Projection
 from .fold import fold
 
 if TYPE_CHECKING:
-    from ..runners.base import RunnerDiagnostic
+    from ..agents.base import AgentDiagnostic
 
 
 # -- Helpers -------------------------------------------------------------------
@@ -131,11 +131,15 @@ class EventLog:
             "detail": detail,
         })
 
-    async def emit_runner_diagnostic(self, diag: RunnerDiagnostic) -> None:
+    async def emit_agent_diagnostic(self, diag: AgentDiagnostic) -> None:
+        """Emit an agent-side diagnostic event (spawn failure, MCP injection
+        failure, bootstrap failure, etc.). Renamed from emit_runner_diagnostic
+        in M1 of the SDK migration.
+        """
         await self.append({
-            "kind": "runner_diagnostic",
+            "kind": "agent_diagnostic",
             "code": diag.code,
-            "runner": diag.runner,
+            "agent": diag.agent,
             "stage": diag.stage,
             "message": diag.message,
             "details": diag.details,
@@ -174,10 +178,10 @@ class EventLog:
 # -- Kind -> event class map ---------------------------------------------------
 
 from .events import (
+    AgentDiagnosticEvent,
     HeartbeatEvent,
     PhaseEndEvent,
     PhaseStartEvent,
-    RunnerDiagnosticEvent,
     StepTransitionEvent,
     ThinkingEvent,
     ToolCallEvent,
@@ -194,5 +198,5 @@ _KIND_MAP: dict[str, type] = {
     "thinking": ThinkingEvent,
     "tool_call": ToolCallEvent,
     "tool_result": ToolResultEvent,
-    "runner_diagnostic": RunnerDiagnosticEvent,
+    "agent_diagnostic": AgentDiagnosticEvent,
 }

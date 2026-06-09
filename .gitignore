@@ -1,4 +1,3 @@
-.pi/
 .DS_Store
 
 .claude/
@@ -6,6 +5,10 @@ plans/
 .env
 .env.*
 *.log
+
+.deepeval/
+.mcp.json
+evals/harvest_dumps/
 
 # Frontend build output (committed source lives in frontend/src/)
 koan/web/static/app/

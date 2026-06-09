@@ -9,6 +9,9 @@
  */
 
 import './ToolCallRow.css'
+import { FileChip } from '../atoms/FileChip'
+import { formatSize } from '../../hooks/useFileAttachment'
+import type { AttachmentEntry } from '../../store/index'
 
 interface ToolCallRowProps {
   tool: string
@@ -17,6 +20,8 @@ interface ToolCallRowProps {
   /** Optional right-aligned metric text. Examples: "22.8 KB · new",
    *  "2.4s · 140 B out", "3 hunks · ±24 lines". */
   metric?: string
+  // Committed uploads attached to this tool call, from tool_completed manifest.
+  attachments?: AttachmentEntry[] | null
 }
 
 const CheckSvg = () => (
@@ -25,17 +30,25 @@ const CheckSvg = () => (
   </svg>
 )
 
-export function ToolCallRow({ tool, command, status = 'done', metric }: ToolCallRowProps) {
+export function ToolCallRow({ tool, command, status = 'done', metric, attachments }: ToolCallRowProps) {
+  const hasAttachments = attachments && attachments.length > 0
   return (
     <div className={`tcr tcr--${status}`}>
       <span className="tcr-indicator">
         {status === 'done' && <CheckSvg />}
         {status === 'running' && <span className="tcr-running-dot" />}
-        {status === 'error' && <span className="tcr-error-x">✕</span>}
+        {status === 'error' && <span className="tcr-error-x">x</span>}
       </span>
       <span className="tcr-type">{tool}</span>
       <span className="tcr-command">{command}</span>
       {metric && <span className="tcr-metric">{metric}</span>}
+      {hasAttachments && (
+        <div className="tcr-attachments">
+          {attachments!.map(a => (
+            <FileChip key={a.uploadId} name={a.filename} size={formatSize(a.size)} state="ready" />
+          ))}
+        </div>
+      )}
     </div>
   )
 }

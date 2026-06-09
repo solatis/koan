@@ -1,5 +1,5 @@
 # Event payload builders -- bridges koan domain types into projection event payloads.
-# Imports AgentState, RunnerDiagnostic, list_artifacts, etc.
+# Imports AgentState, AgentDiagnostic, list_artifacts, etc.
 # koan/projections.py does NOT import from here.
 
 from __future__ import annotations
@@ -7,20 +7,29 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .runners.base import RunnerDiagnostic
+    from .agents.base import AgentDiagnostic
     from .state import AgentState
 
 
 def build_run_started(
-    profile: str,
-    installations: dict[str, str],
+    active_preset: str,
     scout_concurrency: int,
 ) -> dict:
+    """Build run_started event payload.
+
+    active_preset is the name of the preset active at run start (e.g. '$last').
+    M5: 'profile' renamed to 'active_preset'; 'installations' dropped (removed M4).
+    """
     return {
-        "profile": profile,
-        "installations": installations,
+        "active_preset": active_preset,
         "scout_concurrency": scout_concurrency,
     }
+
+
+def build_run_cleared() -> dict:
+    # Empty payload: run_cleared carries no fields. Follows the same convention
+    # as build_agents_cleared, build_memory_curation_cleared, build_reflect_cleared.
+    return {}
 
 
 def build_workflow_selected(workflow: str) -> dict:
@@ -29,6 +38,11 @@ def build_workflow_selected(workflow: str) -> dict:
 
 
 def build_agent_spawned(agent: AgentState) -> dict:
+    """Build agent_spawned event payload.
+
+    Carries provider and context_window alongside identity so the projection
+    fold can derive cost and context-window percent without live lookups.
+    """
     return {
         "agent_id": agent.agent_id,
         "role": agent.role,
@@ -36,7 +50,13 @@ def build_agent_spawned(agent: AgentState) -> dict:
         "model": agent.model,
         "is_primary": agent.is_primary,
         "started_at_ms": int(agent.started_at.timestamp() * 1000),
+        "provider": agent.provider,
+        "context_window": agent.context_window,
     }
+
+
+def build_agents_cleared() -> dict:
+    return {}
 
 
 def build_scout_queued(scout_id: str, label: str, model: str | None = None) -> dict:
@@ -60,7 +80,13 @@ def build_agent_exited(
     return result
 
 
-def build_agent_spawn_failed(role: str, diagnostic: RunnerDiagnostic) -> dict:
+def build_agent_spawn_failed(role: str, diagnostic: AgentDiagnostic) -> dict:
+    """Build the agent_spawn_failed projection event payload.
+
+    Carries the role of the agent that failed to spawn, the diagnostic code,
+    message, and any details. Used by koan.subagent.spawn_subagent and
+    koan.agents.registry on resolution failure.
+    """
     return {
         "role": role,
         "error_code": diagnostic.code,
@@ -83,75 +109,65 @@ def build_step_advanced(
     return result
 
 
-def build_tool_called(
-    call_id: str,
-    tool: str,
-    args: dict | str,
-    summary: str = "",
-) -> dict:
-    return {
-        "call_id": call_id,
-        "tool": tool,
-        "args": args,
-        "summary": summary,
-    }
+# Legacy tool event builders removed in M1: the streaming stdout path is
+# the single source of truth for tool lifecycle events. All callers were
+# switched to build_tool_request / build_tool_input_delta / build_tool_result
+# before these builders were deleted.
 
 
-def build_tool_started(call_id: str, tool: str) -> dict:
-    return {"call_id": call_id, "tool": tool}
+def build_tool_request(call_id: str, tool: str, tool_use_id: str = "") -> dict:
+    """Build a tool_request event payload.
 
-
-def build_tool_stopped(call_id: str, tool: str, summary: str = "") -> dict:
+    Emitted when the streaming path first sees a tool invocation. tool_use_id is
+    the LLM-assigned identifier used later to correlate with tool_result events.
+    """
     payload: dict = {"call_id": call_id, "tool": tool}
-    if summary:
-        payload["summary"] = summary
+    if tool_use_id:
+        payload["tool_use_id"] = tool_use_id
     return payload
 
 
-# -- Typed tool event builders (recognized tools with extracted metadata) -----
+def build_tool_input_delta(
+    call_id: str,
+    tool: str,
+    tool_input: dict | None,
+    delta: dict | str | None,
+) -> dict:
+    """Build a tool_input_delta event payload.
 
-def build_tool_read(call_id: str, file: str, lines: str = "", ts_ms: int = 0) -> dict:
-    return {
-        "call_id": call_id, "tool": "read", "file": file, "lines": lines,
-        "ts_ms": ts_ms,
-    }
-
-
-def build_tool_write(call_id: str, file: str) -> dict:
-    return {"call_id": call_id, "tool": "write", "file": file}
-
-
-def build_tool_edit(call_id: str, file: str) -> dict:
-    return {"call_id": call_id, "tool": "edit", "file": file}
-
-
-def build_tool_bash(call_id: str, command: str) -> dict:
-    return {"call_id": call_id, "tool": "bash", "command": command}
-
-
-def build_tool_grep(call_id: str, pattern: str, ts_ms: int = 0) -> dict:
-    return {
-        "call_id": call_id, "tool": "grep", "pattern": pattern,
-        "ts_ms": ts_ms,
-    }
+    tool_input is the latest aggregate of all received deltas (server-side
+    running parse). delta is the just-arrived chunk; both are kept so consumers
+    can choose between the complete-so-far view and the incremental view.
+    """
+    payload: dict = {"call_id": call_id, "tool": tool}
+    if tool_input is not None:
+        payload["tool_input"] = tool_input
+    if delta is not None:
+        payload["delta"] = delta
+    return payload
 
 
-def build_tool_ls(call_id: str, path: str, ts_ms: int = 0) -> dict:
-    return {
-        "call_id": call_id, "tool": "ls", "path": path,
-        "ts_ms": ts_ms,
-    }
-
-
-def build_tool_completed(
+def build_tool_result(
     call_id: str,
     tool: str,
     result: str | None = None,
+    attachments: list[dict] | None = None,
+    metrics: dict | None = None,
     ts_ms: int = 0,
 ) -> dict:
+    """Build a tool_result event payload.
+
+    The result event closes the lifecycle for one tool invocation. It carries the
+    text result (for koan tools), an optional attachment manifest (extracted from
+    stream content blocks), and optional metrics (for exploration tools).
+    """
     payload: dict = {"call_id": call_id, "tool": tool, "ts_ms": ts_ms}
     if result is not None:
         payload["result"] = result
+    if attachments:
+        payload["attachments"] = attachments
+    if metrics is not None:
+        payload["metrics"] = metrics
     return payload
 
 
@@ -238,75 +254,265 @@ def build_yield_started(suggestions: list[dict]) -> dict:
     return {"suggestions": suggestions}
 
 
-def build_phase_summary_captured(phase: str, summary: str) -> dict:
-    """Build phase_summary_captured event payload.
-
-    Carries only phase + summary. agent_id is passed separately at push_event
-    time for audit; the fold reads only phase and summary (run-scoped state).
-    """
-    return {"phase": phase, "summary": summary}
-
-
 # -- Configuration event builders ---------------------------------------------
 
-def build_probe_completed(results: dict[str, bool]) -> dict:
-    """Build probe_completed payload.
+# build_probe_completed removed in M4: CLI binary probe and installation concept
+# deleted; provider credential availability uses build_provider_status_listed.
+
+def build_provider_status_listed(connections: list[dict]) -> dict:
+    """Build provider_status_listed payload.
+
+    M5: reshaped from per-type {provider, available, ...} to per-connection
+    {connection_id, connection_type, available}.  One entry per configured
+    connection; replaces the old per-provider-type list (brief D3).
 
     Args:
-        results: mapping of installation alias → available (bool).
+        connections: list of {connection_id, connection_type, available} dicts.
     """
-    return {"results": results}
+    return {"connections": connections}
 
 
-def build_installation_created(
-    alias: str, runner_type: str, binary: str, extra_args: list[str],
+def build_model_registry_listed(models: list[dict]) -> dict:
+    """Build model_registry_listed payload.
+
+    Args:
+        models: list of {provider, model, display_name, context_window,
+                thinking_modes, tier_hint} dicts -- one per MODEL_CAPABILITIES entry.
+    """
+    return {"models": models}
+
+
+def build_provider_models_listed(models: list[dict]) -> dict:
+    """Build provider_models_listed payload.
+
+    Args:
+        models: flat cross-provider list of {provider, model, display_name,
+                context_window} dicts (snake_case; consumed by the fold).
+                Replace-all semantics: each event replaces the entire overlay.
+    """
+    return {"models": models}
+
+
+# build_installation_created/modified/removed removed in M4: installation
+# concept deleted; no callers remain after app.py cleanup.
+# build_profile_created/modified/removed/default_profile_changed removed in M5:
+# profile types deleted; projection reshaped to connections/presets (plan-milestone-5.md).
+
+
+def build_connections_listed(connections: list[dict]) -> dict:
+    """Build connections_listed payload.
+
+    Each dict: {id, connection_type, base_url, region}.  Replace-all semantics;
+    one event per startup/refresh reflects the full connections list.
+    """
+    return {"connections": connections}
+
+
+def build_configured_models_listed(configured_models: list[dict]) -> dict:
+    """Build configured_models_listed payload.
+
+    Each dict: {id, connection_id, model_id, resolved_from}.  Replace-all.
+    """
+    return {"configured_models": configured_models}
+
+
+def build_presets_listed(presets: dict) -> dict:
+    """Build presets_listed payload.
+
+    presets is a dict of preset_name -> {slots: {slot_name: {configured_model_id,
+    thinking}}}.  Replace-all semantics.
+    """
+    return {"presets": presets}
+
+
+def build_active_changed(active: str) -> dict:
+    """Build active_changed payload.  active is the active preset name."""
+    return {"active": active}
+
+
+def build_memory_bindings_listed(memory_bindings: dict | None) -> dict:
+    """Build memory_bindings_listed payload.
+
+    memory_bindings is a dict with optional keys embedding, memory_llm, reflect_llm,
+    each containing {configured_model_id, thinking}.  None when not configured.
+    """
+    return {"memory_bindings": memory_bindings}
+
+
+def build_model_capabilities_listed(capabilities: list[dict]) -> dict:
+    """Build model_capabilities_listed payload (M6).
+
+    Each dict in capabilities is a ResolvedCapabilitiesWire-shaped entry keyed by
+    configured_model_id.  Replace-all semantics: each event replaces the entire
+    Settings.model_capabilities list.
+
+    Args:
+        capabilities: list of {configured_model_id, thinking_supported, thinking_modes,
+                      thinking_shape, supports_web_search, supports_tools, context_window,
+                      context_window_variants, supports_prompt_caching, tier_hint,
+                      recognized} dicts.
+    """
+    return {"capabilities": capabilities}
+
+
+def build_steering_queued(content: str, timestamp_ms: int) -> dict:
+    """Build steering_queued event payload.
+
+    timestamp_ms is the enqueue wall-clock time (milliseconds since epoch).
+    Stored on the projection's SteeringMessage so downstream consumers can
+    derive enqueue-to-delivery latency once the matching steering_delivered
+    event arrives.
+    """
+    return {"content": content, "timestamp_ms": timestamp_ms}
+
+
+def build_steering_delivered(
+    count: int,
+    enqueue_ts_ms_list: list[int],
+    delivery_ts_ms: int,
 ) -> dict:
+    """Build steering_delivered event payload.
+
+    enqueue_ts_ms_list contains one entry per drained message, in FIFO drain
+    order (parallel to the messages list returned by drain_for_primary). This
+    preserves per-message latency derivation when N > 1 messages drain together.
+
+    delivery_ts_ms is the wall-clock time the batch was delivered (ms since
+    epoch). Latency for message i: delivery_ts_ms - enqueue_ts_ms_list[i].
+
+    These fields live only on the wire event for log/replay analysis; they are
+    not folded into the live projection state.
+    """
     return {
-        "alias": alias,
-        "runner_type": runner_type,
-        "binary": binary,
-        "extra_args": extra_args,
+        "count": count,
+        "enqueue_ts_ms_list": enqueue_ts_ms_list,
+        "delivery_ts_ms": delivery_ts_ms,
     }
-
-
-def build_installation_modified(
-    alias: str, runner_type: str, binary: str, extra_args: list[str],
-) -> dict:
-    return {
-        "alias": alias,
-        "runner_type": runner_type,
-        "binary": binary,
-        "extra_args": extra_args,
-    }
-
-
-def build_installation_removed(alias: str) -> dict:
-    return {"alias": alias}
-
-
-def build_profile_created(name: str, read_only: bool, tiers: dict) -> dict:
-    return {"name": name, "read_only": read_only, "tiers": tiers}
-
-
-def build_profile_modified(name: str, read_only: bool, tiers: dict) -> dict:
-    return {"name": name, "read_only": read_only, "tiers": tiers}
-
-
-def build_profile_removed(name: str) -> dict:
-    return {"name": name}
-
-
-def build_default_profile_changed(name: str) -> dict:
-    return {"name": name}
-
-
-def build_steering_queued(content: str) -> dict:
-    return {"content": content}
-
-
-def build_steering_delivered(count: int) -> dict:
-    return {"count": count}
 
 
 def build_default_scout_concurrency_changed(value: int) -> dict:
     return {"value": value}
+
+
+def build_workflows_listed(workflows: list[dict]) -> dict:
+    """Build workflows_listed event payload.
+
+    Each entry in workflows is a dict shaped as the WorkflowInfo wire model
+    with snake_case keys: {id, description, phases, initial_phase}. The fold
+    reconstructs WorkflowInfo via WorkflowInfo(**entry).
+
+    Snake_case is used here (not camelCase) because the payload consumer is
+    the Python fold, not the wire -- matching the same convention used by
+    build_profile_created passing read_only straight to Profile(read_only=...).
+    """
+    return {"workflows": workflows}
+
+
+# -- Memory curation event builders -------------------------------------------
+
+def build_memory_curation_started(batch: dict) -> dict:
+    """Payload for memory_curation_started. batch is ActiveCurationBatch.to_wire()."""
+    return {"batch": batch}
+
+
+def build_memory_curation_cleared() -> dict:
+    return {}
+
+
+# -- Memory mutation event builders -------------------------------------------
+
+def build_memory_entry_created(entry: dict) -> dict:
+    """Payload for memory_entry_created. entry is MemoryEntrySummary.to_wire()."""
+    return entry
+
+
+def build_memory_entry_updated(entry: dict) -> dict:
+    """Payload for memory_entry_updated. entry is MemoryEntrySummary.to_wire()."""
+    return entry
+
+
+def build_memory_entry_deleted(seq: str) -> dict:
+    return {"seq": seq}
+
+
+def build_memory_summary_updated(summary: str) -> dict:
+    return {"summary": summary}
+
+
+# -- Reflect event builders ---------------------------------------------------
+
+def build_reflect_started(
+    session_id: str,
+    question: str,
+    model: str,
+    started_at_ms: int,
+    max_iterations: int,
+) -> dict:
+    return {
+        "session_id": session_id,
+        "question": question,
+        "model": model,
+        "started_at_ms": started_at_ms,
+        "max_iterations": max_iterations,
+    }
+
+
+def build_reflect_trace(session_id: str, trace: dict) -> dict:
+    return {"session_id": session_id, "trace": trace}
+
+
+def build_reflect_done(
+    session_id: str,
+    answer: str,
+    citations: list[dict],
+    completed_at_ms: int,
+    iterations: int,
+) -> dict:
+    """Build reflect_done event payload.
+
+    Each citation dict carries id, title, type, and modifiedMs (camelCase on wire).
+    """
+    return {
+        "session_id": session_id,
+        "answer": answer,
+        "citations": citations,
+        "completed_at_ms": completed_at_ms,
+        "iterations": iterations,
+    }
+
+
+def build_reflect_cancelled(session_id: str, completed_at_ms: int) -> dict:
+    return {"session_id": session_id, "completed_at_ms": completed_at_ms}
+
+
+def build_reflect_failed(session_id: str, error: str, completed_at_ms: int) -> dict:
+    return {"session_id": session_id, "error": error, "completed_at_ms": completed_at_ms}
+
+
+def build_reflect_cleared() -> dict:
+    return {}
+
+
+# -- Domain event builders (agent-conversation channel) -----------------------
+
+def build_reflect_delta(delta: str) -> dict:
+    """Build reflect_delta event payload.
+
+    Carries a single text fragment from the pydantic-ai reflection loop's
+    text-output stream. The fold appends it to the in-flight ToolKoanEntry's
+    result.answer for the agent. Correlated by agent_id only -- koan MCP tools
+    block, so at most one in-flight koan entry per agent.
+    """
+    return {"delta": delta}
+
+
+def build_tool_attachments(manifest: list[dict]) -> dict:
+    """Build tool_attachments event payload.
+
+    Carries a koan-side attachment manifest (upload_id, filename, size,
+    content_type, path per AttachmentEntry) emitted by an MCP handler when
+    uploads are committed for the active agent. The fold overwrites the
+    in-flight tool entry's attachments field. Richer than the runner-extracted
+    partial manifest on tool_result content blocks, which lacks koan-side fields.
+    """
+    return {"attachments": manifest}

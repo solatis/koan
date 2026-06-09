@@ -7,7 +7,7 @@ from .events import (
     PhaseEndEvent,
     PhaseStartEvent,
     Projection,
-    RunnerDiagnosticEvent,
+    AgentDiagnosticEvent,
     StepTransitionEvent,
     ThinkingEvent,
     ToolCallEvent,
@@ -29,5 +29,5 @@ __all__ = [
     "ThinkingEvent",
     "ToolCallEvent",
     "ToolResultEvent",
-    "RunnerDiagnosticEvent",
+    "AgentDiagnosticEvent",
 ]

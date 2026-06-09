@@ -1,6 +1,8 @@
 /**
  * CheckboxOption — a multi-select option card for elicitation questions.
  * Square checkbox instead of RadioOption's circle.
+ * When `isCustom` is true and the option is selected, renders a multi-line
+ * <textarea> for free-form answers (the "Other (type your own)" field).
  * Used in: elicitation decision panels (multi-select mode).
  */
 import { useEffect, useRef } from 'react'
@@ -23,7 +25,7 @@ const CheckSvg = () => (
 )
 
 export function CheckboxOption({ label, selected, recommended, isCustom, customText, onCustomTextChange, onClick }: CheckboxOptionProps) {
-  const inputRef = useRef<HTMLInputElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
   useEffect(() => {
     if (isCustom && selected) inputRef.current?.focus()
   }, [isCustom, selected])
@@ -43,10 +45,10 @@ export function CheckboxOption({ label, selected, recommended, isCustom, customT
           <span className="co-label">{label}</span>
         </span>
         {isCustom && selected && (
-          <input
+          <textarea
             ref={inputRef}
             className="co-custom-input"
-            type="text"
+            rows={3}
             placeholder="Type your response..."
             value={customText ?? ''}
             onChange={e => onCustomTextChange?.(e.target.value)}

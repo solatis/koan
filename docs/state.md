@@ -57,7 +57,8 @@ the active workflow type, and the list of story IDs.
 | `plan-review` | Orchestrator reads `landscape.md` and `plan.md`, evaluates quality, reports findings via chat. |
 | `execute` | Orchestrator composes executor instructions and spawns a single executor subagent. |
 
-Phases advance via `koan_set_phase`. Any phase in the active workflow's
+Phases advance via `koan_set_phase`; the active workflow switches via
+`koan_set_workflow` (which also lands at the new workflow's initial phase). Any phase in the active workflow's
 `available_phases` is a valid transition target from any other phase (except
 self-transitions). The suggested transitions in `workflow.suggested_transitions`
 guide the orchestrator's default boundary response but do not restrict the user.
@@ -206,9 +207,22 @@ Orchestrator state tracked in `AppState` (in-memory, not persisted):
 | Field | Type | Purpose |
 |-------|------|---------|
 | `workflow` | `Workflow \| None` | Active workflow; set at run start, drives transition validation and phase guidance |
-| `user_message_buffer` | `list[ChatMessage]` | Buffered user chat messages, drained when `koan_yield` unblocks |
-| `yield_future` | `asyncio.Future \| None` | Non-None while `koan_yield` is blocking, waiting for a user message |
-| `workflow_done` | `bool` | Set to `True` by `koan_set_phase("done")`; causes `koan_complete_step` to return exit signal |
+| `user_message_buffer` | `list[ChatMessage]` | Buffered user chat messages, drained when the loop resumes from a hand-back |
+| `yield_future` | `asyncio.Future \| None` | Non-None while the loop is parked at a phase-boundary hand-back, waiting for a user message |
+| `workflow_done` | `bool` | Set to `True` by `koan_set_phase("done")`; causes the loop to terminate |
+
+Per-agent state in `AgentState`:
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `first_turn_completed` | `bool` | Set by `run_agent_loop` when the first turn reaches the End node; the bootstrap success signal replacing the former first-tool-call handshake |
+| `provider` | `str \| None` | Provider name from `model_spec`; used by the fold to derive cost |
+| `context_window` | `int` | Context window size from `model_spec`; used by the fold to derive context-window percent |
+
+`InteractionState` carries `next_suggestions: list[dict] \| None`, the
+orchestrator-authored hand-back suggestions recorded by `koan_suggest_next`.
+The loop consumes and clears them at the hand-back, falling back to the
+deterministic `build_phase_suggestions` when none are present.
 
 `ChatMessage` carries `content: str` and `timestamp_ms: int`. Messages are
 appended by `POST /api/chat` and removed atomically by `drain_user_messages()`.

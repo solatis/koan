@@ -1,6 +1,9 @@
 .tcr {
   display: flex;
   align-items: center;
+  /* flex-wrap allows .tcr-attachments (flex-basis: 100%) to flow to a new
+     line without affecting the inline layout of the existing row items. */
+  flex-wrap: wrap;
   gap: 10px;
   background: var(--bg-tool-row);
   border-radius: var(--radius-md);
@@ -83,4 +86,13 @@
 @keyframes tcr-pulse {
   0%, 100% { opacity: 0.3; }
   50%      { opacity: 1; }
+}
+
+/* ---- Attachment chips (read-only, from tool_completed manifest) ---- */
+.tcr-attachments {
+  /* flex-basis: 100% forces this div onto a new line within the flex-wrap row. */
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
 }

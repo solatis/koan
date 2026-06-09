@@ -26,6 +26,9 @@ def main() -> None:
                                  parents=[_common])
     run_parser.add_argument("--port", type=int, default=None,
                             help="Port to listen on (default: random free port)")
+    run_parser.add_argument("--address", type=str, default="127.0.0.1",
+                            help="Address to bind to (default: 127.0.0.1; "
+                                 "use 0.0.0.0 to bind all IPv4 interfaces)")
     run_parser.add_argument("--log-level", type=str, default="INFO")
     run_parser.add_argument("--no-open", action="store_true",
                             help="Don't open browser on startup")
@@ -35,6 +38,19 @@ def main() -> None:
                             help="Pre-fill the task description")
     run_parser.add_argument("--yolo", action="store_true",
                             help="Skip all agent permission prompts (dangerous)")
+    run_parser.add_argument("--directed-phases", nargs="+", default=None,
+                            help="Fixed phase sequence for eval runs (e.g. intake plan-spec done)")
+    # default=None rather than default=[] because argparse action="append" mutates
+    # the default in place; a shared [] would accumulate across parse calls.
+    run_parser.add_argument(
+        "--add-dir",
+        action="append",
+        default=None,
+        dest="additional_dirs",
+        metavar="PATH",
+        help="Additional working directory accessible to all spawned agents "
+             "(repeatable: --add-dir A --add-dir B). Each PATH must exist and be a directory.",
+    )
 
     # koan memory
     mem_parser = subs.add_parser("memory", help="Manage project memory",
@@ -76,8 +92,23 @@ def main() -> None:
     mem_rag.add_argument("--json", action="store_true", dest="json_output",
                          help="Machine-readable JSON output")
 
-    mem_subs.add_parser("reflect",
-                        help="Reflect on memory entries (not yet implemented)")
+    mem_reflect = mem_subs.add_parser(
+        "reflect",
+        help="Reflect on memory entries via an LLM tool-calling loop",
+    )
+    mem_reflect.add_argument("question", help="The broad question to answer")
+    mem_reflect.add_argument(
+        "--context", default=None,
+        help="Optional caller context (e.g. subsystem being worked on)",
+    )
+    mem_reflect.add_argument(
+        "--show-trace", action="store_true", dest="show_trace",
+        help="Stream each search call to stderr during the loop",
+    )
+    mem_reflect.add_argument(
+        "--json", action="store_true", dest="json_output",
+        help="Machine-readable JSON output",
+    )
 
     args = parser.parse_args()
 
