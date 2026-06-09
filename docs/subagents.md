@@ -257,10 +257,10 @@ phase-aware -- tools vary by the current phase (`ROLE_PERMISSIONS` joined with
 the `_ORCHESTRATOR_SCOUT_PHASES`, `_ORCHESTRATOR_BASH_PHASES`, and
 `_ORCHESTRATOR_STORY_TOOLS` frozensets). Executor and scout use static sets:
 
-| Role         | koan tools                  | notes                                           |
-| ------------ | --------------------------- | ----------------------------------------------- |
-| **scout**    | (none beyond universal read) | No user interaction. No nested scouts. No write.|
-| **executor** | `koan_ask_question`         | Must modify the actual codebase; bash + write unrestricted |
+| Role         | koan tools                   | notes                                                      |
+| ------------ | ---------------------------- | ---------------------------------------------------------- |
+| **scout**    | (none beyond universal read) | No user interaction. No nested scouts. No write.           |
+| **executor** | `koan_ask_question`          | Must modify the actual codebase; bash + write unrestricted |
 
 #### READ_TOOLS (always composed for all roles)
 
@@ -319,35 +319,26 @@ requires updating that map.
 Model tiers use a profile-based system. Each profile defines three tiers
 (`strong`, `standard`, `cheap`), and an active profile is selected at runtime.
 Provider credentials come from environment variables; no binary or installation
-config is stored. Config is persisted to `~/.koan/config.json`:
+config is stored. Config is persisted to `~/.koan/config.yaml`:
 
-```json
-{
-  "profiles": [
-    {
-      "name": "balanced",
-      "tiers": {
-        "strong": {
-          "provider": "google",
-          "model": "gemini-2.5-pro-preview-06-05",
-          "thinking": "disabled"
-        },
-        "standard": {
-          "provider": "google",
-          "model": "gemini-2.5-pro-preview-06-05",
-          "thinking": "disabled"
-        },
-        "cheap": {
-          "provider": "google",
-          "model": "gemini-2.5-flash-preview-05-20",
-          "thinking": "disabled"
-        }
-      }
-    }
-  ],
-  "activeProfile": "balanced",
-  "scoutConcurrency": 8
-}
+```yaml
+profiles:
+  - name: balanced
+    tiers:
+      strong:
+        provider: google
+        model: gemini-2.5-pro-preview-06-05
+        thinking: disabled
+      standard:
+        provider: google
+        model: gemini-2.5-pro-preview-06-05
+        thinking: disabled
+      cheap:
+        provider: google
+        model: gemini-2.5-flash-preview-05-20
+        thinking: disabled
+active_profile: balanced
+scout_concurrency: 8
 ```
 
 Roles map to tiers (`strong`/`standard`/`cheap`), and tier-to-model bindings
@@ -357,7 +348,7 @@ once without touching role definitions. Provider availability is checked via
 
 ### Scout concurrency
 
-`scoutConcurrency` (default: 8) controls how many scout subagents run in
+`scout_concurrency` (default: 8) controls how many scout subagents run in
 parallel. Increase for faster scouting on machines with ample resources;
 decrease to reduce peak memory pressure.
 

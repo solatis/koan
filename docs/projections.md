@@ -52,19 +52,19 @@ held in memory for the duration of a workflow run.
 
 ### Lifecycle (10)
 
-| Event | Payload | `agent_id` |
-|-------|---------|-----------|
-| `run_started` | `{profile, scout_concurrency}` | `None` |
-| `workflow_selected` | `{workflow}` | `None` |
-| `phase_started` | `{phase}` | `None` |
-| `agent_spawned` | `{agent_id, role, label, model, is_primary, started_at_ms}` | set |
-| `agent_spawn_failed` | `{role, error_code, message, details?}` | `None` |
-| `agent_step_advanced` | `{step, step_name, usage?, total_steps?}` | set |
-| `agent_exited` | `{exit_code, error?, usage?}` | set |
-| `workflow_completed` | `{success, summary?, error?}` | `None` |
-| `scout_queued` | `{scout_id, label, model?}` | `None` |
-| `yield_started` | `{suggestions: [{id, label, command}, ...]}` | set (primary) |
-| `yield_cleared` | `{}` | `None` |
+| Event                 | Payload                                                     | `agent_id`    |
+| --------------------- | ----------------------------------------------------------- | ------------- |
+| `run_started`         | `{profile, scout_concurrency}`                              | `None`        |
+| `workflow_selected`   | `{workflow}`                                                | `None`        |
+| `phase_started`       | `{phase}`                                                   | `None`        |
+| `agent_spawned`       | `{agent_id, role, label, model, is_primary, started_at_ms}` | set           |
+| `agent_spawn_failed`  | `{role, error_code, message, details?}`                     | `None`        |
+| `agent_step_advanced` | `{step, step_name, usage?, total_steps?}`                   | set           |
+| `agent_exited`        | `{exit_code, error?, usage?}`                               | set           |
+| `workflow_completed`  | `{success, summary?, error?}`                               | `None`        |
+| `scout_queued`        | `{scout_id, label, model?}`                                 | `None`        |
+| `yield_started`       | `{suggestions: [{id, label, command}, ...]}`                | set (primary) |
+| `yield_cleared`       | `{}`                                                        | `None`        |
 
 `yield_started` is emitted by `run_agent_loop` when the turn-outcome resolver
 parks a primary agent at a phase-boundary hand-back. The fold appends a
@@ -84,19 +84,19 @@ not carry `is_primary` — the fold looks up the agent in `run.agents`.
 
 ### Activity (11)
 
-| Event | Payload | `agent_id` |
-|-------|---------|-----------|
-| `tool_called` | `{call_id, tool, args, summary}` | set |
-| `tool_read` | `{call_id, file, lines}` | set |
-| `tool_write` | `{call_id, file}` | set |
-| `tool_edit` | `{call_id, file}` | set |
-| `tool_bash` | `{call_id, command}` | set |
-| `tool_grep` | `{call_id, pattern}` | set |
-| `tool_ls` | `{call_id, path}` | set |
-| `tool_completed` | `{call_id, tool, result?}` | set |
-| `thinking` | `{delta}` | set |
-| `stream_delta` | `{delta}` | set |
-| `stream_cleared` | `{}` | set |
+| Event            | Payload                          | `agent_id` |
+| ---------------- | -------------------------------- | ---------- |
+| `tool_called`    | `{call_id, tool, args, summary}` | set        |
+| `tool_read`      | `{call_id, file, lines}`         | set        |
+| `tool_write`     | `{call_id, file}`                | set        |
+| `tool_edit`      | `{call_id, file}`                | set        |
+| `tool_bash`      | `{call_id, command}`             | set        |
+| `tool_grep`      | `{call_id, pattern}`             | set        |
+| `tool_ls`        | `{call_id, path}`                | set        |
+| `tool_completed` | `{call_id, tool, result?}`       | set        |
+| `thinking`       | `{delta}`                        | set        |
+| `stream_delta`   | `{delta}`                        | set        |
+| `stream_cleared` | `{}`                             | set        |
 
 `tool_called` and the typed tool events (`tool_read`, `tool_bash`, etc.) are
 mutually exclusive for any given tool invocation. The in-process event fan-out
@@ -113,10 +113,10 @@ on the next transition (tool call, step advance, or stream delta).
 
 ### Focus (2)
 
-| Event | Payload | `agent_id` |
-|-------|---------|-----------|
-| `questions_asked` | `{token, questions}` | set |
-| `questions_answered` | `{token, cancelled, answers?}` | set |
+| Event                | Payload                        | `agent_id` |
+| -------------------- | ------------------------------ | ---------- |
+| `questions_asked`    | `{token, questions}`           | set        |
+| `questions_answered` | `{token, cancelled, answers?}` | set        |
 
 These events transition `run.focus` between variants of the `Focus` union.
 Cancellation (`cancelled: true`) occurs when the agent exits while the
@@ -124,8 +124,8 @@ interaction is pending — there is no separate cancellation event type.
 
 ### User messages (1)
 
-| Event | Payload | `agent_id` |
-|-------|---------|-----------|
+| Event          | Payload                   | `agent_id`          |
+| -------------- | ------------------------- | ------------------- |
 | `user_message` | `{content, timestamp_ms}` | set (primary agent) |
 
 Emitted by `POST /api/chat` when the user sends a message during a run. The
@@ -134,11 +134,11 @@ making user messages appear inline in the activity feed alongside agent output.
 
 ### Resources (3)
 
-| Event | Payload | `agent_id` |
-|-------|---------|-----------|
-| `artifact_created` | `{path, size, modified_at}` | if known |
-| `artifact_modified` | `{path, size, modified_at}` | if known |
-| `artifact_removed` | `{path}` | if known |
+| Event               | Payload                     | `agent_id` |
+| ------------------- | --------------------------- | ---------- |
+| `artifact_created`  | `{path, size, modified_at}` | if known   |
+| `artifact_modified` | `{path, size, modified_at}` | if known   |
+| `artifact_removed`  | `{path}`                    | if known   |
 
 `agent_id` is the primary agent at scan time (approximate — scanning happens at
 phase boundaries, not on individual file writes). `build_artifact_diff()` in
@@ -147,15 +147,15 @@ for each difference.
 
 ### Settings (9)
 
-| Event | Payload |
-|-------|---------|
-| `provider_status_listed` | `{providers: [{provider, available, env_keys}]}` |
-| `model_registry_listed` | `{models: [{provider, model, display_name, context_window, thinking_modes, tier_hint}]}` |
-| `profile_created` | `{name, read_only, tiers}` |
-| `profile_modified` | `{name, read_only, tiers}` |
-| `profile_removed` | `{name}` |
-| `default_profile_changed` | `{name}` |
-| `default_scout_concurrency_changed` | `{value}` |
+| Event                               | Payload                                                                                  |
+| ----------------------------------- | ---------------------------------------------------------------------------------------- |
+| `provider_status_listed`            | `{providers: [{provider, available, env_keys}]}`                                         |
+| `model_registry_listed`             | `{models: [{provider, model, display_name, context_window, thinking_modes, tier_hint}]}` |
+| `profile_created`                   | `{name, read_only, tiers}`                                                               |
+| `profile_modified`                  | `{name, read_only, tiers}`                                                               |
+| `profile_removed`                   | `{name}`                                                                                 |
+| `default_profile_changed`           | `{name}`                                                                                 |
+| `default_scout_concurrency_changed` | `{value}`                                                                                |
 
 `provider_status_listed` is emitted at server start via `_push_initial_config_events`.
 The fold sets `settings.provider_status` from this event. `model_registry_listed`
@@ -268,8 +268,8 @@ class Settings(KoanBaseModel):
     default_scout_concurrency: int = 8
 ```
 
-`Settings` represents what is *available* -- it persists across runs to
-`~/.koan/config.json` and describes the user's configured environment.
+`Settings` represents what is _available_ -- it persists across runs to
+`~/.koan/config.yaml` and describes the user's configured environment.
 Provider availability is env-key presence only; no binary probe is performed.
 
 ### Run configuration
@@ -282,13 +282,13 @@ class RunConfig(KoanBaseModel):
 
 `RunConfig` is frozen at `run_started` and never modified during the run.
 
-| | Settings | RunConfig |
-|--|---------|----------|
-| Lifetime | Persists across runs | Single run |
-| Mutation | Settings overlay, any time | Frozen at run start |
-| `default_profile` | Pre-selected for next run | — |
-| `profile` | — | Which profile this run uses |
-| `scout_concurrency` | Default for next run | What this run uses |
+|                     | Settings                   | RunConfig                   |
+| ------------------- | -------------------------- | --------------------------- |
+| Lifetime            | Persists across runs       | Single run                  |
+| Mutation            | Settings overlay, any time | Frozen at run start         |
+| `default_profile`   | Pre-selected for next run  | —                           |
+| `profile`           | —                          | Which profile this run uses |
+| `scout_concurrency` | Default for next run       | What this run uses          |
 
 ### Agent
 
@@ -535,70 +535,70 @@ primary-agent filtering in the fold — every agent has its own conversation and
 the fold appends unconditionally. The frontend chooses which conversation to
 render via `focus`.
 
-| Event | Action |
-|-------|--------|
-| `thinking` | Flush `pending_text` → TextEntry. Append delta to `pending_thinking`. Set `is_thinking = True`. |
-| `stream_delta` | Flush `pending_thinking` → ThinkingEntry. Append delta to `pending_text`. Set `is_thinking = False`. |
-| `tool_read`, `tool_write`, `tool_edit`, `tool_bash`, `tool_grep`, `tool_ls` | Flush both pending fields. Append typed entry with `in_flight=True`. Set `is_thinking = False`. Update `agent.last_tool`. |
-| `tool_called` (non-koan) | Flush both pending fields. Append `ToolGenericEntry` with `in_flight=True`. Set `is_thinking = False`. Update `agent.last_tool`. |
-| `tool_called` (tool name starts with `koan_`) | Skip. koan MCP tools are infrastructure; their effects arrive via `agent_step_advanced`, `questions_asked`, etc. |
-| `tool_completed` | Find entry by `call_id`, set `in_flight = False`. |
-| `agent_step_advanced` | Flush both pending fields. Append `StepEntry` if `step >= 1`. Set `is_thinking = False`. **Also** update `agent.step`, `agent.step_name`; accumulate `usage` into `conversation.input_tokens`, `conversation.output_tokens`. |
-| `stream_cleared` | Flush both pending fields. Set `is_thinking = False`. |
+| Event                                                                       | Action                                                                                                                                                                                                                       |
+| --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `thinking`                                                                  | Flush `pending_text` → TextEntry. Append delta to `pending_thinking`. Set `is_thinking = True`.                                                                                                                              |
+| `stream_delta`                                                              | Flush `pending_thinking` → ThinkingEntry. Append delta to `pending_text`. Set `is_thinking = False`.                                                                                                                         |
+| `tool_read`, `tool_write`, `tool_edit`, `tool_bash`, `tool_grep`, `tool_ls` | Flush both pending fields. Append typed entry with `in_flight=True`. Set `is_thinking = False`. Update `agent.last_tool`.                                                                                                    |
+| `tool_called` (non-koan)                                                    | Flush both pending fields. Append `ToolGenericEntry` with `in_flight=True`. Set `is_thinking = False`. Update `agent.last_tool`.                                                                                             |
+| `tool_called` (tool name starts with `koan_`)                               | Skip. koan MCP tools are infrastructure; their effects arrive via `agent_step_advanced`, `questions_asked`, etc.                                                                                                             |
+| `tool_completed`                                                            | Find entry by `call_id`, set `in_flight = False`.                                                                                                                                                                            |
+| `agent_step_advanced`                                                       | Flush both pending fields. Append `StepEntry` if `step >= 1`. Set `is_thinking = False`. **Also** update `agent.step`, `agent.step_name`; accumulate `usage` into `conversation.input_tokens`, `conversation.output_tokens`. |
+| `stream_cleared`                                                            | Flush both pending fields. Set `is_thinking = False`.                                                                                                                                                                        |
 
 ### Agent lifecycle
 
-| Event | Action |
-|-------|--------|
-| `scout_queued` | Add `Agent(agent_id=scout_id, status="queued", ...)` to `run.agents`. |
-| `agent_spawned` | Look up `agent_id` in `run.agents`. If found (queued scout): set `status="running"`, `started_at_ms`. If not found (primary agent): create `Agent(is_primary=True, status="running", ...)`, add to `run.agents`. |
-| `agent_exited` | Set `status="done"` or `"failed"`. Set `error` if present. Accumulate final `usage` into conversation tokens. |
-| `agent_spawn_failed` | Append `Notification` to `projection.notifications`. |
+| Event                | Action                                                                                                                                                                                                           |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scout_queued`       | Add `Agent(agent_id=scout_id, status="queued", ...)` to `run.agents`.                                                                                                                                            |
+| `agent_spawned`      | Look up `agent_id` in `run.agents`. If found (queued scout): set `status="running"`, `started_at_ms`. If not found (primary agent): create `Agent(is_primary=True, status="running", ...)`, add to `run.agents`. |
+| `agent_exited`       | Set `status="done"` or `"failed"`. Set `error` if present. Accumulate final `usage` into conversation tokens.                                                                                                    |
+| `agent_spawn_failed` | Append `Notification` to `projection.notifications`.                                                                                                                                                             |
 
 Agents are never removed from `run.agents`. Status distinguishes active from
 completed agents.
 
 ### Focus transitions
 
-| Event | Action |
-|-------|--------|
-| `agent_spawned` (primary) | `run.focus = ConversationFocus(agent_id=...)` |
-| `questions_asked` | `run.focus = QuestionFocus(agent_id=..., token=..., questions=...)` |
-| `questions_answered` | `run.focus = ConversationFocus(agent_id=primary_id)` |
-| `user_message` | `primary_agent.conversation.entries += UserMessageEntry(...)` |
+| Event                     | Action                                                              |
+| ------------------------- | ------------------------------------------------------------------- |
+| `agent_spawned` (primary) | `run.focus = ConversationFocus(agent_id=...)`                       |
+| `questions_asked`         | `run.focus = QuestionFocus(agent_id=..., token=..., questions=...)` |
+| `questions_answered`      | `run.focus = ConversationFocus(agent_id=primary_id)`                |
+| `user_message`            | `primary_agent.conversation.entries += UserMessageEntry(...)`       |
 
 ### Run lifecycle
 
-| Event | Action |
-|-------|--------|
-| `run_started` | `projection.run = Run(config=RunConfig(...))` |
-| `workflow_selected` | `run.workflow = payload["workflow"]` |
-| `phase_started` | `run.phase = phase`. Clear `run.active_yield = None`. |
-| `workflow_completed` | `run.completion = CompletionInfo(...)`. Clear `run.active_yield = None`. |
-| `yield_started` | Parse `suggestions` from payload → `Suggestion` list. Append `YieldEntry(suggestions=...)` to primary agent's conversation (flushing pending fields first). Set `run.active_yield = ActiveYield(suggestions=...)`. |
-| `yield_cleared` | Set `run.active_yield = None`. |
+| Event                | Action                                                                                                                                                                                                             |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `run_started`        | `projection.run = Run(config=RunConfig(...))`                                                                                                                                                                      |
+| `workflow_selected`  | `run.workflow = payload["workflow"]`                                                                                                                                                                               |
+| `phase_started`      | `run.phase = phase`. Clear `run.active_yield = None`.                                                                                                                                                              |
+| `workflow_completed` | `run.completion = CompletionInfo(...)`. Clear `run.active_yield = None`.                                                                                                                                           |
+| `yield_started`      | Parse `suggestions` from payload → `Suggestion` list. Append `YieldEntry(suggestions=...)` to primary agent's conversation (flushing pending fields first). Set `run.active_yield = ActiveYield(suggestions=...)`. |
+| `yield_cleared`      | Set `run.active_yield = None`.                                                                                                                                                                                     |
 
 ### Settings
 
-| Event | Action |
-|-------|--------|
-| `probe_completed` | For each alias in `payload.results`, set `settings.installations[alias].available`. |
-| `installation_created` | Add `Installation(...)` to `settings.installations[alias]`. |
-| `installation_modified` | Update `settings.installations[alias]`. |
-| `installation_removed` | Remove `settings.installations[alias]`. |
-| `profile_created` | Add `Profile(...)` to `settings.profiles[name]`. |
-| `profile_modified` | Update `settings.profiles[name]`. |
-| `profile_removed` | Remove `settings.profiles[name]`. |
-| `default_profile_changed` | Set `settings.default_profile`. |
-| `default_scout_concurrency_changed` | Set `settings.default_scout_concurrency`. |
+| Event                               | Action                                                                              |
+| ----------------------------------- | ----------------------------------------------------------------------------------- |
+| `probe_completed`                   | For each alias in `payload.results`, set `settings.installations[alias].available`. |
+| `installation_created`              | Add `Installation(...)` to `settings.installations[alias]`.                         |
+| `installation_modified`             | Update `settings.installations[alias]`.                                             |
+| `installation_removed`              | Remove `settings.installations[alias]`.                                             |
+| `profile_created`                   | Add `Profile(...)` to `settings.profiles[name]`.                                    |
+| `profile_modified`                  | Update `settings.profiles[name]`.                                                   |
+| `profile_removed`                   | Remove `settings.profiles[name]`.                                                   |
+| `default_profile_changed`           | Set `settings.default_profile`.                                                     |
+| `default_scout_concurrency_changed` | Set `settings.default_scout_concurrency`.                                           |
 
 ### Artifacts
 
-| Event | Action |
-|-------|--------|
-| `artifact_created` | Add to `run.artifacts[path]`. |
+| Event               | Action                        |
+| ------------------- | ----------------------------- |
+| `artifact_created`  | Add to `run.artifacts[path]`. |
 | `artifact_modified` | Update `run.artifacts[path]`. |
-| `artifact_removed` | Remove `run.artifacts[path]`. |
+| `artifact_removed`  | Remove `run.artifacts[path]`. |
 
 ### Fold safety
 
@@ -714,10 +714,10 @@ def build_artifact_diff(old, new_artifacts) -> list[tuple[str, dict]]
 
 `GET /events?since=N`
 
-| `since` value | Server response |
-|---|---|
-| matches `store.version` | Subscribe and stream live patches (no snapshot needed) |
-| anything else (including 0, reconnect, server restart) | Send snapshot, then stream live patches |
+| `since` value                                          | Server response                                        |
+| ------------------------------------------------------ | ------------------------------------------------------ |
+| matches `store.version`                                | Subscribe and stream live patches (no snapshot needed) |
+| anything else (including 0, reconnect, server restart) | Send snapshot, then stream live patches                |
 
 The `since` parameter is a version check, not a replay cursor. If the client's
 `lastVersion` matches the server's current version, there is nothing to catch
@@ -788,27 +788,27 @@ distinguish between them.
 // Module-level projection dict for fast-json-patch operations.
 // fast-json-patch operates on plain JS objects, not Zustand state.
 // On snapshot, replaced wholesale. On patch, applyPatch returns a new object.
-let storeState: Record<string, unknown> = {}
+let storeState: Record<string, unknown> = {};
 
-es.addEventListener('snapshot', (e) => {
-  const { version, state } = JSON.parse(e.data)
-  storeState = state
-  set({ lastVersion: version, ...state })    // spread camelCase fields directly into Zustand store
-})
+es.addEventListener("snapshot", (e) => {
+  const { version, state } = JSON.parse(e.data);
+  storeState = state;
+  set({ lastVersion: version, ...state }); // spread camelCase fields directly into Zustand store
+});
 
-es.addEventListener('patch', (e) => {
+es.addEventListener("patch", (e) => {
   try {
-    const { version, patch } = JSON.parse(e.data)
+    const { version, patch } = JSON.parse(e.data);
     // mutate:false returns a new object rather than modifying storeState in-place.
-    storeState = applyPatch(storeState, patch, false, false).newDocument
-    set({ lastVersion: version, ...storeState })
+    storeState = applyPatch(storeState, patch, false, false).newDocument;
+    set({ lastVersion: version, ...storeState });
   } catch (err) {
-    console.error('Patch failed, reconnecting:', err)
-    es.close()
-    set({ lastVersion: 0 })        // force snapshot on next connect
-    setTimeout(() => connect(set), 1000)
+    console.error("Patch failed, reconnecting:", err);
+    es.close();
+    set({ lastVersion: 0 }); // force snapshot on next connect
+    setTimeout(() => connect(set), 1000);
   }
-})
+});
 ```
 
 Two handlers. No `applyEvent`. No fold logic. No field renaming. No special
@@ -819,22 +819,26 @@ directly.
 
 ```typescript
 // Agent monitor: filter run.agents by status
-const agents = useStore(s => s.run?.agents ?? {})
-const running = Object.values(agents).filter(a => !a.isPrimary && a.status === 'running')
-const queued  = Object.values(agents).filter(a => a.status === 'queued')
+const agents = useStore((s) => s.run?.agents ?? {});
+const running = Object.values(agents).filter(
+  (a) => !a.isPrimary && a.status === "running",
+);
+const queued = Object.values(agents).filter((a) => a.status === "queued");
 
 // Activity feed: conversation of the focused agent
-const focusId = useStore(s => s.run?.focus?.agentId)
-const conversation = useStore(s =>
-  focusId ? s.run?.agents?.[focusId]?.conversation : undefined
-)
+const focusId = useStore((s) => s.run?.focus?.agentId);
+const conversation = useStore((s) =>
+  focusId ? s.run?.agents?.[focusId]?.conversation : undefined,
+);
 
 // Settings: read directly from store
-const installations = useStore(s => s.settings?.installations ?? {})
-const defaultProfile = useStore(s => s.settings?.defaultProfile ?? 'balanced')
+const installations = useStore((s) => s.settings?.installations ?? {});
+const defaultProfile = useStore(
+  (s) => s.settings?.defaultProfile ?? "balanced",
+);
 
 // Run: workflow type
-const workflow = useStore(s => s.run?.workflow)
+const workflow = useStore((s) => s.run?.workflow);
 ```
 
 ---
@@ -844,13 +848,13 @@ const workflow = useStore(s => s.run?.workflow)
 Koan has two independent fold systems sharing the same structural pattern (pure
 fold function, append-only log) but serving different purposes:
 
-| Aspect | Audit fold (`koan/audit/fold.py`) | Projection fold (`koan/projections.py`) |
-|---|---|---|
-| Input | Per-subagent audit events (`events.jsonl`) | Workflow-level projection events |
-| Output | Per-subagent `Projection` written to `state.json` | Frontend-visible `Projection` (in-memory) |
-| Scope | One subagent's execution | Entire workflow run |
-| Persistence | Written to disk on each event | In-memory only |
-| Consumers | Debugging, post-mortem analysis | Browser frontend via SSE |
+| Aspect      | Audit fold (`koan/audit/fold.py`)                 | Projection fold (`koan/projections.py`)   |
+| ----------- | ------------------------------------------------- | ----------------------------------------- |
+| Input       | Per-subagent audit events (`events.jsonl`)        | Workflow-level projection events          |
+| Output      | Per-subagent `Projection` written to `state.json` | Frontend-visible `Projection` (in-memory) |
+| Scope       | One subagent's execution                          | Entire workflow run                       |
+| Persistence | Written to disk on each event                     | In-memory only                            |
+| Consumers   | Debugging, post-mortem analysis                   | Browser frontend via SSE                  |
 
 ---
 
@@ -873,7 +877,7 @@ Emitting snake_case from the server requires a `mapProjectionToStore()` function
 in the frontend that renames every field, plus a `projectionState` shadow object
 for patch application (patches must apply to the pre-renamed dict, not the
 renamed store). Every new projection field needs a rename entry in that mapping.
-The mapping layer *is* business logic and it contradicts the "frontend has zero
+The mapping layer _is_ business logic and it contradicts the "frontend has zero
 business logic" principle. Emitting camelCase eliminates the layer: patches
 apply directly to the Zustand store, snapshots spread directly into it, and
 adding a field to `Projection` requires zero frontend changes.
@@ -902,7 +906,7 @@ artifacts — all named entities are dicts.
 
 "Buffer" describes the mechanism — accumulate, flush, reset. "Pending" describes
 the content: incomplete LLM output that will become a conversation entry on the
-next transition. Names should describe what a field *is*, not how it works.
+next transition. Names should describe what a field _is_, not how it works.
 "Pending" also communicates the temporal relationship correctly: this text is
 not yet complete and will be committed to `entries` on the next event.
 
@@ -915,8 +919,8 @@ always available as backdrop without a separate lookup.
 
 ### Why Settings vs RunConfig
 
-Settings describe what's *available* (persistent, mutable via the settings
-overlay at any time). RunConfig describes what *this run uses* (frozen at
+Settings describe what's _available_ (persistent, mutable via the settings
+overlay at any time). RunConfig describes what _this run uses_ (frozen at
 `run_started`, never modified). This separation prevents a settings change
 mid-run from affecting the in-flight run. It also makes the landing page
 straightforward: it reads `settings.defaultProfile` and
