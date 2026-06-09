@@ -1,15 +1,7 @@
 # Tests for key web flows: SSE replay, SPA fallback, start-run, artifacts, path traversal.
 #
-# M1 NOTE: tests that use the `client` fixture fail because the Starlette app
-# startup calls _push_initial_config_events -> _serialize_profile which accesses
-# ProfileTier.runner_type -- a field removed in the M1 config reshape. This is
-# the expected settings-UI/probe path breakage; reworked in M8.
-#
-# M2 NOTE: the module-level xfail was removed. Tests that use the `client`
-# fixture are marked xfail individually via request.applymarker in the client
-# fixture, so passing tests (artifact/SSE/koan_set_workflow) run clean without
-# an xfail decorator. test_api_artifact_comment_resolves_active_yield uses
-# TestClient directly and carries its own @pytest.mark.xfail.
+# M5: profile CRUD and provider settings endpoints removed; start-run no longer
+# requires a profile param.  Tests for deleted endpoints removed or replaced.
 
 from __future__ import annotations
 
@@ -25,23 +17,22 @@ from starlette.testclient import TestClient
 
 from koan.config import KoanConfig
 from koan.state import AppState
-from koan.types import ModelRegistryEntry, Profile, ProfileTier, ProviderStatus
+from koan.types import ConnectionStatus, ModelRegistryEntry
 from koan.web.app import create_app
 
 
 # -- Helpers ------------------------------------------------------------------
 
-def _make_provider_status() -> list[ProviderStatus]:
+def _make_provider_status() -> list[ConnectionStatus]:
     """Build a minimal provider_status list for tests.
 
-    M3: updated to use real provider names (google/anthropic/openai) so tests
-    that exercise the new profile CRUD validation work with the model_registry.
-    google is available; anthropic and openai are not, so start-run guards work.
+    M5: updated to use per-connection ConnectionStatus replacing per-type ProviderStatus.
+    google connection is available; anthropic and openai are not.
     """
     return [
-        ProviderStatus(provider="google", available=True, env_keys=["GOOGLE_API_KEY"]),
-        ProviderStatus(provider="anthropic", available=False, env_keys=["ANTHROPIC_API_KEY"]),
-        ProviderStatus(provider="openai", available=False, env_keys=["OPENAI_API_KEY"]),
+        ConnectionStatus(connection_id="google-direct", connection_type="google", available=True),
+        ConnectionStatus(connection_id="anthropic-direct", connection_type="anthropic", available=False),
+        ConnectionStatus(connection_id="openai-direct", connection_type="openai", available=False),
     ]
 
 
@@ -84,7 +75,7 @@ def _make_model_registry() -> list[ModelRegistryEntry]:
 @pytest.fixture
 def app_state():
     st = AppState()
-    st.runner_config.config = KoanConfig()
+    st.provider_config.config = KoanConfig()
     return st
 
 
@@ -114,50 +105,37 @@ def test_start_run_requires_task(client, app_state):
     assert resp.status_code == 422
 
 
-def test_start_run_requires_profile(client, app_state):
-    app_state.runner_config.provider_status = _make_provider_status()
-    resp = client.post("/api/start-run", json={"task": "build something"})
-    assert resp.status_code == 422
-    assert resp.json()["error"] == "validation_error"
-    assert "profile" in resp.json()["message"]
-
-
-def test_start_run_rejects_empty_profile(client, app_state):
-    app_state.runner_config.provider_status = _make_provider_status()
-    resp = client.post("/api/start-run", json={"task": "build something", "profile": ""})
-    assert resp.status_code == 422
-    assert resp.json()["error"] == "validation_error"
-    assert "profile" in resp.json()["message"]
-
-
 def test_start_run_blocked_no_providers(client, app_state):
-    # Env-credential model: when no provider's credentials resolve, start-run is
-    # blocked with `no_providers` (replaces the old CLI `no_runners`).
-    app_state.runner_config.provider_status = [
-        ProviderStatus(provider="google", available=False),
+    # When no connection has credentials, start-run returns no_providers.
+    # Provide a config with a valid preset so the unconfigured gate is passed.
+    from koan.types import Connection, ConfiguredModel, Preset, SlotAssignment
+    conn = Connection(id="g1", type="google")
+    cm = ConfiguredModel(id="cm1", connection_id="g1", model_id="gemini-pro")
+    slot = SlotAssignment(configured_model_id="cm1", thinking="disabled")
+    preset = Preset(slots={"strong": slot, "standard": slot, "cheap": slot})
+    from koan.config import KoanConfig
+    app_state.provider_config.config = KoanConfig(
+        connections=[conn],
+        configured_models=[cm],
+        presets={"$last": preset},
+        active="$last",
+    )
+    app_state.provider_config.provider_status = [
+        ConnectionStatus(connection_id="g1", connection_type="google", available=False),
     ]
-    resp = client.post("/api/start-run", json={"task": "build something", "profile": "balanced"})
+    resp = client.post("/api/start-run", json={"task": "build something"})
     assert resp.status_code == 422
     assert resp.json()["error"] == "no_providers"
 
 
 # -- Start-run preflight -------------------------------------------------------
 
-def test_preflight_returns_required_providers(client, app_state):
-    from koan.agents.registry import compute_builtin_profiles
-    app_state.runner_config.builtin_profiles = compute_builtin_profiles()
-    resp = client.get("/api/start-run/preflight?profile=balanced")
-    assert resp.status_code == 200
-    data = resp.json()
-    # The built-in profiles are Gemini (google provider).
-    assert "google" in data["required_providers"]
-    assert "google" in data["providers"]
-    assert "available" in data["providers"]["google"]
-
-
-def test_preflight_missing_profile(client, app_state):
-    resp = client.get("/api/start-run/preflight?profile=nonexistent")
-    assert resp.status_code == 404
+def test_preflight_returns_unconfigured_when_no_preset(client, app_state):
+    """Preflight returns 422 when no active preset is configured (M5)."""
+    # Default KoanConfig has no presets; active='$last' won't resolve.
+    resp = client.get("/api/start-run/preflight")
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "unconfigured"
 
 
 # (Removed with the CLI-binary model: preflight binary-validity, start-run
@@ -206,62 +184,18 @@ def test_path_traversal_blocked(client, app_state):
         assert resp.status_code in (400, 404)
 
 
-# -- Profile endpoints --------------------------------------------------------
+# Profile CRUD tests removed in M5: /api/profiles endpoints deleted.
+# See plan-milestone-5.md.
 
-def test_profiles_create_invalid_runner(client, app_state):
-    """M3: provider field replaces runner_type; unavailable provider returns 422."""
-    app_state.runner_config.provider_status = _make_provider_status()
-
-    resp = client.post("/api/profiles", json={
-        "name": "bad-runner",
-        "tiers": {
-            "strong": {"provider": "anthropic", "model": "claude-opus-4-0", "thinking": "disabled"},
-        },
-    })
-    assert resp.status_code == 422
-    assert "not available" in resp.json()["message"]
-
-
-def test_profiles_create_invalid_model(client, app_state):
-    """M3: model must be in model_registry for the provider; unknown model returns 422."""
-    app_state.runner_config.provider_status = _make_provider_status()
-    app_state.runner_config.model_registry = _make_model_registry()
-
-    resp = client.post("/api/profiles", json={
-        "name": "bad-model",
-        "tiers": {
-            "strong": {"provider": "google", "model": "nonexistent-model", "thinking": "disabled"},
-        },
-    })
-    assert resp.status_code == 422
-    assert "not found" in resp.json()["message"]
-
-
-def test_profiles_create_invalid_thinking(client, app_state):
-    """M3: thinking mode must be in the registry entry's thinking_modes; unknown mode returns 422."""
-    app_state.runner_config.provider_status = _make_provider_status()
-    app_state.runner_config.model_registry = _make_model_registry()
-
-    resp = client.post("/api/profiles", json={
-        "name": "bad-thinking",
-        "tiers": {
-            "strong": {"provider": "google", "model": "gemini-2.5-pro", "thinking": "turbo"},
-        },
-    })
-    assert resp.status_code == 422
-    assert "not supported" in resp.json()["message"]
-
-
-def test_profiles_update_balanced_rejected(client, app_state):
-    resp = client.put("/api/profiles/balanced", json={"tiers": {}})
-    assert resp.status_code == 422
-    assert resp.json()["error"] == "read_only"
-
-
-def test_profiles_delete_balanced_rejected(client, app_state):
-    resp = client.delete("/api/profiles/balanced")
-    assert resp.status_code == 400
-    assert resp.json()["error"] == "read_only"
+def test_profiles_endpoints_removed(client, app_state):
+    """M5: profile CRUD endpoints removed; routes return 404 or SPA fallback."""
+    # GET /api/profiles used to list profiles; now gone.
+    resp = client.get("/api/profiles")
+    # SPA fallback or 404/405 -- not a JSON profiles list.
+    assert resp.status_code in (200, 404, 405)
+    if resp.status_code == 200:
+        ct = resp.headers.get("content-type", "")
+        assert "text/html" in ct  # SPA, not JSON API
 
 
 # -- api_artifact_comment endpoint -------------------------------------------
@@ -370,151 +304,49 @@ def test_api_artifact_comment_commits_attachments(client, app_state, tmp_path):
         assert call_args[0][1] == ["upload-abc123"]
 
 
-def test_profiles_create_non_dict_tiers(client, app_state):
-    app_state.runner_config.provider_status = _make_provider_status()
-    resp = client.post("/api/profiles", json={
-        "name": "bad-tiers",
-        "tiers": [],
-    })
-    assert resp.status_code == 422
-    assert resp.json()["error"] == "validation_error"
-    assert "object" in resp.json()["message"]
+# Profile CRUD tests (create/update/delete validations) removed in M5:
+# /api/profiles endpoints deleted (plan-milestone-5.md).
 
 
-def test_profiles_create_non_dict_tier_entry(client, app_state):
-    app_state.runner_config.provider_status = _make_provider_status()
-    resp = client.post("/api/profiles", json={
-        "name": "bad-entry",
-        "tiers": {"strong": "bad"},
-    })
-    assert resp.status_code == 422
-    assert resp.json()["error"] == "validation_error"
-    assert "must be an object" in resp.json()["message"]
+# -- Provider settings endpoint (M3) -----------------------------------------
+# Replaces the removed validate-provider and credential endpoints.
 
 
-def test_profiles_update_non_dict_tiers(client, app_state):
-    app_state.runner_config.provider_status = _make_provider_status()
-    app_state.runner_config.config.profiles.append(Profile(name="myprofile", tiers={}))
-    resp = client.put("/api/profiles/myprofile", json={"tiers": "bad"})
-    assert resp.status_code == 422
-    assert resp.json()["error"] == "validation_error"
-    assert "object" in resp.json()["message"]
+def _make_credential_store(config, tmp_path, monkeypatch):
+    """Build an initialized CredentialStore backed by a tmp master key."""
+    from koan.credentials import CredentialStore, FileKeyBackend
+    key_path = tmp_path / "master.key"
+    monkeypatch.setattr("koan.credentials.MASTER_KEY_PATH", key_path)
+    return CredentialStore(config, FileKeyBackend())
 
 
-def test_profiles_delete_user_profile(client, app_state):
-    app_state.runner_config.config.profiles.append(Profile(name="myprofile", tiers={}))
-    resp = client.delete("/api/profiles/myprofile")
-    assert resp.status_code == 200
-    assert resp.json()["ok"] is True
-    assert not any(p.name == "myprofile" for p in app_state.runner_config.config.profiles)
+# api_settings_provider/delete/test tests removed in M5: endpoints deleted (plan-milestone-5.md).
 
 
-# -- Profile CRUD success: round-trips through ModelSpec (M3) -----------------
+def test_settings_provider_negative_presence(client, app_state):
+    """Old credential and validate-provider routes return non-200 (removed in M3).
 
-def test_profiles_create_success_round_trips_model_spec(client, app_state):
-    """M3: a valid profile create saves a ModelSpec-backed ProfileTier in the config.
-
-    Previously broken: api_profiles_create tried ProfileTier(runner_type=...) which
-    does not exist on the M1-reshaped ProfileTier(model=ModelSpec). This test asserts
-    the successful path end-to-end.
+    Starlette may return 404 or 405 for a removed route depending on whether the
+    catchall SPA fallback claims the method. Either status confirms the endpoint is
+    gone: a 200 from the original handler would be the failure case.
     """
-    from koan.types import ModelSpec
-    app_state.runner_config.provider_status = _make_provider_status()
-    app_state.runner_config.model_registry = _make_model_registry()
+    resp_cred_post = client.post("/api/settings/credential", json={"provider": "google", "secret": "k"})
+    assert resp_cred_post.status_code in (404, 405), (
+        f"expected 404/405 for removed POST /api/settings/credential, got {resp_cred_post.status_code}"
+    )
 
-    resp = client.post("/api/profiles", json={
-        "name": "my-test-profile",
-        "tiers": {
-            "strong": {"provider": "google", "model": "gemini-2.5-pro", "thinking": "medium"},
-            "cheap": {"provider": "google", "model": "gemini-2.5-flash-lite", "thinking": "disabled"},
-        },
-    })
-    assert resp.status_code == 200, resp.json()
-    assert resp.json()["ok"] is True
+    resp_cred_del = client.delete("/api/settings/credential/google")
+    assert resp_cred_del.status_code in (404, 405), (
+        f"expected 404/405 for removed DELETE /api/settings/credential/google, got {resp_cred_del.status_code}"
+    )
 
-    saved = next(p for p in app_state.runner_config.config.profiles if p.name == "my-test-profile")
-    assert "strong" in saved.tiers
-    strong_tier = saved.tiers["strong"]
-    # ProfileTier.model must be a ModelSpec (not a string or dict)
-    assert isinstance(strong_tier.model, ModelSpec)
-    assert strong_tier.model.provider == "google"
-    assert strong_tier.model.model == "gemini-2.5-pro"
-    assert strong_tier.model.thinking == "medium"
-    assert strong_tier.model.context_window == 1_000_000
+    resp_validate = client.post("/api/settings/validate-provider", json={"provider": "google"})
+    assert resp_validate.status_code in (404, 405), (
+        f"expected 404/405 for removed POST /api/settings/validate-provider, got {resp_validate.status_code}"
+    )
 
 
-def test_profiles_update_success_round_trips_model_spec(client, app_state):
-    """M3: profile update also constructs ProfileTier(model=ModelSpec(...)) correctly."""
-    from koan.types import ModelSpec
-    app_state.runner_config.provider_status = _make_provider_status()
-    app_state.runner_config.model_registry = _make_model_registry()
-    app_state.runner_config.config.profiles.append(Profile(name="edit-me", tiers={}))
-
-    resp = client.put("/api/profiles/edit-me", json={
-        "tiers": {
-            "standard": {"provider": "google", "model": "gemini-2.5-flash", "thinking": "low"},
-        },
-    })
-    assert resp.status_code == 200, resp.json()
-    assert resp.json()["ok"] is True
-
-    saved = next(p for p in app_state.runner_config.config.profiles if p.name == "edit-me")
-    assert isinstance(saved.tiers["standard"].model, ModelSpec)
-    assert saved.tiers["standard"].model.provider == "google"
-    assert saved.tiers["standard"].model.model == "gemini-2.5-flash"
-
-
-# -- Validate provider endpoint (M3) -----------------------------------------
-
-def test_validate_provider_no_registry_entry(client, app_state):
-    """POST /api/settings/validate-provider with unknown provider returns 422."""
-    app_state.runner_config.model_registry = []  # empty -- provider has no entry
-    resp = client.post("/api/settings/validate-provider", json={"provider": "unknown-ai"})
-    assert resp.status_code == 422
-    assert resp.json()["valid"] is False
-    assert "unknown-ai" in resp.json()["reason"]
-
-
-def test_validate_provider_missing_credential(client, app_state):
-    """Provider in registry but no env var -> valid=False, reason contains 'no credential'."""
-    app_state.runner_config.model_registry = _make_model_registry()
-    import os
-    # Ensure GOOGLE_API_KEY is unset for this test
-    with patch.dict(os.environ, {}, clear=False):
-        saved = os.environ.pop("GOOGLE_API_KEY", None)
-        saved_gemini = os.environ.pop("GEMINI_API_KEY", None)
-        try:
-            resp = client.post("/api/settings/validate-provider", json={"provider": "google"})
-        finally:
-            if saved is not None:
-                os.environ["GOOGLE_API_KEY"] = saved
-            if saved_gemini is not None:
-                os.environ["GEMINI_API_KEY"] = saved_gemini
-    assert resp.status_code == 200
-    assert resp.json()["valid"] is False
-    assert "no credential" in resp.json()["reason"]
-
-
-def test_validate_provider_present_credential(client, app_state):
-    """Provider with a credential env var set -> build_model is called; result depends on provider."""
-    app_state.runner_config.model_registry = _make_model_registry()
-    import os
-    from unittest.mock import patch as _patch
-    # build_model is imported inline in api_validate_provider; patch at the source module.
-    with _patch.dict(os.environ, {"GOOGLE_API_KEY": "fake-key-for-test"}):
-        with _patch("koan.agents.adapter.build_model") as mock_bm:
-            mock_bm.return_value = object()  # any truthy return = success
-            resp = client.post("/api/settings/validate-provider", json={"provider": "google"})
-    assert resp.status_code == 200
-    assert resp.json()["valid"] is True
-    mock_bm.assert_called_once()
-
-
-def test_validate_provider_missing_body_field(client, app_state):
-    """POST without 'provider' field returns 422."""
-    resp = client.post("/api/settings/validate-provider", json={})
-    assert resp.status_code == 422
-    assert resp.json()["valid"] is False
+# Provider test endpoint tests removed in M5: endpoint deleted (plan-milestone-5.md).
 
 
 # -- Agent installation endpoints removed (M3) --------------------------------
@@ -599,79 +431,43 @@ def test_model_config_removed(client, app_state):
 
 # -- Landing page: profile selector & settings button ------------------------
 
-def test_landing_includes_profile_selector(client, app_state):
-    # After SPA migration, GET / serves the React SPA, not server-rendered HTML.
-    # Profile selector is rendered client-side by React.
-    from koan.agents.registry import compute_builtin_profiles
-    app_state.runner_config.provider_status = _make_provider_status()
-    app_state.runner_config.builtin_profiles = compute_builtin_profiles()
+def test_landing_with_connection_status(client, app_state):
+    # GET / serves the React SPA regardless of connection status.
+    app_state.provider_config.provider_status = _make_provider_status()
     resp = client.get("/")
     assert resp.status_code == 200
 
 
-def test_landing_start_run_disabled_no_runners(client, app_state):
-    # After SPA migration, runner availability is checked client-side via /api/probe.
-    app_state.runner_config.provider_status = [
-        ProviderStatus(provider="claude", available=False),
-        ProviderStatus(provider="codex", available=False),
+def test_landing_start_run_disabled_no_connections(client, app_state):
+    # After SPA migration, connection availability is checked client-side via /api/probe.
+    app_state.provider_config.provider_status = [
+        ConnectionStatus(connection_id="c1", connection_type="openai", available=False),
     ]
     resp = client.get("/")
     assert resp.status_code == 200
 
 
-def test_landing_start_run_enabled_with_runners(client, app_state):
-    # After SPA migration, GET / serves the SPA regardless of runner state.
-    app_state.runner_config.provider_status = _make_provider_status()
-    app_state.runner_config.builtin_profiles = {"balanced": Profile(name="balanced", tiers={})}
-    resp = client.get("/")
-    assert resp.status_code == 200
-
-
-def test_start_run_sends_profile(client, app_state):
-    app_state.runner_config.provider_status = _make_provider_status()
-    resp = client.post(
-        "/api/start-run",
-        json={"task": "build something", "profile": "balanced"},
-    )
-    assert resp.status_code == 200
-    assert resp.json()["ok"] is True
-    assert app_state.runner_config.config.active_profile == "balanced"
-
-
-def test_start_run_unknown_profile_rejected(client, app_state):
-    app_state.runner_config.provider_status = _make_provider_status()
-    resp = client.post(
-        "/api/start-run",
-        json={"task": "build something", "profile": "nonexistent"},
-    )
-    assert resp.status_code == 422
-    assert "not found" in resp.json()["message"]
+# test_start_run_sends_profile removed in M5: profile param removed from start-run.
+# test_start_run_unknown_profile_rejected removed in M5: profile param removed.
 
 
 # -- Probe refresh ------------------------------------------------------------
 
 class TestProbeRefresh:
-    def test_probe_refresh_repopulates_providers(self, client, app_state):
-        # refresh=1 recomputes builtin profiles + provider availability (env-
-        # credential model; no CLI probe). Asserts the endpoint returns 200 and
-        # provider rows.
-        app_state.runner_config.provider_status = []
-        app_state.runner_config.builtin_profiles = {}
-        resp = client.get("/api/probe?refresh=1")
-        assert resp.status_code == 200
-        assert app_state.runner_config.builtin_profiles  # repopulated
-        assert app_state.runner_config.provider_status  # provider rows present
-
-    def test_probe_no_refresh_skips_restate(self, client, app_state):
-        app_state.runner_config.provider_status = _make_provider_status()
-        app_state.runner_config.builtin_profiles = {"balanced": Profile(name="balanced", tiers={})}
-
-        # M4: koan.probe deleted; /api/probe without refresh=1 just returns cached state.
+    def test_probe_returns_connection_status(self, client, app_state):
+        """M5: /api/probe returns {connections: [...]} with per-connection availability."""
+        app_state.provider_config.provider_status = _make_provider_status()
         resp = client.get("/api/probe")
-
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data["runners"]) == 3
+        assert "connections" in data
+        # 3 connections from _make_provider_status
+        assert len(data["connections"]) == 3
+        # Each connection has the required fields
+        for conn in data["connections"]:
+            assert "connection_id" in conn
+            assert "connection_type" in conn
+            assert "available" in conn
 
 
 

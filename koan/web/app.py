@@ -30,21 +30,25 @@ from ..run_state import atomic_write_json
 from ..lib.task_json import current_workflow, make_initial_workflow_history
 from ..projections import _primary_agent_id
 from ..state import ChatMessage
-from ..types import ModelSpec, Profile, ProfileTier, ProviderStatus, ModelRegistryEntry
+from ..types import ModelSpec, ConnectionStatus, ModelRegistryEntry, ProviderModel
 from .interactions import activate_next_interaction
 from ..events import (
     build_questions_answered,
     # build_probe_completed removed in M4: CLI binary probe deleted.
     # build_installation_created/modified/removed removed in M4: installation concept deleted.
+    # build_profile_*/build_default_profile_changed removed in M5: profile types deleted.
     build_provider_status_listed,
     build_model_registry_listed,
+    build_provider_models_listed,
     build_run_cleared,
     build_run_started,
     build_steering_queued,
-    build_profile_created,
-    build_profile_modified,
-    build_profile_removed,
-    build_default_profile_changed,
+    build_connections_listed,
+    build_configured_models_listed,
+    build_presets_listed,
+    build_active_changed,
+    build_memory_bindings_listed,
+    build_model_capabilities_listed,
     build_default_scout_concurrency_changed,
     build_workflows_listed,
     build_reflect_started,
@@ -111,56 +115,8 @@ def _render_age(iso_str: str) -> str:
     return f"{diff_s // 86400}d ago"
 
 
-# -- Profile validation -------------------------------------------------------
-
-def _validate_profile_tiers(
-    tiers_raw: dict,
-    provider_status: list[ProviderStatus],
-    model_registry: list[ModelRegistryEntry],
-) -> str | None:
-    """Validate profile tier dicts against the provider-credential model and model registry.
-
-    M3: tiers now carry {provider, model, thinking} (not runner_type). Validates:
-      - tier value is a dict
-      - provider is in provider_status and available
-      - (provider, model) exists in model_registry
-      - thinking is in that entry's thinking_modes (or "disabled" which is always valid)
-
-    Returns an error string on the first failure, else None.
-    """
-    by_provider: dict[str, ProviderStatus] = {ps.provider: ps for ps in provider_status}
-    # Index registry by (provider, model) -> thinking_modes for O(1) lookup.
-    registry_thinking: dict[tuple[str, str], list[str]] = {
-        (e.provider, e.model): e.thinking_modes for e in model_registry
-    }
-    registry_pairs: frozenset[tuple[str, str]] = frozenset(registry_thinking)
-
-    for tier_name, tier_val in tiers_raw.items():
-        if not isinstance(tier_val, dict):
-            return f"tier '{tier_name}' must be an object"
-
-        provider = tier_val.get("provider", "")
-        if not isinstance(provider, str) or not provider:
-            return f"tier '{tier_name}' requires a non-empty 'provider'"
-
-        model = tier_val.get("model", "")
-        if not isinstance(model, str) or not model:
-            return f"tier '{tier_name}' requires a non-empty 'model'"
-
-        ps = by_provider.get(provider)
-        if ps is None or not ps.available:
-            return f"provider '{provider}' is not available"
-
-        if (provider, model) not in registry_pairs:
-            return f"model '{model}' for provider '{provider}' not found in registry"
-
-        thinking = tier_val.get("thinking", "disabled")
-        modes = registry_thinking.get((provider, model), [])
-        # "disabled" is always valid; non-disabled modes must be in the registry's list.
-        if thinking != "disabled" and thinking not in modes:
-            return f"thinking mode '{thinking}' not supported for {provider}/{model}"
-
-    return None
+# _validate_profile_tiers removed in M5: profile CRUD endpoints deleted.
+# _serialize_profile and _resolve_profile removed in M5: profile types deleted.
 
 
 # -- Route handlers -----------------------------------------------------------
@@ -230,48 +186,50 @@ def _sse_event(event_type: str, payload: Any) -> str:
     return f"event: {event_type}\ndata: {data}\n\n"
 
 
-def _resolve_profile(st: AppState, name: str) -> Profile | None:
-    """Look up a profile by name, including built-in profiles."""
-    builtin = st.runner_config.builtin_profiles.get(name)
-    if builtin is not None:
-        return builtin
-    for p in st.runner_config.config.profiles:
-        if p.name == name:
-            return p
-    return None
-
-
 async def api_start_run_preflight(r: Request) -> Response:
-    """Return required runner types and available installations for a profile."""
-    profile_name = r.query_params.get("profile", "")
-    if not profile_name:
+    """Return required connections and availability for the active preset.
+
+    M5: 'profile' query param removed; uses the active preset from config.
+    Returns which connections the active preset's slots reference and whether
+    each has a credential stored.  Returns 422 when no preset is configured.
+    """
+    st = _app_state(r)
+    cfg = st.provider_config.config
+    active_preset_name = cfg.active
+    preset = cfg.presets.get(active_preset_name)
+    if preset is None:
         return JSONResponse(
-            {"error": "validation_error", "message": "profile query parameter is required"},
+            {"error": "unconfigured",
+             "message": f"No active preset found (active='{active_preset_name}'). "
+                        "Configure a preset in ~/.koan/config.yaml."},
             status_code=422,
         )
 
-    st = _app_state(r)
-    profile = _resolve_profile(st, profile_name)
-    if profile is None:
-        return JSONResponse(
-            {"error": "not_found", "message": f"Profile '{profile_name}' not found"},
-            status_code=404,
-        )
-
-    # Derive required providers from the profile's tier ModelSpecs and report
-    # whether each one's credentials resolve (env-credential model -- the old
-    # CLI installations/binary-validity preflight is retired).
-    from ..agents.adapter import provider_available
-    cfg_keys = {pa.provider: pa.env_keys for pa in st.runner_config.config.provider_auth}
-    required: set[str] = {tier.model.provider for tier in profile.tiers.values()}
-    providers = {
-        prov: {"available": provider_available(prov, cfg_keys.get(prov))}
-        for prov in sorted(required)
-    }
+    # Resolve required connection ids from the preset's slot assignments.
+    cm_by_id = {cm.id: cm for cm in cfg.configured_models}
+    conn_by_id = {c.id: c for c in cfg.connections}
+    store = st.provider_config.credential_store
+    required_conns: dict[str, dict] = {}
+    for slot_name, slot in preset.slots.items():
+        cm = cm_by_id.get(slot.configured_model_id)
+        if cm is None:
+            continue
+        conn = conn_by_id.get(cm.connection_id)
+        if conn is None:
+            continue
+        from ..types import KEYLESS_PROVIDER_TYPES
+        if conn.type in KEYLESS_PROVIDER_TYPES:
+            available = bool(conn.base_url)
+        else:
+            available = bool(store and store.has(conn.id))
+        required_conns[conn.id] = {
+            "connection_id": conn.id,
+            "connection_type": conn.type,
+            "available": available,
+        }
     return JSONResponse({
-        "profile": profile_name,
-        "required_providers": sorted(required),
-        "providers": providers,
+        "active_preset": active_preset_name,
+        "connections": list(required_conns.values()),
     })
 
 
@@ -290,13 +248,6 @@ async def api_start_run(r: Request) -> Response:
     if not isinstance(task, str) or not task.strip():
         return JSONResponse(
             {"error": "validation_error", "message": "task is required"},
-            status_code=422,
-        )
-
-    profile = body.get("profile", "")
-    if not isinstance(profile, str) or not profile.strip():
-        return JSONResponse(
-            {"error": "validation_error", "message": "profile is required"},
             status_code=422,
         )
 
@@ -327,67 +278,92 @@ async def api_start_run(r: Request) -> Response:
             status_code=409,
         )
 
+    # M5: resolve active preset from config (no 'profile' body param required).
+    cfg = st.provider_config.config
+    active_preset_name = cfg.active
+    preset = cfg.presets.get(active_preset_name)
+    if preset is None:
+        return JSONResponse(
+            {"error": "unconfigured",
+             "message": f"No active preset found (active='{active_preset_name}'). "
+                        "Configure a preset in ~/.koan/config.yaml."},
+            status_code=422,
+        )
+
     # Log before any control-flow branches that can return early so the line
     # always appears when a valid start-run request is received.
     log.info(
-        "start-run received: task_len=%d workflow=%s profile=%s attachments=%d",
-        len(task), body.get("workflow", "plan"), profile, len(attachments),
+        "start-run received: task_len=%d workflow=%s active_preset=%s attachments=%d",
+        len(task), body.get("workflow", "plan"), active_preset_name, len(attachments),
     )
     log.debug("start-run task payload: %s", truncate_payload(task))
 
-    # Block when no provider credentials are available (env-credential model).
-    if not any(ps.available for ps in st.runner_config.provider_status):
+    # Block when no connection has a credential available.
+    # provider_status is now list[ConnectionStatus]; available means credential stored.
+    if not any(cs.available for cs in st.provider_config.provider_status):
         return JSONResponse(
             {"error": "no_providers",
-             "message": "No provider credentials found. Set a provider API key "
-                        "(e.g. GOOGLE_API_KEY) in the environment."},
+             "message": "No provider credentials found. Add connections and credentials "
+                        "in ~/.koan/config.yaml."},
             status_code=422,
         )
 
-    # Validate profile exists
-    profile_obj = _resolve_profile(st, profile)
-    if profile_obj is None:
-        return JSONResponse(
-            {"error": "validation_error", "message": f"profile '{profile}' not found"},
-            status_code=422,
-        )
-
-    # Validate the profile's providers have credentials. The per-role ModelSpec
-    # is resolved at spawn time (resolve_model_spec); here we just fail fast if a
-    # required provider is unconfigured. (The CLI installation-selection dance is
-    # gone -- the in-process path resolves a ModelSpec, not a binary.)
-    from ..agents.adapter import provider_available
-    cfg_keys = {pa.provider: pa.env_keys for pa in st.runner_config.config.provider_auth}
-    for tier in profile_obj.tiers.values():
-        prov = tier.model.provider
-        if not provider_available(prov, cfg_keys.get(prov)):
+    # Validate each slot's connection has a credential.
+    cm_by_id = {cm.id: cm for cm in cfg.configured_models}
+    conn_by_id = {c.id: c for c in cfg.connections}
+    store = st.provider_config.credential_store
+    from ..types import KEYLESS_PROVIDER_TYPES
+    for slot_name, slot in preset.slots.items():
+        cm = cm_by_id.get(slot.configured_model_id)
+        if cm is None:
             return JSONResponse(
-                {"error": "missing_credentials",
-                 "message": f"Provider '{prov}' (required by profile '{profile}') "
-                            f"has no credentials set in the environment.",
-                 "provider": prov},
+                {"error": "unconfigured",
+                 "message": f"Slot '{slot_name}': configured model "
+                            f"'{slot.configured_model_id}' not found."},
                 status_code=422,
             )
+        conn = conn_by_id.get(cm.connection_id)
+        if conn is None:
+            return JSONResponse(
+                {"error": "unconfigured",
+                 "message": f"Slot '{slot_name}': connection '{cm.connection_id}' not found."},
+                status_code=422,
+            )
+        if conn.type in KEYLESS_PROVIDER_TYPES:
+            if not conn.base_url:
+                return JSONResponse(
+                    {"error": "missing_credentials",
+                     "message": f"Connection '{conn.id}' (type '{conn.type}') "
+                                f"requires a base_url (keyless provider)."},
+                    status_code=422,
+                )
+        else:
+            if not (store and store.has(conn.id)):
+                return JSONResponse(
+                    {"error": "missing_credentials",
+                     "message": f"Connection '{conn.id}' (type '{conn.type}') "
+                                f"has no stored credential.",
+                     "connection_id": conn.id},
+                    status_code=422,
+                )
 
-    # Persist profile
-    st.runner_config.config.active_profile = profile
-    from ..config import save_koan_config
-    await save_koan_config(st.runner_config.config)
-    st.projection_store.push_event("default_profile_changed", build_default_profile_changed(profile))
-
-    # Apply optional overrides
+    # Apply optional scout_concurrency override.
     scout_concurrency = body.get("scout_concurrency")
     if isinstance(scout_concurrency, int) and scout_concurrency > 0:
-        st.runner_config.config.scout_concurrency = scout_concurrency
-        await save_koan_config(st.runner_config.config)
-        st.projection_store.push_event("default_scout_concurrency_changed", build_default_scout_concurrency_changed(scout_concurrency))
+        cfg.scout_concurrency = scout_concurrency
+        from ..config import save_koan_config
+        await save_koan_config(cfg)
+        st.projection_store.push_event(
+            "default_scout_concurrency_changed",
+            build_default_scout_concurrency_changed(scout_concurrency),
+        )
 
-    # Emit run_started to create the Run object in the projection
-    _installations_map = dict(st.run.run_installations)
-    _scout_concurrency = st.runner_config.config.scout_concurrency
+    # Emit run_started to create the Run object in the projection.
+    # M5: carries active_preset instead of profile name (plan-milestone-5.md).
+    _scout_concurrency = cfg.scout_concurrency
     st.projection_store.push_event(
         "run_started",
-        build_run_started(profile, _installations_map, _scout_concurrency),
+        build_run_started(active_preset_name, _scout_concurrency),
     )
 
     # Reset run-scoped state
@@ -975,7 +951,14 @@ async def api_memory_reflect_start(r: Request) -> Response:
             status_code=409,
         )
 
-    model = os.environ.get("KOAN_REFLECT_MODEL") or "gemini-flash-latest"
+    # M5: resolve model name from reflect_llm memory binding (replaces env var).
+    # Graceful fallback to a safe default when binding is not configured.
+    try:
+        from ..memory.bindings import resolve_memory_binding as _rmb
+        _reflect_rmm = _rmb("reflect_llm")
+        model = _reflect_rmm.model_id
+    except Exception:
+        model = os.environ.get("KOAN_REFLECT_MODEL") or "gemini-flash-latest"
     session_id = uuid.uuid4().hex
     started_at_ms = int(time.time() * 1000)
     max_iterations = 10  # matches reflect.MAX_ITERATIONS
@@ -1120,16 +1103,16 @@ def _serialize_model_info(m) -> dict:
     }
 
 
-def _serialize_provider_status(ps: ProviderStatus) -> dict:
-    """Serialize ProviderStatus to a wire dict for API and event payloads.
+def _serialize_connection_status(cs: ConnectionStatus) -> dict:
+    """Serialize ConnectionStatus to a wire dict for the provider_status_listed event.
 
-    Replaces _serialize_probe_result from M2; carrier is env-credential
-    availability only (no binary path, version, or model list).
+    M5: replaces _serialize_provider_status (per-type) with per-connection status.
+    connection_id and connection_type are non-secret; available is credential-derived.
     """
     return {
-        "provider": ps.provider,
-        "available": ps.available,
-        "env_keys": ps.env_keys,
+        "connection_id": cs.connection_id,
+        "connection_type": cs.connection_type,
+        "available": cs.available,
     }
 
 
@@ -1145,118 +1128,242 @@ def _serialize_model_registry_entry(e: ModelRegistryEntry) -> dict:
     }
 
 
-def _serialize_profile(p: Profile, read_only: bool) -> dict:
-    # ProfileTier is {model: ModelSpec} since the M1 reshape; emit the
-    # provider/model/thinking from the ModelSpec (the old runner_type field
-    # is gone with the CLI-binary model).
+def _serialize_provider_model(pm: ProviderModel) -> dict:
+    """Serialize ProviderModel to a wire dict for the provider_models_listed event."""
     return {
-        "name": p.name,
-        "read_only": read_only,
-        "tiers": {
-            tier_name: {
-                "provider": pt.model.provider,
-                "model": pt.model.model,
-                "thinking": pt.model.thinking,
-            }
-            for tier_name, pt in p.tiers.items()
-        },
+        "provider": pm.provider,
+        "model": pm.model,
+        "display_name": pm.display_name,
+        "context_window": pm.context_window,
     }
 
 
-def _provider_probe_results(st: AppState) -> list[ProviderStatus]:
-    """Derive provider availability from env credentials (env-credential model).
+def _push_provider_models(st: "AppState") -> None:
+    """Push the current provider_models overlay as a provider_models_listed event.
 
-    Returns a ProviderStatus per known provider; available is True when all
-    required credential env vars are present. env_keys carries the var NAMES
-    checked (never values). Replaces the legacy CLI-binary probe from M2.
+    Flattens st.provider_config.provider_models (dict provider -> list) into a
+    single cross-provider list and pushes a replace-all provider_models_listed
+    event to the projection store. Called on save, Test, and eager-refresh.
     """
-    from ..agents.adapter import DEFAULT_PROVIDER_ENV_KEYS, provider_available
-    cfg_keys: dict[str, list[str]] = {pa.provider: pa.env_keys for pa in st.runner_config.config.provider_auth}
-    providers = sorted(set(DEFAULT_PROVIDER_ENV_KEYS) | set(cfg_keys))
-    return [
-        ProviderStatus(
-            provider=p,
-            available=provider_available(p, cfg_keys.get(p)),
-            env_keys=cfg_keys.get(p) or DEFAULT_PROVIDER_ENV_KEYS.get(p, []),
-        )
-        for p in providers
+    flat = [
+        _serialize_provider_model(pm)
+        for models in st.provider_config.provider_models.values()
+        for pm in models
     ]
+    st.projection_store.push_event(
+        "provider_models_listed",
+        build_provider_models_listed(flat),
+    )
+
+
+def _provider_probe_results(st: AppState) -> list[ConnectionStatus]:
+    """Build per-connection availability from the connections-based config (M5).
+
+    M5: replaces the old per-type ProviderStatus synthesis with per-connection
+    ConnectionStatus.  One ConnectionStatus per Connection in config.connections.
+    For keyless types (KEYLESS_PROVIDER_TYPES, e.g. lmstudio), available is True
+    when the connection has a non-empty base_url.  For keyed types, available is
+    True when a credential is stored for the connection id.
+    """
+    from ..types import KEYLESS_PROVIDER_TYPES
+    store = st.provider_config.credential_store
+    cfg = st.provider_config.config
+    connections = cfg.connections if cfg else []
+
+    result: list[ConnectionStatus] = []
+    for conn in connections:
+        if conn.type in KEYLESS_PROVIDER_TYPES:
+            available = bool(conn.base_url)
+        else:
+            available = bool(store and store.has(conn.id))
+        result.append(ConnectionStatus(
+            connection_id=conn.id,
+            connection_type=conn.type,
+            available=available,
+        ))
+    return result
 
 
 async def _refresh_probe_state(st: AppState, broadcast: bool = True) -> None:
-    """Refresh provider availability, built-in profiles, and model registry.
+    """Refresh per-connection availability and model registry.
 
-    The CLI-binary probe is retired. Provider availability comes from credential
-    env vars (_provider_probe_results); built-in profiles are static Gemini specs
-    (compute_builtin_profiles takes no argument from M2); model_registry is built
-    from MODEL_CAPABILITIES + genai-prices bundled snapshot. No config mutation.
+    M5: builtin_profiles removed; provider_status is now per-connection
+    ConnectionStatus.  model_registry is built from MODEL_CAPABILITIES +
+    genai-prices bundled snapshot.  No config mutation.
     """
-    from ..agents.registry import compute_builtin_profiles
     from ..agents.model_catalog import build_model_registry
 
-    st.runner_config.builtin_profiles = compute_builtin_profiles()
-    st.runner_config.provider_status = _provider_probe_results(st)
-    st.runner_config.model_registry = build_model_registry()
+    st.provider_config.provider_status = _provider_probe_results(st)
+    st.provider_config.model_registry = build_model_registry()
 
     if broadcast:
-        # M4: probe_completed event removed; installation fold cases deleted.
-        # Push provider_status and model_registry via the M2 channel.
+        # Push per-connection availability and model registry.
         st.projection_store.push_event(
             "provider_status_listed",
-            build_provider_status_listed([_serialize_provider_status(ps) for ps in st.runner_config.provider_status]),
+            build_provider_status_listed([_serialize_connection_status(cs) for cs in st.provider_config.provider_status]),
         )
         st.projection_store.push_event(
             "model_registry_listed",
-            build_model_registry_listed([_serialize_model_registry_entry(e) for e in st.runner_config.model_registry]),
+            build_model_registry_listed([_serialize_model_registry_entry(e) for e in st.provider_config.model_registry]),
         )
-        for bp in st.runner_config.builtin_profiles.values():
-            tiers = _serialize_profile(bp, True)["tiers"]
-            st.projection_store.push_event(
-                "profile_modified",
-                build_profile_modified(bp.name, True, tiers),
+
+
+def _serialize_connection(conn) -> dict:
+    """Serialize a Connection to a wire dict for connections_listed."""
+    return {
+        "id": conn.id,
+        "connection_type": conn.type,
+        "base_url": conn.base_url,
+        "region": conn.region,
+    }
+
+
+def _serialize_configured_model(cm) -> dict:
+    """Serialize a ConfiguredModel to a wire dict for configured_models_listed."""
+    return {
+        "id": cm.id,
+        "connection_id": cm.connection_id,
+        "model_id": cm.model_id,
+        "resolved_from": getattr(cm, "resolved_from", None),
+    }
+
+
+def _serialize_preset(preset) -> dict:
+    """Serialize a Preset to a wire dict for presets_listed."""
+    slots = {}
+    for slot_name, slot in preset.slots.items():
+        slots[slot_name] = {
+            "configured_model_id": slot.configured_model_id,
+            "thinking": slot.thinking if hasattr(slot, "thinking") else "disabled",
+        }
+    return {"slots": slots}
+
+
+def _serialize_memory_bindings(bindings) -> dict | None:
+    """Serialize MemoryBindings to a wire dict for memory_bindings_listed."""
+    if bindings is None:
+        return None
+    result = {}
+    for key in ("embedding", "memory_llm", "reflect_llm"):
+        mb = getattr(bindings, key, None)
+        if mb is not None:
+            result[key] = {
+                "configured_model_id": mb.configured_model_id,
+                "thinking": getattr(mb, "thinking", "disabled"),
+            }
+    return result or None
+
+
+def _serialize_model_capabilities(st: "AppState") -> list[dict]:
+    """Build a ResolvedCapabilitiesWire-shaped dict for each configured model (M6).
+
+    Calls resolve_capabilities(conn.type, cm.model_id) for each entry in
+    cfg.configured_models.  A missing connection (misconfigured config) logs a
+    warning and skips the entry rather than crashing -- callers must tolerate
+    partial results.  Secrets are never read here; only the connection type is
+    needed for capability resolution.
+    """
+    from ..agents.capability_resolver import resolve_capabilities
+
+    cfg = st.provider_config.config
+    if not cfg:
+        return []
+
+    conn_by_id = {c.id: c for c in cfg.connections}
+    result: list[dict] = []
+    for cm in cfg.configured_models:
+        conn = conn_by_id.get(cm.connection_id)
+        if conn is None:
+            log.warning(
+                "_serialize_model_capabilities: configured_model %r references unknown connection %r; skipping",
+                cm.id,
+                cm.connection_id,
             )
+            continue
+        caps = resolve_capabilities(conn.type, cm.model_id)
+        result.append({
+            "configured_model_id": cm.id,
+            "thinking_supported": caps.thinking_supported,
+            "thinking_modes": [str(m) for m in caps.thinking_modes],
+            "thinking_shape": caps.thinking_shape,
+            "supports_web_search": caps.supports_web_search,
+            "supports_tools": caps.supports_tools,
+            "context_window": caps.context_window,
+            "context_window_variants": list(caps.context_window_variants),
+            "supports_prompt_caching": caps.supports_prompt_caching,
+            "tier_hint": caps.tier_hint,
+            "recognized": caps.recognized,
+        })
+    return result
+
+
+def _push_model_capabilities(st: "AppState") -> None:
+    """Push model_capabilities_listed for all configured models (M6).
+
+    Called on startup and on any mutation that touches connections or
+    configured_models -- a connection's type determines the resolved capabilities
+    of all models attached to it (brief D4).
+    """
+    caps = _serialize_model_capabilities(st)
+    st.projection_store.push_event(
+        "model_capabilities_listed",
+        build_model_capabilities_listed(caps),
+    )
 
 
 def _push_initial_config_events(st: AppState) -> None:
     """Push full config state into the projection on startup.
 
-    Called after _refresh_probe_state(broadcast=False) so all state is ready.
-    Emits one event per config fact so the snapshot captures complete config.
-    Includes workflows_listed, provider_status_listed, and model_registry_listed
-    events so Settings.* fields are uniformly populated from the fold.
+    M5: replaces profile/active_profile events with connections/configured_models/
+    presets/active/memory_bindings events.  Called after _refresh_probe_state
+    (broadcast=False) so all state is ready.
+    M6: also pushes model_capabilities_listed.
     """
     store = st.projection_store
+    cfg = st.provider_config.config
 
-    # M4: probe_completed event removed; installation fold cases deleted.
-    # M2: provider availability via ProviderStatus (Settings.provider_status).
+    # M5: connections, configured_models, presets, active, memory_bindings.
+    store.push_event(
+        "connections_listed",
+        build_connections_listed([_serialize_connection(c) for c in cfg.connections]),
+    )
+    store.push_event(
+        "configured_models_listed",
+        build_configured_models_listed([_serialize_configured_model(cm) for cm in cfg.configured_models]),
+    )
+    store.push_event(
+        "presets_listed",
+        build_presets_listed({
+            name: _serialize_preset(p)
+            for name, p in cfg.presets.items()
+        }),
+    )
+    store.push_event("active_changed", build_active_changed(cfg.active))
+    store.push_event(
+        "memory_bindings_listed",
+        build_memory_bindings_listed(_serialize_memory_bindings(cfg.memory)),
+    )
+
+    # Per-connection availability (replaces per-type ProviderStatus).
     store.push_event(
         "provider_status_listed",
-        build_provider_status_listed([_serialize_provider_status(ps) for ps in st.runner_config.provider_status]),
+        build_provider_status_listed([_serialize_connection_status(cs) for cs in st.provider_config.provider_status]),
     )
 
-    # M2: model registry (Settings.model_registry).
+    # Model registry and dynamic overlay (overlay empty at boot; eager task fills it).
     store.push_event(
         "model_registry_listed",
-        build_model_registry_listed([_serialize_model_registry_entry(e) for e in st.runner_config.model_registry]),
+        build_model_registry_listed([_serialize_model_registry_entry(e) for e in st.provider_config.model_registry]),
+    )
+    _push_provider_models(st)
+
+    # Scout concurrency.
+    store.push_event(
+        "default_scout_concurrency_changed",
+        build_default_scout_concurrency_changed(cfg.scout_concurrency),
     )
 
-    # Profiles (built-in first, then user-defined)
-    for bp in st.runner_config.builtin_profiles.values():
-        tiers = _serialize_profile(bp, True)["tiers"]
-        store.push_event("profile_created", build_profile_created(bp.name, True, tiers))
-    for p in st.runner_config.config.profiles:
-        sp = _serialize_profile(p, False)
-        store.push_event("profile_created", build_profile_created(p.name, False, sp["tiers"]))
-
-    # Active profile
-    store.push_event("default_profile_changed", build_default_profile_changed(st.runner_config.config.active_profile))
-
-    # Scout concurrency
-    store.push_event("default_scout_concurrency_changed", build_default_scout_concurrency_changed(st.runner_config.config.scout_concurrency))
-
-    # Workflows registry: static for the process lifetime, but delivered through
-    # an initial event so the projection field is uniformly populated by the fold
-    # (consistent with profiles, installations, and probe results).
+    # Workflows registry: static for the process lifetime.
     from ..lib.workflows import WORKFLOWS as _WORKFLOWS
     workflows_payload: list[dict] = []
     for wf in _WORKFLOWS.values():
@@ -1270,6 +1377,9 @@ def _push_initial_config_events(st: AppState) -> None:
             "initial_phase": wf.initial_phase,
         })
     store.push_event("workflows_listed", build_workflows_listed(workflows_payload))
+
+    # M6: per-configured-model read-only capabilities snapshot.
+    _push_model_capabilities(st)
 
 
 async def api_eval_harvest(r: Request) -> Response:
@@ -1295,232 +1405,106 @@ async def api_run_status(r: Request) -> Response:
 
 
 async def api_probe(r: Request) -> Response:
+    """Return per-connection availability; refresh on request.
+
+    M5: response is {connections: [{connection_id, connection_type, available}]}.
+    Callers that previously consumed the 'runners' and 'balanced_profile' fields
+    should migrate to the new shape.
+    """
     st = _app_state(r)
     if r.query_params.get("refresh", "") in ("1", "true"):
         await _refresh_probe_state(st)
-    runners = [_serialize_provider_status(ps) for ps in st.runner_config.provider_status]
-    balanced = st.runner_config.builtin_profiles.get("balanced")
-    balanced_json = _serialize_profile(balanced, True) if balanced else None
-    return JSONResponse({"runners": runners, "balanced_profile": balanced_json})
+    return JSONResponse({
+        "connections": [_serialize_connection_status(cs) for cs in st.provider_config.provider_status],
+    })
 
 
-async def api_profiles_list(r: Request) -> Response:
-    st = _app_state(r)
-    profiles = [_serialize_profile(bp, True) for bp in st.runner_config.builtin_profiles.values()]
-    for p in st.runner_config.config.profiles:
-        profiles.append(_serialize_profile(p, False))
-    return JSONResponse({"profiles": profiles})
+# api_profiles_list/create/update/delete removed in M5: profile CRUD endpoints
+# deleted.  Profiles replaced by connections/configured_models/presets (plan-milestone-5.md).
 
 
-async def api_profiles_create(r: Request) -> Response:
-    """Create a user-defined profile.
+# -- Provider model-listing helpers -------------------------------------------
+# These helpers are called by the Test endpoint, the post-save refresh, and the
+# eager startup background task. They never raise to the caller.
 
-    Accepts {name, tiers: {tier_name: {provider, model, thinking}}}. Tiers are
-    validated against provider_status (credential availability) and model_registry
-    ((provider, model) must be a catalogued entry). Each tier is stored as a
-    ProfileTier backed by a ModelSpec; context_window is resolved from the registry.
+async def _refresh_one_provider_models(
+    st: "AppState",
+    provider: str,
+    *,
+    api_key: str | None,
+    base_url: str | None,
+    region: str | None,
+) -> tuple[bool, str]:
+    """List models for one provider and update the overlay on success.
+
+    On success: updates st.provider_config.provider_models[provider], calls
+    _push_provider_models(st), and returns (True, ""). On ModelListingError:
+    returns (False, message) without touching the overlay. Each provider is
+    isolated so a single failure cannot abort the others.
     """
-    body = await r.json()
-    name = body.get("name", "")
-    tiers_raw = body.get("tiers", {})
-
-    if not isinstance(name, str) or not name.strip():
-        return JSONResponse(
-            {"error": "validation_error", "message": "name is required"},
-            status_code=422,
-        )
-    if name in _app_state(r).runner_config.builtin_profiles:
-        return JSONResponse(
-            {"error": "validation_error", "message": f"cannot use reserved name '{name}'"},
-            status_code=422,
-        )
-    if any(p.name == name for p in _app_state(r).runner_config.config.profiles):
-        return JSONResponse(
-            {"error": "validation_error", "message": f"profile '{name}' already exists"},
-            status_code=422,
-        )
-
-    st = _app_state(r)
-    if not isinstance(tiers_raw, dict):
-        return JSONResponse(
-            {"error": "validation_error", "message": "tiers must be an object"},
-            status_code=422,
-        )
-    err = _validate_profile_tiers(tiers_raw, st.runner_config.provider_status, st.runner_config.model_registry)
-    if err is not None:
-        return JSONResponse(
-            {"error": "validation_error", "message": err},
-            status_code=422,
-        )
-
-    # Build registry lookup for context_window resolution.
-    ctx_by_pair: dict[tuple[str, str], int] = {
-        (e.provider, e.model): e.context_window for e in st.runner_config.model_registry
-    }
-    tiers = {}
-    for tier_name, tier_val in tiers_raw.items():
-        provider = tier_val.get("provider", "")
-        model = tier_val.get("model", "")
-        thinking = tier_val.get("thinking", "disabled")
-        context_window = ctx_by_pair.get((provider, model), 0)
-        tiers[tier_name] = ProfileTier(
-            model=ModelSpec(
-                provider=provider,
-                model=model,
-                thinking=thinking,
-                context_window=context_window,
-            )
-        )
-
-    new_profile = Profile(name=name, tiers=tiers)
-    st.runner_config.config.profiles.append(new_profile)
-    from ..config import save_koan_config
-    await save_koan_config(st.runner_config.config)
-    sp = _serialize_profile(new_profile, False)
-    st.projection_store.push_event("profile_created", build_profile_created(name, False, sp["tiers"]))
-    return JSONResponse({"ok": True})
-
-
-async def api_profiles_update(r: Request) -> Response:
-    """Update the tiers of an existing user-defined profile.
-
-    Accepts {tiers: {tier_name: {provider, model, thinking}}}. Same validation
-    as api_profiles_create; tiers are rebuilt from ModelSpec on each update.
-    """
-    name = r.path_params["name"]
-    if name in _app_state(r).runner_config.builtin_profiles:
-        return JSONResponse(
-            {"error": "read_only", "message": f"built-in profile '{name}' cannot be edited"},
-            status_code=422,
-        )
-
-    st = _app_state(r)
-    target = None
-    for p in st.runner_config.config.profiles:
-        if p.name == name:
-            target = p
-            break
-    if target is None:
-        return JSONResponse({"error": "not_found", "message": f"profile '{name}' not found"}, status_code=404)
-
-    body = await r.json()
-    tiers_raw = body.get("tiers", {})
-    if not isinstance(tiers_raw, dict):
-        return JSONResponse(
-            {"error": "validation_error", "message": "tiers must be an object"},
-            status_code=422,
-        )
-    err = _validate_profile_tiers(tiers_raw, st.runner_config.provider_status, st.runner_config.model_registry)
-    if err is not None:
-        return JSONResponse({"error": "validation_error", "message": err}, status_code=422)
-
-    ctx_by_pair: dict[tuple[str, str], int] = {
-        (e.provider, e.model): e.context_window for e in st.runner_config.model_registry
-    }
-    new_tiers = {}
-    for tier_name, tier_val in tiers_raw.items():
-        provider = tier_val.get("provider", "")
-        model = tier_val.get("model", "")
-        thinking = tier_val.get("thinking", "disabled")
-        context_window = ctx_by_pair.get((provider, model), 0)
-        new_tiers[tier_name] = ProfileTier(
-            model=ModelSpec(
-                provider=provider,
-                model=model,
-                thinking=thinking,
-                context_window=context_window,
-            )
-        )
-    target.tiers = new_tiers
-
-    from ..config import save_koan_config
-    await save_koan_config(st.runner_config.config)
-    sp = _serialize_profile(target, False)
-    st.projection_store.push_event("profile_modified", build_profile_modified(name, False, sp["tiers"]))
-    return JSONResponse({"ok": True})
-
-
-async def api_profiles_delete(r: Request) -> Response:
-    name = r.path_params["name"]
-    if name in _app_state(r).runner_config.builtin_profiles:
-        return JSONResponse(
-            {"error": "read_only", "message": f"built-in profile '{name}' cannot be deleted"},
-            status_code=400,
-        )
-
-    st = _app_state(r)
-    idx = None
-    for i, p in enumerate(st.runner_config.config.profiles):
-        if p.name == name:
-            idx = i
-            break
-    if idx is None:
-        return JSONResponse({"error": "not_found", "message": f"profile '{name}' not found"}, status_code=404)
-
-    st.runner_config.config.profiles.pop(idx)
-    reset_active = st.runner_config.config.active_profile == name
-    if reset_active:
-        st.runner_config.config.active_profile = "balanced"
-
-    from ..config import save_koan_config
-    await save_koan_config(st.runner_config.config)
-    st.projection_store.push_event("profile_removed", build_profile_removed(name))
-    if reset_active:
-        st.projection_store.push_event("default_profile_changed", build_default_profile_changed("balanced"))
-    return JSONResponse({"ok": True})
-
-
-# -- Provider validation endpoint ---------------------------------------------
-
-async def api_validate_provider(r: Request) -> Response:
-    """Local construction check for a provider credential.
-
-    POST {provider: str}. Picks a registry entry for the provider (preferring
-    tier_hint=="strong", else first), checks credential availability via
-    provider_available (env-credential model), then constructs the pydantic-ai
-    Model object via build_model inside a try/except AgentError. This is a local
-    construction check only -- no live provider call is made.
-
-    Returns {"valid": True} on success or {"valid": False, "reason": str} on
-    failure (missing credential, AgentError, or provider not in registry).
-    """
-    body = await r.json()
-    provider = body.get("provider", "")
-    if not isinstance(provider, str) or not provider:
-        return JSONResponse(
-            {"valid": False, "reason": "provider is required"},
-            status_code=422,
-        )
-
-    st = _app_state(r)
-    # Pick one registry entry for this provider (strong-tier preferred, else first).
-    entries = [e for e in st.runner_config.model_registry if e.provider == provider]
-    if not entries:
-        return JSONResponse(
-            {"valid": False, "reason": f"no registry entry for provider '{provider}'"},
-            status_code=422,
-        )
-    entry = next((e for e in entries if e.tier_hint == "strong"), entries[0])
-    spec = ModelSpec(
-        provider=provider,
-        model=entry.model,
-        thinking="disabled",
-        context_window=entry.context_window,
-    )
-
-    # Credential check first: a missing credential must always report invalid,
-    # independent of build_model's internal error path, to give a clear message.
-    from ..agents.adapter import provider_available, build_model
-    from ..agents.base import AgentError
-    if not provider_available(provider):
-        return JSONResponse({"valid": False, "reason": f"no credential for {provider}"})
-
+    from ..agents.model_listing import list_provider_models, ModelListingError
     try:
-        build_model(spec)
-        return JSONResponse({"valid": True})
-    except AgentError as e:
-        return JSONResponse({"valid": False, "reason": e.diagnostic.message})
+        models = await list_provider_models(
+            provider,
+            api_key=api_key,
+            base_url=base_url,
+            region=region,
+        )
+        st.provider_config.provider_models[provider] = models
+        _push_provider_models(st)
+        return (True, "")
+    except ModelListingError as exc:
+        return (False, str(exc))
+    except Exception as exc:
+        return (False, str(exc))
 
+
+async def _refresh_provider_models_eager(st: "AppState") -> None:
+    """Populate the provider model overlay at startup for all configured connections.
+
+    M5: iterates config.connections instead of config.provider_auth.  For keyed
+    providers a credential must exist in the store; for keyless types (lmstudio)
+    a non-empty base_url is required.  Each connection is wrapped in its own
+    try/except so one failure cannot abort others.  Runs as a non-blocking asyncio
+    background task -- never called from within _refresh_probe_state.
+    """
+    from ..types import KEYLESS_PROVIDER_TYPES
+
+    LISTING_CAPABLE = {"openai", "anthropic", "google", "lmstudio"}
+    cfg = st.provider_config.config
+    if not cfg:
+        return
+    store = st.provider_config.credential_store
+
+    for conn in cfg.connections:
+        if conn.type not in LISTING_CAPABLE:
+            continue
+        if conn.type in KEYLESS_PROVIDER_TYPES:
+            if not conn.base_url:
+                continue
+            api_key = None
+            base_url = conn.base_url
+            region = None
+        else:
+            if not (store and store.has(conn.id)):
+                continue  # no credential -- skip silently
+            api_key = store.resolve(conn.id)
+            base_url = conn.base_url
+            region = conn.region
+        try:
+            await _refresh_one_provider_models(
+                st, conn.type,
+                api_key=api_key,
+                base_url=base_url,
+                region=region,
+            )
+        except Exception:
+            pass  # per-connection isolation
+
+
+# api_settings_provider/api_settings_provider_delete/api_settings_provider_test
+# removed in M5: provider settings mutation endpoints deleted; mutation is M6 scope.
+# See plan-milestone-5.md, brief D9.
 
 # /api/agents (GET) removed in M4: api_agents_list deleted; installation concept
 # fully removed. All prior installation endpoints were removed in M3.
@@ -1531,45 +1515,25 @@ async def api_validate_provider(r: Request) -> Response:
 async def api_settings_body(r: Request) -> Response:
     """Return the settings page payload.
 
-    M3: installations array removed (installation concept deleted; config shim
-    and projection field stay until Milestone 4). Response is {profiles, scoutConcurrency}.
+    M5: response is {connections, configured_models, presets, active, scoutConcurrency}.
+    Profile fields removed (plan-milestone-5.md).
     """
     st = _app_state(r)
-
-    profiles = [_serialize_profile(bp, True) for bp in st.runner_config.builtin_profiles.values()]
-    for p in st.runner_config.config.profiles:
-        profiles.append(_serialize_profile(p, False))
+    cfg = st.provider_config.config
 
     return JSONResponse({
-        "profiles": profiles,
-        "scoutConcurrency": st.runner_config.config.scout_concurrency,
+        "connections": [_serialize_connection(c) for c in cfg.connections],
+        "configured_models": [_serialize_configured_model(cm) for cm in cfg.configured_models],
+        "presets": {name: _serialize_preset(p) for name, p in cfg.presets.items()},
+        "active": cfg.active,
+        "scoutConcurrency": cfg.scout_concurrency,
     })
 
 
-async def api_settings_profile_form(r: Request) -> Response:
-    st = _app_state(r)
+# api_settings_profile_form removed in M5: profile form endpoints deleted;
+# presets replace profiles (plan-milestone-5.md).
 
-    name = r.query_params.get("name", "")
-    is_edit = r.query_params.get("edit", "0") == "1"
 
-    available_runners = [
-        _serialize_provider_status(ps) for ps in st.runner_config.provider_status if ps.available
-    ]
-
-    tiers: dict = {}
-    if is_edit and name:
-        for p in st.runner_config.config.profiles:
-            if p.name == name:
-                sp = _serialize_profile(p, False)
-                tiers = sp.get("tiers", {})
-                break
-
-    return JSONResponse({
-        "name": name,
-        "tiers": tiers,
-        "availableRunners": available_runners,
-        "isEdit": is_edit,
-    })
 
 
 
@@ -1582,11 +1546,477 @@ async def api_settings_scout_concurrency(r: Request) -> Response:
             status_code=422,
         )
     st = _app_state(r)
-    st.runner_config.config.scout_concurrency = value
+    st.provider_config.config.scout_concurrency = value
     from ..config import save_koan_config
-    await save_koan_config(st.runner_config.config)
+    await save_koan_config(st.provider_config.config)
     st.projection_store.push_event("default_scout_concurrency_changed", build_default_scout_concurrency_changed(value))
     return JSONResponse({"ok": True})
+
+
+# api_settings_provider_test removed in M5: provider test endpoint deleted;
+# mutation/test is M6 scope (plan-milestone-5.md).
+
+
+# -- Config mutation endpoints (M6) ------------------------------------------
+# Each endpoint follows the template established by api_settings_scout_concurrency:
+#   parse + validate body -> mutate st.provider_config.config ->
+#   await save_koan_config(...) -> push matching projection event(s) ->
+#   return JSONResponse({"ok": True}), 422 on validation error.
+# Secrets are never echoed in responses or the projection (brief D3).
+
+_VALID_CONNECTION_TYPES = {"google", "anthropic", "openai", "bedrock", "lmstudio", "voyage"}
+_VALID_SLOT_NAMES = {"strong", "standard", "cheap"}
+_VALID_MEMORY_KINDS = {"embedding", "memory_llm", "reflect_llm"}
+
+
+def _push_connection_events(st: "AppState") -> None:
+    """Push connections_listed + provider_status_listed + model_capabilities (M6).
+
+    Called after any connection mutation so the projection stays consistent with
+    the mutated config.  Provider availability is recomputed from the credential
+    store rather than the old cached st.provider_config.provider_status so that
+    a newly-credentialed connection becomes available immediately.
+    """
+    cfg = st.provider_config.config
+    st.provider_config.provider_status = _provider_probe_results(st)
+    st.projection_store.push_event(
+        "connections_listed",
+        build_connections_listed([_serialize_connection(c) for c in cfg.connections]),
+    )
+    st.projection_store.push_event(
+        "provider_status_listed",
+        build_provider_status_listed([_serialize_connection_status(cs) for cs in st.provider_config.provider_status]),
+    )
+    _push_model_capabilities(st)
+
+
+async def api_config_connection_set(r: Request) -> Response:
+    """Upsert a connection (POST/PUT /api/config/connections[/{id}]).
+
+    Body: {id, type, base_url?, region?, azure_deployment?, api_version?,
+           timeout?, secret?}.  The id may be provided in the body or the path.
+    If a 'secret' field is present it is stored encrypted in the credential store
+    and never echoed back.  Pushes connections_listed + provider_status_listed +
+    model_capabilities_listed after saving.
+
+    Returns 422 on validation error.
+    """
+    from ..config import save_koan_config
+    from ..types import Connection
+
+    body = await r.json()
+
+    # id comes from the path param (PUT /api/config/connections/{id}) or from
+    # the body (POST /api/config/connections).
+    conn_id = r.path_params.get("id") or body.get("id", "")
+    conn_type = body.get("type", "")
+
+    if not conn_id or not isinstance(conn_id, str):
+        return JSONResponse({"error": "validation_error", "message": "connection id is required"}, status_code=422)
+    if conn_type not in _VALID_CONNECTION_TYPES:
+        return JSONResponse(
+            {"error": "validation_error", "message": f"type must be one of {sorted(_VALID_CONNECTION_TYPES)}"},
+            status_code=422,
+        )
+
+    st = _app_state(r)
+    cfg = st.provider_config.config
+
+    # Build the Connection object from the body.  Endpoint settings only; the
+    # secret lives in the credential store, never on the Connection.
+    timeout_raw = body.get("timeout")
+    conn = Connection(
+        id=conn_id,
+        type=conn_type,
+        base_url=body.get("base_url") or None,
+        region=body.get("region") or None,
+        azure_deployment=body.get("azure_deployment") or None,
+        api_version=body.get("api_version") or None,
+        timeout=float(timeout_raw) if timeout_raw is not None else None,
+    )
+
+    # Upsert: replace an existing connection by id or append a new one.
+    existing_idx = next((i for i, c in enumerate(cfg.connections) if c.id == conn_id), None)
+    if existing_idx is not None:
+        cfg.connections[existing_idx] = conn
+    else:
+        cfg.connections.append(conn)
+
+    # Store the secret if provided; never echo it back.
+    # credential_store.set() updates both the in-memory cache and the config
+    # credentials envelope so save_koan_config writes the encrypted envelope.
+    secret = body.get("secret")
+    if secret and isinstance(secret, str):
+        st.provider_config.credential_store.set(conn_id, secret)
+
+    await save_koan_config(cfg)
+    _push_connection_events(st)
+    return JSONResponse({"ok": True})
+
+
+async def api_config_connection_delete(r: Request) -> Response:
+    """Delete a connection (DELETE /api/config/connections/{id}).
+
+    Removes the connection from cfg.connections and its credential from the
+    store.  Pushes connections_listed + provider_status_listed +
+    model_capabilities_listed after saving.
+
+    Returns 404 when the connection id is not found.
+    """
+    from ..config import save_koan_config
+
+    conn_id = r.path_params.get("id", "")
+    st = _app_state(r)
+    cfg = st.provider_config.config
+
+    existing = next((c for c in cfg.connections if c.id == conn_id), None)
+    if existing is None:
+        return JSONResponse({"error": "not_found", "message": f"connection '{conn_id}' not found"}, status_code=404)
+
+    cfg.connections = [c for c in cfg.connections if c.id != conn_id]
+    st.provider_config.credential_store.remove(conn_id)
+
+    await save_koan_config(cfg)
+    _push_connection_events(st)
+    return JSONResponse({"ok": True})
+
+
+async def api_config_model_set(r: Request) -> Response:
+    """Upsert a configured model (POST/PUT /api/config/models[/{id}]).
+
+    Body: {id, connection_id, model_id, resolved_from?}.  id may be in the path
+    (PUT) or the body (POST).  Pushes configured_models_listed +
+    model_capabilities_listed after saving.
+
+    Returns 422 on validation error.
+    """
+    from ..config import save_koan_config
+    from ..types import ConfiguredModel
+
+    body = await r.json()
+    cm_id = r.path_params.get("id") or body.get("id", "")
+    connection_id = body.get("connection_id", "")
+    model_id = body.get("model_id", "")
+
+    if not cm_id or not isinstance(cm_id, str):
+        return JSONResponse({"error": "validation_error", "message": "configured model id is required"}, status_code=422)
+    if not connection_id or not isinstance(connection_id, str):
+        return JSONResponse({"error": "validation_error", "message": "connection_id is required"}, status_code=422)
+    if not model_id or not isinstance(model_id, str):
+        return JSONResponse({"error": "validation_error", "message": "model_id is required"}, status_code=422)
+
+    st = _app_state(r)
+    cfg = st.provider_config.config
+
+    # Validate that the referenced connection exists.
+    if not any(c.id == connection_id for c in cfg.connections):
+        return JSONResponse(
+            {"error": "validation_error", "message": f"connection '{connection_id}' not found"},
+            status_code=422,
+        )
+
+    cm = ConfiguredModel(
+        id=cm_id,
+        connection_id=connection_id,
+        model_id=model_id,
+        resolved_from=body.get("resolved_from") or None,
+    )
+
+    existing_idx = next((i for i, m in enumerate(cfg.configured_models) if m.id == cm_id), None)
+    if existing_idx is not None:
+        cfg.configured_models[existing_idx] = cm
+    else:
+        cfg.configured_models.append(cm)
+
+    await save_koan_config(cfg)
+    st.projection_store.push_event(
+        "configured_models_listed",
+        build_configured_models_listed([_serialize_configured_model(m) for m in cfg.configured_models]),
+    )
+    _push_model_capabilities(st)
+    return JSONResponse({"ok": True})
+
+
+async def api_config_model_delete(r: Request) -> Response:
+    """Delete a configured model (DELETE /api/config/models/{id}).
+
+    Returns 404 when the model id is not found.  Pushes configured_models_listed +
+    model_capabilities_listed after saving.
+    """
+    from ..config import save_koan_config
+
+    cm_id = r.path_params.get("id", "")
+    st = _app_state(r)
+    cfg = st.provider_config.config
+
+    if not any(m.id == cm_id for m in cfg.configured_models):
+        return JSONResponse({"error": "not_found", "message": f"configured_model '{cm_id}' not found"}, status_code=404)
+
+    cfg.configured_models = [m for m in cfg.configured_models if m.id != cm_id]
+
+    await save_koan_config(cfg)
+    st.projection_store.push_event(
+        "configured_models_listed",
+        build_configured_models_listed([_serialize_configured_model(m) for m in cfg.configured_models]),
+    )
+    _push_model_capabilities(st)
+    return JSONResponse({"ok": True})
+
+
+async def api_config_slot_set(r: Request) -> Response:
+    """Assign a configured model to a slot in the $last preset (PUT /api/config/slots/{slot}).
+
+    Body: {configured_model_id, thinking?}.  Validates that:
+      - slot is one of strong/standard/cheap
+      - configured_model_id exists
+      - the chosen thinking mode is in resolve_capabilities(...).thinking_modes (422 otherwise)
+    Only mutates the reserved $last preset (brief D7 / Out-of-scope: named presets).
+    Pushes presets_listed after saving.
+
+    Returns 422 on validation error.
+    """
+    from ..config import save_koan_config
+    from ..types import SlotAssignment, Preset
+    from ..agents.capability_resolver import resolve_capabilities
+
+    slot = r.path_params.get("slot", "")
+    if slot not in _VALID_SLOT_NAMES:
+        return JSONResponse(
+            {"error": "validation_error", "message": f"slot must be one of {sorted(_VALID_SLOT_NAMES)}"},
+            status_code=422,
+        )
+
+    body = await r.json()
+    cm_id = body.get("configured_model_id", "")
+    thinking = body.get("thinking", "disabled")
+
+    if not cm_id or not isinstance(cm_id, str):
+        return JSONResponse({"error": "validation_error", "message": "configured_model_id is required"}, status_code=422)
+
+    st = _app_state(r)
+    cfg = st.provider_config.config
+
+    # Validate that the configured model exists and resolve its connection.
+    cm = next((m for m in cfg.configured_models if m.id == cm_id), None)
+    if cm is None:
+        return JSONResponse(
+            {"error": "validation_error", "message": f"configured_model '{cm_id}' not found"},
+            status_code=422,
+        )
+
+    conn = next((c for c in cfg.connections if c.id == cm.connection_id), None)
+    if conn is None:
+        return JSONResponse(
+            {"error": "validation_error", "message": f"connection '{cm.connection_id}' for model '{cm_id}' not found"},
+            status_code=422,
+        )
+
+    # Validate that the chosen thinking mode is supported by the model.
+    # resolve_capabilities is a pure function; 422 is deterministic and observable
+    # (brief D4 -- capabilities are resolved, never asked).
+    caps = resolve_capabilities(conn.type, cm.model_id)
+    supported_modes = ["disabled", *[str(m) for m in caps.thinking_modes]]
+    if thinking not in supported_modes:
+        return JSONResponse(
+            {
+                "error": "validation_error",
+                "message": (
+                    f"thinking mode '{thinking}' is not supported for model '{cm.model_id}' "
+                    f"on connection '{conn.type}'; supported: {supported_modes}"
+                ),
+            },
+            status_code=422,
+        )
+
+    # Ensure $last preset exists before writing.
+    if "$last" not in cfg.presets:
+        cfg.presets["$last"] = Preset()
+
+    cfg.presets["$last"].slots[slot] = SlotAssignment(
+        configured_model_id=cm_id,
+        thinking=thinking,
+    )
+
+    await save_koan_config(cfg)
+    st.projection_store.push_event(
+        "presets_listed",
+        build_presets_listed({name: _serialize_preset(p) for name, p in cfg.presets.items()}),
+    )
+    return JSONResponse({"ok": True})
+
+
+async def api_config_memory_set(r: Request) -> Response:
+    """Set a memory binding (PUT /api/config/memory/{kind}).
+
+    kind is one of embedding, memory_llm, reflect_llm.
+    Body: {configured_model_id, thinking?}.  Validates that configured_model_id
+    exists.  Pushes memory_bindings_listed after saving.
+
+    Returns 422 on validation error.
+    """
+    from ..config import save_koan_config
+    from ..types import MemoryBinding, MemoryBindings
+
+    kind = r.path_params.get("kind", "")
+    if kind not in _VALID_MEMORY_KINDS:
+        return JSONResponse(
+            {"error": "validation_error", "message": f"kind must be one of {sorted(_VALID_MEMORY_KINDS)}"},
+            status_code=422,
+        )
+
+    body = await r.json()
+    cm_id = body.get("configured_model_id", "")
+    thinking = body.get("thinking", "disabled")
+
+    if not cm_id or not isinstance(cm_id, str):
+        return JSONResponse({"error": "validation_error", "message": "configured_model_id is required"}, status_code=422)
+
+    st = _app_state(r)
+    cfg = st.provider_config.config
+
+    if not any(m.id == cm_id for m in cfg.configured_models):
+        return JSONResponse(
+            {"error": "validation_error", "message": f"configured_model '{cm_id}' not found"},
+            status_code=422,
+        )
+
+    if cfg.memory is None:
+        cfg.memory = MemoryBindings()
+
+    setattr(cfg.memory, kind, MemoryBinding(configured_model_id=cm_id, thinking=thinking))
+
+    await save_koan_config(cfg)
+    st.projection_store.push_event(
+        "memory_bindings_listed",
+        build_memory_bindings_listed(_serialize_memory_bindings(cfg.memory)),
+    )
+    return JSONResponse({"ok": True})
+
+
+async def api_config_connection_list_models(r: Request) -> Response:
+    """Trigger a live model listing for a connection (POST /api/config/connections/{id}/list-models).
+
+    Resolves the connection, obtains its credential (or base_url for keyless
+    types), calls _refresh_one_provider_models, and pushes provider_models_listed
+    on success.  Returns {ok: True} on success, {ok: False, message: ...} on
+    ModelListingError or for non-listing types so the caller can offer a free-text
+    fallback (brief D7).  Never raises to the client.
+    """
+    from ..types import KEYLESS_PROVIDER_TYPES
+
+    conn_id = r.path_params.get("id", "")
+    st = _app_state(r)
+    cfg = st.provider_config.config
+
+    conn = next((c for c in cfg.connections if c.id == conn_id), None)
+    if conn is None:
+        return JSONResponse({"error": "not_found", "message": f"connection '{conn_id}' not found"}, status_code=404)
+
+    store = st.provider_config.credential_store
+    if conn.type in KEYLESS_PROVIDER_TYPES:
+        if not conn.base_url:
+            return JSONResponse({"ok": False, "message": f"connection '{conn_id}' has no base_url configured"})
+        api_key = None
+        base_url = conn.base_url
+        region = None
+    else:
+        if not (store and store.has(conn_id)):
+            return JSONResponse({"ok": False, "message": f"no credential available for connection '{conn_id}'"})
+        api_key = store.resolve(conn_id)
+        base_url = conn.base_url
+        region = conn.region
+
+    ok, msg = await _refresh_one_provider_models(
+        st,
+        conn.type,
+        api_key=api_key,
+        base_url=base_url,
+        region=region,
+    )
+    if ok:
+        return JSONResponse({"ok": True})
+    return JSONResponse({"ok": False, "message": msg})
+
+
+async def api_config_model_newest(r: Request) -> Response:
+    """Resolve and pin the newest model in a family (POST /api/config/models/newest).
+
+    Body: {connection_id, family, id?}.  Resolves the connection, calls
+    resolve_newest_in_family, upserts a ConfiguredModel with the pinned model_id +
+    resolved_from provenance, saves, and pushes configured_models_listed +
+    model_capabilities_listed.
+
+    On ModelListingError (non-listing connection type or fetch failure) returns 409
+    with message "unavailable for this connection type" so the caller knows to
+    require an explicit pin.  On NewestInFamilyUnavailable returns 422 "no models
+    in that family" so the caller can suggest a different family or explicit pin
+    (M3 pattern: two distinct unavailability signals, brief D11).
+    """
+    from ..config import save_koan_config
+    from ..agents.model_listing import ModelListingError
+    from ..agents.newest_in_family import (
+        NewestInFamilyUnavailable,
+        resolve_newest_in_family,
+    )
+    from ..types import ConfiguredModel
+
+    body = await r.json()
+    conn_id = body.get("connection_id", "")
+    family = body.get("family", "")
+    cm_id = body.get("id") or None  # caller may supply an id; otherwise auto-generate
+
+    if not conn_id or not isinstance(conn_id, str):
+        return JSONResponse({"error": "validation_error", "message": "connection_id is required"}, status_code=422)
+    if not family or not isinstance(family, str):
+        return JSONResponse({"error": "validation_error", "message": "family is required"}, status_code=422)
+
+    st = _app_state(r)
+    cfg = st.provider_config.config
+
+    conn = next((c for c in cfg.connections if c.id == conn_id), None)
+    if conn is None:
+        return JSONResponse({"error": "not_found", "message": f"connection '{conn_id}' not found"}, status_code=404)
+
+    try:
+        resolution = await resolve_newest_in_family(conn, family, st.provider_config.credential_store)
+    except ModelListingError as exc:
+        return JSONResponse(
+            {"error": "unavailable", "message": f"model listing unavailable for this connection type: {exc}"},
+            status_code=409,
+        )
+    except NewestInFamilyUnavailable as exc:
+        return JSONResponse(
+            {"error": "not_found", "message": f"no models in family '{family}': {exc}"},
+            status_code=422,
+        )
+
+    # Auto-generate an id when the caller does not supply one.  Use a
+    # deterministic slug so repeated calls for the same (connection, family)
+    # upsert rather than accumulate duplicates.
+    if not cm_id:
+        import uuid as _uuid
+        cm_id = str(_uuid.uuid4())
+
+    cm = ConfiguredModel(
+        id=cm_id,
+        connection_id=conn_id,
+        model_id=resolution.model_id,
+        resolved_from=resolution.resolved_from,
+    )
+
+    existing_idx = next((i for i, m in enumerate(cfg.configured_models) if m.id == cm_id), None)
+    if existing_idx is not None:
+        cfg.configured_models[existing_idx] = cm
+    else:
+        cfg.configured_models.append(cm)
+
+    await save_koan_config(cfg)
+    st.projection_store.push_event(
+        "configured_models_listed",
+        build_configured_models_listed([_serialize_configured_model(m) for m in cfg.configured_models]),
+    )
+    _push_model_capabilities(st)
+    return JSONResponse({"ok": True, "model_id": resolution.model_id, "resolved_from": resolution.resolved_from})
 
 
 # -- Initial prompt endpoint --------------------------------------------------
@@ -1675,6 +2105,11 @@ def create_app(app_state: AppState) -> Starlette:
         await _refresh_probe_state(app_state, broadcast=False)
         _push_initial_config_events(app_state)
 
+        # Eagerly populate the provider model overlay in the background.
+        # Non-blocking: an unreachable provider yields an empty overlay entry,
+        # never delays or crashes boot. The eager task must not be awaited here.
+        asyncio.create_task(_refresh_provider_models_eager(app_state))
+
         # Open browser once after server is listening
         if app_state.server.open_browser:
             app_state.server.open_browser = False  # one-shot guard
@@ -1726,15 +2161,23 @@ def create_app(app_state: AppState) -> Starlette:
         Route("/api/eval-harvest", api_eval_harvest, methods=["GET"]),
         Route("/api/run-status", api_run_status, methods=["GET"]),
         Route("/api/probe", api_probe),
-        Route("/api/profiles", api_profiles_list, methods=["GET"]),
-        Route("/api/profiles", api_profiles_create, methods=["POST"]),
-        Route("/api/profiles/{name}", api_profiles_update, methods=["PUT"]),
-        Route("/api/profiles/{name}", api_profiles_delete, methods=["DELETE"]),
+        # /api/profiles routes removed in M5: profile CRUD deleted.
         # /api/agents removed in M4: installation concept fully deleted.
         Route("/api/settings/body", api_settings_body, methods=["GET"]),
         Route("/api/settings/scout-concurrency", api_settings_scout_concurrency, methods=["PUT"]),
-        Route("/api/settings/profile-form", api_settings_profile_form, methods=["GET"]),
-        Route("/api/settings/validate-provider", api_validate_provider, methods=["POST"]),
+        # /api/settings/profile-form removed in M5: profile form endpoints deleted.
+        # /api/settings/provider routes removed in M5: provider mutation is M6 scope.
+        # -- M6: config mutation routes --
+        Route("/api/config/connections", api_config_connection_set, methods=["POST"]),
+        Route("/api/config/connections/{id}", api_config_connection_set, methods=["PUT"]),
+        Route("/api/config/connections/{id}", api_config_connection_delete, methods=["DELETE"]),
+        Route("/api/config/connections/{id}/list-models", api_config_connection_list_models, methods=["POST"]),
+        Route("/api/config/models", api_config_model_set, methods=["POST"]),
+        Route("/api/config/models/newest", api_config_model_newest, methods=["POST"]),
+        Route("/api/config/models/{id}", api_config_model_set, methods=["PUT"]),
+        Route("/api/config/models/{id}", api_config_model_delete, methods=["DELETE"]),
+        Route("/api/config/slots/{slot}", api_config_slot_set, methods=["PUT"]),
+        Route("/api/config/memory/{kind}", api_config_memory_set, methods=["PUT"]),
         Route("/api/initial-prompt", api_initial_prompt, methods=["GET"]),
         Route("/api/sessions", api_sessions_list, methods=["GET"]),
         Route("/api/sessions/{run_id}", api_sessions_delete, methods=["DELETE"]),

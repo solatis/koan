@@ -35,7 +35,7 @@ from koan.web.uploads import (
 @pytest.fixture
 def app_state():
     st = AppState()
-    st.runner_config.config = KoanConfig()
+    st.provider_config.config = KoanConfig()
     return st
 
 
