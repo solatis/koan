@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import os
 import shutil
@@ -1773,6 +1774,25 @@ def create_app(app_state: AppState) -> Starlette:
         init_upload_state(app_state.uploads)
         await _refresh_probe_state(app_state, broadcast=False)
         _push_initial_config_events(app_state)
+
+        # Warm the memory-retrieval stack before we accept any run. Its module
+        # does a top-level `import lancedb` -- a heavy, fork-unsafe native
+        # extension that takes ~seconds to load the first time. On a cold server
+        # that import otherwise fires lazily on the event loop during the first
+        # run, blocking the loop for the duration. That block lands squarely in
+        # the window where a just-spawned agent's CLI fetches tools/list from our
+        # MCP server, so the response never arrives, the agent starts with no
+        # koan tools, never calls koan_complete_step, and the run dies with
+        # bootstrap_failure. Importing it here, off-loop and before the server is
+        # ready, closes that race (subsequent runs were always fine because
+        # lancedb was warm by then). Best-effort: a warmup failure must not stop
+        # the server from starting.
+        try:
+            await asyncio.to_thread(
+                importlib.import_module, "koan.memory.retrieval.index"
+            )
+        except Exception:
+            log.debug("memory-retrieval warmup skipped", exc_info=True)
 
         # Open browser once after server is listening
         if app_state.server.open_browser:
