@@ -31,7 +31,7 @@ def mem_dir(tmp_path: Path) -> Path:
 
 @requires_keys
 @pytest.mark.anyio
-async def test_end_to_end_search(mem_dir: Path) -> None:
+async def test_end_to_end_search(mem_dir: Path, real_credential_store) -> None:
     _write_entry(mem_dir, 1, "Database choice", "We chose PostgreSQL for its ACID guarantees.", "decision")
     _write_entry(mem_dir, 2, "Auth system", "We use JWT tokens for authentication.", "decision")
     _write_entry(mem_dir, 3, "Caching layer", "Redis is used for session caching and rate limiting.", "context")
@@ -48,7 +48,7 @@ async def test_end_to_end_search(mem_dir: Path) -> None:
 
 @requires_keys
 @pytest.mark.anyio
-async def test_search_type_filter_narrows_results(mem_dir: Path) -> None:
+async def test_search_type_filter_narrows_results(mem_dir: Path, real_credential_store) -> None:
     _write_entry(mem_dir, 1, "Decision one", "We chose React for the frontend.", "decision")
     _write_entry(mem_dir, 2, "Procedure one", "Run pytest to execute all tests.", "procedure")
     _write_entry(mem_dir, 3, "Procedure two", "Use uv run to install dependencies.", "procedure")
@@ -62,7 +62,7 @@ async def test_search_type_filter_narrows_results(mem_dir: Path) -> None:
 
 @requires_keys
 @pytest.mark.anyio
-async def test_rag_inject_returns_relevant_entries(mem_dir: Path) -> None:
+async def test_rag_inject_returns_relevant_entries(mem_dir: Path, real_credential_store) -> None:
     _write_entry(mem_dir, 1, "Auth decision", "JWT chosen over sessions for stateless auth.", "decision")
     _write_entry(mem_dir, 2, "DB decision", "PostgreSQL for relational data.", "decision")
     _write_entry(mem_dir, 3, "Caching lesson", "Redis TTL must match session timeout.", "lesson")

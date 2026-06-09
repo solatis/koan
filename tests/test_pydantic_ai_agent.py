@@ -148,7 +148,7 @@ class TestPydanticAIAgentGolden:
 
         original_build_model = adapter_mod.build_model
         original_build_model_settings = adapter_mod.build_model_settings
-        adapter_mod.build_model = lambda spec: TestModel(
+        adapter_mod.build_model = lambda spec, api_key=None, **_: TestModel(
             call_tools=["koan_suggest_next"],
             custom_output_text="Analysis complete.",
         )
@@ -226,7 +226,7 @@ class TestPydanticAIAgentGolden:
 
         orig_bm = adapter_mod.build_model
         orig_bms = adapter_mod.build_model_settings
-        adapter_mod.build_model = lambda s: TestModel(call_tools=[])
+        adapter_mod.build_model = lambda s, api_key=None, **_: TestModel(call_tools=[])
         adapter_mod.build_model_settings = lambda s: {}
         try:
             options = AgentOptions(
@@ -268,7 +268,7 @@ class TestPydanticAIAgentGolden:
         orig_bms = adapter_mod.build_model_settings
         # call_tools=[] so no tools are called; the run produces only text and
         # completes cleanly -- enough to verify that _success is set to True.
-        adapter_mod.build_model = lambda s: TestModel(call_tools=[])
+        adapter_mod.build_model = lambda s, api_key=None, **_: TestModel(call_tools=[])
         adapter_mod.build_model_settings = lambda s: {}
         try:
             options = AgentOptions(
@@ -326,7 +326,7 @@ class TestPydanticAIAgentGolden:
 
         orig_bm = adapter_mod.build_model
         orig_bms = adapter_mod.build_model_settings
-        adapter_mod.build_model = lambda s: TestModel(call_tools=[])
+        adapter_mod.build_model = lambda s, api_key=None, **_: TestModel(call_tools=[])
         adapter_mod.build_model_settings = lambda s: {}
         try:
             options = AgentOptions(
@@ -364,7 +364,7 @@ _GOOGLE_KEY_SET = bool(
     reason="GOOGLE_API_KEY / GEMINI_API_KEY not set -- skipping live Gemini smoke test",
 )
 @pytest.mark.anyio
-async def test_live_gemini_intake_turn_advances_step(tmp_path):
+async def test_live_gemini_intake_turn_advances_step(tmp_path, real_credential_store):
     """Live: a degenerate intake turn on Gemini boots and reaches turn_complete.
 
     Runs PydanticAIAgent.run() with a real Gemini model (google provider).
@@ -398,6 +398,13 @@ async def test_live_gemini_intake_turn_advances_step(tmp_path):
         model="gemini-flash-latest",
         thinking="disabled",
     )
+
+    # Wire the credential store and config so build_model can resolve the Google
+    # API key.  M4: the pre-M1 fallback in pydantic_ai.py finds the first google
+    # connection from cfg.connections and resolves credentials by its id, so the
+    # config must carry a google connection alongside the store.
+    app_state.provider_config.credential_store = real_credential_store
+    app_state.provider_config.config = real_credential_store._config
 
     pai_agent = PydanticAIAgent(
         model_spec=model_spec,

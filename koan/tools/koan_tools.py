@@ -1252,7 +1252,7 @@ async def request_scouts_core(deps: ToolDeps, questions: list[dict] | None) -> s
     from ..run_state import ensure_subagent_directory
     from ..events import build_agents_cleared, build_scout_queued
 
-    semaphore = asyncio.Semaphore(app_state.runner_config.config.scout_concurrency)
+    semaphore = asyncio.Semaphore(app_state.provider_config.config.scout_concurrency)
     run_dir = _resolve_run_dir_core(agent, app_state) or ""
 
     scout_tasks = []

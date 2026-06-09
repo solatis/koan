@@ -2,12 +2,13 @@
 #
 # run_reflect_agent runs a single-conversation tool-calling loop that searches
 # memory as many times as needed, then returns a cited briefing. Uses
-# pydantic-ai with Gemini as the default provider (configurable via
-# KOAN_REFLECT_MODEL). Evaluation is handled through evals/, not unit mocks.
+# pydantic-ai with any chat provider via the adapter.
+# M4: model selection is now driven by the 'reflect_llm' binding in the active
+# provider config.  The KOAN_REFLECT_MODEL env var and DEFAULT_MODEL are removed.
+# Evaluation is handled through evals/, not unit mocks.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from typing import Callable, Literal
 
@@ -26,13 +27,13 @@ from pydantic_ai.output import TextOutput
 from ..types import MemoryEntry
 from ..timestamps import iso_to_ms
 from ...logger import get_logger
+from ..bindings import resolve_memory_binding
 from .backend import search as retrieval_search
 from .index import RetrievalIndex
 from .types import SearchResult
 
 log = get_logger("memory.retrieval.reflect")
 
-DEFAULT_MODEL = "gemini-flash-latest"
 MAX_ITERATIONS = 10
 
 # ---------------------------------------------------------------------------
@@ -181,25 +182,6 @@ class _DoneResult:
 
 
 # ---------------------------------------------------------------------------
-# API-key helpers (module-local, mirroring llm.py pattern)
-# ---------------------------------------------------------------------------
-
-# Kept module-local so reflect's mid-tier client (gemini-flash-latest)
-# stays isolated from llm.py's cheap-tier client (gemini-flash-lite-latest).
-def _api_key() -> str:
-    key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or ""
-    if not key:
-        raise RuntimeError(
-            "GEMINI_API_KEY or GOOGLE_API_KEY environment variable is required"
-        )
-    return key
-
-
-def _model() -> str:
-    return os.environ.get("KOAN_REFLECT_MODEL") or DEFAULT_MODEL
-
-
-# ---------------------------------------------------------------------------
 # Dependencies injected into the agent
 # ---------------------------------------------------------------------------
 
@@ -220,14 +202,33 @@ class _Deps:
 # env vars are resolved at call time, not at import time.
 
 def _build_agent() -> Agent[_Deps, None]:
-    """Build the reflect agent. Called once per run_reflect_agent invocation."""
+    """Build the reflect agent using the 'reflect_llm' binding.
+
+    Model is resolved from the active provider config's reflect_llm binding
+    via resolve_memory_binding.  The model is built provider-agnostically
+    via adapter.build_model.  Existing inference settings are preserved:
+    temperature 0.0 and minimal thinking.  M4 changes which model is
+    selected, not the inference behavior.
+    """
+    from ...agents.adapter import build_model
+    from ...types import ModelSpec
+
     def _reject_text(text: str) -> str:
         raise ModelRetry("Do not produce text output. Call the `done` tool instead.")
 
-    # Use 'google:' provider prefix -- 'google-gla:' is a v1 alias not accepted
-    # by pydantic-ai v2.0.0b5's infer_provider_class.
+    rmm = resolve_memory_binding("reflect_llm")
+    model = build_model(
+        ModelSpec(
+            provider=rmm.provider_type,
+            model=rmm.model_id,
+            thinking="disabled",
+        ),
+        api_key=rmm.api_key,
+        region=rmm.region,
+        base_url=rmm.base_url,
+    )
     agent: Agent[_Deps, str] = Agent(
-        model=f"google:{_model()}",
+        model=model,
         system_prompt=SYSTEM_PROMPT,
         model_settings={
             "temperature": 0.0,
@@ -406,10 +407,11 @@ async def run_reflect_agent(
     """Run the pydantic-ai tool-calling reflection loop and return a cited briefing.
 
     Raises IterationCapExceeded if the model does not call "done" within
-    max_iterations model-request turns. Raises RuntimeError for API-key or
-    client errors. No partial/best-effort answer is synthesized on overflow.
+    max_iterations model-request turns. Raises RuntimeError when the
+    reflect_llm binding is not configured or the build fails. No
+    partial/best-effort answer is synthesized on overflow.
     """
-    _api_key()  # raise early if key is missing, before touching the network
+    resolve_memory_binding("reflect_llm")  # raise early if binding not configured
 
     # Sync the index once before the loop; each retrieval_search call also
     # calls ensure_synced internally, but front-loading it avoids paying the

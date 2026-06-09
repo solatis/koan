@@ -1,6 +1,8 @@
 # Integration test for run_reflect_agent.
 # Requires GEMINI_API_KEY (or GOOGLE_API_KEY) and VOYAGE_API_KEY.
 # These tests are skipped in CI unless the keys are present.
+# After the credential-store migration, the real_credential_store fixture
+# initializes the active store from env vars before any memory operation.
 # Primary evaluation path is evals/; this test exists as a smoke check.
 
 from __future__ import annotations
@@ -56,7 +58,7 @@ def mem_dir(tmp_path: Path) -> Path:
 
 @_SKIP_NO_KEYS
 @pytest.mark.anyio
-async def test_reflect_cites_fixture_entries(mem_dir: Path) -> None:
+async def test_reflect_cites_fixture_entries(mem_dir: Path, real_credential_store) -> None:
     """run_reflect_agent returns citations that all come from the fixture entry set."""
     # Five entries across three types so the model has enough to synthesize.
     _write_entry(

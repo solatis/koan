@@ -57,12 +57,14 @@ def _e(
     )
 
 
-def _proj_with_run(profile: str = "balanced") -> Projection:
-    """Return a Projection with an active run (post run_started)."""
+def _proj_with_run(active_preset: str = "$last") -> Projection:
+    """Return a Projection with an active run (post run_started).
+
+    M5: 'profile' renamed to 'active_preset' in run_started payload.
+    """
     p = Projection()
     return fold(p, _e("run_started", {
-        "profile": profile,
-        "installations": {},
+        "active_preset": active_preset,
         "scout_concurrency": 8,
     }))
 
@@ -90,18 +92,18 @@ class TestFoldRunLifecycle:
     def test_run_started_creates_run(self):
         p = Projection()
         assert p.run is None
-        r = fold(p, _e("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8}))
+        r = fold(p, _e("run_started", {"active_preset": "my-preset", "scout_concurrency": 8}))
         assert r.run is not None
-        assert r.run.config.profile == "balanced"
+        assert r.run.config.active_preset == "my-preset"
         assert r.run.config.scout_concurrency == 8
 
     def test_run_started_resets_run_on_new_start(self):
         """A second run_started replaces the run entirely."""
-        p = _proj_with_run("balanced")
+        p = _proj_with_run("$last")
         # Simulate a new run
-        r = fold(p, _e("run_started", {"profile": "fast", "installations": {}, "scout_concurrency": 4}))
+        r = fold(p, _e("run_started", {"active_preset": "custom-preset", "scout_concurrency": 4}))
         assert r.run is not None
-        assert r.run.config.profile == "fast"
+        assert r.run.config.active_preset == "custom-preset"
         assert r.run.agents == {}
 
     def test_phase_started_sets_phase(self):
@@ -760,32 +762,36 @@ class TestFoldFocus:
         assert isinstance(r.run.focus, ConversationFocus)
         assert r.run.focus.agent_id == "a1"
 
-    def test_profile_created(self):
+    def test_connections_listed(self):
+        """M5: connections_listed replaces profile_created for config entity surfaces."""
         p = Projection()
-        r = fold(p, _e("profile_created", {"name": "fast", "read_only": False, "tiers": {}}))
-        assert "fast" in r.settings.profiles
-        assert r.settings.profiles["fast"].read_only is False
+        r = fold(p, _e("connections_listed", {"connections": [
+            {"id": "g1", "connection_type": "google", "base_url": None, "region": None},
+        ]}))
+        assert len(r.settings.connections) == 1
+        assert r.settings.connections[0].id == "g1"
+        assert r.settings.connections[0].connection_type == "google"
 
-    def test_profile_modified_updates(self):
-        # M3: tier values are nested {provider, model, thinking} dicts.
+    def test_configured_models_listed(self):
         p = Projection()
-        p = fold(p, _e("profile_created", {"name": "fast", "read_only": False, "tiers": {}}))
-        r = fold(p, _e("profile_modified", {"name": "fast", "read_only": False, "tiers": {
-            "scout": {"provider": "google", "model": "gemini-2.5-flash-lite", "thinking": "disabled"},
+        r = fold(p, _e("configured_models_listed", {"configured_models": [
+            {"id": "cm1", "connection_id": "g1", "model_id": "gemini-pro"},
+        ]}))
+        assert len(r.settings.configured_models) == 1
+        assert r.settings.configured_models[0].id == "cm1"
+
+    def test_presets_listed(self):
+        p = Projection()
+        r = fold(p, _e("presets_listed", {"presets": {
+            "$last": {"slots": {"strong": {"configured_model_id": "cm1", "thinking": "high"}}},
         }}))
-        assert r.settings.profiles["fast"].tiers["scout"].provider == "google"
-        assert r.settings.profiles["fast"].tiers["scout"].model == "gemini-2.5-flash-lite"
+        assert "$last" in r.settings.presets
+        assert "strong" in r.settings.presets["$last"].slots
 
-    def test_profile_removed(self):
+    def test_active_changed(self):
         p = Projection()
-        p = fold(p, _e("profile_created", {"name": "fast", "read_only": False, "tiers": {}}))
-        r = fold(p, _e("profile_removed", {"name": "fast"}))
-        assert "fast" not in r.settings.profiles
-
-    def test_default_profile_changed(self):
-        p = Projection()
-        r = fold(p, _e("default_profile_changed", {"name": "fast"}))
-        assert r.settings.default_profile == "fast"
+        r = fold(p, _e("active_changed", {"active": "my-preset"}))
+        assert r.settings.active == "my-preset"
 
     def test_default_scout_concurrency_changed(self):
         p = Projection()
@@ -795,7 +801,7 @@ class TestFoldFocus:
     def test_settings_events_do_not_touch_run(self):
         """Settings events must not modify run state."""
         p = _proj_with_run()
-        r = fold(p, _e("default_profile_changed", {"name": "fast"}))
+        r = fold(p, _e("active_changed", {"active": "custom-preset"}))
         assert r.run is not None
         assert r.run.config == p.run.config
 
@@ -892,13 +898,13 @@ class TestFoldSafety:
 
         # Test the store's exception handling
         store = ProjectionStore()
-        store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+        store.push_event("run_started", {"active_preset": "$last", "scout_concurrency": 8})
         assert store.projection.run is not None
 
         monkeypatch.setattr(proj_mod, "fold", raise_once)
         store2 = proj_mod.ProjectionStore()
         prev = store2.projection
-        store2.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+        store2.push_event("run_started", {"active_preset": "$last", "scout_concurrency": 8})
         # fold raised — projection unchanged
         assert store2.projection == prev
 
@@ -912,12 +918,12 @@ class TestProjectionStore:
     def test_push_increments_version(self):
         store = ProjectionStore()
         assert store.version == 0
-        store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+        store.push_event("run_started", {"active_preset": "$last", "scout_concurrency": 8})
         assert store.version == 1
 
     def test_fold_applied(self):
         store = ProjectionStore()
-        store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+        store.push_event("run_started", {"active_preset": "$last", "scout_concurrency": 8})
         assert store.projection.run is not None
 
     def test_get_snapshot_camelcase(self):
@@ -929,14 +935,17 @@ class TestProjectionStore:
         assert "settings" in state
         assert "run" in state
         assert "notifications" in state
-        # Nested camelCase
+        # Nested camelCase: M5 settings no longer has defaultProfile (profiles removed)
         settings = state["settings"]
-        assert "defaultProfile" in settings       # not default_profile
         assert "defaultScoutConcurrency" in settings  # not default_scout_concurrency
+        # M5: connections, presets, active replace profiles/defaultProfile
+        assert "connections" in settings
+        assert "presets" in settings
+        assert "active" in settings
 
     def test_get_snapshot_includes_version(self):
         store = ProjectionStore()
-        store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+        store.push_event("run_started", {"active_preset": "$last", "scout_concurrency": 8})
         snap = store.get_snapshot()
         assert snap["version"] == 1
 
@@ -944,7 +953,7 @@ class TestProjectionStore:
         """Subscribers get plain dicts (SSE-ready), not VersionedEvent objects."""
         store = ProjectionStore()
         q = store.subscribe()
-        store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+        store.push_event("run_started", {"active_preset": "$last", "scout_concurrency": 8})
         msg = q.get_nowait()
         assert isinstance(msg, dict)
         assert msg["type"] == "patch"
@@ -955,7 +964,7 @@ class TestProjectionStore:
     async def test_subscriber_receives_patch(self):
         store = ProjectionStore()
         q = store.subscribe()
-        store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+        store.push_event("run_started", {"active_preset": "$last", "scout_concurrency": 8})
         msg = await asyncio.wait_for(q.get(), timeout=1.0)
         assert msg["type"] == "patch"
         assert msg["version"] == 1
@@ -967,13 +976,13 @@ class TestProjectionStore:
         store = ProjectionStore()
         q = store.subscribe()
         store.unsubscribe(q)
-        store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+        store.push_event("run_started", {"active_preset": "$last", "scout_concurrency": 8})
         assert q.empty()
 
     def test_no_patch_broadcast_when_no_state_change(self):
         """koan_ tools produce no state change; no patch broadcast."""
         store = ProjectionStore()
-        store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+        store.push_event("run_started", {"active_preset": "$last", "scout_concurrency": 8})
         store.push_event("agent_spawned", {
             "agent_id": "a1", "role": "intake", "is_primary": True,
             "started_at_ms": 0, "label": "", "model": None,
@@ -997,7 +1006,7 @@ class TestJSONPatchPaths:
         """run_started must produce a patch with /run path."""
         store = ProjectionStore()
         q = store.subscribe()
-        store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+        store.push_event("run_started", {"active_preset": "$last", "scout_concurrency": 8})
         msg = q.get_nowait()
         ops = msg["patch"]
         paths = [op["path"] for op in ops]
@@ -1006,7 +1015,7 @@ class TestJSONPatchPaths:
     def test_patch_has_camelcase_agent_fields(self):
         """Agent fields use camelCase in patch paths: lastTool, stepName, etc."""
         store = ProjectionStore()
-        store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+        store.push_event("run_started", {"active_preset": "$last", "scout_concurrency": 8})
         store.push_event("agent_spawned", {
             "agent_id": "a1", "role": "intake", "is_primary": True,
             "started_at_ms": 0, "label": "", "model": None,
@@ -1023,7 +1032,7 @@ class TestJSONPatchPaths:
 
     def test_patch_pending_thinking_camelcase_path(self):
         store = ProjectionStore()
-        store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+        store.push_event("run_started", {"active_preset": "$last", "scout_concurrency": 8})
         store.push_event("agent_spawned", {
             "agent_id": "a1", "role": "intake", "is_primary": True,
             "started_at_ms": 0, "label": "", "model": None,
@@ -1036,20 +1045,21 @@ class TestJSONPatchPaths:
         # pendingThinking must be camelCase
         assert "pendingThinking" in all_paths
 
-    def test_patch_default_profile_camelcase(self):
+    def test_patch_active_changed_camelcase(self):
+        """M5: active_changed replaces default_profile_changed; patch path is /settings/active."""
         store = ProjectionStore()
         q = store.subscribe()
-        store.push_event("default_profile_changed", {"name": "fast"})
+        store.push_event("active_changed", {"active": "my-preset"})
         msg = q.get_nowait()
         ops = msg["patch"]
         all_paths = " ".join(op["path"] for op in ops)
-        assert "defaultProfile" in all_paths
+        assert "/settings/active" in all_paths
 
     def test_run_cleared_produces_run_replace_patch(self):
         # run_cleared must emit at least one patch op touching /run.
         # jsonpatch emits a "replace" op (value: null) when an object becomes None.
         store = ProjectionStore()
-        store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+        store.push_event("run_started", {"active_preset": "$last", "scout_concurrency": 8})
         q = store.subscribe()
         store.push_event("run_cleared", {})
         msg = q.get_nowait()
@@ -1065,7 +1075,7 @@ class TestSnapshotRoundTrip:
 
     def test_snapshot_state_is_camelcase(self):
         store = ProjectionStore()
-        store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+        store.push_event("run_started", {"active_preset": "$last", "scout_concurrency": 8})
         state = store.get_snapshot()["state"]
         run = state["run"]
         assert "config" in run
@@ -1075,7 +1085,7 @@ class TestSnapshotRoundTrip:
 
     def test_snapshot_agent_camelcase(self):
         store = ProjectionStore()
-        store.push_event("run_started", {"profile": "balanced", "installations": {}, "scout_concurrency": 8})
+        store.push_event("run_started", {"active_preset": "$last", "scout_concurrency": 8})
         store.push_event("agent_spawned", {
             "agent_id": "a1", "role": "intake", "is_primary": True,
             "started_at_ms": 1000, "label": "", "model": "opus",
@@ -1290,3 +1300,105 @@ class TestFoldToolAttachments:
         assert isinstance(r.run.agents["a1"].conversation.entries[0], ToolAggregateEntry)
         # ToolAggregateEntry has no attachments field -- just verify entry type unchanged
         assert len(r.run.agents["a1"].conversation.entries) == 1
+
+
+# ---------------------------------------------------------------------------
+# provider_status_listed fold (M3)
+# ---------------------------------------------------------------------------
+
+class TestProviderStatusListedFold:
+
+    def test_provider_status_listed_per_connection(self):
+        """M5: provider_status_listed carries per-connection {connection_id, connection_type, available}.
+
+        Replaces the old per-type {provider, available, region, base_url} shape.
+        """
+        from koan.projections import ConnectionStatusWire
+        p = Projection()
+        connections = [
+            {
+                "connection_id": "bedrock-direct",
+                "connection_type": "bedrock",
+                "available": True,
+            },
+            {
+                "connection_id": "google-direct",
+                "connection_type": "google",
+                "available": False,
+            },
+        ]
+        r = fold(p, _e("provider_status_listed", {"connections": connections}))
+        ps = {entry.connection_id: entry for entry in r.settings.provider_status}
+
+        assert ps["bedrock-direct"].connection_type == "bedrock"
+        assert ps["bedrock-direct"].available is True
+        assert ps["google-direct"].available is False
+
+
+# ---------------------------------------------------------------------------
+# provider_models_listed fold
+# ---------------------------------------------------------------------------
+
+class TestProviderModelsListedFold:
+
+    def test_provider_models_listed_populates_settings(self):
+        """Fold provider_models_listed; Settings.provider_models is populated.
+
+        The event carries a flat cross-provider model list. The fold replaces
+        Settings.provider_models entirely (same replace-all semantics as
+        model_registry_listed). display_name and context_window are threaded
+        through via the ProviderModelWire alias mapping.
+        """
+        p = Projection()
+        models = [
+            {
+                "provider": "lmstudio",
+                "model": "llama-3.2-3b",
+                "display_name": "Llama 3.2 3B",
+                "context_window": 131072,
+            },
+            {
+                "provider": "openai",
+                "model": "gpt-4o",
+                "display_name": "GPT-4o",
+                "context_window": 128000,
+            },
+        ]
+        r = fold(p, _e("provider_models_listed", {"models": models}))
+        assert len(r.settings.provider_models) == 2
+
+        by_model = {pm.model: pm for pm in r.settings.provider_models}
+        assert by_model["llama-3.2-3b"].provider == "lmstudio"
+        assert by_model["llama-3.2-3b"].display_name == "Llama 3.2 3B"
+        assert by_model["llama-3.2-3b"].context_window == 131072
+        assert by_model["gpt-4o"].provider == "openai"
+
+    def test_provider_models_listed_replaces_previous(self):
+        """A second event replaces the first list entirely (no append)."""
+        p = Projection()
+        p = fold(p, _e("provider_models_listed", {"models": [
+            {"provider": "openai", "model": "gpt-4", "display_name": "GPT-4", "context_window": 8192},
+        ]}))
+        r = fold(p, _e("provider_models_listed", {"models": [
+            {"provider": "lmstudio", "model": "gemma-3b", "display_name": "Gemma 3B", "context_window": 8192},
+        ]}))
+        assert len(r.settings.provider_models) == 1
+        assert r.settings.provider_models[0].model == "gemma-3b"
+
+    def test_provider_models_listed_empty_payload_clears(self):
+        """Empty models list clears the overlay."""
+        p = Projection()
+        p = fold(p, _e("provider_models_listed", {"models": [
+            {"provider": "openai", "model": "gpt-4", "display_name": "GPT-4", "context_window": 8192},
+        ]}))
+        r = fold(p, _e("provider_models_listed", {"models": []}))
+        assert r.settings.provider_models == []
+
+    def test_provider_models_listed_does_not_touch_run(self):
+        """provider_models_listed must not modify run state."""
+        p = _proj_with_run()
+        r = fold(p, _e("provider_models_listed", {"models": [
+            {"provider": "lmstudio", "model": "llama-3b", "display_name": "Llama 3B", "context_window": 4096},
+        ]}))
+        assert r.run is not None
+        assert r.run.config == p.run.config

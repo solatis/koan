@@ -1,15 +1,14 @@
 # Validating tests for koan/agents/model_catalog.py.
 #
-# Enforces two invariants introduced in Milestone 2:
-#   1. Every (provider, model) in MODEL_CAPABILITIES AND every model referenced
-#      by the built-in profiles (_GEMINI_TIER_SPECS + _GEMINI_FRONTIER_SPECS)
-#      resolves in the genai-prices bundled snapshot -- price_for_usage succeeds
-#      and returns a positive Decimal (brief decision 4, "validate it").
+# Enforces two invariants:
+#   1. Every (provider, model) in MODEL_CAPABILITIES resolves in the genai-prices
+#      bundled snapshot -- price_for_usage succeeds and returns a positive Decimal.
 #   2. build_model_registry() returns one ModelRegistryEntry per capability entry,
 #      each with a positive (never null) context_window.
 #
-# If either invariant fails, the executor MUST replace the offending model ID with
-# a snapshot-resolvable ID for the same tier before shipping.
+# M1: _GEMINI_TIER_SPECS and _GEMINI_FRONTIER_SPECS removed from registry.py
+# (built-in profiles deleted, brief D12).  The test_builtin_profile_model_price_resolves
+# parametrize that imported those constants is deleted.  context_window_for is added.
 
 from __future__ import annotations
 
@@ -21,11 +20,8 @@ from koan.agents.model_catalog import (
     MODEL_CAPABILITIES,
     PROVIDER_ID_MAP,
     build_model_registry,
+    context_window_for,
     price_for_usage,
-)
-from koan.agents.registry import (
-    _GEMINI_FRONTIER_SPECS,
-    _GEMINI_TIER_SPECS,
 )
 
 
@@ -36,29 +32,12 @@ def _all_offered_models() -> list[tuple[str, str]]:
     return list(MODEL_CAPABILITIES.keys())
 
 
-def _all_builtin_profile_models() -> list[tuple[str, str]]:
-    """Enumerate every (provider, model) referenced by the built-in Gemini profiles."""
-    pairs: list[tuple[str, str]] = []
-    for model_id, _thinking, _ctx in _GEMINI_TIER_SPECS.values():
-        pairs.append(("google", model_id))
-    for model_id, _thinking, _ctx in _GEMINI_FRONTIER_SPECS.values():
-        pairs.append(("google", model_id))
-    return pairs
-
-
 # -- Price resolution tests ---------------------------------------------------
 
 class TestPriceForUsage:
     @pytest.mark.parametrize("provider,model", _all_offered_models())
     def test_offered_model_price_resolves(self, provider: str, model: str) -> None:
         """price_for_usage succeeds and returns a positive Decimal for every catalog model."""
-        result = price_for_usage(provider, model, input_tokens=1000, output_tokens=500)
-        assert isinstance(result, Decimal), f"Expected Decimal, got {type(result)}"
-        assert result > 0, f"Expected positive price for {provider}/{model}, got {result}"
-
-    @pytest.mark.parametrize("provider,model", _all_builtin_profile_models())
-    def test_builtin_profile_model_price_resolves(self, provider: str, model: str) -> None:
-        """price_for_usage succeeds and returns a positive Decimal for every built-in profile model."""
         result = price_for_usage(provider, model, input_tokens=1000, output_tokens=500)
         assert isinstance(result, Decimal), f"Expected Decimal, got {type(result)}"
         assert result > 0, f"Expected positive price for {provider}/{model}, got {result}"
@@ -114,3 +93,86 @@ class TestBuildModelRegistry:
             f"Registry/capabilities mismatch: extra={registry_pairs - capability_pairs}, "
             f"missing={capability_pairs - registry_pairs}"
         )
+
+
+# -- context_window_for tests -------------------------------------------------
+
+class TestContextWindowFor:
+    def test_known_catalog_model_returns_positive_window(self) -> None:
+        """context_window_for returns a positive int for a catalog-known model."""
+        result = context_window_for("google", "gemini-3.1-pro-preview")
+        assert isinstance(result, int)
+        assert result > 0
+
+    def test_known_anthropic_model(self) -> None:
+        """context_window_for returns a positive int for a known Anthropic model."""
+        result = context_window_for("anthropic", "claude-opus-4-0")
+        assert result > 0
+
+    def test_unknown_model_returns_zero(self) -> None:
+        """context_window_for returns 0 for a model not in any source."""
+        result = context_window_for("google", "this-model-does-not-exist-xyz")
+        assert result == 0
+
+    def test_unknown_provider_returns_zero(self) -> None:
+        """context_window_for returns 0 for an unknown provider."""
+        result = context_window_for("unknown-provider", "some-model")
+        assert result == 0
+
+    @pytest.mark.parametrize("provider,model", _all_offered_models())
+    def test_all_catalog_models_have_positive_window(self, provider: str, model: str) -> None:
+        """context_window_for returns > 0 for every MODEL_CAPABILITIES entry."""
+        result = context_window_for(provider, model)
+        assert result > 0, (
+            f"Expected positive context_window for {provider}/{model}, got {result}"
+        )
+
+
+# -- context_window_variants_for tests ----------------------------------------
+
+class TestContextWindowVariantsFor:
+    def test_returns_empty_list_for_unknown_model(self) -> None:
+        """context_window_variants_for returns [] for a model not in CONTEXT_WINDOW_VARIANTS."""
+        from koan.agents.model_catalog import context_window_variants_for
+        assert context_window_variants_for("anthropic", "some-unknown-model") == []
+
+    def test_returns_empty_list_for_current_catalog_models(self) -> None:
+        """No current catalog model advertises a context-window variant."""
+        from koan.agents.model_catalog import context_window_variants_for
+        for provider, model in _all_offered_models():
+            result = context_window_variants_for(provider, model)
+            assert isinstance(result, list)
+
+    def test_reflects_injected_variant(self) -> None:
+        """context_window_variants_for returns the variant list when one is injected."""
+        from koan.agents import model_catalog
+        original = dict(model_catalog.CONTEXT_WINDOW_VARIANTS)
+        model_catalog.CONTEXT_WINDOW_VARIANTS[("anthropic", "test-model")] = [1_000_000]
+        try:
+            result = model_catalog.context_window_variants_for("anthropic", "test-model")
+            assert result == [1_000_000]
+        finally:
+            model_catalog.CONTEXT_WINDOW_VARIANTS.clear()
+            model_catalog.CONTEXT_WINDOW_VARIANTS.update(original)
+
+
+# -- supports_prompt_caching tests --------------------------------------------
+
+class TestSupportsPromptCaching:
+    def test_anthropic_returns_true(self) -> None:
+        """Anthropic supports explicit prompt-caching settings."""
+        from koan.agents.model_catalog import supports_prompt_caching
+        for _provider, model in _all_offered_models():
+            if _provider == "anthropic":
+                assert supports_prompt_caching("anthropic", model) is True
+
+    def test_non_anthropic_returns_false(self) -> None:
+        """Google, OpenAI, Bedrock, lmstudio, and voyage return False."""
+        from koan.agents.model_catalog import supports_prompt_caching
+        for provider in ("google", "openai", "bedrock", "lmstudio", "voyage"):
+            assert supports_prompt_caching(provider, "any-model") is False
+
+    def test_unknown_provider_returns_false(self) -> None:
+        """Unknown provider returns False (graceful fallthrough, brief D5)."""
+        from koan.agents.model_catalog import supports_prompt_caching
+        assert supports_prompt_caching("unknown-provider", "some-model") is False

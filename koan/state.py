@@ -11,13 +11,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+if TYPE_CHECKING:
+    from .credentials import CredentialStore
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 from .config import KoanConfig
 from .projections import ProjectionStore
-from .types import WorkflowPhase, Profile, ProviderStatus, ModelRegistryEntry, SubagentRole
+from .types import WorkflowPhase, ConnectionStatus, ProviderModel, ModelRegistryEntry, SubagentRole
 
 
 @dataclass
@@ -153,22 +156,34 @@ class UploadState:
 
 
 @dataclass
-class RunnerConfigState:
-    """Mutable server-side runner and provider configuration state.
+class ProviderConfigState:
+    """Mutable server-side provider configuration state.
 
-    provider_status replaces the legacy probe_results (ProbeResult list) from M2.
+    Renamed from RunnerConfigState (post-PydanticAI: 'runner' terminology retired).
+    M5: builtin_profiles removed (compute_builtin_profiles returns {}; the shim
+    is deleted); provider_status changed to list[ConnectionStatus] (per-connection
+    availability replaces per-type ProviderStatus, brief D3).
+
     model_registry is additive -- populated at startup alongside provider_status
     and surfaced to the frontend via Settings projection initial events.
+    credential_store is the decrypted, in-memory credential authority for the
+    web/agent path. Set at startup (cli/run.py) before any availability check.
+    provider_models is the per-provider dynamic model overlay (LM Studio + cloud),
+    keyed by provider name and populated by the eager startup task.
     """
 
     config: KoanConfig = field(default_factory=KoanConfig)
-    builtin_profiles: dict[str, Profile] = field(default_factory=dict)
-    # M2: renamed from probe_results; type changed from list[ProbeResult] to
-    # list[ProviderStatus]. Every reader migrated in this change to avoid boot crash.
-    provider_status: list[ProviderStatus] = field(default_factory=list)
+    # M5: per-connection availability (replaces per-type ProviderStatus from M2).
+    provider_status: list[ConnectionStatus] = field(default_factory=list)
     # M2: all-providers model registry sourced from MODEL_CAPABILITIES + genai-prices.
     model_registry: list[ModelRegistryEntry] = field(default_factory=list)
     config_write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Decrypted credential store; None only during test setups that do not
+    # exercise the credential path (provider_available returns False when None).
+    credential_store: "CredentialStore | None" = None
+    # Dynamic model overlay: provider -> list of live-retrieved ProviderModel.
+    # Populated by the eager startup background task; refreshed on model-test.
+    provider_models: dict[str, list[ProviderModel]] = field(default_factory=dict)
 
 
 @dataclass
@@ -219,7 +234,7 @@ class ServerConfig:
 class AppState:
     run: RunState = field(default_factory=RunState)
     interactions: InteractionState = field(default_factory=InteractionState)
-    runner_config: RunnerConfigState = field(default_factory=RunnerConfigState)
+    provider_config: ProviderConfigState = field(default_factory=ProviderConfigState)
     memory: MemoryServices = field(default_factory=MemoryServices)
     uploads: UploadState = field(default_factory=UploadState)
     server: ServerConfig = field(default_factory=ServerConfig)

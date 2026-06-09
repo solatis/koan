@@ -438,7 +438,7 @@ class TestRequestScouts:
         from koan.tools.koan_tools import ToolDeps, request_scouts_core
 
         app_state = FakeAppState(port=9999, run_dir=str(tmp_path))
-        app_state.runner_config.config.scout_concurrency = 1
+        app_state.provider_config.config.scout_concurrency = 1
 
         agent = AgentState(
             agent_id="scout-parent",

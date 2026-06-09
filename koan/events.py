@@ -12,13 +12,16 @@ if TYPE_CHECKING:
 
 
 def build_run_started(
-    profile: str,
-    installations: dict[str, str],
+    active_preset: str,
     scout_concurrency: int,
 ) -> dict:
+    """Build run_started event payload.
+
+    active_preset is the name of the preset active at run start (e.g. '$last').
+    M5: 'profile' renamed to 'active_preset'; 'installations' dropped (removed M4).
+    """
     return {
-        "profile": profile,
-        "installations": installations,
+        "active_preset": active_preset,
         "scout_concurrency": scout_concurrency,
     }
 
@@ -256,14 +259,17 @@ def build_yield_started(suggestions: list[dict]) -> dict:
 # build_probe_completed removed in M4: CLI binary probe and installation concept
 # deleted; provider credential availability uses build_provider_status_listed.
 
-def build_provider_status_listed(providers: list[dict]) -> dict:
+def build_provider_status_listed(connections: list[dict]) -> dict:
     """Build provider_status_listed payload.
 
+    M5: reshaped from per-type {provider, available, ...} to per-connection
+    {connection_id, connection_type, available}.  One entry per configured
+    connection; replaces the old per-provider-type list (brief D3).
+
     Args:
-        providers: list of {provider, available, env_keys} dicts -- one per known
-                   provider; env_keys carries the env var NAMES checked (never values).
+        connections: list of {connection_id, connection_type, available} dicts.
     """
-    return {"providers": providers}
+    return {"connections": connections}
 
 
 def build_model_registry_listed(models: list[dict]) -> dict:
@@ -276,23 +282,77 @@ def build_model_registry_listed(models: list[dict]) -> dict:
     return {"models": models}
 
 
+def build_provider_models_listed(models: list[dict]) -> dict:
+    """Build provider_models_listed payload.
+
+    Args:
+        models: flat cross-provider list of {provider, model, display_name,
+                context_window} dicts (snake_case; consumed by the fold).
+                Replace-all semantics: each event replaces the entire overlay.
+    """
+    return {"models": models}
+
+
 # build_installation_created/modified/removed removed in M4: installation
 # concept deleted; no callers remain after app.py cleanup.
-
-def build_profile_created(name: str, read_only: bool, tiers: dict) -> dict:
-    return {"name": name, "read_only": read_only, "tiers": tiers}
-
-
-def build_profile_modified(name: str, read_only: bool, tiers: dict) -> dict:
-    return {"name": name, "read_only": read_only, "tiers": tiers}
+# build_profile_created/modified/removed/default_profile_changed removed in M5:
+# profile types deleted; projection reshaped to connections/presets (plan-milestone-5.md).
 
 
-def build_profile_removed(name: str) -> dict:
-    return {"name": name}
+def build_connections_listed(connections: list[dict]) -> dict:
+    """Build connections_listed payload.
+
+    Each dict: {id, connection_type, base_url, region}.  Replace-all semantics;
+    one event per startup/refresh reflects the full connections list.
+    """
+    return {"connections": connections}
 
 
-def build_default_profile_changed(name: str) -> dict:
-    return {"name": name}
+def build_configured_models_listed(configured_models: list[dict]) -> dict:
+    """Build configured_models_listed payload.
+
+    Each dict: {id, connection_id, model_id, resolved_from}.  Replace-all.
+    """
+    return {"configured_models": configured_models}
+
+
+def build_presets_listed(presets: dict) -> dict:
+    """Build presets_listed payload.
+
+    presets is a dict of preset_name -> {slots: {slot_name: {configured_model_id,
+    thinking}}}.  Replace-all semantics.
+    """
+    return {"presets": presets}
+
+
+def build_active_changed(active: str) -> dict:
+    """Build active_changed payload.  active is the active preset name."""
+    return {"active": active}
+
+
+def build_memory_bindings_listed(memory_bindings: dict | None) -> dict:
+    """Build memory_bindings_listed payload.
+
+    memory_bindings is a dict with optional keys embedding, memory_llm, reflect_llm,
+    each containing {configured_model_id, thinking}.  None when not configured.
+    """
+    return {"memory_bindings": memory_bindings}
+
+
+def build_model_capabilities_listed(capabilities: list[dict]) -> dict:
+    """Build model_capabilities_listed payload (M6).
+
+    Each dict in capabilities is a ResolvedCapabilitiesWire-shaped entry keyed by
+    configured_model_id.  Replace-all semantics: each event replaces the entire
+    Settings.model_capabilities list.
+
+    Args:
+        capabilities: list of {configured_model_id, thinking_supported, thinking_modes,
+                      thinking_shape, supports_web_search, supports_tools, context_window,
+                      context_window_variants, supports_prompt_caching, tier_hint,
+                      recognized} dicts.
+    """
+    return {"capabilities": capabilities}
 
 
 def build_steering_queued(content: str, timestamp_ms: int) -> dict:

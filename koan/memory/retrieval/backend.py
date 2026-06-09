@@ -6,8 +6,9 @@ import voyageai
 
 from koan.logger import get_logger
 
+from ..bindings import resolve_memory_binding
 from ..parser import parse_entry
-from .index import RetrievalIndex, _embed_query, _voyage_api_key
+from .index import RetrievalIndex, _embed_query
 from .types import SearchResult
 
 log = get_logger("memory.retrieval.backend")
@@ -44,8 +45,15 @@ def _rrf_merge(dense_hits: list[dict], fts_hits: list[dict]) -> list[dict]:
 async def _voyage_rerank(
     query: str, candidates: list[dict], k: int
 ) -> list[dict]:
+    """Rerank candidates using the voyage reranker (model='rerank-2.5').
+
+    Resolves the api_key from the 'embedding' binding's voyage connection.
+    The reranker stays voyage-coupled and always uses model='rerank-2.5'
+    (the reranker is not separately configurable, brief D9).
+    """
     log.debug("voyage_rerank: %d candidates, k=%d", len(candidates), k)
-    client = voyageai.AsyncClient(api_key=_voyage_api_key())
+    rmm = resolve_memory_binding("embedding")
+    client = voyageai.AsyncClient(api_key=rmm.api_key)
     result = await client.rerank(
         query=query,
         documents=[c["body"] for c in candidates],

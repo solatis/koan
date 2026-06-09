@@ -2,6 +2,10 @@
 # providers. The pure mapping functions are tested directly; build_model is
 # tested via a monkeypatched infer_model so no real provider credentials or
 # network are needed (only the prefix-selection logic is under test here).
+#
+# M2: map_thinking and _caching_settings now take a ResolvedCapabilities argument;
+# tests are updated to pass a minimal caps stub rather than using the old two-arg
+# signature.
 
 from __future__ import annotations
 
@@ -9,76 +13,122 @@ import pytest
 
 from koan.agents import adapter
 from koan.agents.base import AgentError
-from koan.types import CachingPolicy, ModelSpec
+from koan.types import CachingPolicy, ModelSpec, ResolvedCapabilities
 
 
-def _spec(provider, model="m", thinking="disabled", caching=None, settings=None):
+def _spec(provider, model="m", thinking="disabled", caching=None, settings=None, context_window=0):
+    """Build a minimal ModelSpec for adapter tests."""
     return ModelSpec(
         provider=provider,
         model=model,
         thinking=thinking,
         settings=settings or {},
         caching=caching or CachingPolicy(),
+        context_window=context_window,
+    )
+
+
+def _caps(
+    thinking_shape="budget",
+    thinking_modes=None,
+    supports_prompt_caching=False,
+    context_window=200_000,
+    context_window_variants=None,
+):
+    """Build a minimal ResolvedCapabilities stub for map_thinking / caching tests."""
+    return ResolvedCapabilities(
+        thinking_supported=thinking_shape != "none",
+        thinking_modes=list(thinking_modes if thinking_modes is not None else ["low", "medium", "high"]),
+        thinking_shape=thinking_shape,
+        supports_web_search=False,
+        supports_tools=True,
+        context_window=context_window,
+        supports_prompt_caching=supports_prompt_caching,
+        context_window_variants=list(context_window_variants or []),
     )
 
 
 # -- map_thinking --------------------------------------------------------------
 
 
-def test_map_thinking_google_disabled_suppresses_thoughts():
-    assert adapter.map_thinking("google", "disabled") == {
-        "google_thinking_config": {"include_thoughts": False}
-    }
+def test_map_thinking_google_disabled_returns_empty():
+    """Disabled mode always returns {} -- the caller never needs a special disable path."""
+    caps = _caps("budget", thinking_modes=["low", "medium", "high"])
+    assert adapter.map_thinking("google", caps, "disabled") == {}
+
+
+def test_map_thinking_google_mode_not_in_caps_returns_empty():
+    """A thinking mode not in caps.thinking_modes returns {} (unsupported)."""
+    caps = _caps("budget", thinking_modes=["low"])
+    assert adapter.map_thinking("google", caps, "high") == {}
 
 
 def test_map_thinking_google_budget():
-    out = adapter.map_thinking("google", "high")
+    """Google budget shape emits google_thinking_config with the token budget."""
+    caps = _caps("budget", thinking_modes=["low", "medium", "high"])
+    out = adapter.map_thinking("google", caps, "high")
     assert out["google_thinking_config"]["thinking_budget"] == 8192
     assert out["google_thinking_config"]["include_thoughts"] is True
 
 
-def test_map_thinking_anthropic():
-    assert adapter.map_thinking("anthropic", "disabled") == {}
-    assert adapter.map_thinking("anthropic", "medium") == {
-        "anthropic_thinking": {"type": "enabled", "budget_tokens": 2048}
-    }
+def test_map_thinking_anthropic_budget():
+    """Anthropic budget shape emits anthropic_thinking with type=enabled and budget_tokens."""
+    caps = _caps("budget", thinking_modes=["medium", "high"])
+    assert adapter.map_thinking("anthropic", caps, "disabled") == {}
+    result = adapter.map_thinking("anthropic", caps, "medium")
+    assert result == {"anthropic_thinking": {"type": "enabled", "budget_tokens": 2048}}
+
+
+def test_map_thinking_anthropic_adaptive():
+    """Anthropic adaptive shape emits anthropic_thinking with type=adaptive (no budget)."""
+    caps = _caps("adaptive", thinking_modes=["low", "medium", "high"])
+    result = adapter.map_thinking("anthropic", caps, "medium")
+    assert result == {"anthropic_thinking": {"type": "adaptive"}}
 
 
 def test_map_thinking_openai_effort():
-    assert adapter.map_thinking("openai", "disabled") == {}
-    assert adapter.map_thinking("openai", "low") == {"openai_reasoning_effort": "low"}
-    # xhigh/max collapse to high (OpenAI has no finer knob).
-    assert adapter.map_thinking("openai", "xhigh") == {"openai_reasoning_effort": "high"}
+    """OpenAI effort shape emits openai_reasoning_effort."""
+    caps = _caps("effort", thinking_modes=["low", "medium", "high", "xhigh", "max"])
+    assert adapter.map_thinking("openai", caps, "disabled") == {}
+    assert adapter.map_thinking("openai", caps, "low") == {"openai_reasoning_effort": "low"}
+    # xhigh/max collapse to high (OpenAI has no finer knob above high).
+    assert adapter.map_thinking("openai", caps, "xhigh") == {"openai_reasoning_effort": "high"}
 
 
 def test_map_thinking_bedrock_is_noop():
-    assert adapter.map_thinking("bedrock", "high") == {}
+    """Bedrock has no portable thinking knob -- map_thinking returns {} for any mode."""
+    caps = _caps("budget", thinking_modes=["high"])
+    assert adapter.map_thinking("bedrock", caps, "high") == {}
 
 
-def test_map_thinking_unknown_provider_raises():
-    with pytest.raises(NotImplementedError):
-        adapter.map_thinking("cohere", "high")
+def test_map_thinking_unknown_provider_returns_empty():
+    """Unrecognized providers fall through gracefully (brief D5) rather than raising."""
+    caps = _caps("budget", thinking_modes=["high"])
+    assert adapter.map_thinking("cohere", caps, "high") == {}
 
 
 # -- caching -------------------------------------------------------------------
 
 
 def test_caching_off_emits_nothing():
+    """CachingPolicy(mode='off') always suppresses cache settings."""
     s = adapter.build_model_settings(
-        _spec("anthropic", caching=CachingPolicy(mode="off"))
+        _spec("anthropic", model="claude-opus-4-0", caching=CachingPolicy(mode="off"))
     )
     assert not any(k.startswith("anthropic_cache") for k in s)
 
 
 def test_caching_anthropic_auto_sets_ttl():
+    """Anthropic auto mode emits cache_instructions and cache_tool_definitions with TTL."""
     s = adapter.build_model_settings(
-        _spec("anthropic", caching=CachingPolicy(mode="auto", ttl="1h"))
+        _spec("anthropic", model="claude-opus-4-0", caching=CachingPolicy(mode="auto", ttl="1h"))
     )
     assert s["anthropic_cache_instructions"] == "1h"
     assert s["anthropic_cache_tool_definitions"] == "1h"
 
 
 def test_caching_google_openai_bedrock_noop():
+    """Google/OpenAI/Bedrock do not emit anthropic cache settings (capability-gated)."""
     for provider in ("google", "openai", "bedrock"):
         s = adapter.build_model_settings(
             _spec(provider, caching=CachingPolicy(mode="auto"))
@@ -87,11 +137,39 @@ def test_caching_google_openai_bedrock_noop():
 
 
 def test_build_model_settings_merges_spec_settings_and_thinking():
+    """build_model_settings merges user settings with capability-driven thinking.
+
+    Uses an o1-mini model which the OpenAI profile recognises as a reasoning model
+    (always-on thinking), ensuring thinking_modes is populated for the test.
+    """
+    # o1-mini is an always-on reasoning model; thinking_modes should include "low".
     s = adapter.build_model_settings(
-        _spec("openai", thinking="low", settings={"temperature": 0.2})
+        _spec("openai", model="o1-mini", thinking="low", settings={"temperature": 0.2})
     )
     assert s["temperature"] == 0.2
     assert s["openai_reasoning_effort"] == "low"
+
+
+# -- context-window variant ----------------------------------------------------
+
+
+def test_context_variant_settings_no_variant_returns_empty():
+    """_context_variant_settings returns {} when no variant is selected."""
+    caps = _caps(context_window=200_000, context_window_variants=[])
+    spec = _spec("anthropic", model="claude-opus-4-0", context_window=0)
+    assert adapter._context_variant_settings(spec, caps) == {}
+
+
+def test_context_variant_settings_logs_warning_when_variant_selected(caplog):
+    """_context_variant_settings logs a warning and returns {} when a variant is selected
+    but no beta string is configured (plan constraint: never crash, log and continue)."""
+    import logging
+    caps = _caps(context_window=200_000, context_window_variants=[1_000_000])
+    spec = _spec("anthropic", model="claude-opus-4-0", context_window=1_000_000)
+    with caplog.at_level(logging.WARNING, logger="koan.adapter"):
+        result = adapter._context_variant_settings(spec, caps)
+    assert result == {}
+    assert "variant" in caplog.text.lower() or "beta" in caplog.text.lower()
 
 
 # -- build_model ---------------------------------------------------------------
@@ -102,17 +180,177 @@ def test_build_model_unknown_provider_raises_agenterror():
         adapter.build_model(_spec("cohere"))
 
 
+def test_build_model_key_requiring_provider_no_key_raises():
+    """build_model raises missing_credentials for google/anthropic/openai without api_key."""
+    for provider in ("google", "anthropic", "openai"):
+        with pytest.raises(AgentError) as exc:
+            adapter.build_model(_spec(provider, model="m"))
+        assert exc.value.diagnostic.code == "missing_credentials"
+
+
+def test_build_model_bedrock_no_region_raises():
+    """build_model raises missing_region for bedrock when no region is supplied."""
+    with pytest.raises(AgentError) as exc:
+        adapter.build_model(_spec("bedrock", model="m"))
+    assert exc.value.diagnostic.code == "missing_region"
+
+
+def test_build_model_bedrock_keyless_with_region_builds_explicit():
+    """build_model builds a BedrockConverseModel without an api_key when a region is given.
+
+    The keyless-with-region path lets boto3 resolve AWS credentials via its
+    default chain (profile/SSO/IAM) without requiring a stored bearer token.
+    """
+    from pydantic_ai.models.bedrock import BedrockConverseModel
+    model = adapter.build_model(_spec("bedrock", model="us.amazon.nova-pro-v1:0"), region="us-east-1")
+    assert isinstance(model, BedrockConverseModel)
+
+
 @pytest.mark.parametrize(
-    "provider,prefix",
-    [("google", "google"), ("anthropic", "anthropic"), ("openai", "openai"), ("bedrock", "bedrock")],
+    "provider,model_cls_path",
+    [
+        ("google", "pydantic_ai.models.google.GoogleModel"),
+        ("anthropic", "pydantic_ai.models.anthropic.AnthropicModel"),
+        ("openai", "pydantic_ai.models.openai.OpenAIChatModel"),
+        ("bedrock", "pydantic_ai.models.bedrock.BedrockConverseModel"),
+    ],
 )
-def test_build_model_uses_provider_prefix(provider, prefix, monkeypatch):
-    captured = {}
+def test_build_model_with_api_key_builds_explicit_model(provider, model_cls_path):
+    """build_model with api_key constructs a provider-typed model (no infer_model).
 
-    def fake_infer(model_str):
-        captured["model_str"] = model_str
-        return object()
+    region='us-east-1' is passed for all providers to satisfy the bedrock
+    missing_region gate; non-bedrock providers ignore the region kwarg.
+    """
+    import importlib
+    model = adapter.build_model(
+        _spec(provider, model="test-model"),
+        api_key="test-key",
+        region="us-east-1",
+    )
+    module_path, cls_name = model_cls_path.rsplit(".", 1)
+    mod = importlib.import_module(module_path)
+    cls = getattr(mod, cls_name)
+    assert isinstance(model, cls)
 
-    monkeypatch.setattr("pydantic_ai.models.infer_model", fake_infer)
-    adapter.build_model(_spec(provider, model="X"))
-    assert captured["model_str"] == f"{prefix}:X"
+
+def test_build_model_threads_region_and_base_url_bedrock(monkeypatch):
+    """build_model passes region_name, api_key, and base_url into BedrockProvider.
+
+    Monkeypatches the provider and model classes to capture constructor kwargs
+    so we can assert the exact parameter names without real AWS credentials.
+    """
+    captured: dict = {}
+
+    class _FakeProvider:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    class _FakeModel:
+        def __init__(self, model, provider=None):
+            pass
+
+    monkeypatch.setattr("pydantic_ai.providers.bedrock.BedrockProvider", _FakeProvider)
+    monkeypatch.setattr("pydantic_ai.models.bedrock.BedrockConverseModel", _FakeModel)
+    adapter.build_model(
+        _spec("bedrock", model="m"),
+        api_key="k",
+        region="us-west-2",
+        base_url="https://ep",
+    )
+    assert captured == {"region_name": "us-west-2", "api_key": "k", "base_url": "https://ep"}
+
+
+def test_build_model_threads_base_url_openai(monkeypatch):
+    """build_model passes api_key and base_url into OpenAIProvider; no region key.
+
+    Confirms that region/region_name is not forwarded to non-bedrock providers.
+    """
+    captured: dict = {}
+
+    class _FakeProvider:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    class _FakeModel:
+        def __init__(self, model, provider=None):
+            pass
+
+    monkeypatch.setattr("pydantic_ai.providers.openai.OpenAIProvider", _FakeProvider)
+    monkeypatch.setattr("pydantic_ai.models.openai.OpenAIChatModel", _FakeModel)
+    adapter.build_model(
+        _spec("openai", model="gpt-4"),
+        api_key="sk-test",
+        base_url="https://proxy.example.com",
+    )
+    assert captured.get("api_key") == "sk-test"
+    assert captured.get("base_url") == "https://proxy.example.com"
+    assert "region" not in captured
+    assert "region_name" not in captured
+
+# -- lmstudio -----------------------------------------------------------------
+
+
+def test_map_thinking_lmstudio_returns_empty():
+    """lmstudio has no koan-managed thinking knob -- map_thinking returns {}."""
+    caps = _caps("none", thinking_modes=[])
+    assert adapter.map_thinking("lmstudio", caps, "disabled") == {}
+    assert adapter.map_thinking("lmstudio", caps, "high") == {}
+
+
+def test_build_model_lmstudio_raises_without_base_url():
+    """build_model raises missing_base_url when base_url is absent for lmstudio."""
+    from koan.agents.base import AgentError
+    with pytest.raises(AgentError) as exc_info:
+        adapter.build_model(_spec("lmstudio", model="any-model"))
+    assert exc_info.value.diagnostic.code == "missing_base_url"
+
+
+def test_build_model_lmstudio_uses_openai_path(monkeypatch):
+    """build_model for lmstudio constructs OpenAIChatModel with placeholder api_key and base_url.
+
+    Confirms no real credential is read and the OpenAI SDK path is used.
+    """
+    captured: dict = {}
+
+    class _FakeProvider:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    class _FakeModel:
+        def __init__(self, model, provider=None):
+            pass
+
+    monkeypatch.setattr("pydantic_ai.providers.openai.OpenAIProvider", _FakeProvider)
+    monkeypatch.setattr("pydantic_ai.models.openai.OpenAIChatModel", _FakeModel)
+    adapter.build_model(
+        _spec("lmstudio", model="local-model"),
+        base_url="http://localhost:1234/v1",
+    )
+    assert captured.get("api_key") == "lm-studio"
+    assert captured.get("base_url") == "http://localhost:1234/v1"
+
+
+def test_build_model_lmstudio_accepts_explicit_key(monkeypatch):
+    """build_model for lmstudio uses the provided api_key when given (non-None).
+
+    The OpenAI SDK placeholder is the fallback, not a hard override.
+    """
+    captured: dict = {}
+
+    class _FakeProvider:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    class _FakeModel:
+        def __init__(self, model, provider=None):
+            pass
+
+    monkeypatch.setattr("pydantic_ai.providers.openai.OpenAIProvider", _FakeProvider)
+    monkeypatch.setattr("pydantic_ai.models.openai.OpenAIChatModel", _FakeModel)
+    adapter.build_model(
+        _spec("lmstudio", model="local-model"),
+        api_key="custom-key",
+        base_url="http://localhost:1234/v1",
+    )
+    # When an explicit key is supplied it should be used, not the placeholder.
+    assert captured.get("api_key") == "custom-key"

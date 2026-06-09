@@ -154,13 +154,11 @@ async def spawn_subagent(
     # the registry entirely (FakeAgent path).
     if agent_impl is None:
         try:
-            config = app_state.runner_config.config
+            config = app_state.provider_config.config
             registry = AgentRegistry()
             # resolve_model_spec replaces resolve_agent_config; returns a ModelSpec.
-            model_spec = registry.resolve_model_spec(
-                role, config,
-                builtin_profiles=app_state.runner_config.builtin_profiles,
-            )
+            # M5: builtin_profiles param removed from resolve_model_spec.
+            model_spec = registry.resolve_model_spec(role, config)
             # M2 seam: PydanticAIAgent wired here; the legacy binary spawn path
             # is non-functional after the M1 config reshape.
             # Lazy import to avoid a circular dependency: koan/agents imports from

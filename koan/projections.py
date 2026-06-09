@@ -88,15 +88,22 @@ EventType = Literal[
     # Settings
     # probe_completed / installation_* removed in M4: installation concept and
     # CLI binary probe deleted; provider credentials are the availability model.
-    "profile_created",
-    "profile_modified",
-    "profile_removed",
-    "default_profile_changed",
+    # profile_created/modified/removed/default_profile_changed removed in M5:
+    # profile types deleted; replaced by connections/presets config events.
     "default_scout_concurrency_changed",
     "workflows_listed",
-    # M2: provider availability + model catalog initial events
-    "provider_status_listed",
+    # M2: model catalog initial event (kept; provider_status_listed reshaped M5)
     "model_registry_listed",
+    # Dynamic per-provider model overlay (LM Studio + cloud providers)
+    "provider_models_listed",
+    # M5: new config entity events (replace profile events)
+    "connections_listed",
+    "configured_models_listed",
+    "presets_listed",
+    "active_changed",
+    "memory_bindings_listed",
+    # M5: provider_status_listed retained but reshaped to per-connection
+    "provider_status_listed",
     # Memory curation — orchestrator blocked in koan_memory_propose
     "memory_curation_started",
     "memory_curation_cleared",
@@ -415,40 +422,85 @@ class Agent(KoanBaseModel):
 
 # Installation model removed in M4: the agent installation concept is deleted.
 # CLI binary configurations are replaced by provider credential availability.
+# ProfileTierWire, Profile (wire), ProviderStatusWire removed in M5: profile
+# types deleted; replaced by ConnectionWire, ConnectionStatusWire, etc. (plan-milestone-5.md).
 
-class ProfileTierWire(KoanBaseModel):
-    """Wire representation of one profile tier slot.
 
-    Carries the provider/model/thinking triple that _serialize_profile emits and
-    that api_profiles_create/update accepts. Replaces the old role->alias string.
+class ConnectionStatusWire(KoanBaseModel):
+    """Wire representation of per-connection availability (M5).
+
+    Replaces ProviderStatusWire (which was per-type).  Payload shape:
+    {connections: [{connection_id, connection_type, available}, ...]}.
+    Fold sets Settings.provider_status from the connections list.
     """
 
-    provider: str
-    model: str
+    connection_id: str
+    connection_type: str
+    available: bool
+
+
+class ConnectionWire(KoanBaseModel):
+    """Wire representation of a Connection from config (M5).
+
+    Carries non-secret endpoint settings only; the credential lives in the
+    credential store keyed by connection_id (brief D3).
+    """
+
+    id: str
+    connection_type: str
+    base_url: str | None = None
+    region: str | None = None
+
+
+class ConfiguredModelWire(KoanBaseModel):
+    """Wire representation of a ConfiguredModel from config (M5).
+
+    A (connection, model-id) pair; global, referenced by slot assignments.
+    """
+
+    id: str
+    connection_id: str
+    model_id: str
+    resolved_from: str | None = None
+
+
+class ResolvedCapabilitiesWire(KoanBaseModel):
+    """Read-only resolved capability snapshot for one configured model (M6).
+
+    Populated by resolve_capabilities(conn.type, cm.model_id) and surfaced via
+    Settings.model_capabilities.  Never persisted and never asked -- computed
+    from the PydanticAI profile + koan bundled knowledge + recognition parse
+    (brief D4/D5).  Keyed by configured_model_id so the UI can join against the
+    configured_models list without an extra lookup.
+    """
+
+    configured_model_id: str
+    thinking_supported: bool = False
+    thinking_modes: list[str] = []
+    thinking_shape: str = "none"
+    supports_web_search: bool = False
+    supports_tools: bool = True
+    context_window: int = 0
+    context_window_variants: list[int] = []
+    supports_prompt_caching: bool = False
+    tier_hint: str | None = None
+    recognized: bool = True
+
+
+class SlotAssignmentWire(KoanBaseModel):
+    """Wire representation of a SlotAssignment inside a preset (M5)."""
+
+    configured_model_id: str
     thinking: str = "disabled"
 
 
-class Profile(KoanBaseModel):
-    """Maps tier names to model selections for a workflow run.
+class PresetWire(KoanBaseModel):
+    """Wire representation of a Preset (M5).
 
-    tiers changed from dict[str,str] (role->alias) to dict[str,ProfileTierWire]
-    in M3 when profile CRUD moved from the installation model to ModelSpec.
+    slots maps role-slot names (strong/standard/cheap) to SlotAssignmentWire.
     """
 
-    name: str
-    read_only: bool = False
-    tiers: dict[str, ProfileTierWire] = {}
-
-class ProviderStatusWire(KoanBaseModel):
-    """Wire representation of ProviderStatus pushed by the provider_status_listed event.
-
-    Payload shape: {providers: [{provider, available, env_keys}, ...]}.
-    Fold sets Settings.provider_status from the providers list.
-    """
-
-    provider: str
-    available: bool
-    env_keys: list[str] = []
+    slots: dict[str, SlotAssignmentWire] = {}
 
 
 class ModelRegistryEntryWire(KoanBaseModel):
@@ -467,6 +519,21 @@ class ModelRegistryEntryWire(KoanBaseModel):
     tier_hint: str | None = None
 
 
+class ProviderModelWire(KoanBaseModel):
+    """Wire representation of ProviderModel pushed by the provider_models_listed event.
+
+    Payload shape: {models: [{provider, model, display_name, context_window}, ...]}.
+    The alias_generator=to_camel emits displayName/contextWindow on the wire.
+    Fold sets Settings.provider_models from the flat cross-provider models list;
+    replace-all semantics (same as model_registry_listed).
+    """
+
+    provider: str
+    model: str
+    display_name: str
+    context_window: int = 0
+
+
 class Settings(KoanBaseModel):
     """Top-level projection settings populated at server startup.
 
@@ -474,25 +541,40 @@ class Settings(KoanBaseModel):
     workflows_listed initial event and never updated after that. It is placed
     here (rather than on Run) so the frontend can read it before any run starts.
 
-    provider_status and model_registry (M2) are populated by initial events pushed
-    from _push_initial_config_events; they follow the same Settings-channel pattern
-    as workflows_listed (not a new HTTP endpoint).
-
-    M4: installations removed -- the agent installation concept is deleted;
-    provider credentials are the availability model.
+    M5: profiles/default_profile removed; replaced by connections, configured_models,
+    presets, active, memory_bindings (the new config entity surfaces).
+    provider_status reshaped to per-connection ConnectionStatusWire (brief D3).
+    model_registry and provider_models kept; they are capability/listing surfaces
+    owned by M6.
     """
-    profiles: dict[str, Profile] = {}             # name -> Profile
-    default_profile: str = "balanced"
+    # M5: new config entity surfaces (replace profiles/default_profile)
+    connections: list[ConnectionWire] = []
+    configured_models: list[ConfiguredModelWire] = []
+    presets: dict[str, PresetWire] = {}
+    active: str = "$last"
+    # memory_bindings stored as opaque dict; M6 will add a typed wire shape.
+    memory_bindings: dict | None = None
+    # M5: per-connection availability (replaces per-type provider_status from M2)
+    provider_status: list[ConnectionStatusWire] = []
     default_scout_concurrency: int = 8
     workflows: list[WorkflowInfo] = []            # populated once by workflows_listed at startup
-    # M2: provider availability (replaces probe_completed for the settings surface)
-    provider_status: list[ProviderStatusWire] = []
-    # M2: all-providers model registry (source for profile form options in M3)
+    # M2: all-providers model registry (capability/listing surface; M6 owns reshape)
     model_registry: list[ModelRegistryEntryWire] = []
+    # Dynamic per-provider model overlay; populated by provider_models_listed events.
+    provider_models: list[ProviderModelWire] = []
+    # M6: read-only per-configured-model capability snapshot; populated by
+    # model_capabilities_listed.  Recomputed on startup and on any mutation
+    # that touches connections or configured_models (a connection's type
+    # determines its models' resolved capabilities).
+    model_capabilities: list[ResolvedCapabilitiesWire] = []
+
 
 class RunConfig(KoanBaseModel):
-    """Resolved configuration frozen at run start."""
-    profile: str
+    """Resolved configuration frozen at run start.
+
+    M5: 'profile' renamed to 'active_preset'; installations dropped (removed M4).
+    """
+    active_preset: str  # name of the preset active when the run started
     # installations removed in M4: agent installation concept deleted.
     scout_concurrency: int = 8
 
@@ -849,9 +931,9 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
             # ── Run lifecycle ──────────────────────────────────────────────
 
             case "run_started":
+                # M5: 'profile' renamed to 'active_preset' in payload and RunConfig.
                 config = RunConfig(
-                    profile=payload.get("profile", ""),
-                    installations=payload.get("installations", {}),
+                    active_preset=payload.get("active_preset", ""),
                     scout_concurrency=payload.get("scout_concurrency", 8),
                 )
                 return projection.model_copy(update={"run": Run(config=config)})
@@ -2007,62 +2089,70 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
 
             # probe_completed / installation_* fold cases removed in M4:
             # installation concept and CLI binary probe deleted.
+            # profile_created/modified/removed/default_profile_changed removed in M5:
+            # profile types deleted; replaced by connections/presets fold cases below.
 
-            case "profile_created":
-                name = payload.get("name", "")
-                raw_tiers = payload.get("tiers", {})
-                # M3: tiers are now nested {provider, model, thinking} dicts emitted
-                # by _serialize_profile. Construct ProfileTierWire from each dict;
-                # skip non-dict values rather than coercing to avoid silent type errors.
-                tiers: dict[str, ProfileTierWire] = {}
-                for role, val in raw_tiers.items():
-                    if isinstance(val, dict):
-                        tiers[role] = ProfileTierWire(
-                            provider=val.get("provider", ""),
-                            model=val.get("model", ""),
-                            thinking=val.get("thinking", "disabled"),
-                        )
-                profile = Profile(
-                    name=name,
-                    read_only=payload.get("read_only", False),
-                    tiers=tiers,
-                )
-                new_profiles = dict(projection.settings.profiles)
-                new_profiles[name] = profile
-                new_settings = projection.settings.model_copy(update={"profiles": new_profiles})
+            case "connections_listed":
+                # Replace-all: {connections: [{id, connection_type, base_url, region}, ...]}.
+                raw_conns = payload.get("connections", [])
+                new_conns = [
+                    ConnectionWire(
+                        id=c.get("id", ""),
+                        connection_type=c.get("connection_type", ""),
+                        base_url=c.get("base_url"),
+                        region=c.get("region"),
+                    )
+                    for c in raw_conns
+                ]
+                new_settings = projection.settings.model_copy(update={"connections": new_conns})
                 return projection.model_copy(update={"settings": new_settings})
 
-            case "profile_modified":
-                name = payload.get("name", "")
-                raw_tiers = payload.get("tiers", {})
-                # M3: same shape as profile_created -- nested {provider, model, thinking}.
-                tiers = {}
-                for role, val in raw_tiers.items():
-                    if isinstance(val, dict):
-                        tiers[role] = ProfileTierWire(
-                            provider=val.get("provider", ""),
-                            model=val.get("model", ""),
-                            thinking=val.get("thinking", "disabled"),
-                        )
-                profile = Profile(
-                    name=name,
-                    read_only=payload.get("read_only", False),
-                    tiers=tiers,
-                )
-                new_profiles = dict(projection.settings.profiles)
-                new_profiles[name] = profile
-                new_settings = projection.settings.model_copy(update={"profiles": new_profiles})
+            case "configured_models_listed":
+                # Replace-all: {configured_models: [{id, connection_id, model_id, resolved_from}, ...]}.
+                raw_cms = payload.get("configured_models", [])
+                new_cms = [
+                    ConfiguredModelWire(
+                        id=m.get("id", ""),
+                        connection_id=m.get("connection_id", ""),
+                        model_id=m.get("model_id", ""),
+                        resolved_from=m.get("resolved_from"),
+                    )
+                    for m in raw_cms
+                ]
+                new_settings = projection.settings.model_copy(update={"configured_models": new_cms})
                 return projection.model_copy(update={"settings": new_settings})
 
-            case "profile_removed":
-                name = payload.get("name", "")
-                new_profiles = {k: v for k, v in projection.settings.profiles.items() if k != name}
-                new_settings = projection.settings.model_copy(update={"profiles": new_profiles})
+            case "presets_listed":
+                # Replace-all: {presets: {name: {slots: {slot_name: {configured_model_id, thinking}}}}}.
+                raw_presets = payload.get("presets", {})
+                new_presets: dict[str, PresetWire] = {}
+                for preset_name, preset_raw in raw_presets.items():
+                    if not isinstance(preset_raw, dict):
+                        continue
+                    slots_raw = preset_raw.get("slots", {})
+                    slots: dict[str, SlotAssignmentWire] = {}
+                    for slot_name, slot_raw in (slots_raw.items() if isinstance(slots_raw, dict) else []):
+                        if isinstance(slot_raw, dict):
+                            slots[slot_name] = SlotAssignmentWire(
+                                configured_model_id=slot_raw.get("configured_model_id", ""),
+                                thinking=slot_raw.get("thinking", "disabled"),
+                            )
+                    new_presets[preset_name] = PresetWire(slots=slots)
+                new_settings = projection.settings.model_copy(update={"presets": new_presets})
                 return projection.model_copy(update={"settings": new_settings})
 
-            case "default_profile_changed":
+            case "active_changed":
+                # Payload {active: str}: update the active preset pointer.
                 new_settings = projection.settings.model_copy(update={
-                    "default_profile": payload.get("name", "balanced"),
+                    "active": payload.get("active", "$last"),
+                })
+                return projection.model_copy(update={"settings": new_settings})
+
+            case "memory_bindings_listed":
+                # Payload {memory_bindings: dict | None}: stored opaque for now;
+                # M6 may add a proper wire subtype when the mutation surface lands.
+                new_settings = projection.settings.model_copy(update={
+                    "memory_bindings": payload.get("memory_bindings"),
                 })
                 return projection.model_copy(update={"settings": new_settings})
 
@@ -2087,16 +2177,16 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 return projection.model_copy(update={"settings": new_settings})
 
             case "provider_status_listed":
-                # Payload: {providers: [{provider, available, env_keys}, ...]}.
-                # Replaces probe_completed as the canonical provider-availability signal in M2.
-                raw_providers = payload.get("providers", [])
+                # M5: payload reshaped from {providers: [{provider, available, ...}]} to
+                # {connections: [{connection_id, connection_type, available}]}.
+                raw_conns = payload.get("connections", [])
                 new_ps = [
-                    ProviderStatusWire(
-                        provider=p.get("provider", ""),
-                        available=p.get("available", False),
-                        env_keys=p.get("env_keys", []),
+                    ConnectionStatusWire(
+                        connection_id=c.get("connection_id", ""),
+                        connection_type=c.get("connection_type", ""),
+                        available=c.get("available", False),
                     )
-                    for p in raw_providers
+                    for c in raw_conns
                 ]
                 new_settings = projection.settings.model_copy(update={"provider_status": new_ps})
                 return projection.model_copy(update={"settings": new_settings})
@@ -2118,6 +2208,49 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                     for m in raw_models
                 ]
                 new_settings = projection.settings.model_copy(update={"model_registry": new_mr})
+                return projection.model_copy(update={"settings": new_settings})
+
+            case "provider_models_listed":
+                # Payload: {models: [{provider, model, display_name, context_window}, ...]}.
+                # Flat cross-provider list; replace-all semantics (same as model_registry_listed).
+                # Populated by the eager startup task and refreshed on Test/save.
+                raw_pm = payload.get("models", [])
+                new_pm = [
+                    ProviderModelWire(
+                        provider=m.get("provider", ""),
+                        model=m.get("model", ""),
+                        display_name=m.get("display_name", ""),
+                        context_window=m.get("context_window", 0),
+                    )
+                    for m in raw_pm
+                ]
+                new_settings = projection.settings.model_copy(update={"provider_models": new_pm})
+                return projection.model_copy(update={"settings": new_settings})
+
+            case "model_capabilities_listed":
+                # Replace-all: {capabilities: [{configured_model_id, thinking_supported,
+                # thinking_modes, thinking_shape, supports_web_search, supports_tools,
+                # context_window, context_window_variants, supports_prompt_caching,
+                # tier_hint, recognized}, ...]}.
+                # Recomputed on startup and on any connection/configured-model mutation.
+                raw_caps = payload.get("capabilities", [])
+                new_caps = [
+                    ResolvedCapabilitiesWire(
+                        configured_model_id=c.get("configured_model_id", ""),
+                        thinking_supported=c.get("thinking_supported", False),
+                        thinking_modes=c.get("thinking_modes", []),
+                        thinking_shape=c.get("thinking_shape", "none"),
+                        supports_web_search=c.get("supports_web_search", False),
+                        supports_tools=c.get("supports_tools", True),
+                        context_window=c.get("context_window", 0),
+                        context_window_variants=c.get("context_window_variants", []),
+                        supports_prompt_caching=c.get("supports_prompt_caching", False),
+                        tier_hint=c.get("tier_hint"),
+                        recognized=c.get("recognized", True),
+                    )
+                    for c in raw_caps
+                ]
+                new_settings = projection.settings.model_copy(update={"model_capabilities": new_caps})
                 return projection.model_copy(update={"settings": new_settings})
 
             case "yield_started":

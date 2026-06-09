@@ -5,10 +5,16 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import sys
 from pathlib import Path
 
+from ..config import load_koan_config, save_koan_config
+from ..credentials import (
+    CredentialStore,
+    get_key_backend,
+    set_active_credential_store,
+)
+from ..memory.bindings import set_active_provider_config
 from ..memory import ops
 from ..memory.retrieval import RetrievalIndex, search as retrieval_search, inject as rag_inject
 from ..memory.retrieval import (
@@ -34,8 +40,37 @@ def _die(msg: str) -> None:
     sys.exit(1)
 
 
+def _init_credentials() -> None:
+    """Initialize the active credential store and provider config for the memory CLI.
+
+    Loads config, constructs the store, and sets the module-level active store
+    and provider config.  Persists the config only when undecryptable envelopes
+    were pruned at construction.  M1: env-seeding removed (brief D13 --
+    credentials are fully manual).  M4: set_active_provider_config is called
+    so memory bindings can be resolved.  Must be called before any operation
+    that resolves a provider key (reflect, status, index).
+    """
+    config = asyncio.run(load_koan_config())
+    store = CredentialStore(config, get_key_backend())
+    if store.pruned:
+        asyncio.run(save_koan_config(config))
+    set_active_credential_store(store)
+    set_active_provider_config(config)
+
+
 def _has_api_key() -> bool:
-    return bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
+    """True when the memory_llm binding is configured and has credentials.
+
+    Uses resolve_memory_binding to verify the memory LLM can be instantiated.
+    _init_credentials() must have been called before this returns a meaningful
+    result (it is called at the top of cmd_memory dispatch).
+    """
+    try:
+        from ..memory.bindings import resolve_memory_binding
+        resolve_memory_binding("memory_llm")
+        return True
+    except Exception:
+        return False
 
 
 def _print_human_readable(result: dict) -> None:
@@ -93,7 +128,7 @@ def cmd_status(args: argparse.Namespace) -> None:
     store = _make_store()
     if store.summary_is_stale() and not _has_api_key():
         print(
-            "koan status: summary is stale but GEMINI_API_KEY is not set"
+            "koan status: summary is stale but no Google API key in credential store"
             " -- cannot regenerate",
             file=sys.stderr,
         )
@@ -246,6 +281,9 @@ def cmd_reflect(args: argparse.Namespace) -> None:
 
 
 def cmd_memory(args: argparse.Namespace) -> None:
+    # Initialize the credential store once at entry so all sub-commands
+    # (status, reflect, search) resolve provider keys from the store.
+    _init_credentials()
     cmd = getattr(args, "memory_command", None)
     if cmd == "memorize":
         cmd_memorize(args)

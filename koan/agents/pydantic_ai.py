@@ -11,7 +11,7 @@
 # The Agent protocol's subprocess-shaped members (register_process, exit_code,
 # stderr_output, list_models) are no-ops pending the M6 protocol slim.
 #
-# node/event -> StreamEvent translation map (verified against pydantic-ai 2.0.0b5):
+# node/event -> StreamEvent translation map (verified against pydantic-ai 2.0.0b6):
 #
 #  ModelRequestNode stream events:
 #    PartStartEvent(TextPart)         -> token_delta if part.content (Gemini ships
@@ -265,9 +265,60 @@ class PydanticAIAgent:
         # defeat the patch.
         import koan.agents.adapter as _adapter_mod
 
+        # Resolve the full provider auth (secret + non-secret region/base_url) by
+        # looking up the Connection by connection_id from the ModelSpec, then
+        # calling resolve_provider_auth(connection, store).
+        # The store is None only in tests that skip the credential path.
+        store = self._app_state.provider_config.credential_store
+        cfg = self._app_state.provider_config.config
+        conn_id = self._model_spec.connection_id
+        connection = next(
+            (c for c in (cfg.connections if cfg else [])
+             if c.id == conn_id),
+            None,
+        )
+        # Raise only when a non-empty connection_id was specified but not found.
+        # An empty connection_id means no connection was assigned (pre-M1 ModelSpec
+        # or test path); fall back to resolving by provider type in that case.
+        if connection is None and conn_id:
+            raise AgentError(AgentDiagnostic(
+                code="unconfigured",
+                agent=self.name,
+                stage="spawn",
+                message=(
+                    f"Connection '{conn_id}' not found in config. "
+                    "Ensure the connection is configured before starting a run."
+                ),
+            ))
+        if connection is not None:
+            resolved = _adapter_mod.resolve_provider_auth(connection, store)
+        else:
+            # Pre-M1 fallback: no connection_id on spec (empty string).
+            # Find the first connection of this provider type in the config
+            # and resolve credentials by its connection id.  Requires
+            # app_state.provider_config.config to carry a matching connection.
+            # M4: removed type-keyed store.resolve() call; now finds the
+            # connection by type from config.connections instead.
+            conn_for_type = next(
+                (c for c in (cfg.connections if cfg else [])
+                 if c.type == self._model_spec.provider),
+                None,
+            )
+            if conn_for_type is not None:
+                resolved = _adapter_mod.resolve_provider_auth(conn_for_type, store)
+            else:
+                resolved = _adapter_mod.ResolvedProviderAuth(
+                    api_key=None, region=None, base_url=None
+                )
+
         # Build the provider model and settings from the resolved ModelSpec.
         try:
-            model = _adapter_mod.build_model(self._model_spec)
+            model = _adapter_mod.build_model(
+                self._model_spec,
+                resolved.api_key,
+                region=resolved.region,
+                base_url=resolved.base_url,
+            )
             model_settings = _adapter_mod.build_model_settings(self._model_spec)
         except Exception as e:
             raise AgentError(AgentDiagnostic(
@@ -304,7 +355,7 @@ class PydanticAIAgent:
 
         # Build the history processor that drains pending_context_files before
         # each model request and injects them as <project_instructions> user
-        # messages. ProcessHistory is the v2.0.0b5 replacement for the
+        # messages. ProcessHistory is the v2.0.0b6 replacement for the
         # deprecated history_processors kwarg; it calls before_model_request.
         from pydantic_ai.capabilities.process_history import ProcessHistory
         context_processor = make_context_history_processor(deps)

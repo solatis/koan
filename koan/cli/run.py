@@ -17,8 +17,10 @@ from pathlib import Path
 
 import uvicorn
 
-from ..config import load_koan_config
+from ..config import load_koan_config, save_koan_config
+from ..credentials import CredentialStore, get_key_backend, set_active_credential_store
 from ..logger import get_logger
+from ..memory.bindings import set_active_provider_config
 from ..state import AppState, hydrate_memory_projection
 from ..web.app import FRONTEND_DIST, create_app
 
@@ -109,7 +111,26 @@ def cmd_run(args: argparse.Namespace) -> None:
 
     config = asyncio.run(load_koan_config())
     app_state = AppState()
-    app_state.runner_config.config = config
+    app_state.provider_config.config = config
+
+    # Initialize the credential store BEFORE any provider availability check
+    # or memory operation. The store must be set on provider_config and as the
+    # module-level active store so both web/agent paths and memory modules
+    # resolve credentials without touching os.environ.
+    # M1: env-seeding (seed_from_env) is removed (brief D13 -- credentials are
+    # fully manual).  Only persist when stale envelopes were pruned at load.
+    try:
+        store = CredentialStore(config, get_key_backend())
+        if store.pruned:
+            asyncio.run(save_koan_config(config))
+            log.info("credentials: persisted config after pruning stale envelopes")
+        app_state.provider_config.credential_store = store
+        set_active_credential_store(store)
+        # M4: set the active provider config so the memory subsystem can
+        # resolve memory bindings (embedding, memory_llm, reflect_llm).
+        set_active_provider_config(config)
+    except Exception as exc:
+        log.error("credentials: store initialization failed -- providers will be unavailable: %s", exc)
     app_state.server.port = port
     app_state.server.address = address
     app_state.server.open_browser = not args.no_open

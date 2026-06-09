@@ -261,7 +261,7 @@ def _test_model(call_tools):
     from pydantic_ai.models.test import TestModel
     import koan.agents.adapter as adapter_mod
     orig_bm, orig_bms = adapter_mod.build_model, adapter_mod.build_model_settings
-    adapter_mod.build_model = lambda spec: TestModel(
+    adapter_mod.build_model = lambda spec, api_key=None, **_: TestModel(
         call_tools=call_tools, custom_output_text="done for now",
     )
     adapter_mod.build_model_settings = lambda spec: {}
@@ -388,7 +388,7 @@ async def test_partstart_first_chunk_emitted(tmp_path):
 
     orig_bm = adapter_mod.build_model
     orig_bms = adapter_mod.build_model_settings
-    adapter_mod.build_model = lambda s: FunctionModel(stream_function=stream_func)
+    adapter_mod.build_model = lambda s, api_key=None, **_: FunctionModel(stream_function=stream_func)
     adapter_mod.build_model_settings = lambda s: {}
     try:
         events: list[StreamEvent] = [

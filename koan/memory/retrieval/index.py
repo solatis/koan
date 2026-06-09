@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import os
 import re
 from pathlib import Path
 
@@ -11,10 +10,9 @@ import pyarrow as pa
 import voyageai
 from lancedb.index import FTS
 
+from ..bindings import embedding_dim_for, resolve_memory_binding
 from ..parser import parse_entry
 
-VOYAGE_MODEL = "voyage-4-large"
-VOYAGE_DIM = 1024
 TABLE_NAME = "entries"
 _ENTRY_PATTERN = re.compile(r"^(\d{4})-.*\.md$")
 
@@ -30,16 +28,21 @@ def _entry_id_from_name(name: str) -> int | None:
     return int(m.group(1))
 
 
-def _voyage_api_key() -> str:
-    key = os.environ.get("VOYAGE_API_KEY") or ""
-    if not key:
-        raise RuntimeError("VOYAGE_API_KEY environment variable is required")
-    return key
-
-
 async def _embed_texts(texts: list[str], input_type: str) -> list[list[float]]:
-    client = voyageai.AsyncClient(api_key=_voyage_api_key())
-    result = await client.embed(texts, model=VOYAGE_MODEL, input_type=input_type)
+    """Embed texts using the voyage provider from the active 'embedding' binding.
+
+    Uses the 'embedding' binding in the active provider config.  The binding
+    must point at a voyage connection; embeddings are voyage-only (brief D9).
+    Raises RuntimeError when the binding is missing or the provider is not voyage.
+    """
+    rmm = resolve_memory_binding("embedding")
+    if rmm.provider_type != "voyage":
+        raise RuntimeError(
+            f"Memory embedding binding must use a voyage connection; "
+            f"got provider_type={rmm.provider_type!r}."
+        )
+    client = voyageai.AsyncClient(api_key=rmm.api_key)
+    result = await client.embed(texts, model=rmm.model_id, input_type=input_type)
     return result.embeddings
 
 
@@ -48,7 +51,14 @@ async def _embed_query(text: str) -> list[float]:
     return result[0]
 
 
-def _lancedb_schema() -> pa.Schema:
+def _lancedb_schema(dim: int) -> pa.Schema:
+    """Build the LanceDB schema parameterized by embedding dimension.
+
+    dim is resolved from embedding_dim_for(provider_type, model_id) at
+    table-creation time.  Changing the embedding model requires a manual
+    vector-store rebuild since the dimension is baked into the LanceDB schema
+    once the table is created (brief D10 -- no auto re-index).
+    """
     return pa.schema([
         pa.field("entry_id", pa.int32()),
         pa.field("file_path", pa.utf8()),
@@ -58,7 +68,7 @@ def _lancedb_schema() -> pa.Schema:
         pa.field("modified", pa.utf8()),
         pa.field("body", pa.utf8()),
         pa.field("content_hash", pa.utf8()),
-        pa.field("vector", pa.list_(pa.float32(), VOYAGE_DIM)),
+        pa.field("vector", pa.list_(pa.float32(), dim)),
     ])
 
 
@@ -77,8 +87,12 @@ class RetrievalIndex:
     async def _sync(self) -> None:
         conn = await lancedb.connect_async(str(self._index_path))
 
-        # Create-or-open: exist_ok=True returns existing table without overwriting data
-        table = await conn.create_table(TABLE_NAME, schema=_lancedb_schema(), exist_ok=True)
+        # Resolve the embedding binding once to get the schema dimension.
+        # exist_ok=True returns the existing table without overwriting data;
+        # the schema argument is used only when creating a new table.
+        rmm = resolve_memory_binding("embedding")
+        dim = embedding_dim_for(rmm.provider_type, rmm.model_id)
+        table = await conn.create_table(TABLE_NAME, schema=_lancedb_schema(dim), exist_ok=True)
 
         # Load existing hashes: entry_id -> content_hash
         rows = await table.query().select(["entry_id", "content_hash"]).to_list()

@@ -1,236 +1,312 @@
-# Unit tests for M1 config schema and adapter: ModelSpec resolution,
-# built-in profile computation, config round-trip, and credential resolution.
+# Unit tests for M1 config schema and adapter: new round-trip, ModelSpec
+# resolution via slot/preset/connection, compute_builtin_profiles returning {},
+# and resolve_provider_auth with the new Connection-based signature.
 
 from __future__ import annotations
 
 import asyncio
-import json
-import os
 
 import pytest
 
-from koan.agents.adapter import resolve_credentials
-from koan.agents.registry import AgentRegistry, compute_builtin_profiles
+from koan.agents.registry import AgentRegistry
 from koan.config import KoanConfig, load_koan_config, save_koan_config
+from koan.credentials import CredentialStore, FileKeyBackend
 from koan.types import (
     CachingPolicy,
+    ConfiguredModel,
+    Connection,
     ModelSpec,
-    Profile,
-    ProfileTier,
-    ProviderAuth,
+    MemoryBinding,
+    MemoryBindings,
+    Preset,
+    SlotAssignment,
 )
 
 
-# -- resolve_model_spec --------------------------------------------------------
+# -- helpers ------------------------------------------------------------------
+
+def _make_minimal_config(
+    conn_id: str = "google-direct",
+    conn_type: str = "google",
+    cm_id: str = "gemini-pro-cm",
+    model_id: str = "gemini-3.1-pro-preview",
+) -> KoanConfig:
+    """Build a minimal KoanConfig with one connection, one model, and a $last preset."""
+    conn = Connection(id=conn_id, type=conn_type)
+    cm = ConfiguredModel(id=cm_id, connection_id=conn_id, model_id=model_id)
+    slot = SlotAssignment(configured_model_id=cm_id, thinking="high")
+    preset = Preset(slots={"strong": slot, "standard": slot, "cheap": slot})
+    return KoanConfig(
+        connections=[conn],
+        configured_models=[cm],
+        presets={"$last": preset},
+        active="$last",
+    )
+
+
+def _make_credential_store(config: KoanConfig, tmp_path, monkeypatch) -> CredentialStore:
+    """Build a CredentialStore with a tmp master key."""
+    monkeypatch.setattr("koan.credentials.MASTER_KEY_PATH", tmp_path / "master.key")
+    return CredentialStore(config, FileKeyBackend())
+
+
+# -- resolve_model_spec -------------------------------------------------------
 
 class TestResolveModelSpec:
-    def _make_config(self, profile: Profile) -> KoanConfig:
-        """Build a KoanConfig with a single profile and no provider_auth."""
-        return KoanConfig(profiles=[], active_profile=profile.name)
-
-    def _gemini_profile(self, name: str) -> Profile:
-        """Build a simple Gemini profile with strong/standard/cheap tiers."""
-        return Profile(name=name, tiers={
-            "strong":   ProfileTier(model=ModelSpec(provider="google", model="gemini-pro",   thinking="high")),
-            "standard": ProfileTier(model=ModelSpec(provider="google", model="gemini-flash", thinking="medium")),
-            "cheap":    ProfileTier(model=ModelSpec(provider="google", model="gemini-lite",  thinking="disabled")),
-        })
-
-    def test_orchestrator_resolves_strong_tier(self):
-        """Orchestrator maps to 'strong' tier and returns its ModelSpec."""
-        profile = self._gemini_profile("balanced")
-        config = KoanConfig(active_profile="balanced")
+    def test_orchestrator_resolves_strong_slot(self, tmp_path, monkeypatch):
+        """Orchestrator maps to 'strong' slot and returns a ModelSpec with connection_id."""
+        config = _make_minimal_config()
         reg = AgentRegistry()
-        spec = reg.resolve_model_spec("orchestrator", config, builtin_profiles={"balanced": profile})
+        spec = reg.resolve_model_spec("orchestrator", config)
         assert spec.provider == "google"
-        assert spec.model == "gemini-pro"
+        assert spec.model == "gemini-3.1-pro-preview"
+        assert spec.thinking == "high"
+        assert spec.connection_id == "google-direct"
+
+    def test_executor_resolves_standard_slot(self, tmp_path, monkeypatch):
+        """Executor maps to 'standard' slot."""
+        config = _make_minimal_config()
+        reg = AgentRegistry()
+        spec = reg.resolve_model_spec("executor", config)
+        assert spec.connection_id == "google-direct"
+
+    def test_scout_resolves_cheap_slot(self, tmp_path, monkeypatch):
+        """Scout maps to 'cheap' slot."""
+        config = _make_minimal_config()
+        reg = AgentRegistry()
+        spec = reg.resolve_model_spec("scout", config)
+        assert spec.connection_id == "google-direct"
         assert spec.thinking == "high"
 
-    def test_intake_resolves_strong_tier(self):
-        """Intake role maps to 'strong' tier."""
-        profile = self._gemini_profile("balanced")
-        config = KoanConfig(active_profile="balanced")
-        reg = AgentRegistry()
-        spec = reg.resolve_model_spec("intake", config, builtin_profiles={"balanced": profile})
-        assert spec.model == "gemini-pro"
-
-    def test_planner_resolves_strong_tier(self):
-        """Planner role maps to 'strong' tier."""
-        profile = self._gemini_profile("balanced")
-        config = KoanConfig(active_profile="balanced")
-        reg = AgentRegistry()
-        spec = reg.resolve_model_spec("planner", config, builtin_profiles={"balanced": profile})
-        assert spec.model == "gemini-pro"
-
-    def test_executor_resolves_standard_tier(self):
-        """Executor role maps to 'standard' tier."""
-        profile = self._gemini_profile("balanced")
-        config = KoanConfig(active_profile="balanced")
-        reg = AgentRegistry()
-        spec = reg.resolve_model_spec("executor", config, builtin_profiles={"balanced": profile})
-        assert spec.model == "gemini-flash"
-        assert spec.thinking == "medium"
-
-    def test_scout_resolves_cheap_tier(self):
-        """Scout role maps to 'cheap' tier."""
-        profile = self._gemini_profile("balanced")
-        config = KoanConfig(active_profile="balanced")
-        reg = AgentRegistry()
-        spec = reg.resolve_model_spec("scout", config, builtin_profiles={"balanced": profile})
-        assert spec.model == "gemini-lite"
-        assert spec.thinking == "disabled"
-
-    def test_missing_profile_raises_agent_error(self):
-        """Missing active profile raises AgentError with code 'no_profile'."""
+    def test_missing_preset_raises_unconfigured(self):
+        """Missing active preset raises AgentError with code 'unconfigured'."""
         from koan.agents.base import AgentError
-        config = KoanConfig(active_profile="nonexistent")
+        config = KoanConfig()  # no presets
         reg = AgentRegistry()
         with pytest.raises(AgentError) as exc:
-            reg.resolve_model_spec("orchestrator", config, builtin_profiles={})
-        assert exc.value.diagnostic.code == "no_profile"
+            reg.resolve_model_spec("orchestrator", config)
+        assert exc.value.diagnostic.code == "unconfigured"
+
+    def test_missing_slot_raises_unconfigured(self):
+        """Preset with no 'strong' slot raises AgentError with code 'unconfigured'."""
+        from koan.agents.base import AgentError
+        conn = Connection(id="g", type="google")
+        cm = ConfiguredModel(id="m", connection_id="g", model_id="flash")
+        # Only cheap slot assigned; orchestrator needs strong.
+        preset = Preset(slots={"cheap": SlotAssignment(configured_model_id="m", thinking="disabled")})
+        config = KoanConfig(
+            connections=[conn],
+            configured_models=[cm],
+            presets={"$last": preset},
+        )
+        reg = AgentRegistry()
+        with pytest.raises(AgentError) as exc:
+            reg.resolve_model_spec("orchestrator", config)
+        assert exc.value.diagnostic.code == "unconfigured"
+
+    def test_missing_configured_model_raises_unconfigured(self):
+        """Slot pointing to a non-existent configured_model_id raises unconfigured."""
+        from koan.agents.base import AgentError
+        conn = Connection(id="g", type="google")
+        slot = SlotAssignment(configured_model_id="nonexistent-cm", thinking="high")
+        preset = Preset(slots={"strong": slot})
+        config = KoanConfig(
+            connections=[conn],
+            configured_models=[],  # no matching model
+            presets={"$last": preset},
+        )
+        reg = AgentRegistry()
+        with pytest.raises(AgentError) as exc:
+            reg.resolve_model_spec("orchestrator", config)
+        assert exc.value.diagnostic.code == "unconfigured"
+
+    def test_missing_connection_raises_unconfigured(self):
+        """ConfiguredModel pointing to a non-existent connection raises unconfigured."""
+        from koan.agents.base import AgentError
+        cm = ConfiguredModel(id="m", connection_id="nonexistent-conn", model_id="flash")
+        slot = SlotAssignment(configured_model_id="m", thinking="high")
+        preset = Preset(slots={"strong": slot})
+        config = KoanConfig(
+            connections=[],  # no matching connection
+            configured_models=[cm],
+            presets={"$last": preset},
+        )
+        reg = AgentRegistry()
+        with pytest.raises(AgentError) as exc:
+            reg.resolve_model_spec("orchestrator", config)
+        assert exc.value.diagnostic.code == "unconfigured"
+
+    def test_context_window_set_from_catalog(self):
+        """ModelSpec.context_window is populated from context_window_for."""
+        config = _make_minimal_config(
+            model_id="gemini-3.1-pro-preview",
+        )
+        reg = AgentRegistry()
+        spec = reg.resolve_model_spec("orchestrator", config)
+        # gemini-3.1-pro-preview is in MODEL_CAPABILITIES with a 1_000_000 fallback.
+        assert spec.context_window == 1_000_000
 
 
-# -- compute_builtin_profiles --------------------------------------------------
+# compute_builtin_profiles tests removed in M5: function deleted (plan-milestone-5.md).
 
-class TestComputeBuiltinProfiles:
-    def test_returns_balanced_and_frontier(self):
-        """compute_builtin_profiles returns at least balanced and frontier profiles."""
-        profiles = compute_builtin_profiles()
-        assert "balanced" in profiles
-        assert "frontier" in profiles
-
-    def test_balanced_tiers_are_google_provider(self):
-        """All balanced profile tiers use provider='google'."""
-        profiles = compute_builtin_profiles()
-        balanced = profiles["balanced"]
-        for tier in ("strong", "standard", "cheap"):
-            assert tier in balanced.tiers, f"Missing tier: {tier}"
-            assert balanced.tiers[tier].model.provider == "google"
-
-    def test_frontier_tiers_are_google_provider(self):
-        """All frontier profile tiers use provider='google'."""
-        profiles = compute_builtin_profiles()
-        frontier = profiles["frontier"]
-        for tier in ("strong", "standard", "cheap"):
-            assert tier in frontier.tiers, f"Missing tier: {tier}"
-            assert frontier.tiers[tier].model.provider == "google"
-
-    def test_probe_results_ignored(self):
-        """M2: compute_builtin_profiles takes no argument; probe_results param removed."""
-        # Both calls return identical results (probe_results was vestigial and is now gone).
-        profiles_a = compute_builtin_profiles()
-        profiles_b = compute_builtin_profiles()
-        assert profiles_a["balanced"].tiers.keys() == profiles_b["balanced"].tiers.keys()
-        for tier in ("strong", "standard", "cheap"):
-            assert (
-                profiles_a["balanced"].tiers[tier].model.provider
-                == profiles_b["balanced"].tiers[tier].model.provider
-            )
-
-
-# -- Config round-trip ---------------------------------------------------------
+# -- Config round-trip (new schema) -------------------------------------------
 
 class TestConfigRoundTrip:
     @pytest.mark.anyio
-    async def test_provider_auth_and_model_spec_round_trip(self, tmp_path, monkeypatch):
-        """KoanConfig with provider_auth and a ModelSpec profile round-trips through save/load."""
-        config_path = tmp_path / "config.json"
+    async def test_new_schema_round_trip(self, tmp_path, monkeypatch):
+        """KoanConfig with new schema round-trips through save/load correctly."""
+        config_path = tmp_path / "config.yaml"
         monkeypatch.setattr("koan.config.CONFIG_PATH", config_path)
         monkeypatch.setattr("koan.config._config_write_lock", None)
 
-        spec = ModelSpec(
-            provider="google",
-            model="gemini-pro",
+        conn = Connection(
+            id="anthropic-direct",
+            type="anthropic",
+            region="us-east-1",
+            base_url="https://example.test",
+        )
+        cm = ConfiguredModel(
+            id="opus-cm",
+            connection_id="anthropic-direct",
+            model_id="claude-opus-4-0",
+            resolved_from="newest(claude-opus)@2026-06-08 -> claude-opus-4-0",
+        )
+        slot = SlotAssignment(
+            configured_model_id="opus-cm",
             thinking="high",
-            settings={"temperature": 0.2},
             caching=CachingPolicy(mode="auto", ttl="5m"),
-            context_window=1_000_000,
         )
-        auth = ProviderAuth(
-            provider="google",
-            env_keys=["GOOGLE_API_KEY", "GEMINI_API_KEY"],
-        )
-        profile = Profile(name="my-profile", tiers={
-            "strong": ProfileTier(model=spec),
-        })
+        preset = Preset(slots={"strong": slot})
         original = KoanConfig(
-            provider_auth=[auth],
-            profiles=[profile],
-            active_profile="my-profile",
+            connections=[conn],
+            configured_models=[cm],
+            presets={"$last": preset},
+            active="$last",
             scout_concurrency=4,
         )
 
         await save_koan_config(original)
         loaded = await load_koan_config()
 
-        assert loaded.active_profile == "my-profile"
+        assert loaded.active == "$last"
         assert loaded.scout_concurrency == 4
-        assert len(loaded.provider_auth) == 1
-        pa = loaded.provider_auth[0]
-        assert pa.provider == "google"
-        assert pa.env_keys == ["GOOGLE_API_KEY", "GEMINI_API_KEY"]
-        assert len(loaded.profiles) == 1
-        p = loaded.profiles[0]
-        assert p.name == "my-profile"
-        tier = p.tiers["strong"]
-        assert tier.model.provider == "google"
-        assert tier.model.model == "gemini-pro"
-        assert tier.model.thinking == "high"
-        assert tier.model.context_window == 1_000_000
+        assert len(loaded.connections) == 1
+        c = loaded.connections[0]
+        assert c.id == "anthropic-direct"
+        assert c.type == "anthropic"
+        assert c.region == "us-east-1"
+        assert c.base_url == "https://example.test"
+
+        assert len(loaded.configured_models) == 1
+        m = loaded.configured_models[0]
+        assert m.id == "opus-cm"
+        assert m.connection_id == "anthropic-direct"
+        assert m.model_id == "claude-opus-4-0"
+        assert m.resolved_from is not None
+
+        assert "$last" in loaded.presets
+        p = loaded.presets["$last"]
+        assert "strong" in p.slots
+        s = p.slots["strong"]
+        assert s.configured_model_id == "opus-cm"
+        assert s.thinking == "high"
 
     @pytest.mark.anyio
-    async def test_legacy_agent_installations_key_stripped_on_save(self, tmp_path, monkeypatch):
-        """Saving a KoanConfig strips the legacy agentInstallations key from existing files."""
-        config_path = tmp_path / "config.json"
+    async def test_memory_bindings_round_trip(self, tmp_path, monkeypatch):
+        """MemoryBindings persists and loads correctly."""
+        config_path = tmp_path / "config.yaml"
         monkeypatch.setattr("koan.config.CONFIG_PATH", config_path)
         monkeypatch.setattr("koan.config._config_write_lock", None)
 
-        # Write a legacy-format file with agentInstallations key.
-        config_path.write_text(json.dumps({
-            "agentInstallations": [{"alias": "old-claude", "runnerType": "claude", "binary": "/bin/claude"}],
-            "scoutConcurrency": 8,
-        }), "utf-8")
+        original = KoanConfig(
+            memory=MemoryBindings(
+                embedding=MemoryBinding(configured_model_id="voyage-cm"),
+                memory_llm=MemoryBinding(configured_model_id="gemini-flash-cm"),
+                reflect_llm=MemoryBinding(configured_model_id="gemini-pro-cm"),
+            ),
+        )
+        await save_koan_config(original)
+        loaded = await load_koan_config()
 
+        assert loaded.memory is not None
+        assert loaded.memory.embedding.configured_model_id == "voyage-cm"
+        assert loaded.memory.memory_llm.configured_model_id == "gemini-flash-cm"
+        assert loaded.memory.reflect_llm.configured_model_id == "gemini-pro-cm"
+
+
+# TestShimProperties removed in M5: profiles/active_profile shim deleted from KoanConfig.
+
+# -- resolve_provider_auth (new signature) ------------------------------------
+
+class TestResolveProviderAuth:
+    """Tests for the Connection-based resolve_provider_auth."""
+
+    def _make_store(self, conn: Connection, secret: str, tmp_path, monkeypatch) -> CredentialStore:
+        """Build a store with one connection id's secret stored."""
+        monkeypatch.setattr("koan.credentials.MASTER_KEY_PATH", tmp_path / "master.key")
+        config = KoanConfig(connections=[conn])
+        store = CredentialStore(config, FileKeyBackend())
+        store.set(conn.id, secret)
+        return store
+
+    def test_resolves_api_key_and_region_from_connection(self, tmp_path, monkeypatch):
+        """resolve_provider_auth returns api_key from store and region/base_url from Connection."""
+        from koan.agents.adapter import ResolvedProviderAuth, resolve_provider_auth
+
+        conn = Connection(
+            id="bedrock-direct",
+            type="bedrock",
+            region="us-east-1",
+            base_url="https://ep",
+        )
+        store = self._make_store(conn, "tok", tmp_path, monkeypatch)
+        result = resolve_provider_auth(conn, store)
+        assert isinstance(result, ResolvedProviderAuth)
+        assert result.api_key == "tok"
+        assert result.region == "us-east-1"
+        assert result.base_url == "https://ep"
+
+    def test_none_store_returns_none_api_key(self):
+        """resolve_provider_auth returns api_key=None when store is None (no crash)."""
+        from koan.agents.adapter import resolve_provider_auth
+
+        conn = Connection(id="anthropic-direct", type="anthropic")
+        result = resolve_provider_auth(conn, None)
+        assert result.api_key is None
+        assert result.region is None
+        assert result.base_url is None
+
+    def test_connection_with_no_region_or_base_url(self, tmp_path, monkeypatch):
+        """Connection without region/base_url resolves Nones for those fields."""
+        from koan.agents.adapter import resolve_provider_auth
+
+        conn = Connection(id="openai-direct", type="openai")
+        store = self._make_store(conn, "sk-test", tmp_path, monkeypatch)
+        result = resolve_provider_auth(conn, store)
+        assert result.api_key == "sk-test"
+        assert result.region is None
+        assert result.base_url is None
+
+
+# -- Credential store round-trip (via config) ----------------------------------
+
+class TestCredentialConfigRoundTrip:
+    @pytest.mark.anyio
+    async def test_credentials_envelope_round_trips(self, tmp_path, monkeypatch):
+        """A credentials envelope written to config.yaml is loaded back correctly."""
+        config_path = tmp_path / "config.yaml"
+        key_path = tmp_path / "master.key"
+        monkeypatch.setattr("koan.config.CONFIG_PATH", config_path)
+        monkeypatch.setattr("koan.config._config_write_lock", None)
+        monkeypatch.setattr("koan.credentials.MASTER_KEY_PATH", key_path)
+
+        backend = FileKeyBackend()
         config = KoanConfig()
+        store = CredentialStore(config, backend)
+        store.set("google-direct", "round-trip-key")
+
         await save_koan_config(config)
+        loaded = await load_koan_config()
 
-        saved = json.loads(config_path.read_text("utf-8"))
-        assert "agentInstallations" not in saved
-        assert "providerAuth" in saved
-
-
-# -- resolve_credentials -------------------------------------------------------
-
-class TestResolveCredentials:
-    def test_raises_when_env_vars_unset(self, monkeypatch):
-        """resolve_credentials raises AgentError when no env var is populated."""
-        from koan.agents.base import AgentError
-        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-        auth = ProviderAuth(provider="google", env_keys=["GOOGLE_API_KEY", "GEMINI_API_KEY"])
-        with pytest.raises(AgentError) as exc:
-            resolve_credentials(auth)
-        assert exc.value.diagnostic.code == "missing_credentials"
-        assert "GOOGLE_API_KEY" in exc.value.diagnostic.message
-
-    def test_returns_when_google_api_key_set(self, monkeypatch):
-        """resolve_credentials returns api_key when GOOGLE_API_KEY is set."""
-        monkeypatch.setenv("GOOGLE_API_KEY", "test-key-value")
-        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-        auth = ProviderAuth(provider="google", env_keys=["GOOGLE_API_KEY", "GEMINI_API_KEY"])
-        creds = resolve_credentials(auth)
-        assert creds.get("api_key") == "test-key-value"
-
-    def test_returns_when_gemini_api_key_set(self, monkeypatch):
-        """resolve_credentials falls back to GEMINI_API_KEY when GOOGLE_API_KEY is absent."""
-        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-        monkeypatch.setenv("GEMINI_API_KEY", "gemini-key-value")
-        auth = ProviderAuth(provider="google", env_keys=["GOOGLE_API_KEY", "GEMINI_API_KEY"])
-        creds = resolve_credentials(auth)
-        assert creds.get("api_key") == "gemini-key-value"
-
-    def test_no_error_when_no_env_keys_configured(self, monkeypatch):
-        """resolve_credentials returns empty dict when env_keys is empty (no key required)."""
-        auth = ProviderAuth(provider="bedrock", env_keys=[])
-        creds = resolve_credentials(auth)
-        assert "api_key" not in creds
+        store2 = CredentialStore(loaded, backend)
+        assert store2.resolve("google-direct") == "round-trip-key"

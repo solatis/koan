@@ -116,7 +116,7 @@ async def test_loop_handback_consumes_and_clears_recorded_suggestions(tmp_path):
     import koan.agents.adapter as adapter_mod
     from pydantic_ai.models.test import TestModel
     orig_bm, orig_bms = adapter_mod.build_model, adapter_mod.build_model_settings
-    adapter_mod.build_model = lambda s: TestModel(call_tools=[], custom_output_text="done")
+    adapter_mod.build_model = lambda s, api_key=None, **_: TestModel(call_tools=[], custom_output_text="done")
     adapter_mod.build_model_settings = lambda s: {}
 
     events = []
@@ -191,7 +191,7 @@ async def test_loop_handback_falls_back_to_build_phase_suggestions(tmp_path):
     import koan.agents.adapter as adapter_mod
     from pydantic_ai.models.test import TestModel
     orig_bm, orig_bms = adapter_mod.build_model, adapter_mod.build_model_settings
-    adapter_mod.build_model = lambda s: TestModel(call_tools=[], custom_output_text="done")
+    adapter_mod.build_model = lambda s, api_key=None, **_: TestModel(call_tools=[], custom_output_text="done")
     adapter_mod.build_model_settings = lambda s: {}
 
     try:

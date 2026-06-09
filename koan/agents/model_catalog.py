@@ -112,6 +112,76 @@ def build_model_registry() -> list[ModelRegistryEntry]:
     return entries
 
 
+# Selectable context-window variants beyond the base window, per (provider, model).
+# A non-empty list means the user may opt in to a larger window; the adapter
+# emits the provider-specific opt-in (e.g. an Anthropic beta header) when a
+# variant is selected (brief D4 / M2 plan step 3).
+# Currently empty: no catalog model needs a beta opt-in beyond its native base
+# window.  Add entries here when a model gains an opt-in extended context.
+CONTEXT_WINDOW_VARIANTS: dict[tuple[str, str], list[int]] = {}
+
+
+def context_window_variants_for(provider: str, model: str) -> list[int]:
+    """Return selectable larger context-window variants for (provider, model).
+
+    Returns an empty list when no variant is available.  Source is the koan-owned
+    CONTEXT_WINDOW_VARIANTS table (bundled knowledge, not PydanticAI).  Empty /
+    false-on-unknown is the contract -- never raises.
+    """
+    return list(CONTEXT_WINDOW_VARIANTS.get((provider, model), []))
+
+
+# Providers where koan manages explicit prompt-caching settings (i.e. the provider
+# exposes a cache-control mechanism that koan can turn on/off).  Google and OpenAI
+# cache automatically server-side and need no settings; bedrock has no portable
+# cache knob; lmstudio/voyage are local/embedding providers.
+_PROMPT_CACHING_PROVIDERS: frozenset[str] = frozenset({"anthropic"})
+
+
+def supports_prompt_caching(provider: str, model: str) -> bool:
+    """Return True when koan manages explicit prompt-caching settings for (provider, model).
+
+    Source is the koan-owned _PROMPT_CACHING_PROVIDERS set.  Google/OpenAI cache
+    automatically server-side (no settings to emit); bedrock/lmstudio/voyage have
+    no portable cache knob.  Returns False for unknown providers (brief D5).
+    """
+    return provider in _PROMPT_CACHING_PROVIDERS
+
+
+def context_window_for(provider: str, model: str) -> int:
+    """Return the context window size for (provider, model) from the bundled snapshot.
+
+    Resolution order: (1) MODEL_CAPABILITIES koan fallback, (2) bundled
+    genai-prices snapshot.  Returns 0 when the model is not found in either
+    source so callers can substitute a safe default.  Never triggers network
+    access (fold determinism -- bundled snapshot only).
+    """
+    # Check koan's capability table first (has authoritative fallbacks for
+    # models whose genai-prices snapshot entry has a null context_window).
+    cap = MODEL_CAPABILITIES.get((provider, model))
+    if cap is not None:
+        _thinking_modes, _tier_hint, ctx_fallback, _display = cap
+        # Try the snapshot for a non-null value; fall back to koan's fallback.
+        try:
+            _name, snap_ctx = _snapshot_model_info(provider, model)
+            if snap_ctx is not None:
+                return int(snap_ctx)
+        except Exception:
+            pass
+        return ctx_fallback
+
+    # Not in capability table -- attempt snapshot lookup only.
+    try:
+        _name, snap_ctx = _snapshot_model_info(provider, model)
+        if snap_ctx is not None:
+            return int(snap_ctx)
+    except Exception:
+        pass
+
+    # Unknown model: return 0; the caller should treat this as "unresolvable".
+    return 0
+
+
 def price_for_usage(
     provider: str,
     model: str,

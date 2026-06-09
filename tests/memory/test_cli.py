@@ -58,16 +58,16 @@ def test_forget_prints_json_to_stdout(store_env, capsys):
 
 
 def test_status_stale_no_api_key_exits(store_env, monkeypatch, capsys):
-    """Early-exit guard: stale summary without API key exits with code 1."""
+    """Early-exit guard: stale summary without a Google credential exits with code 1."""
     ops.memorize(store_env, "context", "Entry", "Body.")
-    # summary.md is absent -> summary_is_stale() returns True
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    # summary.md is absent -> summary_is_stale() returns True.
+    # With the credential-store model, _has_api_key() checks the active store
+    # (not env vars); the store is uninitialized here so it returns False.
     with pytest.raises(SystemExit) as exc:
         cmd_status(ns(type=None, json_output=True))
     assert exc.value.code == 1
     err = capsys.readouterr().err
-    assert "GEMINI_API_KEY" in err
+    assert "credential store" in err
 
 
 def test_status_human_readable_output(store_env, tmp_path, capsys):

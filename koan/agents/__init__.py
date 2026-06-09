@@ -5,7 +5,10 @@
 # deleted. The only implementation is PydanticAIAgent (koan/agents/pydantic_ai.py).
 
 from .base import Agent, AgentDiagnostic, AgentError, AgentOptions
-from .registry import AgentRegistry, compute_balanced_profile, compute_builtin_profiles
+from .registry import AgentRegistry
+
+# compute_builtin_profiles and compute_balanced_profile removed in M5:
+# built-in profiles deleted (plan-milestone-5.md, brief D12).
 
 __all__ = [
     "Agent",
@@ -13,6 +16,4 @@ __all__ = [
     "AgentError",
     "AgentOptions",
     "AgentRegistry",
-    "compute_balanced_profile",
-    "compute_builtin_profiles",
 ]
