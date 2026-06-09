@@ -55,10 +55,8 @@ import { KoanToolCard } from './components/molecules/KoanToolCard'
 
 import { Md } from './components/Md'
 import { Notification } from './components/Notification'
-// SettingsOverlay is no longer rendered — replaced by SettingsPage organism
-// import { SettingsOverlay } from './components/SettingsOverlay'
 // Installation type removed in M4: agent installation concept deleted.
-import { SettingsPage, type Profile as SPProfile } from './components/organisms/SettingsPage'
+import { SettingsPage, type Profile as SPProfile, type ProviderConfigView } from './components/organisms/SettingsPage'
 import { ReviewPanel } from './components/organisms/ReviewPanel'
 import { SessionsPage } from './components/organisms/SessionsPage'
 import { MemoryRoutes } from './components/organisms/MemoryRoutes'
@@ -735,12 +733,22 @@ const PATH_BY_KEY: Record<string, string> = {
 // Settings page wiring
 // ---------------------------------------------------------------------------
 
+/**
+ * ConnectedSettingsPage -- wires the store and API client to the presentational
+ * SettingsPage organism. Also wires provider configuration (M4): maps
+ * providerStatus to ProviderConfigView and threads onSaveProvider /
+ * onDeleteProvider through the unified /api/settings/provider endpoints.
+ * The dynamic provider model overlay (providerModels) is unioned into
+ * modelOptionsForRunner so LM Studio and other overlay models are selectable.
+ */
 function ConnectedSettingsPage() {
   // Runner/model/thinking options come from the model registry in the projection
   // store (populated by initial events at startup). M4: installationsDict removed.
   const profilesDict = useStore(s => s.settings.profiles)
   const scoutConcurrency = useStore(s => s.settings.defaultScoutConcurrency)
   const modelRegistry = useStore(s => s.settings.modelRegistry)
+  const providerStatus = useStore(s => s.settings.providerStatus)
+  const providerModels = useStore(s => s.settings.providerModels)
 
   const profiles: SPProfile[] = useMemo(() =>
     Object.values(profilesDict).map(p => ({
@@ -757,11 +765,26 @@ function ConnectedSettingsPage() {
     [profilesDict],
   )
 
-  // Source provider/runner options from model registry (M3).
+  // Map store providerStatus to the presentational ProviderConfigView shape.
+  // region/baseUrl arrive via provider_status_listed JSON Patch (M3 backend).
+  const providers: ProviderConfigView[] = useMemo(() =>
+    providerStatus.map(ps => ({
+      provider: ps.provider,
+      available: ps.available,
+      region: ps.region ?? null,
+      baseUrl: ps.baseUrl ?? null,
+    })),
+    [providerStatus],
+  )
+
+  // Runner types: union of static registry and dynamic overlay providers.
   const runnerTypes = useMemo(() => {
-    const providers = new Set(modelRegistry.map(e => e.provider))
-    return [...providers].sort()
-  }, [modelRegistry])
+    const all = new Set([
+      ...modelRegistry.map(e => e.provider),
+      ...providerModels.map(e => e.provider),
+    ])
+    return [...all].sort()
+  }, [modelRegistry, providerModels])
 
   const runnerOptions = useMemo(() =>
     runnerTypes.map(r => ({ value: r, label: r })),
@@ -769,15 +792,23 @@ function ConnectedSettingsPage() {
   )
 
   const modelOptionsForRunner = useMemo(() =>
-    (runner: string) =>
-      modelRegistry
+    (runner: string) => {
+      const staticOpts = modelRegistry
         .filter(e => e.provider === runner)
-        .map(e => ({ value: e.model, label: e.displayName || e.model })),
-    [modelRegistry],
+        .map(e => ({ value: e.model, label: e.displayName || e.model }))
+      const staticModels = new Set(staticOpts.map(o => o.value))
+      // Append overlay models for this runner, deduping against static.
+      const overlayOpts = providerModels
+        .filter(e => e.provider === runner && !staticModels.has(e.model))
+        .map(e => ({ value: e.model, label: e.displayName || e.model }))
+      return [...staticOpts, ...overlayOpts]
+    },
+    [modelRegistry, providerModels],
   )
 
   const thinkingOptionsForModel = useMemo(() =>
     (runner: string, model: string) => {
+      // Overlay-only models have no registry entry -> returns [] -> only "disabled".
       const entry = modelRegistry.find(e => e.provider === runner && e.model === model)
       if (entry && entry.thinkingModes.length > 0) {
         return entry.thinkingModes.map(t => ({ value: t, label: t }))
@@ -813,6 +844,16 @@ function ConnectedSettingsPage() {
       onDeleteProfile={id => api.deleteProfile(id)}
       // installations/runnerTypes/onCreateInstallation/onUpdateInstallation/
       // onDeleteInstallation/onDetectBinary removed in M4: installation concept deleted.
+      providers={providers}
+      onSaveProvider={async (provider, fields) => {
+        const res = await api.setProviderConfig(provider, fields)
+        if (!res.ok) throw new Error(res.message || 'Failed to save provider config')
+      }}
+      onDeleteProvider={async provider => {
+        const res = await api.deleteProviderConfig(provider)
+        if (!res.ok) throw new Error(res.message || 'Failed to delete provider config')
+      }}
+      onTestProvider={async (provider, fields) => api.testProviderConfig(provider, fields)}
       scoutConcurrency={scoutConcurrency}
       onScoutConcurrencyChange={n => api.saveScoutConcurrency(n)}
       runnerOptions={runnerOptions}

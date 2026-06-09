@@ -13,12 +13,20 @@ export interface Profile {
   tiers: Record<string, { provider: string; model: string; thinking: string }>
 }
 
-/** Provider credential availability surfaced via Settings.providerStatus (M2/M3). */
+/**
+ * Provider credential availability and non-secret config surfaced via
+ * Settings.providerStatus (M2/M3). region and baseUrl are non-secret
+ * and stored in providerAuth; the encrypted key is never returned.
+ */
 export interface ProviderStatus {
   provider: string
   available: boolean
   /** Env var names checked for this provider (never values). */
   envKeys: string[]
+  /** Non-secret region used for bedrock (required) and openai/anthropic (optional). */
+  region: string | null
+  /** Non-secret endpoint override (base_url) for openai, anthropic, bedrock. */
+  baseUrl: string | null
 }
 
 /** One entry from the all-providers model catalog surfaced via Settings.modelRegistry (M2/M3). */
@@ -31,6 +39,18 @@ export interface ModelRegistryEntry {
   tierHint: string | null
 }
 
+/**
+ * One entry in the per-provider dynamic model overlay (Settings.providerModels).
+ * Lighter sibling of ModelRegistryEntry: no thinkingModes or tierHint.
+ * Populated by provider_models_listed events (eager startup + Test/save refresh).
+ */
+export interface ProviderModel {
+  provider: string
+  model: string
+  displayName: string
+  contextWindow: number
+}
+
 export interface Settings {
   // installations removed in M4: agent installation concept deleted.
   profiles: Record<string, Profile>
@@ -41,6 +61,8 @@ export interface Settings {
   providerStatus: ProviderStatus[]
   /** M2/M3: all-providers model catalog, populated by model_registry_listed initial event. */
   modelRegistry: ModelRegistryEntry[]
+  /** Dynamic per-provider model overlay; populated by provider_models_listed events. */
+  providerModels: ProviderModel[]
 }
 
 export interface RunConfig {
@@ -386,6 +408,7 @@ export const useStore = create<KoanState>()(
         workflows: [],
         providerStatus: [],
         modelRegistry: [],
+        providerModels: [],
       },
       run: null,
       notifications: [],

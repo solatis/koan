@@ -116,20 +116,54 @@ export async function updateProfile(
   return put<{ ok: boolean; message?: string }>(`/api/profiles/${encodeURIComponent(name)}`, { tiers })
 }
 
-/**
- * Local construction check for a provider credential.
- * Calls POST /api/settings/validate-provider; never makes a live model call.
- * Returns {valid: true} or {valid: false, reason: string}.
- */
-export async function validateProvider(provider: string): Promise<{ valid: boolean; reason?: string }> {
-  return post('/api/settings/validate-provider', { provider })
-}
-
 export async function deleteProfile(name: string) {
   return del<{ ok: boolean; message?: string }>(`/api/profiles/${encodeURIComponent(name)}`)
 }
 
 // -- Settings ----------------------------------------------------------------
+
+/**
+ * Stores the encrypted API key and/or non-secret region/base_url for a
+ * provider. Omitting `secret` leaves the stored key unchanged, so an empty
+ * form submit never overwrites an existing key.
+ */
+export interface ProviderConfigBody {
+  secret?: string
+  region?: string
+  baseUrl?: string
+}
+
+export async function setProviderConfig(
+  provider: string,
+  body: ProviderConfigBody,
+): Promise<{ ok: boolean; error?: string; message?: string }> {
+  return post('/api/settings/provider', { provider, ...body })
+}
+
+/**
+ * Clears both the encrypted credential and the non-secret config
+ * (region, base_url) for a provider. Idempotent.
+ */
+export async function deleteProviderConfig(
+  provider: string,
+): Promise<{ ok: boolean; error?: string; message?: string }> {
+  return del(`/api/settings/provider/${encodeURIComponent(provider)}`)
+}
+
+/**
+ * Test connectivity and model listing for a provider using candidate values.
+ * Candidate values from the form (pre-save) are used when present; stored values
+ * are the fallback. Always returns HTTP 200 -- never throws on a listing failure.
+ *
+ * On success: {ok: true, count: N, models: string[]}.
+ * On failure: {ok: false, message: string}.
+ */
+export async function testProviderConfig(
+  provider: string,
+  body: ProviderConfigBody,
+): Promise<{ ok: boolean; count?: number; models?: string[]; message?: string }> {
+  return post('/api/settings/provider/test', { provider, ...body })
+}
 
 export async function saveScoutConcurrency(value: number) {
   return put<{ ok: boolean; message?: string }>('/api/settings/scout-concurrency', {
