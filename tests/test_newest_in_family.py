@@ -114,6 +114,81 @@ async def test_resolve_newest_excludes_unrecognised_models(monkeypatch):
         await m.resolve_newest_in_family(_make_connection(), "claude-sonnet", None)
 
 
+# -- resolve_families ---------------------------------------------------------
+
+
+def test_resolve_families_groups_by_family():
+    """resolve_families returns one FamilyPin per recognised family."""
+    from koan.agents.newest_in_family import resolve_families
+
+    model_ids = [
+        "claude-sonnet-4-5",
+        "claude-sonnet-4-0",
+        "claude-haiku-4-0",
+    ]
+    pins = resolve_families(model_ids)
+
+    families = {p.family for p in pins}
+    assert families == {"claude-sonnet", "claude-haiku"}
+
+
+def test_resolve_families_picks_newest_per_family():
+    """Each FamilyPin resolved field is the newest version in that family."""
+    from koan.agents.newest_in_family import resolve_families
+
+    model_ids = [
+        "claude-sonnet-4-5",
+        "claude-sonnet-4-0",
+    ]
+    pins = resolve_families(model_ids)
+    assert len(pins) == 1
+    assert pins[0].resolved == "claude-sonnet-4-5"
+
+
+def test_resolve_families_resolved_from_format():
+    """resolved_from follows 'newest(<family>)@YYYY-MM-DD -> <model_id>' format."""
+    import re
+    from koan.agents.newest_in_family import resolve_families
+
+    pins = resolve_families(["claude-opus-4-0"])
+    assert len(pins) == 1
+    p = pins[0]
+    assert re.match(
+        r"newest\(claude-opus\)@\d{4}-\d{2}-\d{2} -> claude-opus-4-0",
+        p.resolved_from,
+    )
+
+
+def test_resolve_families_skips_unrecognised():
+    """Model ids whose family is None are excluded from grouping."""
+    from koan.agents.newest_in_family import resolve_families
+
+    pins = resolve_families(["some-unknown-model-xyz", "claude-haiku-4-0"])
+    assert len(pins) == 1
+    assert pins[0].family == "claude-haiku"
+
+
+def test_resolve_families_empty_list_returns_empty():
+    """Empty input yields no pins."""
+    from koan.agents.newest_in_family import resolve_families
+
+    assert resolve_families([]) == []
+
+
+def test_resolve_families_sorted_by_family_name():
+    """Result is sorted by family name for stable output."""
+    from koan.agents.newest_in_family import resolve_families
+
+    model_ids = [
+        "claude-sonnet-4-0",
+        "claude-haiku-4-0",
+        "claude-opus-4-0",
+    ]
+    pins = resolve_families(model_ids)
+    names = [p.family for p in pins]
+    assert names == sorted(names)
+
+
 # -- apply_newest_resolution --------------------------------------------------
 
 

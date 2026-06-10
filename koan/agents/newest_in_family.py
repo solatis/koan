@@ -94,6 +94,51 @@ async def resolve_newest_in_family(
     return NewestResolution(model_id=newest, resolved_from=resolved_from)
 
 
+@dataclass(frozen=True)
+class FamilyPin:
+    """Per-family newest-version pin computed from a flat model id list.
+
+    family is the canonical family name (from parse_model_id).
+    resolved is the exact versioned model id chosen as newest in the family.
+    resolved_from encodes the family, the UTC date of resolution, and the
+    pinned id -- kept as a human-readable audit string, never parsed back.
+    Same format as NewestResolution.resolved_from so display code is uniform.
+    """
+
+    family: str
+    resolved: str
+    resolved_from: str
+
+
+def resolve_families(model_ids: list[str]) -> list["FamilyPin"]:
+    """Return one FamilyPin per recognised family in model_ids, newest-first.
+
+    Groups model_ids by parse_model_id(m).family, skipping models whose family
+    is None (unrecognised ids cannot be meaningfully version-ordered).  For each
+    family takes order_by_version(members)[0] as the newest.  resolved_from
+    follows the same "newest(<family>)@YYYY-MM-DD -> <model_id>" format as
+    resolve_newest_in_family so display code is uniform.
+
+    Pure function: no I/O, no network, no state mutation.  Sorting by family
+    name produces stable output independent of list ordering.
+    """
+    from collections import defaultdict
+
+    groups: dict[str, list[str]] = defaultdict(list)
+    for m in model_ids:
+        fam = parse_model_id(m).family
+        if fam is not None:
+            groups[fam].append(m)
+
+    date_str = datetime.now(timezone.utc).date().isoformat()
+    pins: list[FamilyPin] = []
+    for family in sorted(groups):
+        newest = order_by_version(groups[family])[0]
+        resolved_from = f"newest({family})@{date_str} -> {newest}"
+        pins.append(FamilyPin(family=family, resolved=newest, resolved_from=resolved_from))
+    return pins
+
+
 def apply_newest_resolution(
     cm: "ConfiguredModel",
     res: NewestResolution,
