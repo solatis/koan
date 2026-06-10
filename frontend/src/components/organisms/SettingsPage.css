@@ -28,24 +28,46 @@
   padding: var(--padding-card-settings);
 }
 
+.settings-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 20px; /* old .settings-card-title spacing, kept for chrome consistency */
+}
+
 .settings-card-title {
-  font-size: 17px; /* --type-section-title */
+  font-size: var(--type-section-title);
   font-weight: 500;
   color: var(--text-primary);
-  margin-bottom: 20px;
+}
+
+.settings-card-hint {
+  font-size: var(--type-breadcrumb);
+  color: var(--text-muted);
+}
+
+/* Description line sits between the head and the section body. The negative
+   feel of pulling it closer to the title is intentional: it reads as part of
+   the heading block, not the content. */
+.settings-card-desc {
+  font-size: var(--type-breadcrumb);
+  color: var(--text-body);
+  line-height: 1.5;
+  margin: -12px 0 18px; /* tucks under the head's 20px gap; no token at this granularity */
+  max-width: 560px; /* readable measure for the description line; no token */
+}
+
+.settings-connections {
+  display: flex;
+  flex-direction: column;
 }
 
 .settings-add-trigger {
   margin-top: 16px;
 }
 
-/* Inline validation/API error message in the provider edit form.
-   Uses --text-danger-body (danger semantic color) and --type-breadcrumb (13px).
-   Hardcoded margin-top: 8px -- no spacing token at this granularity; flag for
-   potential token promotion if reused across other inline form error states. */
-.settings-provider-error {
-  font-size: var(--type-breadcrumb);
-  color: var(--text-danger-body);
-  margin-top: 8px;
-  padding-left: 4px;
+.settings-roles {
+  display: flex;
+  flex-direction: column;
+  gap: 12px; /* spec: role-row gap, matches the not-set card row gap */
 }

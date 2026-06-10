@@ -1,0 +1,42 @@
+/* NoProvidersBlock — first-run gate takeover of the New Run content area. */
+
+.org-no-providers-block {
+  background: var(--bg-card);
+  border: 0.5px solid var(--border-card);
+  border-radius: var(--radius-2xl);
+  padding: 40px 36px 36px; /* spec: roomier than card default — gate block padding */
+  text-align: center;
+}
+
+.org-no-providers-block__mark {
+  width: 46px; /* spec: danger mark circle diameter */
+  height: 46px;
+  border-radius: var(--radius-circle);
+  background: var(--bg-danger);
+  margin: 0 auto 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.org-no-providers-block__heading {
+  font-size: 20px; /* spec: gate heading size, no heading token at this scale */
+  font-weight: 500;
+  color: var(--text-primary);
+  margin: 0 0 8px;
+}
+
+.org-no-providers-block__body {
+  font-size: var(--type-body);
+  color: var(--text-body);
+  line-height: 1.55;
+  max-width: 400px; /* spec: keeps body copy to a readable measure */
+  margin: 0 auto;
+}
+
+.org-no-providers-block__roles {
+  display: flex;
+  gap: 12px;
+  max-width: 470px; /* spec: three not-set cards at their natural width */
+  margin: 26px auto 28px;
+}

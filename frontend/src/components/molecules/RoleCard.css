@@ -1,0 +1,35 @@
+.mol-role-card {
+  flex: 1;
+  border-radius: var(--radius-xl);
+  padding: 16px 14px 14px;
+  text-align: center;
+}
+
+.mol-role-card--not-set {
+  border: 1px dashed var(--border-input);
+  background: var(--bg-surface);
+}
+
+/* ===== Header ===== */
+.mol-role-card__marker {
+  margin: 0 auto 10px;
+}
+
+.mol-role-card--not-set .mol-role-card__marker {
+  opacity: 0.55;
+}
+
+.mol-role-card__name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+/* ===== Not-set status line ===== */
+.mol-role-card__status {
+  margin-top: 9px;
+  font-size: var(--type-badge);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-hint);
+}

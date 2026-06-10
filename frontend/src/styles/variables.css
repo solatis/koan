@@ -7,74 +7,6 @@
  * ========================================================================== */
 
 
-/* --------------------------------------------------------------------------
- * TOKEN MIGRATION MAP
- * --------------------------------------------------------------------------
- * Old token                → New token(s)
- *
- * --bg                     → --bg-base
- * --bg-surface             → --bg-surface
- * --bg-elevated            → --bg-card
- * --bg-inset               → --bg-tool-row  (closest equivalent)
- * --bg-muted               → --bg-tool-row  (was undefined; used in markdown.css)
- *
- * --text                   → --text-body
- * --text-strong            → --text-primary
- * --text-muted             → --text-muted  (same name, new value)
- * --text-ghost             → --text-placeholder  or  --text-hint
- *
- * --border                 → --border-card
- * --border-strong          → --border-input
- *
- * --green                  → --status-done  /  --color-teal
- * --green-bg               → --bg-completion
- * --green-border           → --color-teal  (border usage)
- * --copper                 → --color-orange  /  --status-running
- * --copper-bg              → --bg-selected
- * --copper-border          → --color-orange  (border usage)
- * --caramel                → --color-orange  (no separate caramel in new system)
- * --caramel-bg             → --bg-selected
- * --caramel-border         → --color-orange
- * --red                    → --status-failed
- * --red-bg                 → (no equivalent bg; use light tint or --bg-base)
- * --red-border             → --status-failed
- * --ochre                  → --color-orange  (warning/in-flight → orange)
- * --ochre-bg               → --bg-selected
- * --ochre-border           → --color-orange
- * --plum                   → --text-thinking-label  /  --color-navy
- * --plum-bg                → --bg-thinking
- *
- * --font-sans              → --font-body
- * --font-mono              → --font-mono  (same name, updated stack)
- * (new)                    → --font-display  (serif, logo only)
- *
- * --font-size-xs (11px)    → --type-label (11px)
- * --font-size-sm (13px)    → --type-breadcrumb (13px)
- * --font-size-md (15px)    → --type-prose (15px)
- * --font-size-lg (17px)    → --type-section-title (17px)
- * --font-size-xl (22px)    → (removed; closest --type-page-title 26px)
- * --font-size-display(28px)→ (removed; closest --type-page-title 26px)
- *
- * --space-1 (4px)          → --gap-tool-rows (3px)  (closest)
- * --space-2 (8px)          → (component-specific padding tokens)
- * --space-4 (16px)         → (component-specific padding/gap tokens)
- * --space-6 (24px)         → --padding-card-form  /  --gap-form-sections
- * --space-8 (32px)         → --page-padding
- * --space-12 (48px)        → (removed)
- * --space-16 (64px)        → (removed)
- *
- * --radius-sm (6px)        → --radius-md (6px)
- * --radius-md (10px)       → --radius-xl (10px)
- * --radius-lg (14px)       → --radius-2xl (12px)
- *
- * --duration-fast (150ms)  → --duration-fast (preserved)
- * --duration-normal (250ms)→ --duration-normal (preserved)
- * --duration-slow (400ms)  → --duration-slow (preserved)
- * --ease-default (ease-out)→ --ease-default (preserved)
- *
- * --header-height (56px)   → --header-height (50px)
- * --monitor-min-height     → (removed; scout bar is auto-sized)
- * -------------------------------------------------------------------------- */
 
 
 /* --------------------------------------------------------------------------
@@ -172,6 +104,11 @@
   --status-done:               #5a9a8a;
   --status-queued:             #b8aca0;
   --status-failed:             #c44;
+
+  /* ===== Warning Surface ===== */
+  --bg-warning:                #fdf2ee;  /* orange-amber warning notice surface */
+  --border-warning:            #f0d8cc;  /* warning notice border */
+  --text-warning:              #c06030;  /* warning text + icon on warning surface */
 
 
   /* ===== Tool Family Indicator Colors ===== */

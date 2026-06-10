@@ -37,22 +37,39 @@ export interface StartRunResult {
   message?: string
 }
 
+/**
+ * Start a run on the backend active preset ($last). The backend resolves cfg.active.
+ *
+ * @param task - The task description.
+ * @param workflow - Optional workflow name (default: 'plan').
+ * @param attachments - Optional upload IDs to attach at run start.
+ * @param overrides - Optional per-run model overrides applied to the $last preset.
+ *   Each role key (strong/standard/cheap) may carry {connection_id, model_id, thinking}.
+ *   Roles not included fall back to their persisted slot assignment.
+ *   Overrides affect only the frozen run snapshot; ~/.koan/config.yaml is untouched.
+ *
+ * M4: installations param removed -- agent installation concept deleted.
+ * M5: profile param removed -- /api/start-run no longer reads a posted profile.
+ */
 export async function startRun(
   task: string,
-  profile: string,
-  installations?: Record<string, string>,
   workflow?: string,
   attachments?: string[],
+  overrides?: Partial<Record<'strong' | 'standard' | 'cheap', {
+    connection_id: string
+    model_id: string
+    thinking: string
+  }>>,
 ): Promise<StartRunResult> {
-  const body: Record<string, unknown> = { task, profile }
-  if (installations && Object.keys(installations).length > 0) {
-    body['installations'] = installations
-  }
+  const body: Record<string, unknown> = { task }
   if (workflow) {
     body['workflow'] = workflow
   }
   if (attachments && attachments.length > 0) {
     body['attachments'] = attachments
+  }
+  if (overrides && Object.keys(overrides).length > 0) {
+    body['overrides'] = overrides
   }
   return post('/api/start-run', body)
 }
@@ -92,77 +109,103 @@ export async function submitArtifactComment(
   )
 }
 
-// -- Profiles ----------------------------------------------------------------
-
-/**
- * Create a new user profile.
- * tiers: M3 shape -- {tier_name: {provider, model, thinking}}.
- */
-export async function createProfile(
-  name: string,
-  tiers: Record<string, { provider: string; model: string; thinking: string }>,
-) {
-  return post<{ ok: boolean; message?: string }>('/api/profiles', { name, tiers })
-}
-
-/**
- * Update the tiers of an existing user profile.
- * tiers: M3 shape -- {tier_name: {provider, model, thinking}}.
- */
-export async function updateProfile(
-  name: string,
-  tiers: Record<string, { provider: string; model: string; thinking: string }>,
-) {
-  return put<{ ok: boolean; message?: string }>(`/api/profiles/${encodeURIComponent(name)}`, { tiers })
-}
-
-export async function deleteProfile(name: string) {
-  return del<{ ok: boolean; message?: string }>(`/api/profiles/${encodeURIComponent(name)}`)
-}
+// M5: profile endpoints removed -- /api/profiles deleted on the backend.
+// Dead /api/settings/provider* methods removed (M5; routes deleted in M5; HTTP 404).
 
 // -- Settings ----------------------------------------------------------------
 
-/**
- * Stores the encrypted API key and/or non-secret region/base_url for a
- * provider. Omitting `secret` leaves the stored key unchanged, so an empty
- * form submit never overwrites an existing key.
- */
-export interface ProviderConfigBody {
-  secret?: string
+// -- /api/config/* methods (M6) -----------------------------------------------
+
+export interface ConfigApiResult {
+  ok: boolean
+  error?: string
+  message?: string
+  count?: number
+  models?: string[]
+}
+
+export interface ConnectionBody {
+  id: string
+  type: string
+  base_url?: string
   region?: string
-  baseUrl?: string
+  azure_deployment?: string
+  api_version?: string
+  timeout?: number
+  /** Plaintext secret; encrypted on the backend before storage. */
+  secret?: string
 }
 
-export async function setProviderConfig(
-  provider: string,
-  body: ProviderConfigBody,
-): Promise<{ ok: boolean; error?: string; message?: string }> {
-  return post('/api/settings/provider', { provider, ...body })
+export interface ConfiguredModelBody {
+  id: string
+  connection_id: string
+  model_id: string
+  resolved_from?: string
+}
+
+export interface SlotBody {
+  configured_model_id: string
+  thinking?: string
 }
 
 /**
- * Clears both the encrypted credential and the non-secret config
- * (region, base_url) for a provider. Idempotent.
+ * Upsert a connection (POST /api/config/connections).
+ * If 'secret' is present it is stored encrypted; omitting it leaves any
+ * existing credential unchanged. Pushes connections_listed + provider_status_listed.
  */
-export async function deleteProviderConfig(
-  provider: string,
-): Promise<{ ok: boolean; error?: string; message?: string }> {
-  return del(`/api/settings/provider/${encodeURIComponent(provider)}`)
+export async function setConnection(body: ConnectionBody): Promise<ConfigApiResult> {
+  return post('/api/config/connections', body)
 }
 
 /**
- * Test connectivity and model listing for a provider using candidate values.
- * Candidate values from the form (pre-save) are used when present; stored values
- * are the fallback. Always returns HTTP 200 -- never throws on a listing failure.
- *
+ * Delete a connection by id (DELETE /api/config/connections/{id}).
+ * Removes the connection and its credential envelope. Idempotent.
+ */
+export async function deleteConnection(id: string): Promise<ConfigApiResult> {
+  return del(`/api/config/connections/${encodeURIComponent(id)}`)
+}
+
+/**
+ * Trigger a live model listing for a connection (POST /api/config/connections/{id}/list-models).
  * On success: {ok: true, count: N, models: string[]}.
  * On failure: {ok: false, message: string}.
  */
-export async function testProviderConfig(
-  provider: string,
-  body: ProviderConfigBody,
-): Promise<{ ok: boolean; count?: number; models?: string[]; message?: string }> {
-  return post('/api/settings/provider/test', { provider, ...body })
+export async function listConnectionModels(id: string): Promise<ConfigApiResult> {
+  return post(`/api/config/connections/${encodeURIComponent(id)}/list-models`, {})
+}
+
+/**
+ * Upsert a configured model (POST /api/config/models).
+ * A configured model is a (connection, model-id) pair; the id is caller-assigned
+ * and conventionally '<connectionId>:<modelId>' for auto-created entries.
+ */
+export async function setConfiguredModel(body: ConfiguredModelBody): Promise<ConfigApiResult> {
+  return post('/api/config/models', body)
+}
+
+/**
+ * Delete a configured model by id (DELETE /api/config/models/{id}).
+ * Idempotent; also removes any slot/memory references in the config.
+ */
+export async function deleteConfiguredModel(id: string): Promise<ConfigApiResult> {
+  return del(`/api/config/models/${encodeURIComponent(id)}`)
+}
+
+/**
+ * Assign a role slot in the active preset (PUT /api/config/slots/{slot}).
+ * slot is one of 'strong', 'standard', 'cheap'.
+ */
+export async function setSlot(slot: string, body: SlotBody): Promise<ConfigApiResult> {
+  return put(`/api/config/slots/${encodeURIComponent(slot)}`, body)
+}
+
+/**
+ * Assign a memory binding (PUT /api/config/memory/{kind}).
+ * kind is one of 'embedding', 'memory_llm', 'reflect_llm'.
+ * Note: UI slot names use hyphens ('memory-llm'); the API uses underscores.
+ */
+export async function setMemoryBinding(kind: string, body: SlotBody): Promise<ConfigApiResult> {
+  return put(`/api/config/memory/${encodeURIComponent(kind)}`, body)
 }
 
 export async function saveScoutConcurrency(value: number) {

@@ -1,0 +1,32 @@
+.conn-form__header {
+  font-family: var(--font-mono);
+  font-size: var(--type-label);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-bottom: 12px;
+}
+
+/* Helper lines align under the FormRow controls column (82px label width). */
+.conn-form__helper {
+  margin-left: 82px;
+  margin-top: 6px;
+  font-size: var(--type-label);
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+/* Extra action row: Test + result badge (+ Delete pushed right). InlineForm
+   does not expose a slot for extra buttons, so this row lives in the form body
+   above InlineForm's own Cancel/Save row, aligned to the controls column. */
+.conn-form__extra-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 20px;
+  padding-left: 82px;
+}
+
+.conn-form__delete {
+  margin-left: auto;
+}

@@ -26,6 +26,7 @@ import { useStore, ConversationEntry, AskQuestion, CompletionInfo } from './stor
 import { connectSSE } from './sse/connect'
 import { useElapsed, formatElapsed } from './hooks/useElapsed'
 import { useAutoScroll } from './hooks/useAutoScroll'
+import { useFileAttachment } from './hooks/useFileAttachment'
 import { normalizeOptions } from './utils'
 import * as api from './api/client'
 
@@ -34,7 +35,7 @@ import { HeaderBar } from './components/organisms/HeaderBar'
 import { ArtifactsSidebar as ArtifactsSidebarOrg } from './components/organisms/ArtifactsSidebar'
 import { ScoutBar } from './components/organisms/ScoutBar'
 import { ElicitationPanel } from './components/organisms/ElicitationPanel'
-import { NewRunForm } from './components/organisms/NewRunForm'
+import { NewRunForm, type OverrideAssignment, type WorkflowRole } from './components/organisms/NewRunForm'
 
 import { ThinkingBlock } from './components/molecules/ThinkingBlock'
 import { ProseCard } from './components/molecules/ProseCard'
@@ -56,11 +57,13 @@ import { KoanToolCard } from './components/molecules/KoanToolCard'
 import { Md } from './components/Md'
 import { Notification } from './components/Notification'
 // Installation type removed in M4: agent installation concept deleted.
-import { SettingsPage, type Profile as SPProfile, type ProviderConfigView } from './components/organisms/SettingsPage'
+// M5: Profile/SPProfile removed -- profile concept deleted on the backend.
+import { SettingsPage, type RoleAssignment, type RoleSlot } from './components/organisms/SettingsPage'
 import { ReviewPanel } from './components/organisms/ReviewPanel'
 import { SessionsPage } from './components/organisms/SessionsPage'
 import { MemoryRoutes } from './components/organisms/MemoryRoutes'
 import { CurationTakeover } from './components/organisms/CurationTakeover'
+// ReviewNewRunForm removed at integration (review harness deleted).
 
 import type { AggregateChild, AggregateReadChild, AggregateGrepChild, AggregateLsChild, ToolAggregateEntry } from './store/index'
 
@@ -730,135 +733,493 @@ const PATH_BY_KEY: Record<string, string> = {
 }
 
 // ---------------------------------------------------------------------------
+// Shared helper: build ConnectionSummary[] + ModelsForConnection map
+// ---------------------------------------------------------------------------
+
+// Provider types that expose a live list-models endpoint.
+const LISTING_CAPABLE_TYPES = new Set(['anthropic', 'openai', 'google', 'lmstudio'])
+
+// ---------------------------------------------------------------------------
+// Thinking display map -- connected layer only, so presentational components
+// stay store-free.  Maps backend wire tokens to the unified display scale:
+// 'disabled' shows as 'off'; low/medium/high are identity.  The wire value
+// sent on change is always the native token, never the display label.
+// ---------------------------------------------------------------------------
+
+const THINKING_DISPLAY: Record<string, string> = { disabled: 'off' }
+
+/**
+ * Convert a raw list of backend thinking mode tokens into {value, label} pairs
+ * for use in a Select.  Prepends 'disabled' when absent (preserving existing
+ * behavior -- every model gets an explicit off option).  Display label comes
+ * from THINKING_DISPLAY; unrecognised tokens pass through as-is.
+ *
+ * Lives in the connected layer so presentational components receive typed pairs
+ * and never import THINKING_DISPLAY or the store directly.
+ */
+function toThinkingOptions(rawModes: string[]): { value: string; label: string }[] {
+  const modes = rawModes.includes('disabled') ? rawModes : ['disabled', ...rawModes]
+  return modes.map(m => ({ value: m, label: THINKING_DISPLAY[m] ?? m }))
+}
+
+/**
+ * Derive the ConnectionSummary list and modelsByConnection map consumed by
+ * both ConnectedSettingsPage and ConnectedNewRunForm.  Extracted here to avoid
+ * duplicating the join logic in both connected components.
+ */
+function buildConnectionViews(
+  settings: ReturnType<typeof useStore.getState>['settings'],
+  modelsLoading: Record<string, boolean>,
+): {
+  connections: import('./components/organisms/SettingsPage').ConnectionSummary[]
+  modelsByConnection: Record<string, import('./components/organisms/SettingsPage').ModelsForConnection>
+} {
+  const statusByConn: Record<string, boolean> = {}
+  for (const cs of settings.providerStatus) {
+    statusByConn[cs.connectionId] = cs.available
+  }
+
+  const connections: import('./components/organisms/SettingsPage').ConnectionSummary[] = settings.connections.map(c => {
+    const available = statusByConn[c.id] ?? false
+    const region = c.region ? ` · ${c.region}` : ''
+    const url = c.baseUrl ? ` · ${c.baseUrl}` : ''
+    const keyState = available ? 'key set' : 'no key'
+    return {
+      type: c.connectionType as import('./components/atoms/ProviderBadge').ProviderType,
+      id: c.id,
+      meta: `${c.connectionType}${region}${url} · ${keyState}`,
+      status: available ? 'configured' : 'not-set',
+      listingCapable: LISTING_CAPABLE_TYPES.has(c.connectionType),
+    }
+  })
+
+  const modelsByConnection: Record<string, import('./components/organisms/SettingsPage').ModelsForConnection> = {}
+  for (const conn of settings.connections) {
+    // Filtered by provider TYPE, not connection id: two connections of the same
+    // type share one list.  Harmless today (lists are provider-scoped upstream);
+    // revisit if per-connection listing ever diverges (e.g. two openai endpoints).
+    const live = settings.providerModels
+      .filter(m => m.provider === conn.connectionType)
+      .map(m => m.model)
+    const catalog = settings.modelRegistry
+      .filter(r => r.provider === conn.connectionType)
+      .map(r => r.model)
+    // Families are also provider-type-scoped (same caveat as the model list above).
+    const rawFamilies = (settings.providerFamilies ?? []).filter(f => f.provider === conn.connectionType)
+    const families = rawFamilies.map(f => ({ family: f.family, resolved: f.resolved }))
+    modelsByConnection[conn.id] = {
+      models: live.length > 0 ? live : catalog,
+      loading: modelsLoading[conn.id] ?? false,
+      catalogSuggestions: LISTING_CAPABLE_TYPES.has(conn.connectionType) ? undefined : catalog,
+      families: families.length > 0 ? families : undefined,
+    }
+  }
+  return { connections, modelsByConnection }
+}
+
+// ---------------------------------------------------------------------------
+// Map UI slot names to API memory kind strings
+// ---------------------------------------------------------------------------
+
+function slotToMemoryKind(slot: RoleSlot): string {
+  if (slot === 'memory-llm') return 'memory_llm'
+  if (slot === 'reflect-llm') return 'reflect_llm'
+  return slot  // 'embedding'
+}
+
+// ---------------------------------------------------------------------------
 // Settings page wiring
 // ---------------------------------------------------------------------------
 
 /**
- * ConnectedSettingsPage -- wires the store and API client to the presentational
- * SettingsPage organism. Also wires provider configuration (M4): maps
- * providerStatus to ProviderConfigView and threads onSaveProvider /
- * onDeleteProvider through the unified /api/settings/provider endpoints.
- * The dynamic provider model overlay (providerModels) is unioned into
- * modelOptionsForRunner so LM Studio and other overlay models are selectable.
+ * ConnectedSettingsPage -- store + API connector for the presentational SettingsPage.
+ *
+ * Reads connections, configuredModels, presets, memoryBindings, providerStatus,
+ * modelCapabilities, modelRegistry, providerModels, and defaultScoutConcurrency
+ * from the store.  Implements auto-save (per control) with revert-on-reject + toast.
+ * Connection test = save-then-list (no pre-save test endpoint exists).
  */
 function ConnectedSettingsPage() {
-  // Runner/model/thinking options come from the model registry in the projection
-  // store (populated by initial events at startup). M4: installationsDict removed.
-  const profilesDict = useStore(s => s.settings.profiles)
-  const scoutConcurrency = useStore(s => s.settings.defaultScoutConcurrency)
-  const modelRegistry = useStore(s => s.settings.modelRegistry)
-  const providerStatus = useStore(s => s.settings.providerStatus)
-  const providerModels = useStore(s => s.settings.providerModels)
+  const settings = useStore(s => s.settings)
+  const pushToast = useStore(s => s.pushToast)
 
-  const profiles: SPProfile[] = useMemo(() =>
-    Object.values(profilesDict).map(p => ({
-      id: p.name,
-      name: p.name,
-      locked: p.readOnly,
-      tiers: {
-        // M3: tiers are now {provider, model, thinking}; map provider -> runner for SettingsPage.
-        strong:   { runner: p.tiers['strong']?.provider   || '', model: p.tiers['strong']?.model   || '', thinking: p.tiers['strong']?.thinking   || '' },
-        standard: { runner: p.tiers['standard']?.provider || '', model: p.tiers['standard']?.model || '', thinking: p.tiers['standard']?.thinking || '' },
-        cheap:    { runner: p.tiers['cheap']?.provider    || '', model: p.tiers['cheap']?.model    || '', thinking: p.tiers['cheap']?.thinking    || '' },
-      },
-    })),
-    [profilesDict],
-  )
+  const [editingConnection, setEditingConnection] = useState<string | 'new' | null>(null)
+  const [connectionDraft, setConnectionDraft] = useState<import('./components/organisms/SettingsPage').ConnectionDraft | null>(null)
+  const [connectionTestState, setConnectionTestState] = useState<import('./components/organisms/SettingsPage').TestState>({ kind: 'idle' })
+  const [connectionSaving, setConnectionSaving] = useState(false)
+  const [modelsLoading, setModelsLoading] = useState<Record<string, boolean>>({})
 
-  // Map store providerStatus to the presentational ProviderConfigView shape.
-  // region/baseUrl arrive via provider_status_listed JSON Patch (M3 backend).
-  const providers: ProviderConfigView[] = useMemo(() =>
-    providerStatus.map(ps => ({
-      provider: ps.provider,
-      available: ps.available,
-      region: ps.region ?? null,
-      baseUrl: ps.baseUrl ?? null,
-    })),
-    [providerStatus],
-  )
+  const { connections, modelsByConnection } = buildConnectionViews(settings, modelsLoading)
 
-  // Runner types: union of static registry and dynamic overlay providers.
-  const runnerTypes = useMemo(() => {
-    const all = new Set([
-      ...modelRegistry.map(e => e.provider),
-      ...providerModels.map(e => e.provider),
-    ])
-    return [...all].sort()
-  }, [modelRegistry, providerModels])
+  // Build the full assignments map from presets ($last) + memoryBindings.
+  const assignments = useMemo((): Record<RoleSlot, RoleAssignment> => {
+    const cmById: Record<string, typeof settings.configuredModels[0]> = {}
+    for (const cm of settings.configuredModels) cmById[cm.id] = cm
+    const connById: Record<string, typeof settings.connections[0]> = {}
+    for (const c of settings.connections) connById[c.id] = c
+    const capById: Record<string, typeof settings.modelCapabilities[0]> = {}
+    for (const cap of settings.modelCapabilities) capById[cap.configuredModelId] = cap
 
-  const runnerOptions = useMemo(() =>
-    runnerTypes.map(r => ({ value: r, label: r })),
-    [runnerTypes],
-  )
+    const lastPreset = settings.presets['$last']
 
-  const modelOptionsForRunner = useMemo(() =>
-    (runner: string) => {
-      const staticOpts = modelRegistry
-        .filter(e => e.provider === runner)
-        .map(e => ({ value: e.model, label: e.displayName || e.model }))
-      const staticModels = new Set(staticOpts.map(o => o.value))
-      // Append overlay models for this runner, deduping against static.
-      const overlayOpts = providerModels
-        .filter(e => e.provider === runner && !staticModels.has(e.model))
-        .map(e => ({ value: e.model, label: e.displayName || e.model }))
-      return [...staticOpts, ...overlayOpts]
-    },
-    [modelRegistry, providerModels],
-  )
-
-  const thinkingOptionsForModel = useMemo(() =>
-    (runner: string, model: string) => {
-      // Overlay-only models have no registry entry -> returns [] -> only "disabled".
-      const entry = modelRegistry.find(e => e.provider === runner && e.model === model)
-      if (entry && entry.thinkingModes.length > 0) {
-        return entry.thinkingModes.map(t => ({ value: t, label: t }))
+    function resolveSlot(cmId: string | undefined, thinking: string | null): RoleAssignment {
+      if (!cmId) return { connectionId: null, modelId: null, thinking: null, state: 'unassigned', thinkingOptions: [] }
+      const cm = cmById[cmId]
+      if (!cm) return { connectionId: null, modelId: null, thinking: null, state: 'broken', thinkingOptions: [] }
+      const conn = connById[cm.connectionId]
+      if (!conn) return { connectionId: cm.connectionId, modelId: cm.modelId, thinking, state: 'broken', thinkingOptions: [] }
+      const cap = capById[cmId]
+      const rawModes = cap?.thinkingModes ?? []
+      const thinkingOptions = toThinkingOptions(rawModes)
+      return {
+        connectionId: cm.connectionId,
+        modelId: cm.modelId,
+        thinking,
+        state: 'assigned',
+        thinkingOptions,
       }
-      return []
-    },
-    [modelRegistry],
-  )
+    }
+
+    const tierSlots: Partial<Record<RoleSlot, RoleAssignment>> = {}
+    for (const slot of ['strong', 'standard', 'cheap'] as RoleSlot[]) {
+      const sa = lastPreset?.slots[slot]
+      tierSlots[slot] = resolveSlot(sa?.configuredModelId, sa?.thinking ?? null)
+    }
+
+    const mem = settings.memoryBindings
+    const embeddingSlot = resolveSlot(mem?.embedding?.configured_model_id, mem?.embedding?.thinking ?? null)
+    const memLlmSlot = resolveSlot(mem?.memory_llm?.configured_model_id, mem?.memory_llm?.thinking ?? null)
+    const reflectLlmSlot = resolveSlot(mem?.reflect_llm?.configured_model_id, mem?.reflect_llm?.thinking ?? null)
+
+    return {
+      strong: tierSlots.strong!,
+      standard: tierSlots.standard!,
+      cheap: tierSlots.cheap!,
+      embedding: embeddingSlot,
+      'memory-llm': memLlmSlot,
+      'reflect-llm': reflectLlmSlot,
+    }
+  }, [settings])
+
+  const onAddConnection = () => {
+    setEditingConnection('new')
+    setConnectionDraft({ name: '', type: 'anthropic', apiKey: '', endpoint: '', region: '' })
+    setConnectionTestState({ kind: 'idle' })
+  }
+
+  const onEditConnection = (id: string) => {
+    const conn = settings.connections.find(c => c.id === id)
+    if (!conn) return
+    setEditingConnection(id)
+    // Seed draft from existing connection; name is fixed in edit mode.
+    setConnectionDraft({
+      name: conn.id,
+      type: conn.connectionType,
+      apiKey: '',
+      endpoint: conn.baseUrl ?? '',
+      region: conn.region ?? '',
+    })
+    setConnectionTestState({ kind: 'idle' })
+  }
+
+  const onConnectionDraftChange = (draft: import('./components/organisms/SettingsPage').ConnectionDraft) => {
+    // In edit mode, keep name fixed to the existing connection id so edits to
+    // other fields do not create a second connection and orphan the original.
+    if (editingConnection && editingConnection !== 'new') {
+      setConnectionDraft({ ...draft, name: editingConnection })
+    } else {
+      setConnectionDraft(draft)
+    }
+  }
+
+  const onConnectionSave = async () => {
+    if (!connectionDraft) return
+    setConnectionSaving(true)
+    const res = await api.setConnection({
+      id: connectionDraft.name,
+      type: connectionDraft.type,
+      ...(connectionDraft.endpoint ? { base_url: connectionDraft.endpoint } : {}),
+      ...(connectionDraft.region ? { region: connectionDraft.region } : {}),
+      ...(connectionDraft.apiKey ? { secret: connectionDraft.apiKey } : {}),
+    })
+    setConnectionSaving(false)
+    if (res.ok) {
+      setEditingConnection(null)
+      setConnectionDraft(null)
+    } else {
+      pushToast(res.message ?? 'Failed to save connection', 'error')
+    }
+  }
+
+  const onConnectionCancel = () => {
+    setEditingConnection(null)
+    setConnectionDraft(null)
+    setConnectionTestState({ kind: 'idle' })
+  }
+
+  const onConnectionDelete = async () => {
+    if (!editingConnection || editingConnection === 'new') return
+    const res = await api.deleteConnection(editingConnection)
+    if (res.ok) {
+      setEditingConnection(null)
+      setConnectionDraft(null)
+    } else {
+      pushToast(res.message ?? 'Failed to delete connection', 'error')
+    }
+  }
+
+  const onConnectionTest = async () => {
+    if (!connectionDraft) return
+    setConnectionTestState({ kind: 'pending' })
+    // Save first, then list (no pre-save test endpoint exists).
+    const saveRes = await api.setConnection({
+      id: connectionDraft.name,
+      type: connectionDraft.type,
+      ...(connectionDraft.endpoint ? { base_url: connectionDraft.endpoint } : {}),
+      ...(connectionDraft.region ? { region: connectionDraft.region } : {}),
+      ...(connectionDraft.apiKey ? { secret: connectionDraft.apiKey } : {}),
+    })
+    if (!saveRes.ok) {
+      setConnectionTestState({ kind: 'error', message: saveRes.message ?? 'Save failed' })
+      return
+    }
+    const listRes = await api.listConnectionModels(connectionDraft.name)
+    if (listRes.ok) {
+      setConnectionTestState({ kind: 'ok', models: listRes.count ?? 0 })
+    } else {
+      setConnectionTestState({ kind: 'error', message: listRes.message ?? 'Listing failed' })
+    }
+  }
+
+  const onRoleChange = async (slot: RoleSlot, field: 'connection' | 'model' | 'thinking', value: string) => {
+    const current = assignments[slot]
+    const isTierSlot = slot === 'strong' || slot === 'standard' || slot === 'cheap'
+
+    if (field === 'connection') {
+      // Connection change: trigger model listing so the model dropdown populates.
+      setModelsLoading(prev => ({ ...prev, [value]: true }))
+      const res = await api.listConnectionModels(value)
+      setModelsLoading(prev => ({ ...prev, [value]: false }))
+      if (!res.ok) pushToast(res.message ?? 'Failed to load models', 'error')
+      return
+    }
+
+    if (field === 'model') {
+      const connId = current.connectionId
+      if (!connId) return
+      const cmId = `${connId}:${value}`
+      // When the selected value matches a family's resolved id it is a
+      // newest-in-family pin; record its provenance so the ConfiguredModel
+      // carries resolved_from for audit and display purposes.  Benign if the
+      // user separately selects the same id from the flat list -- truthfully,
+      // it is the newest at this point in time.
+      const connType = settings.connections.find(c => c.id === connId)?.connectionType
+      const pin = (settings.providerFamilies ?? []).find(
+        f => f.provider === connType && f.resolved === value,
+      )
+      const cmRes = await api.setConfiguredModel({
+        id: cmId,
+        connection_id: connId,
+        model_id: value,
+        ...(pin ? { resolved_from: pin.resolvedFrom } : {}),
+      })
+      if (!cmRes.ok) {
+        pushToast(cmRes.message ?? 'Failed to save model', 'error')
+        return
+      }
+      const body = { configured_model_id: cmId, thinking: current.thinking ?? 'disabled' }
+      const slotRes = isTierSlot
+        ? await api.setSlot(slot, body)
+        : await api.setMemoryBinding(slotToMemoryKind(slot), body)
+      if (!slotRes.ok) pushToast(slotRes.message ?? 'Failed to assign model', 'error')
+      return
+    }
+
+    if (field === 'thinking') {
+      const cmId = isTierSlot
+        ? settings.presets['$last']?.slots[slot]?.configuredModelId
+        : settings.memoryBindings?.[slotToMemoryKind(slot) as 'embedding' | 'memory_llm' | 'reflect_llm']?.configured_model_id
+      if (!cmId) return
+      const body = { configured_model_id: cmId, thinking: value }
+      const res = isTierSlot
+        ? await api.setSlot(slot, body)
+        : await api.setMemoryBinding(slotToMemoryKind(slot), body)
+      if (!res.ok) pushToast(res.message ?? 'Failed to save thinking mode', 'error')
+    }
+  }
+
+  const onScoutConcurrencyChange = async (value: number) => {
+    const res = await api.saveScoutConcurrency(value)
+    if (!res.ok) pushToast(res.message ?? 'Failed to save concurrency', 'error')
+  }
 
   return (
     <SettingsPage
-      profiles={profiles}
-      onCreateProfile={async p => {
-        // M3: map runner -> provider in the tier payload.
-        const tiers: Record<string, { provider: string; model: string; thinking: string }> = {}
-        for (const [k, v] of Object.entries(p.tiers)) {
-          tiers[k] = { provider: v.runner, model: v.model, thinking: v.thinking }
+      connections={connections}
+      editingConnection={editingConnection}
+      connectionDraft={connectionDraft}
+      connectionTestState={connectionTestState}
+      connectionSaving={connectionSaving}
+      onAddConnection={onAddConnection}
+      onEditConnection={onEditConnection}
+      onConnectionDraftChange={onConnectionDraftChange}
+      onConnectionSave={onConnectionSave}
+      onConnectionCancel={onConnectionCancel}
+      onConnectionDelete={onConnectionDelete}
+      onConnectionTest={onConnectionTest}
+      assignments={assignments}
+      modelsByConnection={modelsByConnection}
+      onRoleChange={onRoleChange}
+      scoutConcurrency={settings.defaultScoutConcurrency}
+      onScoutConcurrencyChange={onScoutConcurrencyChange}
+    />
+  )
+}
+
+/**
+ * ConnectedNewRunForm -- store + API connector for the presentational NewRunForm.
+ *
+ * Computes readiness from connection/slot availability.  Per-run override rows
+ * default from the $last slot assignments; edits are local only (run-scoped,
+ * never persisted to global config).  Overrides are forwarded to startRun.
+ */
+function ConnectedNewRunForm() {
+  const settings = useStore(s => s.settings)
+  const lastCompletion = useStore(s => s.lastCompletion)
+  const setLastCompletion = useStore(s => s.setLastCompletion)
+  const pushToast = useStore(s => s.pushToast)
+  const navigate = useNavigate()
+  const attach = useFileAttachment()
+
+  const [workflow, setWorkflow] = useState('plan')
+  const [task, setTask] = useState('')
+  const [projectDir, setProjectDir] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [modelsLoading, setModelsLoading] = useState<Record<string, boolean>>({})
+
+  // Seed projectDir from the backend once on mount.
+  useEffect(() => {
+    api.getInitialPrompt().then(r => { if (r.project_dir) setProjectDir(r.project_dir) })
+  }, [])
+
+  const { connections, modelsByConnection } = buildConnectionViews(settings, modelsLoading)
+
+  // Default per-run overrides from the current $last slot assignments.
+  const defaultOverrides = useMemo((): Record<WorkflowRole, OverrideAssignment> => {
+    const cmById: Record<string, typeof settings.configuredModels[0]> = {}
+    for (const cm of settings.configuredModels) cmById[cm.id] = cm
+    const capById: Record<string, typeof settings.modelCapabilities[0]> = {}
+    for (const cap of settings.modelCapabilities) capById[cap.configuredModelId] = cap
+    const lastPreset = settings.presets['$last']
+
+    function makeOverride(slot: 'strong' | 'standard' | 'cheap'): OverrideAssignment {
+      const sa = lastPreset?.slots[slot]
+      if (!sa) return { connectionId: null, modelId: null, thinking: null, thinkingOptions: [] }
+      const cm = cmById[sa.configuredModelId]
+      if (!cm) return { connectionId: null, modelId: null, thinking: null, thinkingOptions: [] }
+      const cap = capById[sa.configuredModelId]
+      const rawModes = cap?.thinkingModes ?? []
+      const thinkingOptions = toThinkingOptions(rawModes)
+      return { connectionId: cm.connectionId, modelId: cm.modelId, thinking: sa.thinking, thinkingOptions }
+    }
+    return { strong: makeOverride('strong'), standard: makeOverride('standard'), cheap: makeOverride('cheap') }
+  }, [settings])
+
+  const [overrides, setOverrides] = useState<Record<WorkflowRole, OverrideAssignment>>(defaultOverrides)
+
+  // Re-sync override defaults when the slot assignments change (e.g. after settings save).
+  useEffect(() => { setOverrides(defaultOverrides) }, [defaultOverrides])
+
+  // Readiness: all three tier slots must resolve to a configured model with a valid connection.
+  const readiness = useMemo((): import('./components/organisms/NewRunForm').ConfigReadiness => {
+    if (connections.length === 0) return 'no-providers'
+    const cmById: Record<string, typeof settings.configuredModels[0]> = {}
+    for (const cm of settings.configuredModels) cmById[cm.id] = cm
+    const connById: Record<string, typeof settings.connections[0]> = {}
+    for (const c of settings.connections) connById[c.id] = c
+    const lastPreset = settings.presets['$last']
+    for (const slot of ['strong', 'standard', 'cheap'] as const) {
+      const sa = lastPreset?.slots[slot]
+      if (!sa) return 'incomplete'
+      const cm = cmById[sa.configuredModelId]
+      if (!cm) return 'incomplete'
+      if (!connById[cm.connectionId]) return 'incomplete'
+    }
+    return 'ready'
+  }, [settings, connections])
+
+  const onOverrideChange = (role: WorkflowRole, field: 'connection' | 'model' | 'thinking', value: string) => {
+    setOverrides(prev => {
+      const current = prev[role]
+      if (field === 'connection') {
+        // Connection change clears model + thinking; trigger model listing.
+        setModelsLoading(p => ({ ...p, [value]: true }))
+        api.listConnectionModels(value).then(res => {
+          setModelsLoading(p => ({ ...p, [value]: false }))
+          if (!res.ok) pushToast(res.message ?? 'Failed to load models', 'error')
+        })
+        return { ...prev, [role]: { connectionId: value, modelId: null, thinking: null, thinkingOptions: current.thinkingOptions } }
+      }
+      if (field === 'model') {
+        const cap = settings.modelCapabilities.find(c => {
+          const cm = settings.configuredModels.find(m => m.modelId === value && m.connectionId === current.connectionId)
+          return cm && c.configuredModelId === cm.id
+        })
+        const rawModes = cap?.thinkingModes ?? []
+        const thinkingOptions = toThinkingOptions(rawModes)
+        return { ...prev, [role]: { ...current, modelId: value, thinkingOptions } }
+      }
+      // 'thinking'
+      return { ...prev, [role]: { ...current, thinking: value } }
+    })
+  }
+
+  const onStartRun = async () => {
+    setError(null)
+    // Build the overrides payload: only include roles with both connection and model set.
+    const payload: Record<string, { connection_id: string; model_id: string; thinking: string }> = {}
+    for (const role of ['strong', 'standard', 'cheap'] as WorkflowRole[]) {
+      const ov = overrides[role]
+      if (ov.connectionId && ov.modelId) {
+        payload[role] = {
+          connection_id: ov.connectionId,
+          model_id: ov.modelId,
+          thinking: ov.thinking ?? 'disabled',
         }
-        const res = await api.createProfile(p.name, tiers)
-        if (!res.ok) throw new Error(res.message || 'Failed to create profile')
-      }}
-      onUpdateProfile={async (id, p) => {
-        if (p.tiers) {
-          // M3: map runner -> provider in the tier payload.
-          const tiers: Record<string, { provider: string; model: string; thinking: string }> = {}
-          for (const [k, v] of Object.entries(p.tiers)) {
-            tiers[k] = { provider: v.runner, model: v.model, thinking: v.thinking }
-          }
-          const res = await api.updateProfile(id, tiers)
-          if (!res.ok) throw new Error(res.message || 'Failed to update profile')
-        }
-      }}
-      onDeleteProfile={id => api.deleteProfile(id)}
-      // installations/runnerTypes/onCreateInstallation/onUpdateInstallation/
-      // onDeleteInstallation/onDetectBinary removed in M4: installation concept deleted.
-      providers={providers}
-      onSaveProvider={async (provider, fields) => {
-        const res = await api.setProviderConfig(provider, fields)
-        if (!res.ok) throw new Error(res.message || 'Failed to save provider config')
-      }}
-      onDeleteProvider={async provider => {
-        const res = await api.deleteProviderConfig(provider)
-        if (!res.ok) throw new Error(res.message || 'Failed to delete provider config')
-      }}
-      onTestProvider={async (provider, fields) => api.testProviderConfig(provider, fields)}
-      scoutConcurrency={scoutConcurrency}
-      onScoutConcurrencyChange={n => api.saveScoutConcurrency(n)}
-      runnerOptions={runnerOptions}
-      modelOptionsForRunner={modelOptionsForRunner}
-      thinkingOptionsForModel={thinkingOptionsForModel}
+      }
+    }
+    const readyAttachments = attach.fileIds
+    const res = await api.startRun(task, workflow, readyAttachments, Object.keys(payload).length > 0 ? payload : undefined)
+    if (!res.ok) {
+      const msg = res.message ?? 'Failed to start run'
+      setError(msg)
+      pushToast(msg, 'error')
+    }
+    // On success, SSE run_started drives navigation via App; no navigate() needed here.
+  }
+
+  const startDisabled = !task.trim() || readiness !== 'ready'
+
+  return (
+    <NewRunForm
+      projectDir={projectDir}
+      workflows={settings.workflows.map(w => ({ id: w.id, description: w.description }))}
+      workflow={workflow}
+      onWorkflowChange={setWorkflow}
+      task={task}
+      onTaskChange={setTask}
+      attach={attach}
+      lastCompletion={lastCompletion}
+      onDismissLastCompletion={() => setLastCompletion(null)}
+      error={error}
+      readiness={readiness}
+      overrides={overrides}
+      connections={connections}
+      modelsByConnection={modelsByConnection}
+      onOverrideChange={onOverrideChange}
+      onStartRun={onStartRun}
+      onOpenSettings={() => navigate('/settings')}
+      startDisabled={startDisabled}
     />
   )
 }
@@ -1041,7 +1402,7 @@ export default function App() {
           crumbs={memoryCrumbs}
           onNavChange={k => navigate(PATH_BY_KEY[k] ?? '/')}
         />
-        {page === 'new-run' && <div className="single-column"><NewRunForm /></div>}
+        {page === 'new-run' && <div className="single-column"><ConnectedNewRunForm /></div>}
         {page === 'sessions' && (
           <div className="single-column">
             <SessionsPage />

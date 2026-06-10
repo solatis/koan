@@ -1142,36 +1142,7 @@
   margin-bottom: 16px;
 }
 
-.profile-row {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 8px 16px;
-  border: 1px solid var(--border-card);
-  border-radius: var(--radius-md);
-  margin-bottom: 8px;
-  background: var(--bg-base);
-}
-
-.profile-row-name {
-  font-family: var(--font-mono);
-  font-weight: 600;
-  color: var(--text-primary);
-  min-width: 120px;
-}
-
-.profile-row-tiers {
-  flex: 1;
-  font-family: var(--font-mono);
-  font-size: var(--type-label);
-  color: var(--text-muted);
-}
-
-.profile-row-actions {
-  display: flex;
-  gap: 8px;
-  margin-left: auto;
-}
+/* M5: .profile-row, .profile-row-name, .profile-row-tiers, .profile-row-actions removed -- Profiles card deleted. */
 
 /* -- Installation tabs -- */
 
@@ -1286,13 +1257,7 @@
   margin-top: 8px;
 }
 
-.profile-form {
-  border: 1px solid var(--color-orange);
-  border-radius: var(--radius-2xl);
-  padding: 16px;
-  background: var(--bg-selected);
-  margin-top: 16px;
-}
+/* M5: .profile-form removed -- Profiles card deleted. */
 
 .tier-form-row {
   display: flex;

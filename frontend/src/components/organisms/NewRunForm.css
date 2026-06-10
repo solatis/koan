@@ -182,118 +182,74 @@
   margin-top: 6px;
 }
 
-/* ---- Configuration ---- */
-.nrf-config-fields {
+/* ---- Models (per-run override) ---- */
+.nrf-models-head {
   display: flex;
-  flex-direction: column;
-  gap: 18px;
-  margin-top: 12px;
-}
-
-.nrf-field-label {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--text-primary);
-  margin-bottom: 6px;
-}
-
-/* Select-style div */
-.nrf-select {
-  display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
-  padding: 10px 14px;
-  background: var(--bg-base);
-  border: 1.5px solid var(--border-input);
-  border-radius: var(--radius-lg);
-  font-family: var(--font-mono);
-  font-size: var(--type-body);
-  color: var(--text-primary);
 }
 
-.nrf-select--flex {
-  flex: 1;
+.nrf-models-hint {
+  font-size: var(--type-breadcrumb);
+  color: var(--text-muted);
 }
 
-/* Agent row */
-.nrf-agent-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin-top: 6px;
-}
-
-.nrf-agent-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.nrf-agent-chip {
+/* Column-header line above the compact rows. Mirrors the row geometry
+   (same 14px side padding and 6px gap) so the labels sit over their columns:
+   spacer = 26px marker + 6px gap + 84px compact meta. */
+.nrf-models-cols {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
-  background: var(--bg-thinking); /* lavender — agents are "thinking entities" */
-  border-radius: var(--radius-md);
-  flex-shrink: 0;
+  padding: 0 14px;
+  margin: 12px 0 6px;
 }
 
-.nrf-agent-name {
-  font-family: var(--font-mono);
-  font-size: 13px;
+.nrf-models-cols__spacer {
+  flex: 0 0 116px;
+}
+
+.nrf-models-cols__label {
+  font-size: 9px; /* matches the role-card/row micro-label scale; no token at 9px */
   font-weight: 500;
-  color: var(--text-thinking); /* dark purple — ties to thinking/agent palette */
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-muted);
 }
 
-/* ---- Real select dropdown (replaces static display div) ---- */
-.nrf-real-select {
-  display: block;
-  width: 100%;
-  padding: 10px 14px;
-  background: var(--bg-base);
-  border: 1.5px solid var(--border-input);
-  border-radius: var(--radius-lg);
-  font-family: var(--font-mono);
-  font-size: var(--type-body);
-  color: var(--text-primary);
-  outline: none;
-  cursor: pointer;
-  -webkit-appearance: none;
-  appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%239a8e7e' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 14px center;
-  padding-right: 36px;
+.nrf-models-cols__label--conn {
+  flex: 0 0 142px;
 }
 
-.nrf-real-select:focus {
-  border-color: var(--color-orange);
-}
-
-.nrf-real-select--flex {
+.nrf-models-cols__label--model {
   flex: 1;
+  min-width: 0;
 }
 
-.nrf-real-select--sm {
-  font-size: 13px;
+.nrf-models-cols__label--think {
+  flex: 0 0 80px;
 }
 
-.nrf-real-select option {
-  background: var(--bg-surface);
-  color: var(--text-body);
+.nrf-models-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px; /* spec: compact override row gap */
+}
+
+/* ---- Config gates ---- */
+/* spec: ~44px below the header; the column's 28px flex gap plus 16px */
+.nrf-gate {
+  margin-top: 16px;
+}
+
+/* spec: ~22px above the notice; the column's 28px flex gap minus 6px */
+.nrf-notice-gate {
+  margin-top: -6px;
 }
 
 /* ---- Error message ---- */
 .nrf-error {
   font-size: var(--type-breadcrumb);
-  color: var(--status-failed);
-}
-
-/* ---- Missing agent warning ---- */
-.nrf-missing {
-  font-family: var(--font-mono);
-  font-size: var(--type-label);
   color: var(--status-failed);
 }
 

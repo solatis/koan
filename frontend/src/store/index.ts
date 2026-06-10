@@ -4,30 +4,87 @@ import { devtools } from 'zustand/middleware'
 // -- Wire types — match backend KoanBaseModel.to_wire() output exactly --------
 
 // Installation interface removed in M4: agent installation concept deleted.
-// Provider credentials are the availability model (see ProviderStatus below).
+// M5: Profile interface removed -- profiles/default_profile deleted from the backend Settings projection.
+// M5: ProviderStatus (env-key per-type shape) replaced by ConnectionStatusInfo (per-connection).
 
-export interface Profile {
-  name: string
-  readOnly: boolean
-  /** M3: tier values changed from strings (alias) to nested provider/model/thinking objects. */
-  tiers: Record<string, { provider: string; model: string; thinking: string }>
+// ProviderType mirrors backend Literal["google","anthropic","openai","bedrock","lmstudio","voyage"].
+export type ProviderType = 'google' | 'anthropic' | 'openai' | 'bedrock' | 'lmstudio' | 'voyage'
+
+/**
+ * Wire: ConnectionWire (camelCase via to_camel alias).
+ * Non-secret endpoint settings for one provider connection.
+ */
+export interface ConnectionInfo {
+  id: string
+  connectionType: ProviderType
+  baseUrl: string | null
+  region: string | null
 }
 
 /**
- * Provider credential availability and non-secret config surfaced via
- * Settings.providerStatus (M2/M3). region and baseUrl are non-secret
- * and stored in providerAuth; the encrypted key is never returned.
+ * Wire: ConfiguredModelWire (camelCase).
+ * A (connection, model-id) pair in the global library.
  */
-export interface ProviderStatus {
-  provider: string
-  available: boolean
-  /** Env var names checked for this provider (never values). */
-  envKeys: string[]
-  /** Non-secret region used for bedrock (required) and openai/anthropic (optional). */
-  region: string | null
-  /** Non-secret endpoint override (base_url) for openai, anthropic, bedrock. */
-  baseUrl: string | null
+export interface ConfiguredModelInfo {
+  id: string
+  connectionId: string
+  modelId: string
+  resolvedFrom: string | null
 }
+
+/** Wire: SlotAssignmentWire (camelCase). */
+export interface SlotAssignmentInfo {
+  configuredModelId: string
+  thinking: string
+}
+
+/** Wire: PresetWire (camelCase). */
+export interface PresetInfo {
+  slots: Record<string, SlotAssignmentInfo>
+}
+
+/**
+ * Wire: ConnectionStatusWire (camelCase).
+ * Per-connection credential availability replacing the old per-type ProviderStatus.
+ */
+export interface ConnectionStatusInfo {
+  connectionId: string
+  connectionType: ProviderType
+  available: boolean
+}
+
+/**
+ * Wire: ResolvedCapabilitiesWire (camelCase).
+ * Read-only resolved capability snapshot for one configured model.
+ */
+export interface ModelCapabilityInfo {
+  configuredModelId: string
+  thinkingSupported: boolean
+  thinkingModes: string[]
+  thinkingShape: string
+  supportsWebSearch: boolean
+  supportsTools: boolean
+  contextWindow: number
+  contextWindowVariants: number[]
+  supportsPromptCaching: boolean
+  tierHint: string | null
+  recognized: boolean
+}
+
+/**
+ * Wire: memory_bindings dict (opaque snake_case on the wire -- NOT camelCase).
+ * The backend stores this as a raw dict keyed by binding name, so the keys
+ * stay snake_case unlike the typed KoanBaseModel sub-objects.
+ */
+export interface MemoryBindingInfo {
+  configured_model_id: string
+  thinking: string
+}
+export type MemoryBindingsInfo = {
+  embedding?: MemoryBindingInfo
+  memory_llm?: MemoryBindingInfo
+  reflect_llm?: MemoryBindingInfo
+} | null
 
 /** One entry from the all-providers model catalog surfaced via Settings.modelRegistry (M2/M3). */
 export interface ModelRegistryEntry {
@@ -51,22 +108,51 @@ export interface ProviderModel {
   contextWindow: number
 }
 
+/**
+ * Per-provider newest-in-family pin delivered via the projection (Settings channel).
+ * Computed server-side from the live model list alongside providerModels; replace-all
+ * semantics (each provider_models_listed event replaces the full families list).
+ * camelCase wire of ProviderFamilyWire (projections.py).
+ */
+export interface ProviderFamily {
+  provider: string
+  family: string
+  resolved: string
+  resolvedFrom: string
+}
+
+/**
+ * Projection Settings -- typed sub-objects use camelCase (to_camel alias);
+ * memoryBindings is opaque snake_case on the wire (stored as a raw dict).
+ * Keep modelRegistry and providerModels: they are capability/listing surfaces
+ * retained by M6 (brief decision 5).
+ */
 export interface Settings {
   // installations removed in M4: agent installation concept deleted.
-  profiles: Record<string, Profile>
-  defaultProfile: string
+  // M5: profiles/default_profile removed from the backend Settings projection.
   defaultScoutConcurrency: number
   workflows: WorkflowInfo[]   // populated once at startup by workflows_listed; static for the process lifetime
-  /** M2/M3: per-provider credential availability, populated by provider_status_listed initial event. */
-  providerStatus: ProviderStatus[]
+  connections: ConnectionInfo[]
+  configuredModels: ConfiguredModelInfo[]
+  presets: Record<string, PresetInfo>
+  active: string
+  memoryBindings: MemoryBindingsInfo
+  /** M5: per-connection availability (replaces per-type ProviderStatus from M2). */
+  providerStatus: ConnectionStatusInfo[]
+  modelCapabilities: ModelCapabilityInfo[]
   /** M2/M3: all-providers model catalog, populated by model_registry_listed initial event. */
   modelRegistry: ModelRegistryEntry[]
   /** Dynamic per-provider model overlay; populated by provider_models_listed events. */
   providerModels: ProviderModel[]
+  /** Newest-in-family pins per provider; populated alongside providerModels by
+   *  provider_models_listed events.  Read defensively as (providerFamilies ?? [])
+   *  at every consumption site: the SSE snapshot replaces settings wholesale over
+   *  an untyped boundary and a missing field reads as undefined, not []. */
+  providerFamilies: ProviderFamily[]
 }
 
 export interface RunConfig {
-  profile: string
+  // M5: profile removed -- backend renamed to active_preset; not read by any component.
   // installations removed in M4: agent installation concept deleted.
   scoutConcurrency: number
 }
@@ -288,6 +374,19 @@ export interface Notification {
   timestampMs: number
 }
 
+// -- Client-only toast channel ------------------------------------------------
+
+/**
+ * Client-only toast, not projection-synced.  Survives the SSE merge (same
+ * as chatDraft/lastCompletion) because connect.ts only merges SSE-projected
+ * state, not the full store object.
+ */
+export interface ClientToast {
+  id: number
+  message: string
+  level: 'info' | 'warning' | 'error'
+}
+
 // -- Run ----------------------------------------------------------------------
 
 export interface SteeringMessage {
@@ -354,6 +453,14 @@ interface KoanState {
   // Local UI state (not from server)
   settingsOpen: boolean
 
+  // Client-only toast channel (not projection-synced; survives SSE merge).
+  // Use pushToast for revert-on-reject error messages and other transient notices.
+  toasts: ClientToast[]
+  /** Append a new toast; id is auto-assigned. */
+  pushToast: (message: string, level: 'info' | 'warning' | 'error') => void
+  /** Remove a toast by its auto-assigned id. */
+  dismissToast: (id: number) => void
+
   // Ephemeral snapshot of the last run's completion — populated on the null->non-null
   // rising edge of run.completion and cleared by the user (dismiss button) or a new run.
   // Not persisted; not mirrored in the projection. UI-only.
@@ -402,13 +509,19 @@ export const useStore = create<KoanState>()(
 
       settings: {
         // installations removed in M4: agent installation concept deleted.
-        profiles: {},
-        defaultProfile: 'balanced',
+        // M5: profiles/defaultProfile init values removed.
         defaultScoutConcurrency: 8,
         workflows: [],
+        connections: [],
+        configuredModels: [],
+        presets: {},
+        active: '$last',
+        memoryBindings: null,
         providerStatus: [],
+        modelCapabilities: [],
         modelRegistry: [],
         providerModels: [],
+        providerFamilies: [],
       },
       run: null,
       notifications: [],
@@ -416,6 +529,7 @@ export const useStore = create<KoanState>()(
       reflect: null,
 
       settingsOpen: false,
+      toasts: [],
       lastCompletion: null,
       chatDraft: '',
       reviewingArtifact: null,
@@ -466,6 +580,15 @@ export const useStore = create<KoanState>()(
           return { memory: { ...s.memory, entries: merged } }
         }, false, 'upsertMemoryEntries'),
 
+      pushToast: (message, level) =>
+        set(s => ({
+          // Use Date.now() + random to avoid collisions on rapid-fire toasts.
+          toasts: [...s.toasts, { id: Date.now() + Math.random(), message, level }],
+        }), false, 'pushToast'),
+
+      dismissToast: (id) =>
+        set(s => ({ toasts: s.toasts.filter(t => t.id !== id) }), false, 'dismissToast'),
+
       setConnected: (v) => set({ connected: v }, false, 'setConnected'),
       setSettingsOpen: (v) => set({ settingsOpen: v }, false, 'setSettingsOpen'),
       setLastCompletion: (c) => set({ lastCompletion: c }, false, 'setLastCompletion'),
@@ -496,7 +619,7 @@ export type KoanStore = typeof useStore
 // -- ALL_PHASES (frontend-only derivation helper) ----------------------------
 
 export const ALL_PHASES = [
-  // Legacy workflow phases
+  // Pre-plan workflow phases
   'intake', 'brief-generation', 'core-flows', 'tech-plan',
   'ticket-breakdown', 'cross-artifact-validation',
   'execution', 'implementation-validation',

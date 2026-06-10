@@ -1,21 +1,110 @@
 /**
- * NewRunForm -- standalone form page for starting a new koan run.
- * Reads profiles and workflows from the store. Workflows are sourced from
- * settings.workflows (populated at server startup via the workflows_listed
- * projection event) rather than hard-coded.
- * M4: installation selection removed; provider credentials gate run start.
- * Used in: landing page when no run is active.
+ * NewRunForm — workflow + description + per-run model override.
+ *
+ * Three render states by config readiness:
+ *  'ready'        → Models override section (three RoleCards) + Start enabled
+ *  'incomplete'   → Models section HIDDEN, InlineNotice gate, Start disabled
+ *  'no-providers' → NoProvidersBlock replaces the form body entirely
+ * Run-readiness (computed by the parent): all three workflow slots resolve to
+ * a valid configured model AND ≥1 connection. Memory bindings never gate.
+ *
+ * Presentational: workflows, description text, attachments, and overrides all
+ * arrive via props; the parent owns fetching, uploads, and run start.
  */
 
-import { useState, useEffect, useMemo } from 'react'
-import { useStore } from '../../store/index'
-import { useFileAttachment } from '../../hooks/useFileAttachment'
-import * as api from '../../api/client'
+import './NewRunForm.css'
+import type { ChangeEvent, ClipboardEvent, DragEvent, RefObject } from 'react'
 import { SectionLabel } from '../atoms/SectionLabel'
 import { Button } from '../atoms/Button'
-// StatusDot removed in M4: installation status indicators deleted with the installation section.
 import { FileChip } from '../atoms/FileChip'
-import './NewRunForm.css'
+import type { WorkflowRole } from '../molecules/RoleCard'
+import { RoleRow } from '../molecules/RoleRow'
+import { InlineNotice } from '../molecules/InlineNotice'
+import { NoProvidersBlock } from './NoProvidersBlock'
+import type { ConnectionSummary, ModelsForConnection } from './SettingsPage'
+import type { AttachedFile } from '../../hooks/useFileAttachment'
+
+export type { WorkflowRole }
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export type ConfigReadiness = 'ready' | 'incomplete' | 'no-providers'
+
+export interface OverrideAssignment {
+  connectionId: string | null
+  modelId: string | null
+  thinking: string | null
+  /** {value, label} pairs built by the connected layer; value is the wire token. */
+  thinkingOptions: { value: string; label: string }[]
+}
+
+export interface WorkflowOption {
+  id: string
+  description: string
+}
+
+export interface LastCompletion {
+  success: boolean
+  summary?: string | null
+  error?: string | null
+}
+
+/**
+ * Structural slice of useFileAttachment's return value. Declared here (rather
+ * than importing the hook) so the component stays free of the api client the
+ * hook uploads through; the parent passes the real hook result.
+ */
+export interface FileAttachmentControls {
+  files: AttachedFile[]
+  dragProps: {
+    onDragEnter: (e: DragEvent) => void
+    onDragLeave: (e: DragEvent) => void
+    onDragOver: (e: DragEvent) => void
+    onDrop: (e: DragEvent) => void
+  }
+  onPaste: (e: ClipboardEvent) => void
+  openPicker: () => void
+  inputRef: RefObject<HTMLInputElement | null>
+  onInputChange: (e: ChangeEvent<HTMLInputElement>) => void
+  removeFile: (id: string) => void
+}
+
+export interface NewRunFormProps {
+  // Page header
+  projectDir: string
+
+  // Workflow section
+  workflows: WorkflowOption[]
+  workflow: string
+  onWorkflowChange: (id: string) => void
+
+  // Description section
+  task: string
+  onTaskChange: (value: string) => void
+  attach?: FileAttachmentControls
+
+  // Last-completion banner + error line
+  lastCompletion?: LastCompletion | null
+  onDismissLastCompletion?: () => void
+  error?: string | null
+
+  // Config readiness + per-run model override
+  readiness: ConfigReadiness
+  overrides: Record<WorkflowRole, OverrideAssignment>
+  connections: ConnectionSummary[]
+  modelsByConnection: Record<string, ModelsForConnection>
+  onOverrideChange: (role: WorkflowRole, field: 'connection' | 'model' | 'thinking', value: string) => void
+  onStartRun: () => void
+  onOpenSettings: () => void
+  /** Parent may disable for other reasons (e.g. empty description); OR'd with readiness gating. */
+  startDisabled?: boolean
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 const PaperclipIcon = () => (
   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -35,95 +124,116 @@ function labelFromId(id: string): string {
     .join(' ')
 }
 
-export function NewRunForm() {
-  const [task, setTask] = useState('')
-  const [profile, setProfile] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [workflow, setWorkflow] = useState<string>('plan')
-  const [projectDir, setProjectDir] = useState('')
-  const attach = useFileAttachment()
+const noop = () => {}
 
-  const profilesDict = useStore(s => s.settings.profiles)
-  // installationsDict removed in M4: installation concept deleted.
-  const defaultProfile = useStore(s => s.settings.defaultProfile)
-  const workflows = useStore(s => s.settings.workflows)
-  const lastCompletion = useStore(s => s.lastCompletion)
-  const setLastCompletion = useStore(s => s.setLastCompletion)
+const STUB_ATTACH: FileAttachmentControls = {
+  files: [],
+  dragProps: { onDragEnter: noop, onDragLeave: noop, onDragOver: noop, onDrop: noop },
+  onPaste: noop,
+  openPicker: noop,
+  inputRef: { current: null },
+  onInputChange: noop,
+  removeFile: noop,
+}
 
-  const profiles = useMemo(() => Object.values(profilesDict), [profilesDict])
+const NO_MODELS: ModelsForConnection = { models: [] }
 
-  useEffect(() => {
-    api.getInitialPrompt().then(data => {
-      if (data.prompt) setTask(data.prompt)
-      if (data.project_dir) setProjectDir(data.project_dir)
-    })
-  }, [])
+const OVERRIDE_ROLES: WorkflowRole[] = ['strong', 'standard', 'cheap']
 
-  useEffect(() => {
-    if (profiles.length > 0 && !profile) {
-      const def = profiles.find(p => p.name === defaultProfile) ?? profiles[0]
-      setProfile(def.name)
-    }
-  }, [profiles, profile, defaultProfile])
+// ---------------------------------------------------------------------------
+// NewRunForm
+// ---------------------------------------------------------------------------
 
-  // When the workflows list arrives from the projection, ensure the selected
-  // workflow is still valid. Default to 'plan' if present, otherwise the first
-  // entry. Leave the selection unchanged while the list is empty (not yet arrived).
-  useEffect(() => {
-    if (workflows.length === 0) return
-    const ids = workflows.map(w => w.id)
-    if (!ids.includes(workflow)) {
-      setWorkflow(ids.includes('plan') ? 'plan' : ids[0])
-    }
-  }, [workflows])
+export function NewRunForm({
+  projectDir,
+  workflows,
+  workflow,
+  onWorkflowChange,
+  task,
+  onTaskChange,
+  attach = STUB_ATTACH,
+  lastCompletion,
+  onDismissLastCompletion,
+  error,
+  readiness,
+  overrides,
+  connections,
+  modelsByConnection,
+  onOverrideChange,
+  onStartRun,
+  onOpenSettings,
+  startDisabled = false,
+}: NewRunFormProps) {
+  const banner = lastCompletion && (
+    <div className={`nrf-last-completion nrf-last-completion--${lastCompletion.success ? 'success' : 'error'}`}>
+      <span className="nrf-last-completion-msg">
+        {lastCompletion.success
+          ? (lastCompletion.summary || 'Previous run completed.')
+          : `Previous run failed: ${lastCompletion.error || 'unknown error'}`}
+      </span>
+      <button
+        type="button"
+        className="nrf-last-completion-dismiss"
+        aria-label="Dismiss"
+        onClick={() => onDismissLastCompletion?.()}
+      >
+        {'x'}
+      </button>
+    </div>
+  )
 
-  // M4: preflight/selectedInstallations removed -- installation concept deleted.
-  // The backend gates run start on provider credential availability.
+  const header = (
+    <div className="nrf-header">
+      <h1 className="nrf-title">New Run</h1>
+      <div className="nrf-project">{projectDir || '—'}</div>
+    </div>
+  )
 
-  const handleStart = async () => {
-    const trimmed = task.trim()
-    if (!trimmed) { setError('Please enter a task description'); return }
-    if (!profile) { setError('Please select a profile'); return }
-    setError(null); setLoading(true)
-    try {
-      const attachmentIds = attach.fileIds.length > 0 ? attach.fileIds : undefined
-      const result = await api.startRun(trimmed, profile, undefined, workflow, attachmentIds)
-      if (!result.ok) {
-        setError(result.message ?? 'Failed to start run')
-      } else {
-        // Clear chips so they don't re-display on the next run attempt.
-        attach.clearFiles()
-      }
-    } catch { setError('Network error') }
-    finally { setLoading(false) }
+  // 'no-providers': the gate block replaces the form body entirely.
+  if (readiness === 'no-providers') {
+    return (
+      <div className="nrf">
+        {banner}
+        {header}
+        <div className="nrf-gate">
+          <NoProvidersBlock onGoToSettings={onOpenSettings} />
+        </div>
+      </div>
+    )
   }
+
+  const roleConnections = connections.map(c => ({ id: c.id, listingCapable: c.listingCapable }))
+
+  // Overrides never render 'broken' — readiness gating handles that upstream.
+  const overrideRow = (role: WorkflowRole) => {
+    const o = overrides[role]
+    const m = (o.connectionId != null && modelsByConnection[o.connectionId]) || NO_MODELS
+    return (
+      <RoleRow
+        key={role}
+        role={role}
+        variant="compact"
+        state={o.connectionId != null && o.modelId != null ? 'assigned' : 'unassigned'}
+        connectionId={o.connectionId}
+        modelId={o.modelId}
+        thinking={o.thinking}
+        connections={roleConnections}
+        models={m.models}
+        families={m.families}
+        modelsLoading={m.loading}
+        catalogSuggestions={m.catalogSuggestions}
+        thinkingOptions={o.thinkingOptions}
+        onChange={(field, value) => onOverrideChange(role, field, value)}
+      />
+    )
+  }
+
+  const startBlocked = readiness !== 'ready' || startDisabled || workflows.length === 0
 
   return (
     <div className="nrf">
-      {/* Last-completion banner: shown after navigating away from a completed run.
-          success=true -> teal accent; success=false -> red accent. Dismissed by user. */}
-      {lastCompletion && (
-        <div className={`nrf-last-completion nrf-last-completion--${lastCompletion.success ? 'success' : 'error'}`}>
-          <span className="nrf-last-completion-msg">
-            {lastCompletion.success
-              ? (lastCompletion.summary || 'Previous run completed.')
-              : `Previous run failed: ${lastCompletion.error || 'unknown error'}`}
-          </span>
-          <button
-            type="button"
-            className="nrf-last-completion-dismiss"
-            aria-label="Dismiss"
-            onClick={() => setLastCompletion(null)}
-          >
-            {'x'}
-          </button>
-        </div>
-      )}
-      <div className="nrf-header">
-        <h1 className="nrf-title">New Run</h1>
-        <div className="nrf-project">{projectDir || '—'}</div>
-      </div>
+      {banner}
+      {header}
 
       {/* Workflow */}
       <div className="nrf-card">
@@ -136,7 +246,7 @@ export function NewRunForm() {
               <button
                 key={w.id}
                 className={`nrf-wf-option${workflow === w.id ? ' nrf-wf-option--selected' : ''}`}
-                onClick={() => setWorkflow(w.id)}
+                onClick={() => onWorkflowChange(w.id)}
               >
                 <span className={`nrf-wf-radio${workflow === w.id ? ' nrf-wf-radio--selected' : ''}`}>
                   {workflow === w.id && <span className="nrf-wf-radio-inner" />}
@@ -156,7 +266,7 @@ export function NewRunForm() {
         <SectionLabel>Description</SectionLabel>
         <div className="nrf-helper">What should this run accomplish?</div>
         <div className="nrf-textarea-wrap" {...attach.dragProps}>
-          <textarea className="nrf-textarea" value={task} onChange={e => setTask(e.target.value)} rows={4}
+          <textarea className="nrf-textarea" value={task} onChange={e => onTaskChange(e.target.value)} rows={4}
             onPaste={attach.onPaste}
             placeholder="Describe what you want to build..." />
           <button className="nrf-attach-btn" onClick={attach.openPicker} title="Attach files" type="button">
@@ -173,31 +283,39 @@ export function NewRunForm() {
         )}
       </div>
 
-      {/* Configuration */}
-      <div className="nrf-card">
-        <SectionLabel>Configuration</SectionLabel>
-        <div className="nrf-config-fields">
-          <div className="nrf-field">
-            <div className="nrf-field-label">Profile</div>
-            <select className="nrf-real-select" value={profile} onChange={e => setProfile(e.target.value)}>
-              {profiles.map(p => (
-                <option key={p.name} value={p.name}>{p.name}{p.readOnly ? ' (built-in)' : ''}</option>
-              ))}
-            </select>
+      {/* Models — per-run override, only when the config is runnable */}
+      {readiness === 'ready' && (
+        <div className="nrf-card">
+          <div className="nrf-models-head">
+            <SectionLabel>Models</SectionLabel>
+            <span className="nrf-models-hint">Defaults from Settings · changes apply to this run only</span>
           </div>
-
-          {/* Agent Installations section removed in M4: installation concept deleted. */}
-
+          <div className="nrf-models-cols" aria-hidden="true">
+            <span className="nrf-models-cols__spacer" />
+            <span className="nrf-models-cols__label nrf-models-cols__label--conn">Provider</span>
+            <span className="nrf-models-cols__label nrf-models-cols__label--model">Model</span>
+            <span className="nrf-models-cols__label nrf-models-cols__label--think">Thinking</span>
+          </div>
+          <div className="nrf-models-rows">
+            {OVERRIDE_ROLES.map(overrideRow)}
+          </div>
         </div>
-      </div>
+      )}
+
+      {/* Incomplete config: gate notice instead of the Models section */}
+      {readiness === 'incomplete' && (
+        <div className="nrf-notice-gate">
+          <InlineNotice
+            message="Assign a model to all three roles before starting a run."
+            action={{ label: 'Open Settings →', onClick: onOpenSettings }}
+          />
+        </div>
+      )}
 
       {error && <div className="nrf-error">{error}</div>}
 
-      {/* M4: !hasRunners and !installationsReady guards removed; provider credentials
-          gate run start at the backend (api_start_run checks provider_status). */}
-      <Button variant="primary" onClick={handleStart}
-        disabled={loading || workflows.length === 0}>
-        {loading ? 'Starting...' : 'Start Run'}
+      <Button variant="primary" onClick={onStartRun} disabled={startBlocked}>
+        Start Run
       </Button>
     </div>
   )

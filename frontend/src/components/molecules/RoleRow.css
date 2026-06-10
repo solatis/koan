@@ -1,0 +1,130 @@
+.mol-role-row {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-form-controls);
+  padding: 15px 18px;
+  border: 0.5px solid var(--border-card);
+  border-radius: var(--radius-xl);
+  background: var(--bg-card-warm);
+}
+
+.mol-role-row--broken {
+  background: var(--bg-danger);
+  border-color: var(--border-danger);
+}
+
+/* ===== Meta block ===== */
+.mol-role-row__meta {
+  width: 150px;
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.mol-role-row__name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.mol-role-row__desc {
+  font-size: var(--type-label);
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+/* ===== Connection column ===== */
+.mol-role-row__conn {
+  flex: 0 0 180px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mol-role-row__conn .atom-select {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Broken: error border on the connection select (Select has no error prop). */
+.mol-role-row--broken .mol-role-row__conn .atom-select {
+  border: 1px solid var(--status-failed);
+}
+
+/* ===== Model column ===== */
+.mol-role-row__model {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ===== Thinking column ===== */
+.mol-role-row__thinking {
+  flex: 0 0 112px;
+}
+
+/* ===== Broken helper line (below the row, aligned under the connection col) ===== */
+.mol-role-row__broken-help {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 7px 0 0 198px;
+  font-size: var(--type-label);
+  color: var(--text-danger-body);
+}
+
+.mol-role-row__warn {
+  width: 12px;
+  height: 12px;
+  color: var(--text-danger-body);
+  flex-shrink: 0;
+}
+
+/* ===== Compact variant (New Run per-run override) =====
+   Tighter geometry for the 640px form column; the default variant above is
+   untouched (Settings). Column budget at form width: the row gets ~542px of
+   content, and a 15-char mono model id needs a ~149px model column, so meta/
+   connection/thinking/gap are trimmed to exactly what their longest real
+   values need ("Standard", "anthropic-main", "medium"). */
+.mol-role-row--compact {
+  padding: 11px 14px;
+  gap: 6px;
+}
+
+.mol-role-row--compact .atom-role-marker {
+  width: 26px;
+  height: 26px;
+}
+
+.mol-role-row--compact .mol-role-row__meta {
+  width: 84px; /* name only; the description line is not rendered in compact */
+}
+
+.mol-role-row--compact .mol-role-row__conn {
+  flex: 0 0 142px; /* fits "anthropic-main" (14 mono chars) in the compact control */
+}
+
+.mol-role-row--compact .mol-role-row__thinking {
+  flex: 0 0 80px; /* fits "medium" */
+}
+
+/* Compact control sizing (moved here from RoleCard.css when the card's
+   override variant was removed): full-width mono controls with tighter
+   padding so model ids stay readable at form width. Descendant overrides so
+   Select.css / ModelPicker.css stay untouched. */
+.mol-role-row--compact .atom-select,
+.mol-role-row--compact .mol-model-picker__trigger {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: var(--type-breadcrumb);
+  padding: 6px 22px 6px 8px; /* tighter than the atoms' 8px/28px/10-12px defaults */
+  background-position: right 7px center; /* chevron follows the tighter right padding */
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* Broken helper indent under the compact column geometry:
+   14px pad + 26px marker + 6px gap + 84px meta = ~130px. */
+.mol-role-row--compact + .mol-role-row__broken-help {
+  margin-left: 130px;
+}

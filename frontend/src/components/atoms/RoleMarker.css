@@ -1,0 +1,15 @@
+.atom-role-marker {
+  display: inline-block;
+  border-radius: var(--radius-lg);
+  flex-shrink: 0;
+}
+
+/* Sizes */
+.atom-role-marker--sm { width: 34px; height: 34px; }
+.atom-role-marker--lg { width: 38px; height: 38px; }
+
+/* Role colors */
+.atom-role-marker--strong   { background: var(--color-orange); }
+.atom-role-marker--standard { background: var(--color-navy); }
+.atom-role-marker--cheap    { background: var(--color-teal); }
+.atom-role-marker--memory   { background: var(--color-purple); }

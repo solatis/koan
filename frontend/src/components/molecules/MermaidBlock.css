@@ -1,7 +1,7 @@
 /* MermaidBlock -- namespace prefix: .mb-
  * All values reference design tokens from variables.css. */
 
-/* Wrapper for both the SVG output and the error state. Matches the
+/* Container for both the SVG output and the error state. Matches the
  * spacing and visual weight of adjacent .markdown pre blocks. */
 .mb-container {
   margin: 0.6em 0;
