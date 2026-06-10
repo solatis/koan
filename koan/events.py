@@ -282,15 +282,18 @@ def build_model_registry_listed(models: list[dict]) -> dict:
     return {"models": models}
 
 
-def build_provider_models_listed(models: list[dict]) -> dict:
+def build_provider_models_listed(models: list[dict], families: list[dict]) -> dict:
     """Build provider_models_listed payload.
 
     Args:
         models: flat cross-provider list of {provider, model, display_name,
                 context_window} dicts (snake_case; consumed by the fold).
                 Replace-all semantics: each event replaces the entire overlay.
+        families: flat list of {provider, family, resolved, resolved_from} dicts
+                  representing the newest-in-family pins per provider.
+                  Replace-all semantics (same as models).
     """
-    return {"models": models}
+    return {"models": models, "families": families}
 
 
 # build_installation_created/modified/removed removed in M4: installation

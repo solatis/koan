@@ -1402,3 +1402,47 @@ class TestProviderModelsListedFold:
         ]}))
         assert r.run is not None
         assert r.run.config == p.run.config
+
+    def test_provider_models_listed_populates_families(self):
+        """Fold provider_models_listed with families; Settings.provider_families is populated."""
+        from koan.projections import ProviderFamilyWire
+
+        p = Projection()
+        families = [
+            {
+                "provider": "anthropic",
+                "family": "claude-sonnet",
+                "resolved": "claude-sonnet-4-5",
+                "resolved_from": "newest(claude-sonnet)@2026-06-10 -> claude-sonnet-4-5",
+            },
+            {
+                "provider": "anthropic",
+                "family": "claude-haiku",
+                "resolved": "claude-haiku-4-0",
+                "resolved_from": "newest(claude-haiku)@2026-06-10 -> claude-haiku-4-0",
+            },
+        ]
+        r = fold(p, _e("provider_models_listed", {"models": [], "families": families}))
+        assert len(r.settings.provider_families) == 2
+        by_family = {pf.family: pf for pf in r.settings.provider_families}
+        assert by_family["claude-sonnet"].resolved == "claude-sonnet-4-5"
+        assert by_family["claude-sonnet"].provider == "anthropic"
+        assert "2026-06-10" in by_family["claude-haiku"].resolved_from
+
+    def test_provider_models_listed_families_absent_yields_empty(self):
+        """Fold with no families key leaves provider_families empty."""
+        p = Projection()
+        r = fold(p, _e("provider_models_listed", {"models": []}))
+        assert r.settings.provider_families == []
+
+    def test_provider_models_listed_families_replaces_previous(self):
+        """A second event replaces the families list entirely."""
+        p = Projection()
+        p = fold(p, _e("provider_models_listed", {"models": [], "families": [
+            {"provider": "anthropic", "family": "claude-opus", "resolved": "claude-opus-4-0", "resolved_from": ""},
+        ]}))
+        r = fold(p, _e("provider_models_listed", {"models": [], "families": [
+            {"provider": "openai", "family": "gpt-4o", "resolved": "gpt-4o-2024-11-20", "resolved_from": ""},
+        ]}))
+        assert len(r.settings.provider_families) == 1
+        assert r.settings.provider_families[0].family == "gpt-4o"

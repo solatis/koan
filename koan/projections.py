@@ -534,6 +534,21 @@ class ProviderModelWire(KoanBaseModel):
     context_window: int = 0
 
 
+class ProviderFamilyWire(KoanBaseModel):
+    """Wire representation of a per-provider newest-in-family pin.
+
+    Payload shape: {families: [{provider, family, resolved, resolved_from}, ...]}.
+    Delivered alongside provider_models in the provider_models_listed event.
+    Replace-all semantics: each event replaces the full families list.
+    resolved_from is optional on the wire (defaults to ""); callers may omit it.
+    """
+
+    provider: str
+    family: str
+    resolved: str
+    resolved_from: str = ""
+
+
 class Settings(KoanBaseModel):
     """Top-level projection settings populated at server startup.
 
@@ -562,6 +577,8 @@ class Settings(KoanBaseModel):
     model_registry: list[ModelRegistryEntryWire] = []
     # Dynamic per-provider model overlay; populated by provider_models_listed events.
     provider_models: list[ProviderModelWire] = []
+    # Newest-in-family pins; populated alongside provider_models by provider_models_listed.
+    provider_families: list[ProviderFamilyWire] = []
     # M6: read-only per-configured-model capability snapshot; populated by
     # model_capabilities_listed.  Recomputed on startup and on any mutation
     # that touches connections or configured_models (a connection's type
@@ -2211,7 +2228,8 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 return projection.model_copy(update={"settings": new_settings})
 
             case "provider_models_listed":
-                # Payload: {models: [{provider, model, display_name, context_window}, ...]}.
+                # Payload: {models: [{provider, model, display_name, context_window}, ...],
+                #           families: [{provider, family, resolved, resolved_from}, ...]}.
                 # Flat cross-provider list; replace-all semantics (same as model_registry_listed).
                 # Populated by the eager startup task and refreshed on Test/save.
                 raw_pm = payload.get("models", [])
@@ -2224,7 +2242,21 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                     )
                     for m in raw_pm
                 ]
-                new_settings = projection.settings.model_copy(update={"provider_models": new_pm})
+                # Families are a pass-through: the fold stays a dumb dict->wire mapping;
+                # family/version recognition logic lives in the app layer (app.py).
+                raw_pf = payload.get("families", [])
+                new_pf = [
+                    ProviderFamilyWire(
+                        provider=f.get("provider", ""),
+                        family=f.get("family", ""),
+                        resolved=f.get("resolved", ""),
+                        resolved_from=f.get("resolved_from", ""),
+                    )
+                    for f in raw_pf
+                ]
+                new_settings = projection.settings.model_copy(
+                    update={"provider_models": new_pm, "provider_families": new_pf}
+                )
                 return projection.model_copy(update={"settings": new_settings})
 
             case "model_capabilities_listed":

@@ -1142,17 +1142,29 @@ def _push_provider_models(st: "AppState") -> None:
     """Push the current provider_models overlay as a provider_models_listed event.
 
     Flattens st.provider_config.provider_models (dict provider -> list) into a
-    single cross-provider list and pushes a replace-all provider_models_listed
-    event to the projection store. Called on save, Test, and eager-refresh.
+    single cross-provider list, derives per-provider newest-in-family pins from
+    resolve_families, and pushes a replace-all provider_models_listed event to
+    the projection store.  Called on save, Test, and eager-refresh.
     """
+    from ..agents.newest_in_family import resolve_families
+
     flat = [
         _serialize_provider_model(pm)
         for models in st.provider_config.provider_models.values()
         for pm in models
     ]
+    families: list[dict] = []
+    for provider, models in st.provider_config.provider_models.items():
+        for pin in resolve_families([pm.model for pm in models]):
+            families.append({
+                "provider": provider,
+                "family": pin.family,
+                "resolved": pin.resolved,
+                "resolved_from": pin.resolved_from,
+            })
     st.projection_store.push_event(
         "provider_models_listed",
-        build_provider_models_listed(flat),
+        build_provider_models_listed(flat, families),
     )
 
 

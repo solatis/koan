@@ -421,6 +421,36 @@ def test_list_models_success_pushes_provider_models(client, app_state, config_pa
     mock_refresh.assert_called_once()
 
 
+def test_push_provider_models_emits_families(app_state, config_path):
+    """_push_provider_models includes a families list in the emitted payload.
+
+    Seeds the provider_models overlay with a recognisable family (claude-sonnet)
+    and asserts the emitted provider_models_listed payload carries a non-empty
+    families list whose resolved id is the newest member.
+    """
+    from koan.types import ProviderModel
+    from koan.web.app import _push_provider_models
+
+    # Seed two models in the same family; the newer version should win.
+    app_state.provider_config.provider_models["anthropic"] = [
+        ProviderModel(provider="anthropic", model="claude-sonnet-4-5", display_name="Sonnet 4.5"),
+        ProviderModel(provider="anthropic", model="claude-sonnet-4-0", display_name="Sonnet 4.0"),
+    ]
+
+    _push_provider_models(app_state)
+
+    ev = _last_event_of_type(app_state, "provider_models_listed")
+    assert ev is not None
+    families = ev.get("families", [])
+    assert len(families) >= 1
+
+    sonnet_pins = [f for f in families if f.get("family") == "claude-sonnet"]
+    assert len(sonnet_pins) == 1
+    assert sonnet_pins[0]["resolved"] == "claude-sonnet-4-5"
+    assert sonnet_pins[0]["provider"] == "anthropic"
+    assert "claude-sonnet-4-5" in sonnet_pins[0]["resolved_from"]
+
+
 # -- Newest-in-family ---------------------------------------------------------
 
 def test_model_newest_pins_and_records_provenance(client, app_state, config_path):
