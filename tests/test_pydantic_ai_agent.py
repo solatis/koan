@@ -405,6 +405,10 @@ async def test_live_gemini_intake_turn_advances_step(tmp_path, real_credential_s
     # config must carry a google connection alongside the store.
     app_state.provider_config.credential_store = real_credential_store
     app_state.provider_config.config = real_credential_store._config
+    # pydantic_ai.py now reads the per-run frozen snapshot (Tranche A, step 7)
+    # instead of live provider_config, so the test must mirror both paths.
+    app_state.run.frozen_config = real_credential_store._config
+    app_state.run.frozen_credential_store = real_credential_store
 
     pai_agent = PydanticAIAgent(
         model_spec=model_spec,

@@ -116,8 +116,12 @@ async def spawn_subagent(
 ) -> SubagentResult:
     """Spawn an in-process subagent via the Agent abstraction.
 
-    Resolves a PydanticAIAgent (via AgentRegistry) when none is injected,
-    opens an event log, registers AgentState, drives agent_impl.run(options)
+    Resolves a PydanticAIAgent (via AgentRegistry) when none is injected.
+    Model resolution reads app_state.run.frozen_config (the per-run frozen
+    snapshot denormalized at /api/start-run) so mid-run settings changes
+    never affect an active run.
+
+    Opens an event log, registers AgentState, drives agent_impl.run(options)
     to completion, and translates yielded StreamEvents into projection events.
 
     The handshake gate (agent.first_turn_completed on the AgentState) is
@@ -154,7 +158,19 @@ async def spawn_subagent(
     # the registry entirely (FakeAgent path).
     if agent_impl is None:
         try:
-            config = app_state.provider_config.config
+            # The spawn path reads the per-run frozen config (denormalized at
+            # start-run) so the run is immune to mid-run settings changes.
+            if app_state.run.frozen_config is None:
+                raise AgentError(AgentDiagnostic(
+                    code="unconfigured",
+                    agent="",
+                    stage="resolve_model_spec",
+                    message=(
+                        "No frozen run config available. "
+                        "/api/start-run must complete before spawning agents."
+                    ),
+                ))
+            config = app_state.run.frozen_config
             registry = AgentRegistry()
             # resolve_model_spec replaces resolve_agent_config; returns a ModelSpec.
             # M5: builtin_profiles param removed from resolve_model_spec.

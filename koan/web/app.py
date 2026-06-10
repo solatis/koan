@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 import shutil
@@ -236,8 +237,14 @@ async def api_start_run_preflight(r: Request) -> Response:
 async def api_start_run(r: Request) -> Response:
     """Handle POST /api/start-run.
 
-    Validates the request body, applies installation selections, writes
-    task.json to a fresh run directory, and creates a per-run driver task.
+    Accepts an optional 'overrides' body field ({strong?,standard?,cheap?:
+    {connection_id, model_id, thinking}}) which is applied to a deep copy of
+    the live config to produce the per-run frozen snapshot.  The frozen config
+    + CredentialStore are stored on RunState AND serialized to
+    <run_dir>/run-config.yaml as the durable per-run record (Fernet ciphertext
+    only; never plaintext).  The spawn path reads the frozen snapshot so
+    mid-run settings changes never affect an active run.
+
     Returns 409 if a driver task for the current run is still alive (concurrent
     starts are rejected; the frontend should not reach this path organically).
     The run-root task.json carries workflow_history (a single-entry list on
@@ -260,6 +267,11 @@ async def api_start_run(r: Request) -> Response:
         )
     attachments = [a for a in attachments_raw if isinstance(a, str) and a]
 
+    # Parse optional per-run overrides; coerce non-dict to empty so the helper
+    # treats all slots as "use persisted assignment".
+    overrides_raw = body.get("overrides")
+    overrides: dict = overrides_raw if isinstance(overrides_raw, dict) else {}
+
     # Hoist st here so both the 409 guard below and all subsequent handler
     # code share the same binding without a duplicate _app_state(r) call.
     st = _app_state(r)
@@ -278,10 +290,24 @@ async def api_start_run(r: Request) -> Response:
             status_code=409,
         )
 
-    # M5: resolve active preset from config (no 'profile' body param required).
+    # Block when no connection has a credential available.
+    # Check against live provider_status before building the frozen copy so the
+    # "no providers configured at all" gate is not bypassed by overrides.
+    if not any(cs.available for cs in st.provider_config.provider_status):
+        return JSONResponse(
+            {"error": "no_providers",
+             "message": "No provider credentials found. Add connections and credentials "
+                        "in ~/.koan/config.yaml."},
+            status_code=422,
+        )
+
+    # Build the frozen config (deep copy of live config + overrides applied).
+    # Validation runs against the frozen copy so the frozen preset is what gets checked.
     cfg = st.provider_config.config
-    active_preset_name = cfg.active
-    preset = cfg.presets.get(active_preset_name)
+    frozen_cfg = _build_frozen_run_config(cfg, overrides)
+
+    active_preset_name = frozen_cfg.active
+    preset = frozen_cfg.presets.get(active_preset_name)
     if preset is None:
         return JSONResponse(
             {"error": "unconfigured",
@@ -293,25 +319,21 @@ async def api_start_run(r: Request) -> Response:
     # Log before any control-flow branches that can return early so the line
     # always appears when a valid start-run request is received.
     log.info(
-        "start-run received: task_len=%d workflow=%s active_preset=%s attachments=%d",
+        "start-run received: task_len=%d workflow=%s active_preset=%s attachments=%d overrides=%s",
         len(task), body.get("workflow", "plan"), active_preset_name, len(attachments),
+        list(overrides.keys()),
     )
     log.debug("start-run task payload: %s", truncate_payload(task))
 
-    # Block when no connection has a credential available.
-    # provider_status is now list[ConnectionStatus]; available means credential stored.
-    if not any(cs.available for cs in st.provider_config.provider_status):
-        return JSONResponse(
-            {"error": "no_providers",
-             "message": "No provider credentials found. Add connections and credentials "
-                        "in ~/.koan/config.yaml."},
-            status_code=422,
-        )
+    # Build the frozen CredentialStore over the frozen config.
+    # Do NOT call set_active_credential_store -- the memory subsystem must
+    # stay on the live active store.
+    from ..credentials import CredentialStore, get_key_backend
+    frozen_store = CredentialStore(frozen_cfg, get_key_backend())
 
-    # Validate each slot's connection has a credential.
-    cm_by_id = {cm.id: cm for cm in cfg.configured_models}
-    conn_by_id = {c.id: c for c in cfg.connections}
-    store = st.provider_config.credential_store
+    # Validate each slot's connection has a credential (against the frozen snapshot).
+    cm_by_id = {cm.id: cm for cm in frozen_cfg.configured_models}
+    conn_by_id = {c.id: c for c in frozen_cfg.connections}
     from ..types import KEYLESS_PROVIDER_TYPES
     for slot_name, slot in preset.slots.items():
         cm = cm_by_id.get(slot.configured_model_id)
@@ -338,7 +360,7 @@ async def api_start_run(r: Request) -> Response:
                     status_code=422,
                 )
         else:
-            if not (store and store.has(conn.id)):
+            if not frozen_store.has(conn.id):
                 return JSONResponse(
                     {"error": "missing_credentials",
                      "message": f"Connection '{conn.id}' (type '{conn.type}') "
@@ -366,6 +388,10 @@ async def api_start_run(r: Request) -> Response:
         build_run_started(active_preset_name, _scout_concurrency),
     )
 
+    # Store the frozen snapshot on RunState so the spawn path reads it.
+    st.run.frozen_config = frozen_cfg
+    st.run.frozen_credential_store = frozen_store
+
     # Reset run-scoped state
     st.interactions.user_message_buffer.clear()
     st.interactions.steering_queue.clear()
@@ -391,6 +417,11 @@ async def api_start_run(r: Request) -> Response:
     from .uploads import commit_to_run
     committed = commit_to_run(st.uploads, attachments, run_dir) if attachments else {}
     st.run.start_attachments = list(committed.keys())
+
+    # Serialize the frozen config to disk as the durable per-run record.
+    # Carries the same opaque Fernet ciphertext as config.yaml (never plaintext).
+    from ..config import write_run_config
+    await write_run_config(frozen_cfg, run_dir)
 
     workflow_name = body.get("workflow", "plan")  # default to "plan"
     try:
@@ -463,6 +494,10 @@ async def api_run_clear(r: Request) -> Response:
     # Guard: clear start_attachments so a race between run_clear and a stale
     # orchestrator cannot leak boot-time attachments into the next run.
     st.run.start_attachments = []
+    # Clear the in-memory frozen snapshot; the on-disk run-config.yaml is
+    # retained as the historical record and is never deleted here.
+    st.run.frozen_config = None
+    st.run.frozen_credential_store = None
 
     st.projection_store.push_event("run_cleared", build_run_cleared())
     return JSONResponse({"ok": True})
@@ -1579,6 +1614,45 @@ async def api_settings_scout_concurrency(r: Request) -> Response:
 _VALID_CONNECTION_TYPES = {"google", "anthropic", "openai", "bedrock", "lmstudio", "voyage"}
 _VALID_SLOT_NAMES = {"strong", "standard", "cheap"}
 _VALID_MEMORY_KINDS = {"embedding", "memory_llm", "reflect_llm"}
+
+
+def _build_frozen_run_config(cfg: "KoanConfig", overrides: dict) -> "KoanConfig":
+    """Return a deep-copied KoanConfig with per-run slot overrides applied.
+
+    Overrides are baked into the frozen copy's $last preset via ephemeral
+    ConfiguredModel entries (id='override:<slot>').  The live cfg and the
+    persisted config.yaml are never mutated.  An override entry missing
+    connection_id or model_id is skipped, leaving the persisted slot in place.
+    """
+    from ..types import ConfiguredModel, Preset, SlotAssignment
+    frozen = copy.deepcopy(cfg)
+    if "$last" not in frozen.presets:
+        frozen.presets["$last"] = Preset()
+    last = frozen.presets["$last"]
+    for slot in ("strong", "standard", "cheap"):
+        ov = overrides.get(slot)
+        if not isinstance(ov, dict):
+            continue
+        conn_id = ov.get("connection_id", "")
+        model_id = ov.get("model_id", "")
+        if not conn_id or not model_id:
+            # Incomplete override -- fall back to the persisted slot.
+            continue
+        override_cm_id = f"override:{slot}"
+        # Remove any stale override configured-model from a previous call.
+        frozen.configured_models = [
+            cm for cm in frozen.configured_models if cm.id != override_cm_id
+        ]
+        frozen.configured_models.append(ConfiguredModel(
+            id=override_cm_id,
+            connection_id=conn_id,
+            model_id=model_id,
+        ))
+        last.slots[slot] = SlotAssignment(
+            configured_model_id=override_cm_id,
+            thinking=ov.get("thinking", "disabled"),
+        )
+    return frozen
 
 
 def _push_connection_events(st: "AppState") -> None:

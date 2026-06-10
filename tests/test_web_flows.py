@@ -128,6 +128,190 @@ def test_start_run_blocked_no_providers(client, app_state):
     assert resp.json()["error"] == "no_providers"
 
 
+# -- Start-run denormalization (run-config.yaml + frozen snapshot) ------------
+
+def _make_lmstudio_config():
+    """Build a minimal KoanConfig with a keyless lmstudio connection.
+
+    Keyless providers require only a base_url -- no Fernet credential needed,
+    which simplifies test setup: no master-key I/O, no encryption overhead.
+    """
+    from koan.types import Connection, ConfiguredModel, Preset, SlotAssignment
+    conn = Connection(id="lms1", type="lmstudio", base_url="http://localhost:1234/v1")
+    cm = ConfiguredModel(id="cm-lms", connection_id="lms1", model_id="some-model")
+    slot = SlotAssignment(configured_model_id="cm-lms", thinking="disabled")
+    preset = Preset(slots={"strong": slot, "standard": slot, "cheap": slot})
+    return KoanConfig(
+        connections=[conn],
+        configured_models=[cm],
+        presets={"$last": preset},
+        active="$last",
+    )
+
+
+@pytest.mark.anyio
+async def test_start_run_writes_run_config_yaml(tmp_path):
+    """start-run writes <run_dir>/run-config.yaml as the durable frozen-config record.
+
+    Assertions:
+    (a) HTTP 200 and frozen_config is set on RunState.
+    (b) run-config.yaml is written and parses back to a valid YAML dict.
+    (c) The live cfg slot assignments are unchanged after start.
+    (d) run-config.yaml contains no plaintext secrets (only ciphertext envelopes
+        or empty credentials dict).
+    """
+    import yaml as _yaml
+    from koan.web.app import create_app
+    from starlette.testclient import TestClient
+
+    cfg = _make_lmstudio_config()
+    st = AppState()
+    st.provider_config.config = cfg
+    st.provider_config.provider_status = [
+        ConnectionStatus(connection_id="lms1", connection_type="lmstudio", available=True),
+    ]
+
+    # _refresh_probe_state triggers build_model_registry() which calls into the
+    # genai-prices bundled snapshot.  Patch it to avoid the pre-existing
+    # 'gemini-3.5-flash not found' error that affects all create_app lifespan tests.
+    async def noop_refresh(app_state, broadcast=True):
+        pass
+
+    # write_run_config writes to the real ~/.koan/runs/<id>/ directory; this is
+    # intentional -- the test verifies the actual file path returned by the API.
+    # _push_model_capabilities is mocked because resolve_capabilities has a
+    # pre-existing bug with lmstudio/openai profile objects (not relevant here).
+    with patch("koan.driver.driver_main", new_callable=AsyncMock), \
+         patch("koan.web.app._refresh_probe_state", side_effect=noop_refresh), \
+         patch("koan.web.app._push_model_capabilities"):
+        app = create_app(st)
+        with TestClient(app) as client:
+            resp = client.post("/api/start-run", json={"task": "build something"})
+
+    assert resp.status_code == 200, resp.json()
+    data = resp.json()
+    assert data["ok"] is True
+    run_dir = Path(data["run_dir"])
+
+    # (a) frozen_config is set on RunState.
+    assert st.run.frozen_config is not None
+
+    # (b) run-config.yaml is written.
+    run_cfg_path = run_dir / "run-config.yaml"
+    assert run_cfg_path.exists(), f"run-config.yaml not found at {run_cfg_path}"
+    parsed = _yaml.safe_load(run_cfg_path.read_text("utf-8"))
+    assert isinstance(parsed, dict)
+    assert "connections" in parsed
+
+    # (c) Live cfg slot assignments are unchanged (deep copy was used).
+    live_slot = cfg.presets["$last"].slots.get("strong")
+    assert live_slot is not None
+    assert live_slot.configured_model_id == "cm-lms"  # not overridden
+
+    # (d) No plaintext secret in run-config.yaml (credentials is empty for lmstudio).
+    credentials = parsed.get("credentials", {})
+    for key, envelope in credentials.items():
+        # Each credential must be a Fernet envelope dict, never a raw string.
+        assert isinstance(envelope, dict), f"credential for {key!r} is not an envelope dict"
+        assert "scheme" in envelope and "ciphertext" in envelope
+
+
+@pytest.mark.anyio
+async def test_start_run_override_applies_to_frozen_config(tmp_path):
+    """Per-run overrides appear in the frozen config but not in the live cfg.
+
+    Assertions:
+    (a) The strong slot in the frozen config points to 'override:strong'.
+    (b) The live cfg strong slot is unchanged ('cm-lms').
+    (c) run-config.yaml reflects the override (contains the override cm id).
+    """
+    import yaml as _yaml
+    from koan.web.app import create_app
+    from starlette.testclient import TestClient
+
+    cfg = _make_lmstudio_config()
+    st = AppState()
+    st.provider_config.config = cfg
+    st.provider_config.provider_status = [
+        ConnectionStatus(connection_id="lms1", connection_type="lmstudio", available=True),
+    ]
+
+    overrides = {
+        "strong": {"connection_id": "lms1", "model_id": "override-model", "thinking": "disabled"},
+    }
+
+    async def noop_refresh(app_state, broadcast=True):
+        pass
+
+    with patch("koan.driver.driver_main", new_callable=AsyncMock), \
+         patch("koan.web.app._refresh_probe_state", side_effect=noop_refresh), \
+         patch("koan.web.app._push_model_capabilities"):
+        app = create_app(st)
+        with TestClient(app) as client:
+            resp = client.post("/api/start-run", json={"task": "do something", "overrides": overrides})
+
+    assert resp.status_code == 200, resp.json()
+    run_dir = Path(resp.json()["run_dir"])
+
+    # (a) Frozen config has override:strong in the $last preset.
+    frozen = st.run.frozen_config
+    assert frozen is not None
+    frozen_slot = frozen.presets["$last"].slots.get("strong")
+    assert frozen_slot is not None
+    assert frozen_slot.configured_model_id == "override:strong"
+
+    # Verify the ephemeral configured-model exists in the frozen copy.
+    override_cm = next((cm for cm in frozen.configured_models if cm.id == "override:strong"), None)
+    assert override_cm is not None
+    assert override_cm.model_id == "override-model"
+
+    # (b) Live cfg is unchanged.
+    live_slot = cfg.presets["$last"].slots.get("strong")
+    assert live_slot is not None
+    assert live_slot.configured_model_id == "cm-lms"
+    assert not any(cm.id == "override:strong" for cm in cfg.configured_models)
+
+    # (c) run-config.yaml reflects the override.
+    parsed = _yaml.safe_load((run_dir / "run-config.yaml").read_text("utf-8"))
+    cm_ids = {cm["id"] for cm in parsed.get("configured_models", [])}
+    assert "override:strong" in cm_ids
+
+
+@pytest.mark.anyio
+async def test_start_run_no_overrides_uses_persisted_slots(tmp_path):
+    """start-run without overrides resolves model from the persisted $last preset."""
+    from koan.web.app import create_app
+    from starlette.testclient import TestClient
+
+    cfg = _make_lmstudio_config()
+    st = AppState()
+    st.provider_config.config = cfg
+    st.provider_config.provider_status = [
+        ConnectionStatus(connection_id="lms1", connection_type="lmstudio", available=True),
+    ]
+
+    async def noop_refresh(app_state, broadcast=True):
+        pass
+
+    with patch("koan.driver.driver_main", new_callable=AsyncMock), \
+         patch("koan.web.app._refresh_probe_state", side_effect=noop_refresh), \
+         patch("koan.web.app._push_model_capabilities"):
+        app = create_app(st)
+        with TestClient(app) as client:
+            resp = client.post("/api/start-run", json={"task": "no overrides"})
+
+    assert resp.status_code == 200, resp.json()
+
+    frozen = st.run.frozen_config
+    assert frozen is not None
+    # No override:* configured-models in the frozen config.
+    assert not any(cm.id.startswith("override:") for cm in frozen.configured_models)
+    # Strong slot still points to the persisted cm-lms.
+    frozen_slot = frozen.presets["$last"].slots.get("strong")
+    assert frozen_slot is not None
+    assert frozen_slot.configured_model_id == "cm-lms"
+
+
 # -- Start-run preflight -------------------------------------------------------
 
 def test_preflight_returns_unconfigured_when_no_preset(client, app_state):

@@ -114,6 +114,13 @@ class RunState:
     # truth for the "is a run active?" guard in api_start_run; done() means
     # the previous run has finished and a new start is permitted.
     driver_task: asyncio.Task | None = None
+    # Per-run frozen config + credential snapshot, denormalized at /api/start-run
+    # (with any per-run overrides applied) and also serialized to
+    # <run_dir>/run-config.yaml as the durable on-disk record.  The spawn path
+    # reads these instead of live global config so mid-run settings changes
+    # never affect an active run.  Both are cleared by api_run_clear.
+    frozen_config: "KoanConfig | None" = None
+    frozen_credential_store: "CredentialStore | None" = None
 
 
 @dataclass

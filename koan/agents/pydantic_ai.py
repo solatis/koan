@@ -208,6 +208,10 @@ class PydanticAIAgent:
     async def run(self, options: AgentOptions) -> AsyncIterator[StreamEvent]:
         """Drive one agent.iter() run and yield StreamEvents for spawn_subagent.
 
+        Credentials and connection settings are resolved from the per-run frozen
+        config snapshot (app_state.run.frozen_config / frozen_credential_store),
+        not live global config, so the run is immune to mid-run settings changes.
+
         Translates pydantic-ai's graph-node / stream events into koan's 8-type
         StreamEvent vocabulary so spawn_subagent's existing fan-out is unchanged.
         M2 scope: one turn (one agent.iter() run). Multi-turn loop lands in M5.
@@ -265,12 +269,11 @@ class PydanticAIAgent:
         # defeat the patch.
         import koan.agents.adapter as _adapter_mod
 
-        # Resolve the full provider auth (secret + non-secret region/base_url) by
-        # looking up the Connection by connection_id from the ModelSpec, then
-        # calling resolve_provider_auth(connection, store).
-        # The store is None only in tests that skip the credential path.
-        store = self._app_state.provider_config.credential_store
-        cfg = self._app_state.provider_config.config
+        # Resolve credentials and connection settings from the per-run frozen
+        # config snapshot (app_state.run.frozen_config / frozen_credential_store),
+        # not live global config, so the run is immune to mid-run settings changes.
+        store = self._app_state.run.frozen_credential_store
+        cfg = self._app_state.run.frozen_config
         conn_id = self._model_spec.connection_id
         connection = next(
             (c for c in (cfg.connections if cfg else [])
