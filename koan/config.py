@@ -308,6 +308,97 @@ def _serialize_slot_assignment(slot: SlotAssignment) -> dict:
     return d
 
 
+def _config_to_dict(config: "KoanConfig") -> dict:
+    """Serialize a KoanConfig to a snake_case dict suitable for YAML output.
+
+    Pure function: produces the dict without any I/O side-effects.
+    Credential envelopes are opaque Fernet ciphertext -- plaintext secrets
+    are never included.  Used by both save_koan_config (global config) and
+    write_run_config (per-run frozen snapshot).
+    """
+    data: dict = {}
+
+    data["connections"] = [
+        {
+            "id": c.id,
+            "type": c.type,
+            **({"base_url": c.base_url} if c.base_url else {}),
+            **({"region": c.region} if c.region else {}),
+            **({"azure_deployment": c.azure_deployment} if c.azure_deployment else {}),
+            **({"api_version": c.api_version} if c.api_version else {}),
+            **({"timeout": c.timeout} if c.timeout is not None else {}),
+        }
+        for c in config.connections
+    ]
+
+    # Credential envelopes are opaque Fernet ciphertext; no plaintext
+    # secret is ever written here.
+    data["credentials"] = config.credentials
+
+    data["configured_models"] = [
+        {
+            "id": cm.id,
+            "connection_id": cm.connection_id,
+            "model_id": cm.model_id,
+            **({"resolved_from": cm.resolved_from} if cm.resolved_from else {}),
+        }
+        for cm in config.configured_models
+    ]
+
+    if config.memory is not None:
+        mem: dict = {}
+        for binding_name in ("embedding", "memory_llm", "reflect_llm"):
+            binding = getattr(config.memory, binding_name)
+            if binding is not None:
+                entry: dict = {"configured_model_id": binding.configured_model_id}
+                if binding.thinking != "disabled":
+                    entry["thinking"] = binding.thinking
+                entry["caching"] = {"mode": binding.caching.mode, "ttl": binding.caching.ttl}
+                if binding.context_window is not None:
+                    entry["context_window"] = binding.context_window
+                mem[binding_name] = entry
+        if mem:
+            data["memory"] = mem
+
+    data["scout_concurrency"] = config.scout_concurrency
+
+    data["presets"] = {
+        preset_name: {
+            "slots": {
+                slot_name: _serialize_slot_assignment(slot)
+                for slot_name, slot in preset.slots.items()
+            }
+        }
+        for preset_name, preset in config.presets.items()
+    }
+
+    # Omit active when it is the default to keep hand-edited files minimal.
+    if config.active != "$last":
+        data["active"] = config.active
+
+    return data
+
+
+async def write_run_config(config: "KoanConfig", run_dir: "str | Path") -> None:
+    """Serialize the frozen per-run config to <run_dir>/run-config.yaml.
+
+    Written once at /api/start-run time as the durable, auditable record of
+    exactly which connections/models/credentials the run used.  Carries the
+    same opaque Fernet ciphertext envelopes as config.yaml -- plaintext
+    secrets are never written.  Not protected by the global write lock because
+    this file is run-scoped and written only once per run.
+    """
+    import os
+    data = _config_to_dict(config)
+    # width=4096 prevents line-folding of long ciphertext values.
+    text = yaml.safe_dump(data, sort_keys=False, default_flow_style=False,
+                          allow_unicode=True, width=4096)
+    dest = Path(run_dir) / "run-config.yaml"
+    tmp = dest.with_suffix(".yaml.tmp")
+    tmp.write_text(text, "utf-8")
+    os.replace(str(tmp), str(dest))
+
+
 async def save_koan_config(config: KoanConfig) -> None:
     """Write KoanConfig to ~/.koan/config.yaml atomically via a tmp-file rename.
 
@@ -320,65 +411,7 @@ async def save_koan_config(config: KoanConfig) -> None:
         config_dir = CONFIG_PATH.parent
         config_dir.mkdir(parents=True, exist_ok=True)
 
-        data: dict = {}
-
-        data["connections"] = [
-            {
-                "id": c.id,
-                "type": c.type,
-                **({"base_url": c.base_url} if c.base_url else {}),
-                **({"region": c.region} if c.region else {}),
-                **({"azure_deployment": c.azure_deployment} if c.azure_deployment else {}),
-                **({"api_version": c.api_version} if c.api_version else {}),
-                **({"timeout": c.timeout} if c.timeout is not None else {}),
-            }
-            for c in config.connections
-        ]
-
-        # Credential envelopes are opaque Fernet ciphertext; no plaintext
-        # secret is ever written here.
-        data["credentials"] = config.credentials
-
-        data["configured_models"] = [
-            {
-                "id": cm.id,
-                "connection_id": cm.connection_id,
-                "model_id": cm.model_id,
-                **({"resolved_from": cm.resolved_from} if cm.resolved_from else {}),
-            }
-            for cm in config.configured_models
-        ]
-
-        if config.memory is not None:
-            mem: dict = {}
-            for binding_name in ("embedding", "memory_llm", "reflect_llm"):
-                binding = getattr(config.memory, binding_name)
-                if binding is not None:
-                    entry: dict = {"configured_model_id": binding.configured_model_id}
-                    if binding.thinking != "disabled":
-                        entry["thinking"] = binding.thinking
-                    entry["caching"] = {"mode": binding.caching.mode, "ttl": binding.caching.ttl}
-                    if binding.context_window is not None:
-                        entry["context_window"] = binding.context_window
-                    mem[binding_name] = entry
-            if mem:
-                data["memory"] = mem
-
-        data["scout_concurrency"] = config.scout_concurrency
-
-        data["presets"] = {
-            preset_name: {
-                "slots": {
-                    slot_name: _serialize_slot_assignment(slot)
-                    for slot_name, slot in preset.slots.items()
-                }
-            }
-            for preset_name, preset in config.presets.items()
-        }
-
-        # Omit active when it is the default to keep hand-edited files minimal.
-        if config.active != "$last":
-            data["active"] = config.active
+        data = _config_to_dict(config)
 
         # width=4096 prevents line-folding of long ciphertext values.
         text = yaml.safe_dump(data, sort_keys=False, default_flow_style=False,
