@@ -38,6 +38,23 @@ The single source of truth for koan's visual design. `src/styles/variables.css` 
 | `--color-orange-hover` | `#c06a4f` | Hover state for orange interactive elements (ReviewBlock gutter button).  |
 | `--color-purple`       | `#8e7ca0` | Memory type indicator color for `procedure`. `MemoryTypeIcon` background. |
 
+### Warning surface
+
+Warning is a recurring semantic (the New-Run config-incomplete notice, the
+add-connection backend note) and was previously hardcoded in two places
+(`Badge` `default`, `OperationBadge` `update`). These tokens remove the
+duplication. All role/provider colors elsewhere in this addendum map to existing
+core colors, so no other new tokens are introduced.
+
+| Token              | Value     | Use                                              |
+| ------------------ | --------- | ------------------------------------------------ |
+| `--bg-warning`     | `#fdf2ee` | Warning notice/flag surface (orange-amber tint). |
+| `--border-warning` | `#f0d8cc` | Warning notice/flag border.                      |
+| `--text-warning`   | `#c06030` | Warning text + icon on a warning surface.        |
+
+Migration follow-up (not blocking): `Badge` `default` (`#fdf2ee` / `#c06030`)
+and `OperationBadge` `update` should be repointed at these tokens.
+
 ### Component gaps
 
 | Token                 | Value | Usage                                                                |
@@ -297,6 +314,63 @@ Single labeled numeric value. Composition unit for `StatStrip`; not used standal
 The two sizes use different font families intentionally: `lg` uses the display serif to match page-level stat headers (overview, entry counts), while `sm` uses the monospace to match in-stream meta readouts (elapsed time, iteration count). The sizes are not interchangeable -- they encode different reading contexts.
 
 Props: `value: string` (pre-formatted, e.g., `"28s"`, `"~290"`), `label: string`, `size?: 'lg' | 'sm'` (default `'lg'`).
+
+### RoleMarker
+
+Colored rounded square identifying a model role. Sibling of `MemoryTypeIcon`, but
+**no letter** — role identity is carried by color + an adjacent text label, and a
+letter would collide (Strong / Standard both start with "S"). Used by `RoleRow`
+(Settings) and `RoleCard` (New Run, first-run).
+
+Container: `--radius-lg`, `flex-shrink: 0`. Two sizes:
+
+- `sm` — `34px` × `34px`. Used in `RoleRow`.
+- `lg` — `38px` × `38px`. Used in `RoleCard`.
+
+Per-role background color:
+
+| Role       | Background       |
+| ---------- | ---------------- |
+| `strong`   | `--color-orange` |
+| `standard` | `--color-navy`   |
+| `cheap`    | `--color-teal`   |
+| `memory`   | `--color-purple` |
+
+The `memory` variant marks the Memory section's binding rows (embedding /
+memory-llm / reflect-llm) as one family, distinct from the three model roles.
+
+Static. No hover, no content.
+
+Props: `role: 'strong' | 'standard' | 'cheap' | 'memory'`, `size?: 'sm' | 'lg'` (default `'sm'`).
+
+### ProviderBadge
+
+`30px` × `30px` rounded-square icon with a two-letter mono code identifying a
+connection's provider type. Used by `ConnectionRow` and (optionally) `ConnectionForm`.
+
+Container: `30px` × `30px`, `--radius-md`, `display: inline-flex`, `align-items: center`, `justify-content: center`, `flex-shrink: 0`.
+
+Label: `--font-mono`, 11px, font-weight 500, `color: white`, `line-height: 1`, uppercase.
+
+Per-type background + code:
+
+| Provider type | Background                        | Code |
+| ------------- | --------------------------------- | ---- |
+| `anthropic`   | `--color-orange`                  | `AN` |
+| `openai`      | `--color-navy`                    | `OA` |
+| `google`      | `--color-teal`                    | `GO` |
+| `bedrock`     | `--text-subtle`                   | `BE` |
+| `lmstudio`    | `#8a7e70` (hardcoded, deliberate) | `LM` |
+| `voyage`      | `--color-purple`                  | `VO` |
+
+Colors are decorative anchors; the two-letter code disambiguates. `google`
+reuses an existing color value that is otherwise semantic — acceptable, since a
+badge is not a status read-out. The `lmstudio` background is a hardcoded deep
+warm gray rather than `--status-queued`: the status token (`#b8aca0`) was too
+light on the warm card surfaces — the badge read as disabled and white text fell
+below comfortable contrast. A decorative badge color, not a status read-out.
+
+Props: `type: ProviderType`.
 
 ---
 
@@ -986,29 +1060,260 @@ No background on any state. No border-radius.
 
 Props: `label: string`, `active: boolean`, `onClick: () => void`.
 
+#### ConnectionRow
+
+A two-line list item for a provider connection. Parallels `EntityRow` but adds a
+leading `ProviderBadge`. Used in the Settings -> Connections section.
+
+Container: `--padding-entity-row` (12px 16px), `--radius-lg`, `0.5px solid --border-card`, `background: --bg-card-warm`. Margin-bottom: `--gap-entity-rows` (8px). `display: flex; align-items: center; gap: 12px`.
+
+Leading: `ProviderBadge`.
+
+Text block (`min-width: 0`): connection id in `--font-mono`, 13px, font-weight 500, `--text-primary`. Sub-line in `--font-mono`, `--type-label` (11px), `--text-muted`, `margin-top: 2px` — shows `type · key set`, `type · region us-east-1`, etc.
+
+Then a `flex: 1` spacer, a status `Badge`, and an Edit `Button` (`secondary`, `xs`).
+
+**Status badge:** `Badge` `success` ("configured") when a credential / required
+config is present; `Badge` `error` ("not set") when the connection exists but its
+credential is missing.
+
+Props: `type: ProviderType`, `id: string`, `meta: string`, `status: 'configured' | 'not-set'`, `onEdit: () => void`.
+
+#### ConnectionForm
+
+A provider-add / -edit form. Specialization of `InlineForm` (appears inline under
+the Connections list or under the row being edited; same `1.5px solid --color-orange`
+container). Fields are **conditional on provider type**.
+
+Always-present `FormRow`s:
+
+- **Provider** — `Select` (`mono`). On add, switching the provider re-renders the conditional fields below. On edit, read-only.
+- **Name** — `TextInput` (`mono`). The connection id.
+
+Conditional `FormRow`s by provider type:
+
+| Provider    | API key                  | Region         | Endpoint            | Test |
+| ----------- | ------------------------ | -------------- | ------------------- | ---- |
+| `anthropic` | TextInput mono           | —              | TextInput mono, opt | yes  |
+| `openai`    | TextInput mono           | —              | TextInput mono, opt | yes  |
+| `google`    | TextInput mono           | —              | —                   | yes  |
+| `bedrock`   | — (AWS credential chain) | TextInput, req | TextInput mono, opt | no   |
+| `lmstudio`  | — (keyless)              | —              | TextInput, req      | yes  |
+| `voyage`    | TextInput mono           | —              | —                   | no   |
+
+- Optional fields append "(OPT)" to the FormRow label string — FormRow's label is a plain string, so a styled tag span is not available without modifying FormRow.
+- A `FormRow`-aligned helper line (`--type-label`, `--text-muted`, indented to the controls column) explains the absences: Bedrock -> "uses your AWS credential chain"; LM Studio -> "keyless local server"; Voyage -> "embedding provider; models entered by id".
+
+**Edit mode:** the API key field shows a placeholder "configured — enter to replace" and is left blank (the stored secret is never echoed). A `Button` `danger` (`sm`) "Delete connection" appears in the actions row.
+
+**Test connection** (listing-capable providers only — `anthropic`, `openai`, `google`, `lmstudio`): a `Button` `teal` (`sm`) in the actions row. Result surfaces as a `Badge` next to it — `success` ("N models") or `error` (message). `bedrock` and `voyage` have no Test (no list endpoint). Test is save-then-list: no pre-save test endpoint exists, so Test persists the draft via the connection endpoint and then calls list-models, surfacing the count or the error. A Test click therefore saves the connection.
+
+Actions render as two stacked rows: a utility row with Test connection (`teal`,
+`sm`) and its result Badge, plus Delete connection (`danger`, `sm`) pushed right
+in edit mode; then the InlineForm-standard [Cancel] [Save] row. InlineForm's
+action slot cannot host the extra buttons, and modifying InlineForm for one
+consumer was rejected; the two-row split also keeps Delete visually apart from
+Save.
+
+Props: `mode: 'add' | 'edit'`, `type: ProviderType`, `values: ConnectionDraft`, `onChange`, `onSave`, `onCancel`, `onDelete?`, `onTest?`, `testState?: 'idle' | 'pending' | { ok: number } | { error: string }`, `saving?: boolean`.
+
+#### ModelPicker
+
+A custom combobox for choosing a model id for a connection. **Not the `Select`
+atom** — it filters, groups, offers free-text entry, and reloads its options
+when the connection changes. The heaviest new molecule. Used as the model control
+in `RoleRow` and `RoleCard`.
+
+**Trigger:** a `Select`-shaped box (mono, `--type-breadcrumb`, `1px solid --border-input`, `--radius-md`, custom chevron). Shows the current model id, or a placeholder when none. When the picker is open the border is `--color-orange`. **Disabled** (no connection chosen yet): `--bg-surface`, `--border-divider`, `--text-hint`, not interactive (see cascade in `RoleRow`).
+
+**Dropdown panel:** `position: absolute`, `width: 380px` (wider than the trigger so ids never wrap), `top: calc(100% + 6px)`, `z-index: 5`, `1px solid --border-input`, `--radius-lg`, `background: --bg-card`, `box-shadow: 0 10px 30px rgba(46,58,94,.13)`, `overflow: hidden`. Internal list scrolls past a max height.
+
+Panel regions, top to bottom:
+
+1. **Filter** — a borderless mono input with a search glyph (`--text-muted`), `border-bottom: 1px solid --border-divider-light`. Filters the list as you type.
+2. **Newest in family** group (listing-capable only) — group label "Newest in family · pins a version" (`--bg-surface`, 9px uppercase `--text-muted`). Each row: family name (`--font-mono`, 13px, 500) + the resolved pinned id (`--font-mono`, 11px, `--text-muted`, e.g. `→ claude-opus-4`). Selecting one writes the resolved pinned id. This is the config-time "newest" convenience; it never stores the alias, only the resolved version.
+3. **All models** group — label "All models · {connection}". Flat list of model ids (`--font-mono`, 13px, `--text-primary`), one per row (`padding: 8px 14px`, `white-space: nowrap`). Row states: hover and keyboard highlight use `--bg-tool-row`; the keyboard-highlighted row additionally carries `box-shadow: inset 2px 0 0 --color-orange` (an inset, not a border, so row geometry never shifts as the highlight moves). The row matching the current value uses `--bg-selected`. The highlight rule is declared after the selected rule so the keyboard cursor visibly overrides the selected tint when walking across the current value. **Flat — no family/tier nesting.** No capability annotations (context/caching/tools are inferred, not selection criteria).
+4. **Free-text** — `border-top: 1px solid --border-divider-light`. Label "Or enter a model id" + a mono input (`--bg-surface`). Always available, so unlisted ids can be entered.
+
+**States:**
+
+- **Loading** — replaces groups 2-3 with a spinner row ("Loading models from {connection}...") + 2-3 skeleton bars. Free-text stays available. Shown while the per-connection model list fetches (on open, and whenever the connection changes).
+- **Non-listing** (`bedrock`, `voyage`) — no live groups. Free-text id input first, then a "Suggestions · koan catalog" group (curated ids from the registry), then a note: "{provider} can't list models over its runtime API — enter the id or pick from koan's catalog." Capabilities resolve once the id is set.
+- **Disabled** — trigger only (no connection chosen). Cannot open.
+
+Props: `connectionId: string | null`, `value: string | null`, `onChange: (modelId: string) => void`, `models: string[]`, `families?: { family: string, resolved: string }[]`, `loading?: boolean`, `listingCapable: boolean`, `catalogSuggestions?: string[]`, `disabled?: boolean`.
+
+Keyboard: with the trigger focused, Enter / Space / ArrowDown open the panel
+(focus moves to the filter input, or the free-text input for non-listing
+providers). ArrowDown / ArrowUp move the highlight through the visible rows in
+DOM order, clamped at the ends; typing in the filter narrows the list, hides the
+pin group, and resets the highlight. Enter selects the highlighted row, or
+commits a non-empty free-text id when nothing is highlighted. Escape closes
+without committing and returns focus to the trigger; outside mousedown closes.
+The highlight is component state, not DOM focus.
+
+The free-text footer label ("Or enter a model id" / "Model id") uses the
+group-label typography (9px uppercase) without the `--bg-surface` tinted strip —
+it sits inside the already-padded footer, where a nested tinted box reads wrong.
+The panel also pins `text-align: left` on itself so it is immune to ancestor text
+alignment (it renders inside centered containers).
+
+#### RoleRow
+
+The configuration row for one model role (Settings -> Model roles) or one memory
+binding (Settings -> Memory). A role/binding is fully described by **connection +
+model + thinking** — nothing else (see rationale "Model configuration is three
+fields").
+
+Container: `0.5px solid --border-card`, `--radius-xl`, `background: --bg-card-warm`, `padding: 15px 18px`, `display: flex; align-items: center; gap: --gap-form-controls` (8px).
+
+Layout, left to right (dependency order):
+
+1. `RoleMarker` (`sm`).
+2. Meta block, `width: 150px`, `flex-shrink: 0`: role name (14px/500 `--text-primary`) + description (`--type-label`, `--text-muted`, `margin-top: 2px`). Strong -> "Planning & reviews"; Standard -> "Writing code"; Cheap -> "Exploration sub-agents". Memory rows: Embedding / Memory LLM / Reflect LLM with their descriptions.
+3. **Connection** `Select` (`mono`), `flex: 0 0 ~180px`.
+4. **Model** `ModelPicker`, `flex: 1`.
+5. **Thinking** `Select`, `flex: 0 0 ~112px`.
+
+The Memory **Embedding** binding omits the thinking `Select` (embeddings have no
+thinking); its `ModelPicker` simply extends to where thinking would sit.
+
+**Variant `compact`** (`variant?: 'default' | 'compact'`, default `'default'` —
+the Settings rows above are the default and are pixel-identical with or without
+the variant prop). Used by `NewRunForm`'s per-run override, where the row must fit
+the 640px form column. Differences from default:
+
+- Row padding `11px 14px` (vs `15px 18px`); gap `6px` (vs `--gap-form-controls`).
+- `RoleMarker` rendered at `26px` x `26px` (CSS override inside the compact row).
+- Meta block `width: 84px` (vs 150px), **name only** — the description line is
+  not rendered.
+- Columns: connection `flex: 0 0 142px`; model `flex: 1`; thinking `flex: 0 0 80px`.
+  Sized to the longest real values ("anthropic-main", "medium") so the model
+  column gets ~150px at form width — enough for a 15-char mono id.
+- Controls compacted via descendant overrides (mono, `--type-breadcrumb`,
+  `padding: 6px 22px 6px 8px`, chevron at `right 7px`, `width: 100%`,
+  ellipsized values).
+- All states (assigned / unassigned cascade / broken / no-thinking) work
+  unchanged; the broken helper line indents to the compact meta width (~130px).
+
+**States:**
+
+- **Assigned** — all three set.
+- **Unassigned (cascade)** — connection `Select` shows a placeholder ("— select connection —", `--text-placeholder`); the model `ModelPicker` is **disabled** until a connection is chosen; the thinking `Select` is **disabled** until a model is chosen. Choosing a connection enables + loads the picker; choosing a model enables thinking. This cascade applies to every RoleRow, not only empty ones.
+- **Broken** — the slot points at a configured model whose connection was removed. `background: --bg-danger`; the connection `Select` renders in error state (border `--status-failed`) showing the dead id, followed by a `Badge` `error` ("removed"); thinking is disabled. A helper line sits below the row (`--type-label`, `--text-danger-body`): "Connection removed — choose another." The role counts as **not-runnable** (see New Run gate). Re-picking a connection clears it.
+- **No thinking support** — when the chosen model resolves to no thinking capability, the thinking `Select` stays present but **disabled**, showing `—`. Keeping it present (vs hiding) preserves column alignment across the three rows. When the model does support thinking, the options are `off` + the supported subset only.
+
+**Save:** the three controls auto-save individually on change (no Save button — see
+`InlineForm` / "Save model" rationale). On a backend reject, the control reverts
+and an error `Notification` toast appears (rationale "Auto-save error surfacing").
+
+Props: `role: RoleSlot | 'embedding' | 'memory-llm' | 'reflect-llm'`, `connectionId`, `modelId`, `thinking`, `state: 'assigned' | 'unassigned' | 'broken' | 'no-thinking'`, `connections`, `models`, `modelsLoading`, `thinkingOptions`, `onChange(field, value)`, `showThinking?: boolean` (default true; false for embedding).
+
+#### RoleCard
+
+The vertical, "playful" placeholder card for the first-run gate
+(`NoProvidersBlock`). Shares the `RoleMarker` visual language with `RoleRow` so
+the surfaces read as one family.
+
+> The former `override` variant (three labelled controls per card) was removed:
+> it required >=245px per card and could not fit the 640px New Run column. The
+> per-run override now uses `RoleRow` `variant="compact"` (see rationale
+> "Override layout at form width").
+
+Container: `flex: 1`, `--radius-xl`, `padding: 16px 14px 14px`, `text-align: center`,
+`1px dashed --border-input`, `background: --bg-surface`.
+
+Contents: `RoleMarker` (`lg`, centered, `margin: 0 auto 10px`, reduced opacity
+`0.55`) + role name (14px/500 `--text-primary`) + a status line below the name
+("not set", `--type-badge`, uppercase, `--text-hint`). No controls.
+
+Props: `role: WorkflowRole`, `variant: 'not-set'`.
+
+#### InlineNotice
+
+A one-line warning strip. Used by the New Run config-incomplete gate and the
+add-connection backend note. Reusable.
+
+Container: `background: --bg-warning`, `1px solid --border-warning`, `--radius-lg`, `padding: 12px 16px`, `display: flex; align-items: center; gap: 10px`.
+
+Leading: a 16px warning glyph, `stroke: --text-warning`. Text: `--type-breadcrumb`, `--text-warning`. Optional trailing link (`margin-left: auto`): `--color-orange`, font-weight 500, `--type-breadcrumb`, no underline.
+
+Props: `message: ReactNode`, `action?: { label: string, onClick: () => void }`.
+
 ---
 
 ## Organisms
 
 ### SettingsPage
 
-Full-page settings view accessible via "Settings" in the header navigation.
+> Supersedes the earlier two-column `NavItem` layout and the `Profiles` /
+> `Agents` sections. The live UI is single-column stacked cards; this spec
+> matches it. The redesign is built around the
+> **connection -> configured model -> role slot** model the backend ships (M5/M6).
 
-Two-column flex layout within a centered container (`--settings-max-width`, 960px, `margin: 0 auto`). Left column: stack of NavItem elements (`--settings-nav-width`, 152px, `padding: 36px 0`, `flex-shrink: 0`). Right column: content area (`flex: 1`, `padding: 36px 0 36px 28px`, `min-width: 0`, `overflow-y: auto`).
+Full-page settings view via "Settings" in the header. **Single column**, centered
+container (`--settings-max-width`, `margin: 0 auto`), `--form-page-padding`-style
+top/side padding. Page title (26px/500 `--text-primary`) then a vertical stack of
+section cards (`--gap-content` between them).
 
-Content area shows: section title (20px/500 `--text-primary`, letter-spacing -0.3px, margin-bottom 6px), section description (13px `--text-muted`, margin-bottom 22px), then one or more section cards.
+Section cards: `--bg-card`, `--radius-2xl`, `0.5px solid --border-card`,
+`--padding-card-settings` (22px 26px). Each card: a card title (17px/500
+`--text-primary`) with an optional right-aligned hint (`--type-breadcrumb`,
+`--text-muted`), an optional description line, then content.
 
-Section cards: `--bg-card`, `--radius-2xl` (12px), `0.5px solid --border-card`, `--padding-card-settings` (22px 26px).
+**Sections, in order:**
 
-Only the active section renders. Side nav controls which section is visible.
+1. **Connections** — `ConnectionRow` per connection, the active row's `ConnectionForm` inline below it, and a `Button` `text` ("+ Add connection") that opens an add `ConnectionForm`. Empty state: just the add trigger.
+2. **Model roles** — three `RoleRow`s (strong, standard, cheap). Description: "koan uses three roles across every workflow. Pick a connection, then a model, then a thinking level." Right hint: "Any model can fill any role."
+3. **Memory** — three `RoleRow`s (embedding [no thinking], memory-llm, reflect-llm). Description: "Models used by the memory subsystem."
+4. **Runtime** — a `SettingRow` with `NumberInput` for scout concurrency ("Maximum number of parallel scout agents").
 
-**Sections:**
+Connections sits first because Model roles and Memory both reference connections;
+ordering the dependency before its consumers reads top-down.
 
-- **Profiles:** EntityRows + InlineForm for create/edit + Button text trigger. All inside a section card.
-- **Agents:** TabBar for runner types + EntityRows for installations + InlineForm for create/edit. All inside a section card.
-- **Runtime:** NumberInput for scout concurrency (with heading above), then SettingRows with Toggle/Select controls. Hairline `0.5px solid --border-card` divider separates the scalar controls from the SettingRow list. All inside a section card.
-- **Workflow:** SettingRow with Toggle for "Auto-open new or changed artifacts" (default: on). Description: "Automatically open artifacts for review when they are created or modified." Additional SettingRows for future workflow preferences. Inside a section card.
-- **Preferences, Debug, About:** future sections using the same patterns.
+### NewRunForm
+
+The New Run page. A workflow selector and a description field, plus a per-run model
+override and two config-gating states. The workflow selector and description field
+are unchanged from the prior design.
+
+**Run-readiness:** a run is startable when all three role slots (strong / standard
+/ cheap) resolve to a valid configured model **and** at least one connection
+exists. Memory bindings do **not** gate run start.
+
+Three render states:
+
+1. **Ready** (config complete): below Description, a **Models** section card —
+   header `seclabel` "Models" + right hint "Defaults from Settings · changes apply
+   to this run only" — containing a column-header line (a flex row mirroring the
+   compact row geometry: a spacer over marker+meta, then PROVIDER / MODEL /
+   THINKING labels — 9px/500, uppercase, letter-spacing .6px, `--text-muted`)
+   above three `RoleRow`s (`variant="compact"`, strong / standard / cheap, 8px
+   gap). Then `Button` `primary` (`md`) "Start Run", enabled.
+2. **Config incomplete** (>=1 connection, but a role slot is unassigned or broken):
+   workflow + description render normally; the **Models section is hidden** (there
+   is no complete config to override — the durable fix is in Settings, not a
+   per-run patch). An `InlineNotice` ("Assign a model to all three roles before
+   starting a run." + "Open Settings ->") sits where the Start button group is, and
+   "Start Run" is disabled.
+3. **No providers** (zero connections): the `NoProvidersBlock` organism (below)
+   replaces the form body.
+
+### NoProvidersBlock
+
+The first-run / cold-start gate. Full-width block inside the New Run content area.
+
+Container: `--bg-card`, `0.5px solid --border-card`, `--radius-2xl`, `padding: ~40px`, `text-align: center`.
+
+Contents: a 46px danger circle (`background: --bg-danger`, a warning glyph
+`stroke: --text-danger-body`), a heading (20px/500 `--text-primary`, "No providers
+configured"), a body line (`--type-body`, `--text-body`, max-width ~400px,
+"koan needs at least one connection before it can run. Add a provider, then assign
+models to the three roles."), a row of three `RoleCard`s (`variant="not-set"`),
+and a `Button` `primary` (`md`) "Go to Settings".
+
+Distinct from NewRunForm state 2: zero connections is a full takeover (nothing to
+do here yet); incomplete config keeps the real page and surfaces the specific gap.
 
 ### ReviewPanel
 
@@ -1248,21 +1553,23 @@ Settings is accessed via the "Settings" navigation link. There is no separate se
 
 ## Layout: Settings View
 
-Used for the Settings page. Two-column layout: side navigation + scrollable content area.
+Used for the Settings page. Single-column layout: a centered container holding a
+vertical stack of section cards. (Supersedes the earlier two-column side-nav
+layout; the live UI is single-column stacked cards.)
 
 ```
 Structure:
   Flex column (100vh, overflow: hidden):
   ├─ HeaderBar (flex-shrink: 0, full viewport width, navigation mode)
-  └─ Centered container (flex: 1, min-height: 0, max-width: 960px, margin: 0 auto)
-     ├─ Side nav (width: 152px, padding: 36px 0, flex-shrink: 0)
-     │  └─ Stack of NavItem elements
-     └─ Content area (flex: 1, padding: 36px 0 36px 28px, min-width: 0,
-                       overflow-y: auto)
-        ├─ Section title (20px/500, --text-primary, letter-spacing: -0.3px)
-        ├─ Section description (13px, --text-muted, margin-bottom: 22px)
-        └─ Section card(s) (--bg-card, --radius-2xl, --padding-card-settings)
-           └─ Section-specific content
+  └─ Centered container (flex: 1, min-height: 0, --settings-max-width,
+                         margin: 0 auto, --form-page-padding top/side padding,
+                         overflow-y: auto)
+        ├─ Page title (26px/500, --text-primary)
+        └─ Stack of section cards (--gap-content between them)
+           (--bg-card, --radius-2xl, 0.5px solid --border-card,
+            --padding-card-settings)
+              └─ Card title (17px/500) [+ optional right hint]
+                 [+ optional description] + content
 ```
 
 No ArtifactsSidebar. No ScoutBar. Header in navigation mode.
@@ -1391,6 +1698,117 @@ distinction is scale: individual ops are fast, aggregates are not.
 `bash` specifically, because bash duration is frequently meaningful.
 `ToolCallRow` for `write` and `edit` shows size/line-count metrics without
 duration.
+
+### Model configuration is three fields
+
+A configured model is exactly **provider (connection) + model id + thinking /
+effort**. Context-window variant, prompt caching, and tool selection are inferred
+and managed by koan, not user-configured — the backend resolves them per
+`(provider, model)` capability. Exposing them as controls invited per-model
+fiddling with settings the user shouldn't have to reason about. The thinking
+control is a single unified scale (`off` / `low` / `medium` / `high`, or the
+model's supported subset); koan maps it to each provider's native shape (budget /
+effort / adaptive). This keeps the role rows and override cards to three controls.
+
+### Picker dependency order
+
+Connection, model, and thinking are arranged in dependency order everywhere
+(`RoleRow` left-to-right, in both its default and compact variants — the compact
+variant's shared PROVIDER/MODEL/THINKING column header on New Run carries the
+labels): the connection scopes
+which models are listable, and the chosen model scopes which thinking levels exist.
+The model `ModelPicker` is disabled until a connection is set; the thinking `Select`
+is disabled until a model is set. This is the locked override layout (chosen over a
+model-first arrangement) because it matches the data dependency and avoids invalid
+intermediate states.
+
+### Override layout at form width
+
+The New Run per-run override originally used three `RoleCard`s side by side
+(labelled controls stacked per card). That layout needed >=245px per card for a
+14-15 character mono model id to stay readable, but the New Run column is 640px
+(`--form-max-width`), which yields 173px cards — geometrically unworkable, no
+amount of padding-trimming closes the gap. The override therefore uses compact
+`RoleRow`s with a single shared column-header line (PROVIDER / MODEL / THINKING),
+which gives the model column the full row width and also unifies New Run with
+Settings' row language. Lesson: mockups and harnesses for width-sensitive
+components must render at the true container width — the card layout looked fine
+in a 920px review harness and failed only on the real page.
+
+### ModelPicker is a combobox, not a Select
+
+The model control filters, groups ("newest in family" pins vs the flat list),
+accepts free-text ids, shows a loading state, and degrades to free-text + catalog
+for non-listing providers. A native `Select` can't do this. The list is **flat** —
+no family/tier tree — because tiering is a koan concept (the three role slots), not
+a property the user navigates when picking a specific model. The picker reloads its
+options whenever the connection changes; the Settings page fetches a connection's
+models live on render where the provider supports it.
+
+### Run-readiness and the two empty states
+
+Zero connections and incomplete-but-nonempty config are different situations and
+look different. Zero connections (`NoProvidersBlock`) is a full-page takeover —
+there is nothing useful to do on New Run yet. Incomplete config (a slot unassigned
+or broken while connections exist) keeps the real New Run page, hides the override
+section, disables Start, and points to Settings. The override is only for tweaking a
+working configuration; you finish setup in Settings, where the active config is the
+source of truth — patching an empty slot per-run would force a re-pick every run.
+
+### Broken assignment
+
+A slot can point at a configured model whose connection was later removed. Rather
+than fail silently, the `RoleRow` flags it: danger-tinted row, the dead connection
+shown in field-error state with a "removed" badge, and a helper line. The role
+counts as not-runnable, so it trips the New Run gate. Re-picking a connection
+repairs it. The signal lives at the field (the connection is what vanished), not as
+a generic row error.
+
+### Capability-gated controls
+
+The UI never offers a control for a capability the chosen `(provider, model)` does
+not have. Concretely: a model with no thinking support shows the thinking `Select`
+disabled (`—`) rather than offering levels that would error. Capabilities are
+resolved, never asked. This makes backend `422`s on unsupported settings rare; the
+auto-save error toast is the safety net, not the primary path.
+
+### Auto-save error surfacing
+
+The role / memory `Select`s and `ModelPicker`s auto-save individually (per the
+"Save model" rule — every control has a valid state at every moment). They have no
+Save button to attach an inline error to, so a failed save shows a transient error
+`Notification` toast and **reverts the control to its last-good value**.
+`ConnectionForm` keeps its inline error instead — it is an `InlineForm` with Save /
+Cancel, so the error belongs in the form.
+
+### OpenAI-compatible endpoints
+
+xAI/Grok, OpenRouter, Together, Groq and similar OpenAI-compatible APIs are reached
+by creating an `openai` connection with a custom endpoint (e.g.
+`https://api.x.ai/v1`), not by adding a provider type. `ProviderType` stays
+`google | anthropic | openai | bedrock | lmstudio | voyage`. Adding a first-class
+type is a backend change (capability table + adapter entry) and is out of scope for
+the UI.
+
+### RoleMarker vs MemoryTypeIcon
+
+Both are colored rounded squares. `MemoryTypeIcon` carries a single letter (D/L/C/P)
+because its four types are otherwise only distinguished by color. `RoleMarker` omits
+the letter: roles always sit beside a text label, and "Strong"/"Standard" would both
+reduce to "S". The marker is a color anchor, not a glyph.
+
+### Perceptibility of state-change colors
+
+Interactive state changes (hover, keyboard highlight, selection) must use a
+surface at least one perceptual step from the background they sit on: on
+`--bg-card` (white), that means `--bg-surface` or `--bg-tool-row`, never
+`--bg-card-warm`. The original ModelPicker highlight used `--bg-card-warm`
+(#faf8f4) on white — a few RGB points of difference — and keyboard navigation
+appeared broken while working correctly: the state changed, the pixels didn't.
+Related: a Badge whose background matches its row surface (e.g. `--bg-danger`
+pill on a `--bg-danger` broken row) degrades to plain colored text; acceptable
+when the text carries the meaning, but choose a contrasting surface when the pill
+shape matters.
 
 ## Memory section
 
