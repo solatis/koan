@@ -1163,39 +1163,54 @@ def _serialize_model_registry_entry(e: ModelRegistryEntry) -> dict:
     }
 
 
-def _serialize_provider_model(pm: ProviderModel) -> dict:
-    """Serialize ProviderModel to a wire dict for the provider_models_listed event."""
+def _serialize_provider_model(pm: ProviderModel, connection_id: str) -> dict:
+    """Serialize ProviderModel to a wire dict for the provider_models_listed event.
+
+    Stamps connection_id onto the wire dict so the frontend can join by
+    connection rather than by provider type, avoiding collision when two
+    connections of the same provider type have different model lists.
+    """
     return {
         "provider": pm.provider,
         "model": pm.model,
         "display_name": pm.display_name,
         "context_window": pm.context_window,
+        "connection_id": connection_id,
     }
 
 
 def _push_provider_models(st: "AppState") -> None:
     """Push the current provider_models overlay as a provider_models_listed event.
 
-    Flattens st.provider_config.provider_models (dict provider -> list) into a
-    single cross-provider list, derives per-provider newest-in-family pins from
-    resolve_families, and pushes a replace-all provider_models_listed event to
-    the projection store.  Called on save, Test, and eager-refresh.
+    Flattens st.provider_config.provider_models (dict connection_id -> list)
+    into a single cross-connection list, derives per-connection newest-in-family
+    pins from resolve_families, and pushes a replace-all provider_models_listed
+    event to the projection store.  The overlay is keyed by connection id so
+    same-type connections keep independent model lists.  Called on save, Test,
+    and eager-refresh.
     """
     from ..agents.newest_in_family import resolve_families
 
-    flat = [
-        _serialize_provider_model(pm)
-        for models in st.provider_config.provider_models.values()
-        for pm in models
-    ]
+    cfg = st.provider_config.config
+    # Build a connection_id -> provider_type map so families carry the correct
+    # provider even though the overlay is keyed by connection id.
+    type_by_conn = {c.id: c.type for c in (cfg.connections if cfg else [])}
+
+    flat: list[dict] = []
     families: list[dict] = []
-    for provider, models in st.provider_config.provider_models.items():
+    for connection_id, models in st.provider_config.provider_models.items():
+        # Fall back to models[0].provider when the connection is not in config
+        # (e.g. during tests that seed the overlay directly without a full config).
+        provider = type_by_conn.get(connection_id) or (models[0].provider if models else "")
+        for pm in models:
+            flat.append(_serialize_provider_model(pm, connection_id))
         for pin in resolve_families([pm.model for pm in models]):
             families.append({
                 "provider": provider,
                 "family": pin.family,
                 "resolved": pin.resolved,
                 "resolved_from": pin.resolved_from,
+                "connection_id": connection_id,
             })
     st.projection_store.push_event(
         "provider_models_listed",
@@ -1474,20 +1489,29 @@ async def api_probe(r: Request) -> Response:
 # These helpers are called by the Test endpoint, the post-save refresh, and the
 # eager startup background task. They never raise to the caller.
 
+# Connection types that expose a live list-models endpoint.
+# Hoisted here (not inside the eager task) so the save handler and eager task
+# share the same authoritative set without duplicating a literal.
+LISTING_CAPABLE: frozenset[str] = frozenset({"openai", "anthropic", "google", "lmstudio"})
+
 async def _refresh_one_provider_models(
     st: "AppState",
+    connection_id: str,
     provider: str,
     *,
     api_key: str | None,
     base_url: str | None,
     region: str | None,
-) -> tuple[bool, str]:
-    """List models for one provider and update the overlay on success.
+) -> tuple[bool, str, int]:
+    """List models for one connection and update the overlay on success.
 
-    On success: updates st.provider_config.provider_models[provider], calls
-    _push_provider_models(st), and returns (True, ""). On ModelListingError:
-    returns (False, message) without touching the overlay. Each provider is
-    isolated so a single failure cannot abort the others.
+    On success: updates st.provider_config.provider_models[connection_id],
+    calls _push_provider_models(st), logs the fetched count (diagnostic for
+    empty live-API returns), and returns (True, "", count). On ModelListingError
+    or any exception: returns (False, message, 0) without touching the overlay.
+    Each connection is isolated so a single failure cannot abort the others.
+    The overlay is keyed by connection_id, not provider type, so two connections
+    of the same type keep independent model lists.
     """
     from ..agents.model_listing import list_provider_models, ModelListingError
     try:
@@ -1497,13 +1521,17 @@ async def _refresh_one_provider_models(
             base_url=base_url,
             region=region,
         )
-        st.provider_config.provider_models[provider] = models
+        st.provider_config.provider_models[connection_id] = models
         _push_provider_models(st)
-        return (True, "")
+        log.info(
+            "listed %d models for connection %s (type %s)",
+            len(models), connection_id, provider,
+        )
+        return (True, "", len(models))
     except ModelListingError as exc:
-        return (False, str(exc))
+        return (False, str(exc), 0)
     except Exception as exc:
-        return (False, str(exc))
+        return (False, str(exc), 0)
 
 
 async def _refresh_provider_models_eager(st: "AppState") -> None:
@@ -1514,10 +1542,10 @@ async def _refresh_provider_models_eager(st: "AppState") -> None:
     a non-empty base_url is required.  Each connection is wrapped in its own
     try/except so one failure cannot abort others.  Runs as a non-blocking asyncio
     background task -- never called from within _refresh_probe_state.
+    The overlay is keyed by connection id (LISTING_CAPABLE hoisted to module level).
     """
     from ..types import KEYLESS_PROVIDER_TYPES
 
-    LISTING_CAPABLE = {"openai", "anthropic", "google", "lmstudio"}
     cfg = st.provider_config.config
     if not cfg:
         return
@@ -1540,7 +1568,7 @@ async def _refresh_provider_models_eager(st: "AppState") -> None:
             region = conn.region
         try:
             await _refresh_one_provider_models(
-                st, conn.type,
+                st, conn.id, conn.type,
                 api_key=api_key,
                 base_url=base_url,
                 region=region,
@@ -1683,7 +1711,9 @@ async def api_config_connection_set(r: Request) -> Response:
            timeout?, secret?}.  The id may be provided in the body or the path.
     If a 'secret' field is present it is stored encrypted in the credential store
     and never echoed back.  Pushes connections_listed + provider_status_listed +
-    model_capabilities_listed after saving.
+    model_capabilities_listed after saving.  For listing-capable connection types,
+    schedules a best-effort background provider_models refresh so the model
+    dropdown populates without requiring an explicit Test action.
 
     Returns 422 on validation error.
     """
@@ -1737,6 +1767,31 @@ async def api_config_connection_set(r: Request) -> Response:
 
     await save_koan_config(cfg)
     _push_connection_events(st)
+
+    # Schedule a best-effort background model-list refresh for listing-capable
+    # connections.  Non-blocking (create_task): save stays fast and any listing
+    # error is swallowed silently here; the explicit Test action still surfaces
+    # errors to the user.  Mirrors the eager startup task pattern.
+    if conn.type in LISTING_CAPABLE:
+        from ..types import KEYLESS_PROVIDER_TYPES
+        store = st.provider_config.credential_store
+        if conn.type in KEYLESS_PROVIDER_TYPES:
+            if conn.base_url:
+                asyncio.create_task(_refresh_one_provider_models(
+                    st, conn.id, conn.type,
+                    api_key=None,
+                    base_url=conn.base_url,
+                    region=None,
+                ))
+        else:
+            if store and store.has(conn.id):
+                asyncio.create_task(_refresh_one_provider_models(
+                    st, conn.id, conn.type,
+                    api_key=store.resolve(conn.id),
+                    base_url=conn.base_url,
+                    region=conn.region,
+                ))
+
     return JSONResponse({"ok": True})
 
 
@@ -1984,9 +2039,10 @@ async def api_config_connection_list_models(r: Request) -> Response:
 
     Resolves the connection, obtains its credential (or base_url for keyless
     types), calls _refresh_one_provider_models, and pushes provider_models_listed
-    on success.  Returns {ok: True} on success, {ok: False, message: ...} on
-    ModelListingError or for non-listing types so the caller can offer a free-text
-    fallback (brief D7).  Never raises to the client.
+    on success.  Returns {ok: true, count: N} on success so the Test badge can
+    display the real model count.  Returns {ok: false, message: ...} on
+    ModelListingError or for non-listing types so the caller can offer a
+    free-text fallback (brief D7).  Never raises to the client.
     """
     from ..types import KEYLESS_PROVIDER_TYPES
 
@@ -2012,15 +2068,16 @@ async def api_config_connection_list_models(r: Request) -> Response:
         base_url = conn.base_url
         region = conn.region
 
-    ok, msg = await _refresh_one_provider_models(
+    ok, msg, count = await _refresh_one_provider_models(
         st,
+        conn_id,
         conn.type,
         api_key=api_key,
         base_url=base_url,
         region=region,
     )
     if ok:
-        return JSONResponse({"ok": True})
+        return JSONResponse({"ok": True, "count": count})
     return JSONResponse({"ok": False, "message": msg})
 
 

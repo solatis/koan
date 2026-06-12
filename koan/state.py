@@ -188,8 +188,9 @@ class ProviderConfigState:
     # Decrypted credential store; None only during test setups that do not
     # exercise the credential path (provider_available returns False when None).
     credential_store: "CredentialStore | None" = None
-    # Dynamic model overlay: provider -> list of live-retrieved ProviderModel.
-    # Populated by the eager startup background task; refreshed on model-test.
+    # Dynamic model overlay: connection_id -> list of live-retrieved ProviderModel.
+    # Keyed by connection id so same-type connections keep independent model lists.
+    # Populated by the eager startup background task; refreshed on save/test.
     provider_models: dict[str, list[ProviderModel]] = field(default_factory=dict)
 
 

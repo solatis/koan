@@ -97,21 +97,25 @@ export interface ModelRegistryEntry {
 }
 
 /**
- * One entry in the per-provider dynamic model overlay (Settings.providerModels).
+ * One entry in the per-connection dynamic model overlay (Settings.providerModels).
  * Lighter sibling of ModelRegistryEntry: no thinkingModes or tierHint.
  * Populated by provider_models_listed events (eager startup + Test/save refresh).
+ * connectionId scopes the entry to its originating connection so two connections
+ * of the same provider type keep independent model lists.
  */
 export interface ProviderModel {
   provider: string
   model: string
   displayName: string
   contextWindow: number
+  connectionId: string
 }
 
 /**
- * Per-provider newest-in-family pin delivered via the projection (Settings channel).
+ * Per-connection newest-in-family pin delivered via the projection (Settings channel).
  * Computed server-side from the live model list alongside providerModels; replace-all
  * semantics (each provider_models_listed event replaces the full families list).
+ * connectionId scopes the pin to its originating connection.
  * camelCase wire of ProviderFamilyWire (projections.py).
  */
 export interface ProviderFamily {
@@ -119,6 +123,7 @@ export interface ProviderFamily {
   family: string
   resolved: string
   resolvedFrom: string
+  connectionId: string
 }
 
 /**

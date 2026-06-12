@@ -766,6 +766,10 @@ function toThinkingOptions(rawModes: string[]): { value: string; label: string }
  * Derive the ConnectionSummary list and modelsByConnection map consumed by
  * both ConnectedSettingsPage and ConnectedNewRunForm.  Extracted here to avoid
  * duplicating the join logic in both connected components.
+ *
+ * Model/family join is per-connection (by connectionId), not per provider type.
+ * The static catalog (modelRegistry) is still provider-scoped since it is not
+ * connection-specific.
  */
 function buildConnectionViews(
   settings: ReturnType<typeof useStore.getState>['settings'],
@@ -795,17 +799,16 @@ function buildConnectionViews(
 
   const modelsByConnection: Record<string, import('./components/organisms/SettingsPage').ModelsForConnection> = {}
   for (const conn of settings.connections) {
-    // Filtered by provider TYPE, not connection id: two connections of the same
-    // type share one list.  Harmless today (lists are provider-scoped upstream);
-    // revisit if per-connection listing ever diverges (e.g. two openai endpoints).
+    // Filtered by connection id: each connection carries its own model list so
+    // two connections of the same provider type do not overwrite each other.
     const live = settings.providerModels
-      .filter(m => m.provider === conn.connectionType)
+      .filter(m => m.connectionId === conn.id)
       .map(m => m.model)
     const catalog = settings.modelRegistry
       .filter(r => r.provider === conn.connectionType)
       .map(r => r.model)
-    // Families are also provider-type-scoped (same caveat as the model list above).
-    const rawFamilies = (settings.providerFamilies ?? []).filter(f => f.provider === conn.connectionType)
+    // Families are also per-connection (connectionId on the wire).
+    const rawFamilies = (settings.providerFamilies ?? []).filter(f => f.connectionId === conn.id)
     const families = rawFamilies.map(f => ({ family: f.family, resolved: f.resolved }))
     modelsByConnection[conn.id] = {
       models: live.length > 0 ? live : catalog,
@@ -997,10 +1000,15 @@ function ConnectedSettingsPage() {
 
     if (field === 'connection') {
       // Connection change: trigger model listing so the model dropdown populates.
-      setModelsLoading(prev => ({ ...prev, [value]: true }))
-      const res = await api.listConnectionModels(value)
-      setModelsLoading(prev => ({ ...prev, [value]: false }))
-      if (!res.ok) pushToast(res.message ?? 'Failed to load models', 'error')
+      // Only call listConnectionModels for listing-capable connection types;
+      // non-listing connections (voyage, bedrock) skip this call.
+      const connType = settings.connections.find(c => c.id === value)?.connectionType
+      if (connType && LISTING_CAPABLE_TYPES.has(connType)) {
+        setModelsLoading(prev => ({ ...prev, [value]: true }))
+        const res = await api.listConnectionModels(value)
+        setModelsLoading(prev => ({ ...prev, [value]: false }))
+        if (!res.ok) pushToast(res.message ?? 'Failed to load models', 'error')
+      }
       return
     }
 
@@ -1015,7 +1023,7 @@ function ConnectedSettingsPage() {
       // it is the newest at this point in time.
       const connType = settings.connections.find(c => c.id === connId)?.connectionType
       const pin = (settings.providerFamilies ?? []).find(
-        f => f.provider === connType && f.resolved === value,
+        f => f.connectionId === connId && f.resolved === value,
       )
       const cmRes = await api.setConfiguredModel({
         id: cmId,
@@ -1153,11 +1161,16 @@ function ConnectedNewRunForm() {
       const current = prev[role]
       if (field === 'connection') {
         // Connection change clears model + thinking; trigger model listing.
-        setModelsLoading(p => ({ ...p, [value]: true }))
-        api.listConnectionModels(value).then(res => {
-          setModelsLoading(p => ({ ...p, [value]: false }))
-          if (!res.ok) pushToast(res.message ?? 'Failed to load models', 'error')
-        })
+        // Only call listConnectionModels for listing-capable connection types;
+        // non-listing connections (voyage, bedrock) skip this call.
+        const connType = settings.connections.find(c => c.id === value)?.connectionType
+        if (connType && LISTING_CAPABLE_TYPES.has(connType)) {
+          setModelsLoading(p => ({ ...p, [value]: true }))
+          api.listConnectionModels(value).then(res => {
+            setModelsLoading(p => ({ ...p, [value]: false }))
+            if (!res.ok) pushToast(res.message ?? 'Failed to load models', 'error')
+          })
+        }
         return { ...prev, [role]: { connectionId: value, modelId: null, thinking: null, thinkingOptions: current.thinkingOptions } }
       }
       if (field === 'model') {

@@ -407,32 +407,37 @@ def test_list_models_not_found(client, app_state, config_path):
 
 
 def test_list_models_success_pushes_provider_models(client, app_state, config_path):
-    """Successful list-models call pushes provider_models_listed."""
-    from koan.types import ProviderModel
+    """Successful list-models call returns {ok: true, count: N}.
 
-    fake_models = [ProviderModel(provider="anthropic", model="claude-3-5-haiku-20241022", display_name="Haiku")]
+    The mock returns a 3-tuple (ok, msg, count); the endpoint unpacks it and
+    includes count in the response so the Test badge can display the real number.
+    """
     with patch("koan.web.app._refresh_one_provider_models", new_callable=AsyncMock) as mock_refresh:
-        mock_refresh.return_value = (True, "")
-        # Patch the push so we can see the event.
+        mock_refresh.return_value = (True, "", 3)
         resp = client.post("/api/config/connections/anthropic-1/list-models")
 
     assert resp.status_code == 200
-    assert resp.json()["ok"] is True
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["count"] == 3
     mock_refresh.assert_called_once()
 
 
 def test_push_provider_models_emits_families(app_state, config_path):
-    """_push_provider_models includes a families list in the emitted payload.
+    """_push_provider_models includes connection_id in models and families.
 
-    Seeds the provider_models overlay with a recognisable family (claude-sonnet)
-    and asserts the emitted provider_models_listed payload carries a non-empty
-    families list whose resolved id is the newest member.
+    Seeds the provider_models overlay under a connection-id key (not a bare
+    provider-type key) and asserts:
+    - the emitted families carry connection_id == the seeded key;
+    - the resolved id is the newest member of the family;
+    - the provider field is derived from models[0].provider (fallback path when
+      the connection is not present in config).
     """
     from koan.types import ProviderModel
     from koan.web.app import _push_provider_models
 
-    # Seed two models in the same family; the newer version should win.
-    app_state.provider_config.provider_models["anthropic"] = [
+    # Seed two models in the same family under a connection-id key.
+    app_state.provider_config.provider_models["anthropic-1"] = [
         ProviderModel(provider="anthropic", model="claude-sonnet-4-5", display_name="Sonnet 4.5"),
         ProviderModel(provider="anthropic", model="claude-sonnet-4-0", display_name="Sonnet 4.0"),
     ]
@@ -449,6 +454,43 @@ def test_push_provider_models_emits_families(app_state, config_path):
     assert sonnet_pins[0]["resolved"] == "claude-sonnet-4-5"
     assert sonnet_pins[0]["provider"] == "anthropic"
     assert "claude-sonnet-4-5" in sonnet_pins[0]["resolved_from"]
+    # connection_id must be stamped on families (D4: per-connection overlay keying).
+    assert sonnet_pins[0]["connection_id"] == "anthropic-1"
+
+    # Models in the flat list must also carry connection_id.
+    models = ev.get("models", [])
+    assert all(m.get("connection_id") == "anthropic-1" for m in models)
+
+
+def test_connection_save_schedules_background_refresh(app_state, config_path, monkeypatch):
+    """Saving a listing-capable connection schedules a background provider_models refresh.
+
+    The save handler calls asyncio.create_task(_refresh_one_provider_models(...))
+    for listing-capable connection types when a credential is present.  The task
+    is non-blocking (the response returns before listing completes).  This test
+    patches _refresh_one_provider_models, stores the POST, runs the event loop
+    once to allow the created task to execute, and asserts the patch was called.
+    """
+    from koan.web.app import create_app
+
+    # Ensure a credential exists so the save handler schedules the refresh.
+    app_state.provider_config.credential_store.set("anthropic-1", "sk-ant-test")
+
+    app = create_app(app_state)
+    client = TestClient(app, raise_server_exceptions=True)
+
+    with patch("koan.web.app._refresh_one_provider_models", new_callable=AsyncMock) as mock_refresh:
+        mock_refresh.return_value = (True, "", 5)
+        resp = client.post("/api/config/connections", json={
+            "id": "anthropic-1",
+            "type": "anthropic",
+            "secret": "sk-ant-test",
+        })
+
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    # The background task must have been scheduled (create_task calls the coroutine).
+    mock_refresh.assert_called_once()
 
 
 # -- Newest-in-family ---------------------------------------------------------

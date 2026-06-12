@@ -522,24 +522,30 @@ class ModelRegistryEntryWire(KoanBaseModel):
 class ProviderModelWire(KoanBaseModel):
     """Wire representation of ProviderModel pushed by the provider_models_listed event.
 
-    Payload shape: {models: [{provider, model, display_name, context_window}, ...]}.
-    The alias_generator=to_camel emits displayName/contextWindow on the wire.
-    Fold sets Settings.provider_models from the flat cross-provider models list;
-    replace-all semantics (same as model_registry_listed).
+    Payload shape: {models: [{provider, model, display_name, context_window,
+    connection_id}, ...]}.  The alias_generator=to_camel emits displayName,
+    contextWindow, and connectionId on the wire.  Fold sets
+    Settings.provider_models from the flat cross-provider models list;
+    replace-all semantics (same as model_registry_listed).  The frontend
+    overlay join is per-connection (by connectionId), not per provider type,
+    so two connections of the same type keep independent model lists.
     """
 
     provider: str
     model: str
     display_name: str
     context_window: int = 0
+    connection_id: str = ""
 
 
 class ProviderFamilyWire(KoanBaseModel):
     """Wire representation of a per-provider newest-in-family pin.
 
-    Payload shape: {families: [{provider, family, resolved, resolved_from}, ...]}.
-    Delivered alongside provider_models in the provider_models_listed event.
-    Replace-all semantics: each event replaces the full families list.
+    Payload shape: {families: [{provider, family, resolved, resolved_from,
+    connection_id}, ...]}.  Delivered alongside provider_models in the
+    provider_models_listed event.  Replace-all semantics: each event replaces
+    the full families list.  connection_id scopes the pin to its originating
+    connection so same-type connections carry independent family sets.
     resolved_from is optional on the wire (defaults to ""); callers may omit it.
     """
 
@@ -547,6 +553,7 @@ class ProviderFamilyWire(KoanBaseModel):
     family: str
     resolved: str
     resolved_from: str = ""
+    connection_id: str = ""
 
 
 class Settings(KoanBaseModel):
@@ -2228,10 +2235,14 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 return projection.model_copy(update={"settings": new_settings})
 
             case "provider_models_listed":
-                # Payload: {models: [{provider, model, display_name, context_window}, ...],
-                #           families: [{provider, family, resolved, resolved_from}, ...]}.
+                # Payload: {models: [{provider, model, display_name, context_window,
+                #                     connection_id}, ...],
+                #           families: [{provider, family, resolved, resolved_from,
+                #                       connection_id}, ...]}.
                 # Flat cross-provider list; replace-all semantics (same as model_registry_listed).
                 # Populated by the eager startup task and refreshed on Test/save.
+                # connection_id scopes each model/family to its originating connection
+                # so same-type connections keep independent lists on the frontend.
                 raw_pm = payload.get("models", [])
                 new_pm = [
                     ProviderModelWire(
@@ -2239,6 +2250,7 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                         model=m.get("model", ""),
                         display_name=m.get("display_name", ""),
                         context_window=m.get("context_window", 0),
+                        connection_id=m.get("connection_id", ""),
                     )
                     for m in raw_pm
                 ]
@@ -2251,6 +2263,7 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                         family=f.get("family", ""),
                         resolved=f.get("resolved", ""),
                         resolved_from=f.get("resolved_from", ""),
+                        connection_id=f.get("connection_id", ""),
                     )
                     for f in raw_pf
                 ]

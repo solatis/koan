@@ -1446,3 +1446,37 @@ class TestProviderModelsListedFold:
         ]}))
         assert len(r.settings.provider_families) == 1
         assert r.settings.provider_families[0].family == "gpt-4o"
+
+    def test_provider_models_listed_connection_id_round_trips(self):
+        """connection_id on models and families dicts survives the fold round-trip.
+
+        Verifies the D4 wire-shape change: both ProviderModelWire and
+        ProviderFamilyWire carry connectionId so the frontend can join per-connection
+        without collision between same-type connections.
+        """
+        p = Projection()
+        models = [
+            {
+                "provider": "openai",
+                "model": "gpt-4o",
+                "display_name": "GPT-4o",
+                "context_window": 128000,
+                "connection_id": "openai-work",
+            },
+        ]
+        families = [
+            {
+                "provider": "openai",
+                "family": "gpt-4o",
+                "resolved": "gpt-4o-2024-11-20",
+                "resolved_from": "",
+                "connection_id": "openai-work",
+            },
+        ]
+        r = fold(p, _e("provider_models_listed", {"models": models, "families": families}))
+
+        assert len(r.settings.provider_models) == 1
+        assert r.settings.provider_models[0].connection_id == "openai-work"
+
+        assert len(r.settings.provider_families) == 1
+        assert r.settings.provider_families[0].connection_id == "openai-work"

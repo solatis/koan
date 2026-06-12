@@ -287,10 +287,13 @@ def build_provider_models_listed(models: list[dict], families: list[dict]) -> di
 
     Args:
         models: flat cross-provider list of {provider, model, display_name,
-                context_window} dicts (snake_case; consumed by the fold).
+                context_window, connection_id} dicts (snake_case; consumed by
+                the fold).  connection_id scopes each model to its originating
+                connection so same-type connections keep independent lists.
                 Replace-all semantics: each event replaces the entire overlay.
-        families: flat list of {provider, family, resolved, resolved_from} dicts
-                  representing the newest-in-family pins per provider.
+        families: flat list of {provider, family, resolved, resolved_from,
+                  connection_id} dicts representing the newest-in-family pins
+                  per connection.  connection_id mirrors the models keying.
                   Replace-all semantics (same as models).
     """
     return {"models": models, "families": families}
