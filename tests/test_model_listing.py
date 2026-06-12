@@ -1,6 +1,6 @@
 # Unit tests for koan/agents/model_listing.py.
 #
-# Testing philosophy (per project lesson): pure helper functions (_is_chat_openai_id,
+# Testing philosophy (per project lesson): pure helper functions (_is_chat_model_id,
 # payload parsing) are tested directly with sample data -- the legitimate unit target.
 # Network-touching helpers are tested with real LM Studio when it is running locally
 # and with a lightweight stub for the ModelListingError / unsupported-provider paths.
@@ -8,112 +8,156 @@
 
 from __future__ import annotations
 
+import types
+
 import pytest
 
 
-# -- _is_chat_openai_id -------------------------------------------------------
+# -- _is_chat_model_id -------------------------------------------------------
 
 
-def test_is_chat_openai_id_accepts_gpt():
-    """gpt-4 / gpt-3.5 class ids are chat models."""
-    from koan.agents.model_listing import _is_chat_openai_id
-    assert _is_chat_openai_id("gpt-4")
-    assert _is_chat_openai_id("gpt-4o")
-    assert _is_chat_openai_id("gpt-3.5-turbo")
-    assert _is_chat_openai_id("o1-mini")
+def test_is_chat_model_id_accepts_gpt():
+    """gpt-4 / gpt-3.5 class ids and slash-prefixed vlm ids are chat models."""
+    from koan.agents.model_listing import _is_chat_model_id
+    assert _is_chat_model_id("gpt-4")
+    assert _is_chat_model_id("gpt-4o")
+    assert _is_chat_model_id("gpt-3.5-turbo")
+    assert _is_chat_model_id("o1-mini")
+    assert _is_chat_model_id("qwen/qwen3.6-35b-a3b")
+    assert _is_chat_model_id("qwen/qwen3.6-27b")
 
 
-def test_is_chat_openai_id_rejects_non_chat():
+def test_is_chat_model_id_rejects_non_chat():
     """Known non-chat families are filtered out."""
-    from koan.agents.model_listing import _is_chat_openai_id
-    assert not _is_chat_openai_id("text-embedding-ada-002")
-    assert not _is_chat_openai_id("whisper-1")
-    assert not _is_chat_openai_id("tts-1")
-    assert not _is_chat_openai_id("dall-e-3")
-    assert not _is_chat_openai_id("omni-moderation-latest")
-    assert not _is_chat_openai_id("gpt-4o-realtime-preview")
-    assert not _is_chat_openai_id("gpt-4o-audio-preview")
-    assert not _is_chat_openai_id("gpt-4o-transcribe")
+    from koan.agents.model_listing import _is_chat_model_id
+    assert not _is_chat_model_id("text-embedding-ada-002")
+    assert not _is_chat_model_id("text-embedding-nomic-embed-text-v1.5")
+    assert not _is_chat_model_id("whisper-1")
+    assert not _is_chat_model_id("tts-1")
+    assert not _is_chat_model_id("dall-e-3")
+    assert not _is_chat_model_id("omni-moderation-latest")
+    assert not _is_chat_model_id("gpt-4o-realtime-preview")
+    assert not _is_chat_model_id("gpt-4o-audio-preview")
+    assert not _is_chat_model_id("gpt-4o-transcribe")
 
 
-# -- _list_lmstudio_models (unit: payload parsing) ----------------------------
+# -- _list_openai_compatible_models (unit: filter + provider label) -----------
 
 
 @pytest.mark.asyncio
-async def test_list_lmstudio_models_filters_to_llm_type(monkeypatch):
-    """_list_lmstudio_models keeps only entries with type=='llm' and reads context length.
+async def test_list_openai_compatible_models_filters_and_labels(monkeypatch):
+    """_list_openai_compatible_models keeps chat ids, excludes embeddings, stamps provider.
 
-    Uses monkeypatched httpx so no real server is required for this unit test.
+    Uses the three live LM Studio model ids to confirm vlm-style chat ids pass
+    and the text-embedding-* id is excluded. Monkeypatches openai.AsyncOpenAI so
+    no real server is required. Asserts context_window is 0 (hard cutover from
+    the removed LMSTUDIO_DEFAULT_CONTEXT_WINDOW constant).
     """
-    import httpx
-    from koan.agents.model_listing import _list_lmstudio_models
-
-    payload = [
-        {"id": "llama-3.2-3b", "type": "llm", "max_context_length": 131072},
-        {"id": "nomic-embed-text", "type": "embeddings", "max_context_length": 2048},
-        {"id": "qwen3-embedding", "type": "embeddings", "max_context_length": 8192},
-        {"id": "gemma-3b", "type": "llm", "max_context_length": 8192},
+    live_ids = [
+        "qwen/qwen3.6-35b-a3b",
+        "qwen/qwen3.6-27b",
+        "text-embedding-nomic-embed-text-v1.5",
     ]
 
-    class _FakeResponse:
-        def raise_for_status(self):
-            pass
+    class _FakeModelList:
+        data = [types.SimpleNamespace(id=mid) for mid in live_ids]
 
-        def json(self):
-            return payload
+    class _FakeModels:
+        async def list(self):
+            return _FakeModelList()
 
     class _FakeClient:
-        async def __aenter__(self):
-            return self
+        def __init__(self, **kwargs):
+            self.models = _FakeModels()
 
-        async def __aexit__(self, *a):
-            pass
+    import openai
+    monkeypatch.setattr(openai, "AsyncOpenAI", _FakeClient)
 
-        async def get(self, url):
-            return _FakeResponse()
+    from koan.agents.model_listing import _list_openai_compatible_models
 
-    monkeypatch.setattr("httpx.AsyncClient", lambda: _FakeClient())
+    result = await _list_openai_compatible_models(
+        "lmstudio", "lm-studio", "http://localhost:1234/v1", 5.0
+    )
 
-    models = await _list_lmstudio_models("http://localhost:1234/v1", timeout=5.0)
-    assert len(models) == 2
-    ids = {m.model for m in models}
-    assert "llama-3.2-3b" in ids
-    assert "gemma-3b" in ids
-    assert "nomic-embed-text" not in ids
-    # context_window is read from max_context_length
-    llama = next(m for m in models if m.model == "llama-3.2-3b")
-    assert llama.context_window == 131072
+    assert len(result) == 2
+    returned_ids = {m.model for m in result}
+    assert "qwen/qwen3.6-35b-a3b" in returned_ids
+    assert "qwen/qwen3.6-27b" in returned_ids
+    assert "text-embedding-nomic-embed-text-v1.5" not in returned_ids
+    assert all(m.provider == "lmstudio" for m in result)
+    # context_window is 0 for all listed models: the /v1/models response carries
+    # no context-length field; window is configured per ConfiguredModel (hard cutover).
+    assert all(m.context_window == 0 for m in result)
 
 
 @pytest.mark.asyncio
-async def test_list_lmstudio_models_strips_v1_suffix(monkeypatch):
-    """_list_lmstudio_models strips trailing /v1 from base_url to get the native endpoint."""
-    from koan.agents.model_listing import _list_lmstudio_models
-    called_urls: list[str] = []
+async def test_list_openai_compatible_models_openai_keeps_zero_context(monkeypatch):
+    """_list_openai_compatible_models stamps context_window=0 for provider='openai'.
 
-    class _FakeResponse:
-        def raise_for_status(self):
-            pass
+    Negative test: the lmstudio-specific context window must not bleed into the
+    shared OpenAI listing path, which has no context-length field in its response.
+    """
+    model_ids = ["gpt-4o", "gpt-4o-mini"]
 
-        def json(self):
-            return []
+    class _FakeModelList:
+        data = [types.SimpleNamespace(id=mid) for mid in model_ids]
+
+    class _FakeModels:
+        async def list(self):
+            return _FakeModelList()
 
     class _FakeClient:
-        async def __aenter__(self):
-            return self
+        def __init__(self, **kwargs):
+            self.models = _FakeModels()
 
-        async def __aexit__(self, *a):
-            pass
+    import openai
+    monkeypatch.setattr(openai, "AsyncOpenAI", _FakeClient)
 
-        async def get(self, url):
-            called_urls.append(url)
-            return _FakeResponse()
+    from koan.agents.model_listing import _list_openai_compatible_models
 
-    monkeypatch.setattr("httpx.AsyncClient", lambda: _FakeClient())
+    result = await _list_openai_compatible_models(
+        "openai", "sk-test", None, 5.0
+    )
 
-    await _list_lmstudio_models("http://localhost:1234/v1", timeout=5.0)
-    assert len(called_urls) == 1
-    assert called_urls[0] == "http://localhost:1234/api/v0/models"
+    assert len(result) == 2
+    assert all(m.context_window == 0 for m in result)
+
+
+@pytest.mark.asyncio
+async def test_list_provider_models_lmstudio_delegates(monkeypatch):
+    """list_provider_models for lmstudio delegates to _list_openai_compatible_models.
+
+    Verifies the placeholder key "lm-studio" and the default base_url fallback
+    are passed correctly when api_key and base_url are both None.
+    """
+    recorded: list[tuple] = []
+
+    async def _fake_list_openai_compatible_models(provider, api_key, base_url, timeout):
+        recorded.append((provider, api_key, base_url, timeout))
+        return []
+
+    import koan.agents.model_listing as ml
+    monkeypatch.setattr(
+        ml,
+        "_list_openai_compatible_models",
+        _fake_list_openai_compatible_models,
+    )
+
+    from koan.agents.model_listing import list_provider_models
+
+    await list_provider_models("lmstudio", api_key=None, base_url=None)
+
+    assert len(recorded) == 1
+    provider, api_key, base_url, _timeout = recorded[0]
+    assert provider == "lmstudio"
+    assert api_key == "lm-studio"
+    assert base_url == "http://localhost:1234/v1"
+
+
+def test_list_lmstudio_models_removed():
+    """_list_lmstudio_models has been deleted (hard cutover to OpenAI-compat path)."""
+    import koan.agents.model_listing as ml
+    assert not hasattr(ml, "_list_lmstudio_models")
 
 
 # -- list_provider_models unsupported provider --------------------------------
@@ -208,7 +252,9 @@ async def test_list_models_for_connection_voyage_raises(monkeypatch):
 async def test_list_lmstudio_models_live():
     """Integration: list models from a real LM Studio at localhost:1234.
 
-    Asserts at least one model is returned and its provider field is 'lmstudio'.
+    Exercises the OpenAI-compat /v1/models path (the native /api/v0/models path
+    has been retired). Asserts at least 2 chat models, provider='lmstudio' on
+    every result, and that no id containing 'embedding' is returned.
     Skip this test when LM Studio is not running by using -m 'not lmstudio_live'.
     """
     from koan.agents.model_listing import list_provider_models, ModelListingError
@@ -223,8 +269,9 @@ async def test_list_lmstudio_models_live():
     except ModelListingError as exc:
         pytest.skip(f"LM Studio not available: {exc}")
 
-    assert len(models) >= 0  # may be 0 if no models loaded
+    assert len(models) >= 2
     for m in models:
         assert m.provider == "lmstudio"
         assert m.model
         assert m.display_name
+        assert "embedding" not in m.model.lower()

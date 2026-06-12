@@ -31,9 +31,10 @@ class ModelListingError(Exception):
     """
 
 
-# Non-chat model families by id substring, used to filter OpenAI's heterogeneous
-# catalog. Checked via substring match so versioned ids (e.g. dall-e-3) are caught.
-_OPENAI_NON_CHAT_SUBSTRINGS = frozenset({
+# Non-chat model families by id substring, used to filter id-only OpenAI-compatible
+# catalogs (openai and lmstudio). Checked via substring match so versioned ids
+# (e.g. dall-e-3) and slash-prefixed ids (e.g. qwen/qwen3.6) are caught correctly.
+_NON_CHAT_ID_SUBSTRINGS = frozenset({
     "embedding",
     "whisper",
     "tts",
@@ -47,28 +48,37 @@ _OPENAI_NON_CHAT_SUBSTRINGS = frozenset({
 })
 
 
-def _is_chat_openai_id(model_id: str) -> bool:
-    """Return True when a model id looks like a chat/completion model.
+def _is_chat_model_id(model_id: str) -> bool:
+    """Return True when an id-only model id looks like a chat/completion model.
 
-    Excludes known non-chat families (embeddings, TTS, DALL-E, moderation, etc.)
-    by substring match. False positives (a future OpenAI model whose id contains
-    'audio' but is a chat model) are acceptable: the list is used for display
-    filtering, not access control.
+    Used by both the openai and lmstudio listing paths (both receive OpenAI-
+    compatible /v1/models responses with no type field). Excludes known non-chat
+    families (embeddings, TTS, DALL-E, moderation, etc.) by id substring match.
+    False positives are acceptable: this filters for display, not access control.
     """
     lower = model_id.lower()
-    return not any(sub in lower for sub in _OPENAI_NON_CHAT_SUBSTRINGS)
+    return not any(sub in lower for sub in _NON_CHAT_ID_SUBSTRINGS)
 
 
-async def _list_openai_models(
+async def _list_openai_compatible_models(
+    provider: str,
     api_key: str,
     base_url: str | None,
     timeout: float,
 ) -> list[ProviderModel]:
-    """Fetch and filter OpenAI (or compatible) chat models.
+    """Fetch and filter chat models from any OpenAI-compatible /v1/models endpoint.
 
-    Constructs AsyncOpenAI with the given credentials, lists all models, and
-    keeps only those whose id passes _is_chat_openai_id. Raises ModelListingError
-    on any network, auth, or unexpected parse failure.
+    Works for OpenAI proper (provider='openai') and LM Studio (provider='lmstudio',
+    base_url='http://localhost:1234/v1'). Stamps the passed provider label onto every
+    returned ProviderModel -- callers must pass the correct label since the overlay
+    and per-connection family derivation in app.py key on it.
+
+    api_key must be a non-empty string; keyless callers (e.g. LM Studio) should pass
+    the placeholder 'lm-studio' rather than an empty string (the OpenAI SDK rejects
+    empty keys). Both providers stamp context_window=0 because the /v1/models response
+    carries no context-length field; the window is configured per ConfiguredModel
+    (hard cutover from the old LMSTUDIO_DEFAULT_CONTEXT_WINDOW constant). Raises
+    ModelListingError on any network, auth, or parse failure.
     """
     try:
         from openai import AsyncOpenAI
@@ -78,15 +88,18 @@ async def _list_openai_models(
         client = AsyncOpenAI(**kwargs)
         async with asyncio.timeout(timeout):
             response = await client.models.list()
+        # Neither OpenAI nor LM Studio returns context-length in /v1/models;
+        # context window is configured per ConfiguredModel, not stamped here.
+        ctx = 0
         return [
             ProviderModel(
-                provider="openai",
+                provider=provider,
                 model=m.id,
                 display_name=m.id,
-                context_window=0,
+                context_window=ctx,
             )
             for m in response.data
-            if _is_chat_openai_id(m.id)
+            if _is_chat_model_id(m.id)
         ]
     except Exception as exc:
         raise ModelListingError(str(exc)) from exc
@@ -156,47 +169,6 @@ async def _list_google_models(
         raise ModelListingError(str(exc)) from exc
 
 
-async def _list_lmstudio_models(
-    base_url: str,
-    timeout: float,
-) -> list[ProviderModel]:
-    """Fetch LM Studio models via the native /api/v0/models endpoint.
-
-    Uses LM Studio's own API (not the OpenAI-compat /v1/models) because it
-    exposes 'type' and 'max_context_length', letting us filter to llm-type
-    models and read context windows accurately. The base_url is expected to be
-    the OpenAI-compat root (e.g. http://localhost:1234/v1); '/v1' is stripped to
-    get the host root for the native endpoint. Raises ModelListingError on failure.
-    """
-    try:
-        import httpx
-        # Strip trailing /v1 suffix to get the host root for the native endpoint.
-        root = base_url.rstrip("/")
-        if root.endswith("/v1"):
-            root = root[:-3]
-        url = f"{root}/api/v0/models"
-        async with asyncio.timeout(timeout):
-            async with httpx.AsyncClient() as http:
-                resp = await http.get(url)
-        resp.raise_for_status()
-        data = resp.json()
-        entries = data if isinstance(data, list) else data.get("data", [])
-        return [
-            ProviderModel(
-                provider="lmstudio",
-                model=entry["id"],
-                display_name=entry["id"],
-                context_window=entry.get("max_context_length", 0) or 0,
-            )
-            for entry in entries
-            if isinstance(entry, dict) and entry.get("type") == "llm"
-        ]
-    except ModelListingError:
-        raise
-    except Exception as exc:
-        raise ModelListingError(str(exc)) from exc
-
-
 async def list_provider_models(
     provider: str,
     *,
@@ -213,13 +185,18 @@ async def list_provider_models(
     to the entire network round-trip; an unreachable provider raises within that
     window rather than blocking indefinitely.
 
+    openai and lmstudio both delegate to _list_openai_compatible_models (the
+    OpenAI-compat /v1/models path). lmstudio uses the "lm-studio" placeholder
+    key and defaults base_url to http://localhost:1234/v1. anthropic and google
+    have their own listing paths.
+
     Listing-capable: lmstudio, openai, anthropic, google.
     Not supported: bedrock (no runtime list API), voyage (embedding-only).
     """
     if provider == "openai":
         if not api_key:
             raise ModelListingError("no api_key provided for openai")
-        return await _list_openai_models(api_key, base_url, timeout)
+        return await _list_openai_compatible_models("openai", api_key, base_url, timeout)
 
     if provider == "anthropic":
         if not api_key:
@@ -232,10 +209,16 @@ async def list_provider_models(
         return await _list_google_models(api_key, timeout)
 
     if provider == "lmstudio":
-        # base_url defaults to the LOCAL_PROVIDERS value when absent; we still
-        # require the caller to resolve it so this function stays stateless.
+        # LM Studio is an OpenAI-compatible local server, so listing now uses
+        # the OpenAI-compat /v1/models path via the shared helper, replacing the
+        # retired native /api/v0/models path. The "lm-studio" placeholder mirrors
+        # adapter._build_explicit_model: LM Studio ignores the key but the OpenAI
+        # SDK requires a non-empty string. Embedding exclusion relies on the
+        # "embedding" id substring (the /v1/models response has no type field).
         effective_url = base_url or "http://localhost:1234/v1"
-        return await _list_lmstudio_models(effective_url, timeout)
+        return await _list_openai_compatible_models(
+            "lmstudio", api_key or "lm-studio", effective_url, timeout
+        )
 
     raise ModelListingError(
         f"provider '{provider}' does not support model listing "
