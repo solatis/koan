@@ -18,8 +18,16 @@ _QUERY_GEN_SYSTEM = (
 
 
 async def generate_queries(directive: str, anchor: str) -> list[str]:
+    """Ask the memory LLM for 1-3 search queries relevant to the directive.
+
+    Output budget is sized for reasoning models: a local reasoning model
+    (e.g. Qwen3) spends output tokens on thinking before emitting query lines,
+    and the old 256-token cap was exhausted mid-reasoning, raising
+    UnexpectedModelBehavior. 2048 gives generous headroom while staying bounded
+    to protect paid providers.
+    """
     prompt = f"Directive: {directive}\n\nContext:\n{anchor}"
-    raw = await llm_generate(prompt, system=_QUERY_GEN_SYSTEM, max_tokens=256)
+    raw = await llm_generate(prompt, system=_QUERY_GEN_SYSTEM, max_tokens=2048)
     lines = [line.strip() for line in raw.splitlines()]
     queries = [q for q in lines if q][:3]
     log.debug("generated %d queries: %s", len(queries), queries)
