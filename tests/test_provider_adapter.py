@@ -195,15 +195,15 @@ def test_build_model_bedrock_no_region_raises():
     assert exc.value.diagnostic.code == "missing_region"
 
 
-def test_build_model_bedrock_keyless_with_region_builds_explicit():
-    """build_model builds a BedrockConverseModel without an api_key when a region is given.
+def test_build_model_bedrock_no_key_raises_missing_credentials():
+    """build_model raises missing_credentials for bedrock when no api_key is supplied.
 
-    The keyless-with-region path lets boto3 resolve AWS credentials via its
-    default chain (profile/SSO/IAM) without requiring a stored bearer token.
+    Bedrock requires an explicit long-lived API key; the AWS credential chain
+    is not used.  A region without a key is not sufficient.
     """
-    from pydantic_ai.models.bedrock import BedrockConverseModel
-    model = adapter.build_model(_spec("bedrock", model="us.amazon.nova-pro-v1:0"), region="us-east-1")
-    assert isinstance(model, BedrockConverseModel)
+    with pytest.raises(AgentError) as exc:
+        adapter.build_model(_spec("bedrock", model="us.amazon.nova-pro-v1:0"), region="us-east-1")
+    assert exc.value.diagnostic.code == "missing_credentials"
 
 
 @pytest.mark.parametrize(

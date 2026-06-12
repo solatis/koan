@@ -126,11 +126,11 @@ export function ConnectionForm({
       case 'bedrock':
         return (
           <>
+            {apiKeyRow('bedrock api key')}
             {regionRow()}
             {endpointRow('base URL override')}
             <HelperLine>
-              No API key field — Bedrock uses your AWS credential chain (env vars,
-              shared profile, or IAM role).
+              Bedrock long-lived API key (required). Region is also required.
             </HelperLine>
           </>
         )

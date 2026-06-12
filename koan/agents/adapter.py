@@ -250,8 +250,8 @@ def build_model(
     passed explicitly (typically from resolve_provider_auth).
 
     - bedrock: region is REQUIRED; raises AgentError(code='missing_region') when
-      absent. api_key is optional -- when absent, boto3 resolves AWS credentials
-      via its default chain (keyless-with-region path). base_url optionally
+      absent. api_key is REQUIRED; raises AgentError(code='missing_credentials')
+      when absent -- the AWS credential chain is not used. base_url optionally
       overrides the endpoint.
     - google/anthropic/openai: api_key is required; raises
       AgentError(code='missing_credentials') when absent. base_url optionally
@@ -305,6 +305,20 @@ def build_model(
                     "Set a region (e.g. 'us-east-1') in provider settings."
                 ),
             ))
+        # Bedrock requires an explicit long-lived API key stored in the
+        # credential store.  The AWS credential chain is not used: it is
+        # unreliable in deployed environments and was rejected by the user.
+        if api_key is None:
+            raise AgentError(AgentDiagnostic(
+                code="missing_credentials",
+                agent=spec.provider,
+                stage="build_model",
+                message=(
+                    "No stored API key for provider 'bedrock'. "
+                    "Bedrock requires a long-lived API key; "
+                    "the AWS credential chain is not used."
+                ),
+            ))
         return _build_explicit_model(spec, api_key, region=region, base_url=base_url)
 
     # Key-requiring providers: google, anthropic, openai.
@@ -331,9 +345,9 @@ def _build_explicit_model(
 ):
     """Build a provider-typed model, threading region and base_url into constructors.
 
-    api_key may be None for bedrock (boto3 resolves AWS credentials via its
-    default chain when a region is supplied). region and base_url are optional
-    for non-bedrock providers; base_url is not threaded for google (brief scope).
+    api_key is required for bedrock (enforced by build_model's missing_credentials
+    gate before this is called).  region and base_url are optional for non-bedrock
+    providers; base_url is not threaded for google (brief scope).
     For lmstudio, api_key falls back to the placeholder 'lm-studio' -- the OpenAI
     SDK requires a non-empty string even though LM Studio ignores it.
     Explicit construction avoids any implicit os.environ reads.
@@ -384,14 +398,13 @@ def _build_explicit_model(
     if spec.provider == "bedrock":
         from pydantic_ai.models.bedrock import BedrockConverseModel
         from pydantic_ai.providers.bedrock import BedrockProvider
-        # region is guaranteed non-None by build_model's missing_region gate.
-        # api_key is optional: omit rather than pass None so boto3 resolves
-        # credentials via its default chain when no bearer token is stored.
+        # region and api_key are both guaranteed non-None by build_model's
+        # missing_region and missing_credentials gates before this point.
         return BedrockConverseModel(
             spec.model,
             provider=BedrockProvider(
                 region_name=region,
-                **({"api_key": api_key} if api_key else {}),
+                api_key=api_key,
                 **({"base_url": base_url} if base_url else {}),
             ),
         )
