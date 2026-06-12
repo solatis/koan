@@ -49,6 +49,87 @@ def _active_config() -> "KoanConfig":
     return _ACTIVE_CONFIG
 
 
+# ---------------------------------------------------------------------------
+# Static Voyage embedding model catalog
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class VoyageEmbeddingModel:
+    """One entry in the koan-owned static Voyage embedding model catalog.
+
+    Carries the fixed context window and the set of selectable output
+    dimensions for each recognized Voyage embedding model.  All three
+    current models share the same dimension options and default.
+    """
+
+    model_id: str
+    context_window: int
+    # Selectable output dimensions (ascending order).
+    dimensions: tuple[int, ...]
+    default_dimension: int
+
+
+# Three recognized Voyage embedding models; dimensions ascending, default 1024.
+# Context window is 32,000 tokens for all three (display/metadata only;
+# Voyage truncates server-side via embed(truncation=True)).
+VOYAGE_EMBEDDING_MODELS: dict[str, VoyageEmbeddingModel] = {
+    "voyage-4-large": VoyageEmbeddingModel("voyage-4-large", 32_000, (256, 512, 1024, 2048), 1024),
+    "voyage-4":       VoyageEmbeddingModel("voyage-4",       32_000, (256, 512, 1024, 2048), 1024),
+    "voyage-4-lite":  VoyageEmbeddingModel("voyage-4-lite",  32_000, (256, 512, 1024, 2048), 1024),
+}
+
+
+def voyage_embedding_models() -> list[VoyageEmbeddingModel]:
+    """Return the catalog values; used by the projection surface and the whitelist."""
+    return list(VOYAGE_EMBEDDING_MODELS.values())
+
+
+def is_recognized_voyage_model(model_id: str) -> bool:
+    """Return True when model_id is in the recognized Voyage embedding catalog."""
+    return model_id in VOYAGE_EMBEDDING_MODELS
+
+
+def voyage_dimension_options(model_id: str) -> tuple[int, ...]:
+    """Return the selectable output dimensions for a recognized Voyage embedding model.
+
+    Raises ValueError for an unrecognized model_id.
+    """
+    entry = VOYAGE_EMBEDDING_MODELS.get(model_id)
+    if entry is None:
+        raise ValueError(
+            f"Unrecognized Voyage embedding model: {model_id!r}. "
+            f"Known models: {sorted(VOYAGE_EMBEDDING_MODELS)}."
+        )
+    return entry.dimensions
+
+
+def resolve_voyage_embedding_dim(model_id: str, selected: int | None) -> int:
+    """Resolve the effective output dimension for a Voyage embedding model.
+
+    If selected is None, returns the model's default_dimension.
+    If selected is in the model's dimensions tuple, returns it.
+    Raises ValueError when model_id is unrecognized or selected is not a valid option.
+    """
+    entry = VOYAGE_EMBEDDING_MODELS.get(model_id)
+    if entry is None:
+        raise ValueError(
+            f"Unrecognized Voyage embedding model: {model_id!r}. "
+            f"Known models: {sorted(VOYAGE_EMBEDDING_MODELS)}."
+        )
+    if selected is None:
+        return entry.default_dimension
+    if selected not in entry.dimensions:
+        raise ValueError(
+            f"Invalid embedding dimension {selected} for model {model_id!r}. "
+            f"Valid options: {entry.dimensions}."
+        )
+    return selected
+
+
+# ---------------------------------------------------------------------------
+# Resolved memory model
+# ---------------------------------------------------------------------------
+
 @dataclass(frozen=True)
 class ResolvedMemoryModel:
     """Resolved provider + model + credential for one memory binding.
@@ -59,6 +140,10 @@ class ResolvedMemoryModel:
 
     api_key may be None for keyless providers (lmstudio) or when no
     credential is stored for the connection.
+
+    embedding_dim is set for voyage embedding bindings (the resolved output
+    dimension, accounting for the user-selected override and the model
+    default).  None for all non-embedding or non-voyage bindings.
     """
 
     provider_type: str
@@ -66,35 +151,8 @@ class ResolvedMemoryModel:
     api_key: str | None
     base_url: str | None
     region: str | None
-
-
-# Known embedding model dimensions: (provider_type, model_id) -> dim.
-# Changing the embedding model requires a manual vector-store rebuild
-# (the dimension is baked into the LanceDB schema; no auto re-index, brief D10).
-# Seed: voyage-4-large is the default embedding model (1024 dimensions).
-EMBEDDING_DIMS: dict[tuple[str, str], int] = {
-    ("voyage", "voyage-4-large"): 1024,
-}
-
-
-def embedding_dim_for(provider_type: str, model_id: str) -> int:
-    """Return the embedding dimension for a known (provider_type, model_id) pair.
-
-    Raises ValueError for an unknown pair.  Changing the embedding model
-    requires a manual vector-store rebuild since the dimension is baked into
-    the LanceDB schema; do NOT build re-index machinery (brief D10).
-    To add a new model, extend EMBEDDING_DIMS.
-    """
-    dim = EMBEDDING_DIMS.get((provider_type, model_id))
-    if dim is None:
-        raise ValueError(
-            f"Unknown embedding dimension for provider={provider_type!r} "
-            f"model={model_id!r}. "
-            f"Known pairs: {sorted(EMBEDDING_DIMS)}. "
-            "Add the (provider_type, model_id) -> dim entry to EMBEDDING_DIMS "
-            "and rebuild the vector store manually."
-        )
-    return dim
+    # Resolved embedding output dimension; None for non-voyage or non-embedding.
+    embedding_dim: int | None = None
 
 
 def resolve_memory_binding(
@@ -109,6 +167,9 @@ def resolve_memory_binding(
           -> config.configured_models (by id) -> connection_id
           -> config.connections (by id)
           -> active_credential_store().resolve(connection.id) -> api_key
+
+    For voyage embedding bindings, also resolves embedding_dim from the
+    model's optional embedding_dim override and the catalog default.
 
     Raises RuntimeError with a clear message when:
       - The active config is not set
@@ -156,6 +217,14 @@ def resolve_memory_binding(
             f"references connection_id={conn_id!r} which is not in config.connections."
         )
 
+    # Resolve the embedding dimension for voyage embedding bindings.
+    # Non-voyage and non-embedding bindings carry embedding_dim=None.
+    embedding_dim: int | None = None
+    if kind == "embedding" and connection.type == "voyage":
+        selected = getattr(cm, "embedding_dim", None)
+        if is_recognized_voyage_model(cm.model_id):
+            embedding_dim = resolve_voyage_embedding_dim(cm.model_id, selected)
+
     api_key = active_credential_store().resolve(connection.id)
     return ResolvedMemoryModel(
         provider_type=connection.type,
@@ -163,4 +232,5 @@ def resolve_memory_binding(
         api_key=api_key,
         base_url=connection.base_url,
         region=connection.region,
+        embedding_dim=embedding_dim,
     )

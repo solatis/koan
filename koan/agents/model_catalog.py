@@ -153,8 +153,10 @@ def context_window_for(provider: str, model: str) -> int:
 
     Resolution order: (1) MODEL_CAPABILITIES koan fallback, (2) bundled
     genai-prices snapshot.  Returns 0 when the model is not found in either
-    source so callers can substitute a safe default.  Never triggers network
-    access (fold determinism -- bundled snapshot only).
+    source.  LM Studio is absent from both sources and therefore resolves to 0;
+    an explicit ConfiguredModel.context_window must be supplied by the caller
+    for a non-zero window on lmstudio models (hard cutover -- no shim).
+    Never triggers network access (fold determinism -- bundled snapshot only).
     """
     # Check koan's capability table first (has authoritative fallbacks for
     # models whose genai-prices snapshot entry has a null context_window).

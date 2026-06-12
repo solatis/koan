@@ -57,6 +57,7 @@ from ..events import (
     build_reflect_done,
     build_reflect_cancelled,
     build_reflect_failed,
+    build_embedding_models_listed,
 )
 from ..memory.timestamps import iso_to_ms as _iso_to_ms
 from ..memory import MEMORY_TYPES
@@ -1281,12 +1282,18 @@ def _serialize_connection(conn) -> dict:
 
 
 def _serialize_configured_model(cm) -> dict:
-    """Serialize a ConfiguredModel to a wire dict for configured_models_listed."""
+    """Serialize a ConfiguredModel to a wire dict for configured_models_listed.
+
+    Carries context_window and embedding_dim (both optional) so the Settings
+    form can pre-fill them and distinguish set vs unset without an extra GET.
+    """
     return {
         "id": cm.id,
         "connection_id": cm.connection_id,
         "model_id": cm.model_id,
         "resolved_from": getattr(cm, "resolved_from", None),
+        "context_window": getattr(cm, "context_window", None),
+        "embedding_dim": getattr(cm, "embedding_dim", None),
     }
 
 
@@ -1324,6 +1331,10 @@ def _serialize_model_capabilities(st: "AppState") -> list[dict]:
     warning and skips the entry rather than crashing -- callers must tolerate
     partial results.  Secrets are never read here; only the connection type is
     needed for capability resolution.
+
+    context_window in the emitted dict uses cm.context_window (explicit
+    override) when set, falling back to the capability-resolved value.
+    This ensures the gauge and capability display reflect the configured window.
     """
     from ..agents.capability_resolver import resolve_capabilities
 
@@ -1350,7 +1361,7 @@ def _serialize_model_capabilities(st: "AppState") -> list[dict]:
             "thinking_shape": caps.thinking_shape,
             "supports_web_search": caps.supports_web_search,
             "supports_tools": caps.supports_tools,
-            "context_window": caps.context_window,
+            "context_window": cm.context_window or caps.context_window,
             "context_window_variants": list(caps.context_window_variants),
             "supports_prompt_caching": caps.supports_prompt_caching,
             "tier_hint": caps.tier_hint,
@@ -1371,6 +1382,74 @@ def _push_model_capabilities(st: "AppState") -> None:
         "model_capabilities_listed",
         build_model_capabilities_listed(caps),
     )
+
+
+def _serialize_embedding_models() -> list[dict]:
+    """Build the embedding_models_listed payload from the static Voyage catalog.
+
+    Returns one dict per recognized Voyage embedding model, shaped as the
+    EmbeddingModelWire wire type.  The list is static for the process lifetime
+    and is pushed once at startup.
+    """
+    from ..memory.bindings import voyage_embedding_models
+    return [
+        {
+            "model_id": m.model_id,
+            "context_window": m.context_window,
+            "dimensions": list(m.dimensions),
+            "default_dimension": m.default_dimension,
+        }
+        for m in voyage_embedding_models()
+    ]
+
+
+def _effective_embedding_identity(cfg) -> "tuple[str, int] | None":
+    """Return (model_id, resolved_dim) for the active embedding binding, or None.
+
+    Pure, non-raising: returns None when no embedding binding is configured,
+    when the bound configured model or its connection is missing, when the
+    connection type is not voyage, or when the model is not in the recognized
+    catalog.  Guards with is_recognized_voyage_model before calling
+    resolve_voyage_embedding_dim so a stale or hand-edited model id cannot
+    500 an unrelated config save.
+    """
+    from ..memory.bindings import is_recognized_voyage_model, resolve_voyage_embedding_dim
+
+    if cfg.memory is None or cfg.memory.embedding is None:
+        return None
+    cm_id = cfg.memory.embedding.configured_model_id
+    cm = next((m for m in cfg.configured_models if m.id == cm_id), None)
+    if cm is None:
+        return None
+    conn = next((c for c in cfg.connections if c.id == cm.connection_id), None)
+    if conn is None or conn.type != "voyage":
+        return None
+    if not is_recognized_voyage_model(cm.model_id):
+        return None
+    try:
+        dim = resolve_voyage_embedding_dim(cm.model_id, cm.embedding_dim)
+    except Exception:
+        return None
+    return (cm.model_id, dim)
+
+
+async def _rebuild_embedding_index(st: "AppState") -> dict:
+    """Trigger a force rebuild of the LanceDB vector index.
+
+    Fully defensive: never raises into the caller.  Returns {"ok": True} on
+    success or {"ok": False, "message": ...} when the rebuild fails.  A failed
+    rebuild leaves an empty table that the next ensure_synced() re-embeds,
+    self-healing.  Returns {"ok": True} immediately when no retrieval_index
+    is configured (memory subsystem not initialized for this process).
+    """
+    if st.memory.retrieval_index is None:
+        return {"ok": True}
+    try:
+        await st.memory.retrieval_index.rebuild()
+        return {"ok": True}
+    except Exception as exc:
+        log.error("_rebuild_embedding_index: rebuild failed: %s", exc)
+        return {"ok": False, "message": str(exc)}
 
 
 def _push_initial_config_events(st: AppState) -> None:
@@ -1442,6 +1521,12 @@ def _push_initial_config_events(st: AppState) -> None:
 
     # M6: per-configured-model read-only capabilities snapshot.
     _push_model_capabilities(st)
+
+    # Static Voyage embedding model catalog (pushed once; static for the lifetime).
+    store.push_event(
+        "embedding_models_listed",
+        build_embedding_models_listed(_serialize_embedding_models()),
+    )
 
 
 async def api_eval_harvest(r: Request) -> Response:
@@ -1825,14 +1910,31 @@ async def api_config_connection_delete(r: Request) -> Response:
 async def api_config_model_set(r: Request) -> Response:
     """Upsert a configured model (POST/PUT /api/config/models[/{id}]).
 
-    Body: {id, connection_id, model_id, resolved_from?}.  id may be in the path
-    (PUT) or the body (POST).  Pushes configured_models_listed +
-    model_capabilities_listed after saving.
+    Body: {id, connection_id, model_id, resolved_from?, context_window?, embedding_dim?}.
+    id may be in the path (PUT) or the body (POST).  Pushes
+    configured_models_listed + model_capabilities_listed after saving.
+
+    context_window: positive integer token count or absent/null/non-positive,
+    treated as unset (None -- derive from capabilities at runtime).
+
+    embedding_dim: integer from the model's recognized dimension options, or
+    absent/null to use the catalog default.  For voyage connections only; 422
+    when the model_id is not in the recognized catalog or the dimension is not
+    in the model's option set.
+
+    When the embedding binding's effective identity (model_id, resolved_dim)
+    changes after saving, the LanceDB vector index is rebuilt automatically.
+    A rebuild failure does not roll back the save; the response carries a
+    "rebuild_error" field and HTTP stays 200.
 
     Returns 422 on validation error.
     """
     from ..config import save_koan_config
     from ..types import ConfiguredModel
+    from ..memory.bindings import (
+        is_recognized_voyage_model,
+        voyage_dimension_options,
+    )
 
     body = await r.json()
     cm_id = r.path_params.get("id") or body.get("id", "")
@@ -1850,17 +1952,58 @@ async def api_config_model_set(r: Request) -> Response:
     cfg = st.provider_config.config
 
     # Validate that the referenced connection exists.
-    if not any(c.id == connection_id for c in cfg.connections):
+    conn = next((c for c in cfg.connections if c.id == connection_id), None)
+    if conn is None:
         return JSONResponse(
             {"error": "validation_error", "message": f"connection '{connection_id}' not found"},
             status_code=422,
         )
+
+    # Voyage-specific validation: whitelist model_id and embedding_dim.
+    embedding_dim: int | None = None
+    if conn.type == "voyage":
+        if not is_recognized_voyage_model(model_id):
+            from ..memory.bindings import VOYAGE_EMBEDDING_MODELS
+            return JSONResponse(
+                {
+                    "error": "validation_error",
+                    "message": (
+                        f"model '{model_id}' is not a recognized Voyage embedding model; "
+                        f"recognized: {sorted(VOYAGE_EMBEDDING_MODELS)}"
+                    ),
+                },
+                status_code=422,
+            )
+        raw_dim = body.get("embedding_dim")
+        if raw_dim is not None:
+            parsed_dim = int(raw_dim) if isinstance(raw_dim, (int, float)) else None
+            if parsed_dim is None or parsed_dim not in voyage_dimension_options(model_id):
+                return JSONResponse(
+                    {
+                        "error": "validation_error",
+                        "message": (
+                            f"embedding_dim {raw_dim!r} is not valid for model '{model_id}'; "
+                            f"valid options: {list(voyage_dimension_options(model_id))}"
+                        ),
+                    },
+                    status_code=422,
+                )
+            embedding_dim = parsed_dim
+
+    # Coerce context_window: accept a positive integer, treat missing/null/0 as unset.
+    raw_cw = body.get("context_window")
+    context_window: int | None = int(raw_cw) if isinstance(raw_cw, (int, float)) and int(raw_cw) > 0 else None
+
+    # Capture the embedding identity before mutation for the rebuild trigger.
+    old_identity = _effective_embedding_identity(cfg)
 
     cm = ConfiguredModel(
         id=cm_id,
         connection_id=connection_id,
         model_id=model_id,
         resolved_from=body.get("resolved_from") or None,
+        context_window=context_window,
+        embedding_dim=embedding_dim,
     )
 
     existing_idx = next((i for i, m in enumerate(cfg.configured_models) if m.id == cm_id), None)
@@ -1875,7 +2018,16 @@ async def api_config_model_set(r: Request) -> Response:
         build_configured_models_listed([_serialize_configured_model(m) for m in cfg.configured_models]),
     )
     _push_model_capabilities(st)
-    return JSONResponse({"ok": True})
+
+    # Rebuild the vector index when the embedding identity changed.
+    response_body: dict = {"ok": True}
+    new_identity = _effective_embedding_identity(cfg)
+    if new_identity is not None and new_identity != old_identity:
+        result = await _rebuild_embedding_index(st)
+        if not result.get("ok"):
+            response_body["rebuild_error"] = result.get("message", "rebuild failed")
+
+    return JSONResponse(response_body)
 
 
 async def api_config_model_delete(r: Request) -> Response:
@@ -1993,10 +2145,20 @@ async def api_config_memory_set(r: Request) -> Response:
     Body: {configured_model_id, thinking?}.  Validates that configured_model_id
     exists.  Pushes memory_bindings_listed after saving.
 
+    For kind == 'embedding': validates that the referenced configured model's
+    connection is of type 'voyage' and that its model_id is in the recognized
+    Voyage embedding model catalog.  Returns 422 otherwise.
+
+    When the embedding binding's effective identity (model_id, resolved_dim)
+    changes after saving, the LanceDB vector index is rebuilt automatically.
+    A rebuild failure does not roll back the save; the response carries a
+    "rebuild_error" field and HTTP stays 200.
+
     Returns 422 on validation error.
     """
     from ..config import save_koan_config
     from ..types import MemoryBinding, MemoryBindings
+    from ..memory.bindings import is_recognized_voyage_model
 
     kind = r.path_params.get("kind", "")
     if kind not in _VALID_MEMORY_KINDS:
@@ -2015,14 +2177,44 @@ async def api_config_memory_set(r: Request) -> Response:
     st = _app_state(r)
     cfg = st.provider_config.config
 
-    if not any(m.id == cm_id for m in cfg.configured_models):
+    cm = next((m for m in cfg.configured_models if m.id == cm_id), None)
+    if cm is None:
         return JSONResponse(
             {"error": "validation_error", "message": f"configured_model '{cm_id}' not found"},
             status_code=422,
         )
 
+    # Voyage whitelist: the embedding binding must point at a recognized Voyage model.
+    if kind == "embedding":
+        conn = next((c for c in cfg.connections if c.id == cm.connection_id), None)
+        if conn is None or conn.type != "voyage":
+            return JSONResponse(
+                {
+                    "error": "validation_error",
+                    "message": (
+                        f"configured_model '{cm_id}' must use a voyage connection for the embedding role"
+                    ),
+                },
+                status_code=422,
+            )
+        if not is_recognized_voyage_model(cm.model_id):
+            from ..memory.bindings import VOYAGE_EMBEDDING_MODELS
+            return JSONResponse(
+                {
+                    "error": "validation_error",
+                    "message": (
+                        f"model '{cm.model_id}' is not a recognized Voyage embedding model; "
+                        f"recognized: {sorted(VOYAGE_EMBEDDING_MODELS)}"
+                    ),
+                },
+                status_code=422,
+            )
+
     if cfg.memory is None:
         cfg.memory = MemoryBindings()
+
+    # Capture the embedding identity before mutation for the rebuild trigger.
+    old_identity = _effective_embedding_identity(cfg)
 
     setattr(cfg.memory, kind, MemoryBinding(configured_model_id=cm_id, thinking=thinking))
 
@@ -2031,7 +2223,17 @@ async def api_config_memory_set(r: Request) -> Response:
         "memory_bindings_listed",
         build_memory_bindings_listed(_serialize_memory_bindings(cfg.memory)),
     )
-    return JSONResponse({"ok": True})
+
+    # Rebuild the vector index when the embedding identity changed.
+    response_body: dict = {"ok": True}
+    if kind == "embedding":
+        new_identity = _effective_embedding_identity(cfg)
+        if new_identity is not None and new_identity != old_identity:
+            result = await _rebuild_embedding_index(st)
+            if not result.get("ok"):
+                response_body["rebuild_error"] = result.get("message", "rebuild failed")
+
+    return JSONResponse(response_body)
 
 
 async def api_config_connection_list_models(r: Request) -> Response:

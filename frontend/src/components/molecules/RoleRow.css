@@ -128,3 +128,42 @@
 .mol-role-row--compact + .mol-role-row__broken-help {
   margin-left: 130px;
 }
+
+/* ===== Context-window secondary row (default variant only) =====
+   Sits below the main row; shows a label + small mono input for the
+   optional explicit token-count override on the ConfiguredModel.
+   Hidden in compact variant via the tsx conditional. */
+.mol-role-row__ctx-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 0 198px; /* indented past marker + meta + connection col */
+}
+
+.mol-role-row__ctx-label {
+  font-size: var(--type-label);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.mol-role-row__ctx-input {
+  width: 90px;
+  font-family: var(--font-mono);
+  font-size: var(--type-breadcrumb);
+  padding: 3px 6px;
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.mol-role-row__ctx-input:focus {
+  border-color: var(--color-orange);
+}
+
+.mol-role-row__ctx-input:disabled {
+  background: var(--bg-surface);
+  color: var(--text-hint);
+  cursor: not-allowed;
+}

@@ -95,7 +95,7 @@ export interface NewRunFormProps {
   overrides: Record<WorkflowRole, OverrideAssignment>
   connections: ConnectionSummary[]
   modelsByConnection: Record<string, ModelsForConnection>
-  onOverrideChange: (role: WorkflowRole, field: 'connection' | 'model' | 'thinking', value: string) => void
+  onOverrideChange: (role: WorkflowRole, field: 'connection' | 'model' | 'thinking' | 'context_window', value: string) => void
   onStartRun: () => void
   onOpenSettings: () => void
   /** Parent may disable for other reasons (e.g. empty description); OR'd with readiness gating. */

@@ -18,7 +18,7 @@ def memory_config(tmp_path, monkeypatch):
     Creates a KoanConfig with voyage-1 and google-1 connections, matching
     configured_models, and full MemoryBindings.  No real credentials are
     stored; api_key is None on all resolved bindings.  Sufficient for:
-      - Schema dimension resolution (embedding_dim_for)
+      - Schema dimension resolution (VOYAGE_EMBEDDING_MODELS catalog)
       - provider_type checks in _embed_texts and _voyage_rerank
       - model_id lookups in resolve_memory_binding
     """

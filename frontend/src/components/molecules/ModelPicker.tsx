@@ -20,6 +20,10 @@ export interface ModelPickerProps {
   loading?: boolean
   listingCapable: boolean
   catalogSuggestions?: string[] // non-listing only
+  /** When false, the free-text input is suppressed in all branches (listing, loading,
+   *  non-listing).  Used for voyage embedding models where the model set is a fixed
+   *  whitelist; free-text entry would produce a backend 422. Default: true. */
+  allowFreeText?: boolean
   disabled?: boolean
 }
 
@@ -42,6 +46,7 @@ export function ModelPicker({
   loading = false,
   listingCapable,
   catalogSuggestions,
+  allowFreeText = true,
   disabled = false,
 }: ModelPickerProps) {
   const [open, setOpen] = useState(false)
@@ -141,7 +146,7 @@ export function ModelPicker({
         if (highlight >= 0 && highlight < navCommits.length) {
           e.preventDefault()
           commit(navCommits[highlight])
-        } else if (e.target === freeTextRef.current && freeText.trim()) {
+        } else if (allowFreeText && e.target === freeTextRef.current && freeText.trim()) {
           e.preventDefault()
           commit(freeText.trim())
         }
@@ -219,28 +224,30 @@ export function ModelPicker({
               <div className="mol-model-picker__loading">
                 <div className="mol-model-picker__loading-row">
                   <span className="mol-model-picker__spinner" aria-hidden="true" />
-                  <span>Loading models from {conn}…</span>
+                  <span>Loading models from {conn}...</span>
                 </div>
                 <div className="mol-model-picker__skeleton" style={{ width: '60%' }} />
                 <div className="mol-model-picker__skeleton" style={{ width: '72%' }} />
                 <div className="mol-model-picker__skeleton" style={{ width: '54%' }} />
               </div>
-              {freeTextInput('Or enter a model id', false)}
+              {allowFreeText && freeTextInput('Or enter a model id', false)}
             </>
           ) : !listingCapable ? (
             // C. NON-LISTING
             <>
-              {freeTextInput('Model id', true)}
+              {allowFreeText && freeTextInput('Model id', true)}
               {suggestions.length > 0 && (
                 <div className="mol-model-picker__list" role="listbox" ref={listRef}>
                   <div className="mol-model-picker__grouplabel">Suggestions · koan catalog</div>
                   {suggestions.map((s, i) => Row(s, i))}
                 </div>
               )}
-              <div className="mol-model-picker__note">
-                This provider can't list models over its API — enter the id or pick from koan's
-                catalog.
-              </div>
+              {allowFreeText && (
+                <div className="mol-model-picker__note">
+                  This provider can't list models over its API -- enter the id or pick from koan's
+                  catalog.
+                </div>
+              )}
             </>
           ) : (
             // A. LISTING-CAPABLE
@@ -276,7 +283,7 @@ export function ModelPicker({
                       Row(f.resolved, i, 'mol-model-picker__row--pin', (
                         <>
                           <span className="mol-model-picker__pin-family">{f.family}</span>
-                          <span className="mol-model-picker__pin-resolved">→ {f.resolved}</span>
+                          <span className="mol-model-picker__pin-resolved">-&gt; {f.resolved}</span>
                         </>
                       )),
                     )}
@@ -291,7 +298,7 @@ export function ModelPicker({
                 )}
               </div>
 
-              {freeTextInput('Or enter a model id', false)}
+              {allowFreeText && freeTextInput('Or enter a model id', false)}
             </>
           )}
         </div>

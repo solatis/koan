@@ -119,6 +119,11 @@ class TestContextWindowFor:
         result = context_window_for("unknown-provider", "some-model")
         assert result == 0
 
+    def test_lmstudio_context_window_unset_returns_zero(self) -> None:
+        """context_window_for returns 0 for any lmstudio model (absent from catalog/snapshot; hard cutover)."""
+        result = context_window_for("lmstudio", "some-local-model")
+        assert result == 0
+
     @pytest.mark.parametrize("provider,model", _all_offered_models())
     def test_all_catalog_models_have_positive_window(self, provider: str, model: str) -> None:
         """context_window_for returns > 0 for every MODEL_CAPABILITIES entry."""
@@ -176,3 +181,86 @@ class TestSupportsPromptCaching:
         """Unknown provider returns False (graceful fallthrough, brief D5)."""
         from koan.agents.model_catalog import supports_prompt_caching
         assert supports_prompt_caching("unknown-provider", "some-model") is False
+
+
+# -- Hard-cutover: LMSTUDIO_DEFAULT_CONTEXT_WINDOW removed --------------------
+
+class TestLmstudioDefaultContextWindowRemoved:
+    def test_symbol_not_importable(self) -> None:
+        """LMSTUDIO_DEFAULT_CONTEXT_WINDOW is no longer importable from koan.agents.model_catalog.
+
+        This is the negative-presence test for the hard cutover (project safe-deletion
+        procedure): an explicit 'removed' assertion guards against accidental re-introduction.
+        """
+        import importlib
+        catalog = importlib.import_module("koan.agents.model_catalog")
+        assert not hasattr(catalog, "LMSTUDIO_DEFAULT_CONTEXT_WINDOW"), (
+            "LMSTUDIO_DEFAULT_CONTEXT_WINDOW was re-introduced; "
+            "this symbol was removed as a hard cutover (requires explicit ConfiguredModel.context_window)"
+        )
+
+
+# -- resolve_model_spec: cm.context_window takes top precedence ---------------
+
+class TestResolveModelSpecContextWindowPrecedence:
+    def test_explicit_cm_context_window_wins_over_caps(self) -> None:
+        """resolve_model_spec uses cm.context_window over caps/fallback for an lmstudio model.
+
+        For an lmstudio model (absent from catalog/snapshot, caps.context_window == 0),
+        an explicit ConfiguredModel.context_window is the only source and must win.
+        orchestrator maps to ModelTier 'strong', so the preset slot must be 'strong'.
+        """
+        from koan.agents.registry import AgentRegistry
+        from koan.config import KoanConfig
+        from koan.types import ConfiguredModel, Connection, Preset, SlotAssignment
+
+        conn = Connection(id="lm-conn", type="lmstudio", base_url="http://localhost:1234/v1")
+        cm = ConfiguredModel(
+            id="lm-cm",
+            connection_id="lm-conn",
+            model_id="qwen/qwen3.6-35b-a3b",
+            context_window=131072,
+        )
+        # orchestrator -> ROLE_MODEL_TIER['orchestrator'] == 'strong'
+        slot = SlotAssignment(configured_model_id="lm-cm", thinking="disabled")
+        preset = Preset(slots={"strong": slot})
+
+        cfg = KoanConfig(
+            connections=[conn],
+            configured_models=[cm],
+            presets={"$last": preset},
+        )
+
+        registry = AgentRegistry()
+        spec = registry.resolve_model_spec("orchestrator", cfg)
+        assert spec.context_window == 131072
+
+    def test_unset_cm_context_window_falls_through_to_caps(self) -> None:
+        """resolve_model_spec falls through to caps.context_window when cm.context_window is None.
+
+        For a known anthropic model, caps.context_window > 0; the unset override
+        must not shadow it.
+        """
+        from koan.agents.registry import AgentRegistry
+        from koan.config import KoanConfig
+        from koan.types import ConfiguredModel, Connection, Preset, SlotAssignment
+
+        conn = Connection(id="ant-conn", type="anthropic")
+        cm = ConfiguredModel(
+            id="ant-cm",
+            connection_id="ant-conn",
+            model_id="claude-opus-4-0",
+            context_window=None,
+        )
+        slot = SlotAssignment(configured_model_id="ant-cm", thinking="disabled")
+        preset = Preset(slots={"strong": slot})
+
+        cfg = KoanConfig(
+            connections=[conn],
+            configured_models=[cm],
+            presets={"$last": preset},
+        )
+
+        registry = AgentRegistry()
+        spec = registry.resolve_model_spec("orchestrator", cfg)
+        assert spec.context_window > 0

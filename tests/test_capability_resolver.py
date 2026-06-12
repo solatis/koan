@@ -97,6 +97,11 @@ class TestResolveCapabilitiesKeyless:
         caps = resolve_capabilities("lmstudio", "any-model")
         assert caps.supports_prompt_caching is False
 
+    def test_lmstudio_context_window(self):
+        """lmstudio context_window is 0 (absent from catalog/snapshot; explicit ConfiguredModel.context_window required)."""
+        caps = resolve_capabilities("lmstudio", "some-local-model")
+        assert caps.context_window == 0
+
 
 # -- Google models ------------------------------------------------------------
 

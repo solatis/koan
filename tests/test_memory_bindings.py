@@ -1,5 +1,9 @@
-# Unit tests for koan.memory.bindings: resolve_memory_binding,
-# embedding_dim_for, set_active_provider_config, and error cases.
+# Unit tests for koan.memory.bindings: Voyage embedding catalog, resolver helpers,
+# resolve_memory_binding, set_active_provider_config, and error cases.
+#
+# Hard cutover: EMBEDDING_DIMS and embedding_dim_for were removed and replaced by
+# the VoyageEmbeddingModel catalog.  This file covers the new catalog API and
+# includes a negative-presence test to guard against accidental re-introduction.
 
 from __future__ import annotations
 
@@ -8,11 +12,15 @@ import pytest
 from koan.config import KoanConfig
 from koan.credentials import CredentialStore, FileKeyBackend, set_active_credential_store
 from koan.memory.bindings import (
-    EMBEDDING_DIMS,
+    VOYAGE_EMBEDDING_MODELS,
     ResolvedMemoryModel,
-    embedding_dim_for,
+    VoyageEmbeddingModel,
+    is_recognized_voyage_model,
     resolve_memory_binding,
+    resolve_voyage_embedding_dim,
     set_active_provider_config,
+    voyage_dimension_options,
+    voyage_embedding_models,
 )
 from koan.types import (
     Connection,
@@ -20,6 +28,117 @@ from koan.types import (
     MemoryBinding,
     MemoryBindings,
 )
+
+
+# ---------------------------------------------------------------------------
+# Negative-presence test: removed symbols must not exist
+# ---------------------------------------------------------------------------
+
+class TestRemovedSymbols:
+    def test_embedding_dims_not_exported(self):
+        """EMBEDDING_DIMS must not exist in koan.memory.bindings (hard cutover)."""
+        import koan.memory.bindings as mod
+        assert not hasattr(mod, "EMBEDDING_DIMS"), (
+            "EMBEDDING_DIMS was re-introduced; hard cutover requires permanent removal"
+        )
+
+    def test_embedding_dim_for_not_exported(self):
+        """embedding_dim_for must not exist in koan.memory.bindings (hard cutover)."""
+        import koan.memory.bindings as mod
+        assert not hasattr(mod, "embedding_dim_for"), (
+            "embedding_dim_for was re-introduced; hard cutover requires permanent removal"
+        )
+
+
+# ---------------------------------------------------------------------------
+# VoyageEmbeddingModel catalog
+# ---------------------------------------------------------------------------
+
+class TestVoyageEmbeddingCatalog:
+    def test_catalog_contains_exactly_three_models(self):
+        """VOYAGE_EMBEDDING_MODELS has exactly the three whitelisted models."""
+        assert set(VOYAGE_EMBEDDING_MODELS) == {"voyage-4-large", "voyage-4", "voyage-4-lite"}
+
+    def test_each_model_is_voyage_embedding_model_instance(self):
+        """Every entry in VOYAGE_EMBEDDING_MODELS is a VoyageEmbeddingModel."""
+        for entry in VOYAGE_EMBEDDING_MODELS.values():
+            assert isinstance(entry, VoyageEmbeddingModel)
+
+    def test_each_model_has_context_window_32000(self):
+        for entry in VOYAGE_EMBEDDING_MODELS.values():
+            assert entry.context_window == 32_000
+
+    def test_each_model_default_dimension_is_1024(self):
+        for entry in VOYAGE_EMBEDDING_MODELS.values():
+            assert entry.default_dimension == 1024
+
+    def test_each_model_dimensions_include_256_512_1024_2048(self):
+        for entry in VOYAGE_EMBEDDING_MODELS.values():
+            assert set(entry.dimensions) == {256, 512, 1024, 2048}
+
+    def test_voyage_embedding_models_helper_returns_all(self):
+        assert set(voyage_embedding_models()) == set(VOYAGE_EMBEDDING_MODELS.values())
+
+
+# ---------------------------------------------------------------------------
+# is_recognized_voyage_model
+# ---------------------------------------------------------------------------
+
+class TestIsRecognizedVoyageModel:
+    @pytest.mark.parametrize("model_id", ["voyage-4-large", "voyage-4", "voyage-4-lite"])
+    def test_recognized_models_return_true(self, model_id):
+        assert is_recognized_voyage_model(model_id) is True
+
+    @pytest.mark.parametrize("model_id", [
+        "voyage-unknown",
+        "voyage-3",
+        "voyage-4-pro",
+        "text-embedding-3-small",
+        "",
+        "VOYAGE-4-LARGE",
+    ])
+    def test_unrecognized_models_return_false(self, model_id):
+        assert is_recognized_voyage_model(model_id) is False
+
+
+# ---------------------------------------------------------------------------
+# voyage_dimension_options
+# ---------------------------------------------------------------------------
+
+class TestVoyageDimensionOptions:
+    def test_returns_tuple_of_valid_dims(self):
+        opts = voyage_dimension_options("voyage-4-large")
+        assert 256 in opts
+        assert 512 in opts
+        assert 1024 in opts
+        assert 2048 in opts
+
+    def test_raises_for_unrecognized_model(self):
+        with pytest.raises(ValueError, match="Unrecognized Voyage embedding model"):
+            voyage_dimension_options("voyage-unknown")
+
+
+# ---------------------------------------------------------------------------
+# resolve_voyage_embedding_dim
+# ---------------------------------------------------------------------------
+
+class TestResolveVoyageEmbeddingDim:
+    def test_none_selected_returns_default(self):
+        """None selected -> use the catalog default (1024)."""
+        assert resolve_voyage_embedding_dim("voyage-4-large", None) == 1024
+
+    def test_valid_dimension_returned_unchanged(self):
+        assert resolve_voyage_embedding_dim("voyage-4-large", 256) == 256
+        assert resolve_voyage_embedding_dim("voyage-4-large", 512) == 512
+        assert resolve_voyage_embedding_dim("voyage-4-large", 2048) == 2048
+
+    def test_invalid_dimension_raises_value_error(self):
+        with pytest.raises(ValueError, match="Invalid embedding dimension"):
+            resolve_voyage_embedding_dim("voyage-4-large", 999)
+
+    def test_unrecognized_model_raises_value_error(self):
+        with pytest.raises(ValueError, match="Unrecognized Voyage embedding model"):
+            resolve_voyage_embedding_dim("voyage-unknown", None)
 
 
 # ---------------------------------------------------------------------------
@@ -32,6 +151,7 @@ def _setup_active_config(
     *,
     voyage_key: str | None = "voyage-api-key",
     google_key: str | None = "google-api-key",
+    embedding_dim: int | None = None,
 ) -> tuple[KoanConfig, CredentialStore]:
     """Build and activate a config with voyage + google connections and MemoryBindings."""
     key_path = tmp_path / "master.key"
@@ -45,7 +165,12 @@ def _setup_active_config(
         configured_models=[
             ConfiguredModel(id="google-llm", connection_id="google-1", model_id="gemini-flash-lite-latest"),
             ConfiguredModel(id="google-reflect", connection_id="google-1", model_id="gemini-flash-latest"),
-            ConfiguredModel(id="voyage-embed", connection_id="voyage-1", model_id="voyage-4-large"),
+            ConfiguredModel(
+                id="voyage-embed",
+                connection_id="voyage-1",
+                model_id="voyage-4-large",
+                embedding_dim=embedding_dim,
+            ),
         ],
         memory=MemoryBindings(
             embedding=MemoryBinding(configured_model_id="voyage-embed"),
@@ -65,31 +190,6 @@ def _setup_active_config(
 
 
 # ---------------------------------------------------------------------------
-# embedding_dim_for
-# ---------------------------------------------------------------------------
-
-class TestEmbeddingDimFor:
-    def test_voyage_4_large_returns_1024(self):
-        """embedding_dim_for returns 1024 for the default voyage-4-large model."""
-        assert embedding_dim_for("voyage", "voyage-4-large") == 1024
-
-    def test_unknown_pair_raises_value_error(self):
-        """embedding_dim_for raises ValueError for an unknown (provider, model) pair."""
-        with pytest.raises(ValueError, match="Unknown embedding dimension"):
-            embedding_dim_for("voyage", "voyage-unknown-model")
-
-    def test_unknown_provider_raises_value_error(self):
-        """embedding_dim_for raises ValueError for an unknown provider type."""
-        with pytest.raises(ValueError, match="Unknown embedding dimension"):
-            embedding_dim_for("openai", "text-embedding-3-small")
-
-    def test_embedding_dims_seed_entry(self):
-        """EMBEDDING_DIMS contains the expected seed entry for voyage-4-large."""
-        assert ("voyage", "voyage-4-large") in EMBEDDING_DIMS
-        assert EMBEDDING_DIMS[("voyage", "voyage-4-large")] == 1024
-
-
-# ---------------------------------------------------------------------------
 # resolve_memory_binding -- happy paths
 # ---------------------------------------------------------------------------
 
@@ -102,6 +202,18 @@ class TestResolveMemoryBinding:
         assert rmm.provider_type == "voyage"
         assert rmm.model_id == "voyage-4-large"
         assert rmm.api_key == "voyage-api-key"
+
+    def test_embedding_resolves_dim_from_catalog_default(self, tmp_path, monkeypatch):
+        """embedding binding with no explicit dim resolves to catalog default (1024)."""
+        _setup_active_config(tmp_path, monkeypatch, embedding_dim=None)
+        rmm = resolve_memory_binding("embedding")
+        assert rmm.embedding_dim == 1024
+
+    def test_embedding_respects_explicit_dim(self, tmp_path, monkeypatch):
+        """embedding binding with explicit dim=512 resolves to 512."""
+        _setup_active_config(tmp_path, monkeypatch, embedding_dim=512)
+        rmm = resolve_memory_binding("embedding")
+        assert rmm.embedding_dim == 512
 
     def test_memory_llm_returns_google_rmm(self, tmp_path, monkeypatch):
         """resolve_memory_binding('memory_llm') returns google provider + model + key."""

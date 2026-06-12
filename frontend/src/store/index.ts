@@ -24,12 +24,29 @@ export interface ConnectionInfo {
 /**
  * Wire: ConfiguredModelWire (camelCase).
  * A (connection, model-id) pair in the global library.
+ * contextWindow is the optional explicit override (tokens); null means derive from
+ * capabilities. Populated via the configured_models_listed SSE projection event.
  */
 export interface ConfiguredModelInfo {
   id: string
   connectionId: string
   modelId: string
   resolvedFrom: string | null
+  contextWindow: number | null
+  /** Selected Voyage output dimension; null means use the catalog default. */
+  embeddingDim: number | null
+}
+
+/**
+ * Wire: EmbeddingModelWire (camelCase).
+ * Static catalog entry for a recognized Voyage embedding model.
+ * Populated once at startup via embedding_models_listed; static for process lifetime.
+ */
+export interface EmbeddingModelInfo {
+  modelId: string
+  contextWindow: number
+  dimensions: number[]
+  defaultDimension: number
 }
 
 /** Wire: SlotAssignmentWire (camelCase). */
@@ -154,6 +171,13 @@ export interface Settings {
    *  at every consumption site: the SSE snapshot replaces settings wholesale over
    *  an untyped boundary and a missing field reads as undefined, not []. */
   providerFamilies: ProviderFamily[]
+  /**
+   * Static Voyage embedding model catalog.  Populated once at startup by
+   * embedding_models_listed; static for the process lifetime.  Read defensively
+   * as (embeddingModels ?? []) -- the SSE snapshot replaces settings wholesale
+   * and a missing field reads as undefined, not [].
+   */
+  embeddingModels: EmbeddingModelInfo[]
 }
 
 export interface RunConfig {
@@ -527,6 +551,7 @@ export const useStore = create<KoanState>()(
         modelRegistry: [],
         providerModels: [],
         providerFamilies: [],
+        embeddingModels: [],
       },
       run: null,
       notifications: [],

@@ -810,10 +810,17 @@ function buildConnectionViews(
     // Families are also per-connection (connectionId on the wire).
     const rawFamilies = (settings.providerFamilies ?? []).filter(f => f.connectionId === conn.id)
     const families = rawFamilies.map(f => ({ family: f.family, resolved: f.resolved }))
+    // For voyage connections, catalog suggestions come from the static Voyage
+    // embedding model catalog (embeddingModels), not the general model registry.
+    const voyageSuggestions = conn.connectionType === 'voyage'
+      ? (settings.embeddingModels ?? []).map(e => e.modelId)
+      : undefined
     modelsByConnection[conn.id] = {
       models: live.length > 0 ? live : catalog,
       loading: modelsLoading[conn.id] ?? false,
-      catalogSuggestions: LISTING_CAPABLE_TYPES.has(conn.connectionType) ? undefined : catalog,
+      catalogSuggestions: conn.connectionType === 'voyage'
+        ? voyageSuggestions
+        : (LISTING_CAPABLE_TYPES.has(conn.connectionType) ? undefined : catalog),
       families: families.length > 0 ? families : undefined,
     }
   }
@@ -841,6 +848,14 @@ function slotToMemoryKind(slot: RoleSlot): string {
  * modelCapabilities, modelRegistry, providerModels, and defaultScoutConcurrency
  * from the store.  Implements auto-save (per control) with revert-on-reject + toast.
  * Connection test = save-then-list (no pre-save test endpoint exists).
+ *
+ * Holds a local interim assignments state seeded from the store-derived map.
+ * A connection chosen before its model is picked has no persisted home (a saved
+ * role is a complete connection:model pair), so the selection lives in local state
+ * until a model commits it.  The state is re-synced per-slot on a value signature
+ * (JSON.stringify of the derived map, not its object identity) so neither
+ * unrelated projection patches nor persistence of a sibling role clobbers an
+ * in-progress connection-only selection.
  */
 function ConnectedSettingsPage() {
   const settings = useStore(s => s.settings)
@@ -851,11 +866,16 @@ function ConnectedSettingsPage() {
   const [connectionTestState, setConnectionTestState] = useState<import('./components/organisms/SettingsPage').TestState>({ kind: 'idle' })
   const [connectionSaving, setConnectionSaving] = useState(false)
   const [modelsLoading, setModelsLoading] = useState<Record<string, boolean>>({})
+  // Pending embedding dimension change: user picked a new dim but hasn't confirmed the re-embed yet.
+  const [pendingRebuildDim, setPendingRebuildDim] = useState<number | null>(null)
+  // True while the save/rebuild API call is in-flight after user confirms.
+  const [rebuildInProgress, setRebuildInProgress] = useState(false)
 
   const { connections, modelsByConnection } = buildConnectionViews(settings, modelsLoading)
 
   // Build the full assignments map from presets ($last) + memoryBindings.
-  const assignments = useMemo((): Record<RoleSlot, RoleAssignment> => {
+  // Named derivedAssignments to distinguish it from the local interim state below.
+  const derivedAssignments = useMemo((): Record<RoleSlot, RoleAssignment> => {
     const cmById: Record<string, typeof settings.configuredModels[0]> = {}
     for (const cm of settings.configuredModels) cmById[cm.id] = cm
     const connById: Record<string, typeof settings.connections[0]> = {}
@@ -865,21 +885,31 @@ function ConnectedSettingsPage() {
 
     const lastPreset = settings.presets['$last']
 
+    // Default embedding-specific fields for all non-embedding slots (and for
+    // embedding slots where the catalog lookup is not applicable).
+    const EMBEDDING_DEFAULTS = { embeddingDim: null, embeddingDimOptions: [], fixedContextWindow: null }
+
     function resolveSlot(cmId: string | undefined, thinking: string | null): RoleAssignment {
-      if (!cmId) return { connectionId: null, modelId: null, thinking: null, state: 'unassigned', thinkingOptions: [] }
+      if (!cmId) return { connectionId: null, modelId: null, thinking: null, contextWindow: null, capabilityContextWindow: 0, state: 'unassigned', thinkingOptions: [], ...EMBEDDING_DEFAULTS }
       const cm = cmById[cmId]
-      if (!cm) return { connectionId: null, modelId: null, thinking: null, state: 'broken', thinkingOptions: [] }
+      if (!cm) return { connectionId: null, modelId: null, thinking: null, contextWindow: null, capabilityContextWindow: 0, state: 'broken', thinkingOptions: [], ...EMBEDDING_DEFAULTS }
       const conn = connById[cm.connectionId]
-      if (!conn) return { connectionId: cm.connectionId, modelId: cm.modelId, thinking, state: 'broken', thinkingOptions: [] }
       const cap = capById[cmId]
+      if (!conn) return { connectionId: cm.connectionId, modelId: cm.modelId, thinking, contextWindow: cm.contextWindow, capabilityContextWindow: cap?.contextWindow ?? 0, state: 'broken', thinkingOptions: [], ...EMBEDDING_DEFAULTS }
       const rawModes = cap?.thinkingModes ?? []
       const thinkingOptions = toThinkingOptions(rawModes)
       return {
         connectionId: cm.connectionId,
         modelId: cm.modelId,
         thinking,
+        // Source contextWindow from the projection ConfiguredModel, not local state.
+        // This avoids splitting cmId (model ids contain ':' and '/') and ensures
+        // resolved_from is always available when we need to upsert.
+        contextWindow: cm.contextWindow,
+        capabilityContextWindow: cap?.contextWindow ?? 0,
         state: 'assigned',
         thinkingOptions,
+        ...EMBEDDING_DEFAULTS,
       }
     }
 
@@ -890,7 +920,27 @@ function ConnectedSettingsPage() {
     }
 
     const mem = settings.memoryBindings
-    const embeddingSlot = resolveSlot(mem?.embedding?.configured_model_id, mem?.embedding?.thinking ?? null)
+    const embeddingCmId = mem?.embedding?.configured_model_id
+    const embeddingSlotBase = resolveSlot(embeddingCmId, mem?.embedding?.thinking ?? null)
+
+    // Augment the embedding slot with Voyage catalog data for the dimension selector.
+    // embeddingModels is the static catalog (pushed once at startup).
+    const embeddingModels = settings.embeddingModels ?? []
+    let embeddingSlot = embeddingSlotBase
+    if (embeddingSlotBase.modelId != null) {
+      const catalogEntry = embeddingModels.find(e => e.modelId === embeddingSlotBase.modelId)
+      if (catalogEntry != null) {
+        // Source embeddingDim from the projection ConfiguredModel (the persisted override).
+        const embeddingCm = embeddingCmId != null ? cmById[embeddingCmId] : undefined
+        embeddingSlot = {
+          ...embeddingSlotBase,
+          embeddingDim: embeddingCm?.embeddingDim ?? null,
+          embeddingDimOptions: catalogEntry.dimensions,
+          fixedContextWindow: catalogEntry.contextWindow,
+        }
+      }
+    }
+
     const memLlmSlot = resolveSlot(mem?.memory_llm?.configured_model_id, mem?.memory_llm?.thinking ?? null)
     const reflectLlmSlot = resolveSlot(mem?.reflect_llm?.configured_model_id, mem?.reflect_llm?.thinking ?? null)
 
@@ -903,6 +953,47 @@ function ConnectedSettingsPage() {
       'reflect-llm': reflectLlmSlot,
     }
   }, [settings])
+
+  // Local interim assignments. A connection chosen before its model is picked
+  // has no persisted home (a saved role is a complete connection:model pair),
+  // so the selection lives here until a model commits it. Seeded from the
+  // store-derived map and re-synced -- per slot -- when persistence changes it.
+  const [assignments, setAssignments] =
+    useState<Record<RoleSlot, RoleAssignment>>(derivedAssignments)
+
+  // Value signature of the derived map. Re-sync keys on this, NOT on
+  // derivedAssignments' object identity: the SSE store replaces `settings`
+  // (and thus recomputes derivedAssignments) on EVERY patch, so an
+  // identity-keyed effect would fire on the provider_models_listed patch that
+  // listConnectionModels triggers and clobber an in-progress connection-only
+  // selection. The stringified values change only when an assignment actually
+  // changes (nothing here derives from providerModels).
+  const derivedSignature = useMemo(
+    () => JSON.stringify(derivedAssignments),
+    [derivedAssignments],
+  )
+
+  // Previous derived snapshot. Re-seed PER SLOT so persisting one role does
+  // not wipe an in-progress (connection-chosen, model-not-yet-picked) edit on
+  // another role. Only slots whose derived value changed are refreshed.
+  const prevDerivedRef = useRef(derivedAssignments)
+
+  useEffect(() => {
+    const prev = prevDerivedRef.current
+    setAssignments(local => {
+      let next = local
+      for (const slot of Object.keys(derivedAssignments) as RoleSlot[]) {
+        if (JSON.stringify(derivedAssignments[slot]) !== JSON.stringify(prev[slot])) {
+          if (next === local) next = { ...local }
+          next[slot] = derivedAssignments[slot]
+        }
+      }
+      return next
+    })
+    prevDerivedRef.current = derivedAssignments
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-sync on value
+    // change only; derivedAssignments changes ref every patch.
+  }, [derivedSignature])
 
   const onAddConnection = () => {
     setEditingConnection('new')
@@ -994,14 +1085,58 @@ function ConnectedSettingsPage() {
     }
   }
 
-  const onRoleChange = async (slot: RoleSlot, field: 'connection' | 'model' | 'thinking', value: string) => {
+  /**
+   * Handles all role-row controls for a given slot.
+   *
+   * - connection: Records the chosen connection in local interim state (resetting
+   *   modelId and thinking -- a new connection invalidates the prior model) then
+   *   triggers a model-list fetch for listing-capable connection types. Nothing is
+   *   persisted here -- a connection alone is not a saveable role.
+   * - model: Persists the complete connection:model pair via setConfiguredModel +
+   *   setSlot/setMemoryBinding, then optimistically reflects the new modelId in
+   *   local state so the selection shows immediately without waiting for the
+   *   projection patch.
+   * - thinking: Persists the thinking level via setSlot/setMemoryBinding (using
+   *   the already-persisted cmId from the projection store), then optimistically
+   *   reflects it in local state.
+   * - context_window: Persists an explicit context-window override on the
+   *   ConfiguredModel via setConfiguredModel (full upsert). cmId and all identity
+   *   fields (connectionId, modelId, resolvedFrom) are sourced from the projection
+   *   configuredModels entry -- never by splitting cmId, since model ids legitimately
+   *   contain ':' and '/'. A positive integer value sets the override; empty string
+   *   or non-positive clears it (null). The value-keyed per-slot re-sync effect
+   *   (memory 0204) includes contextWindow so this field participates correctly
+   *   and is not clobbered by an unrelated SSE patch.
+   *
+   * All branches update the local interim assignments state. The per-slot
+   * re-sync effect reconciles local state with the projection once a patch lands.
+   */
+  const onRoleChange = async (slot: RoleSlot, field: 'connection' | 'model' | 'thinking' | 'context_window', value: string) => {
     const current = assignments[slot]
     const isTierSlot = slot === 'strong' || slot === 'standard' || slot === 'cheap'
 
     if (field === 'connection') {
-      // Connection change: trigger model listing so the model dropdown populates.
-      // Only call listConnectionModels for listing-capable connection types;
-      // non-listing connections (voyage, bedrock) skip this call.
+      // Record the chosen connection locally and reset model/thinking before
+      // fetching models. A connection alone cannot be persisted (a saved role is
+      // a complete connection:model pair), so this stays in local state only.
+      setAssignments(prev => ({
+        ...prev,
+        [slot]: {
+          connectionId: value,
+          modelId: null,
+          thinking: null,
+          contextWindow: null,
+          capabilityContextWindow: 0,
+          state: 'unassigned',
+          thinkingOptions: [],
+          embeddingDim: null,
+          embeddingDimOptions: [],
+          fixedContextWindow: null,
+        },
+      }))
+      // Only call listConnectionModels for listing-capable connection types.
+      // Non-listing connections (voyage, bedrock) skip this call and render
+      // the ModelPicker free-text branch with no error toast.
       const connType = settings.connections.find(c => c.id === value)?.connectionType
       if (connType && LISTING_CAPABLE_TYPES.has(connType)) {
         setModelsLoading(prev => ({ ...prev, [value]: true }))
@@ -1021,7 +1156,6 @@ function ConnectedSettingsPage() {
       // carries resolved_from for audit and display purposes.  Benign if the
       // user separately selects the same id from the flat list -- truthfully,
       // it is the newest at this point in time.
-      const connType = settings.connections.find(c => c.id === connId)?.connectionType
       const pin = (settings.providerFamilies ?? []).find(
         f => f.connectionId === connId && f.resolved === value,
       )
@@ -1030,6 +1164,10 @@ function ConnectedSettingsPage() {
         connection_id: connId,
         model_id: value,
         ...(pin ? { resolved_from: pin.resolvedFrom } : {}),
+        // Full-upsert clobber-safety: always carry embedding_dim so a concurrent
+        // dim save is not lost.  For a model change, reset dim to null (use catalog
+        // default for the new model).
+        ...(slot === 'embedding' ? { embedding_dim: null } : {}),
       })
       if (!cmRes.ok) {
         pushToast(cmRes.message ?? 'Failed to save model', 'error')
@@ -1039,11 +1177,23 @@ function ConnectedSettingsPage() {
       const slotRes = isTierSlot
         ? await api.setSlot(slot, body)
         : await api.setMemoryBinding(slotToMemoryKind(slot), body)
-      if (!slotRes.ok) pushToast(slotRes.message ?? 'Failed to assign model', 'error')
+      if (!slotRes.ok) {
+        pushToast(slotRes.message ?? 'Failed to assign model', 'error')
+        return
+      }
+      // Optimistic update: reflect the persisted model immediately so the picker
+      // shows the selection without waiting for the projection patch to land.
+      // thinkingOptions will be filled by the re-sync effect once capabilities arrive.
+      setAssignments(prev => ({
+        ...prev,
+        [slot]: { ...prev[slot], modelId: value, state: 'assigned' },
+      }))
       return
     }
 
     if (field === 'thinking') {
+      // Read cmId from the projection store (not local state) -- thinking
+      // requires an already-persisted configured model id.
       const cmId = isTierSlot
         ? settings.presets['$last']?.slots[slot]?.configuredModelId
         : settings.memoryBindings?.[slotToMemoryKind(slot) as 'embedding' | 'memory_llm' | 'reflect_llm']?.configured_model_id
@@ -1052,13 +1202,113 @@ function ConnectedSettingsPage() {
       const res = isTierSlot
         ? await api.setSlot(slot, body)
         : await api.setMemoryBinding(slotToMemoryKind(slot), body)
-      if (!res.ok) pushToast(res.message ?? 'Failed to save thinking mode', 'error')
+      if (!res.ok) {
+        pushToast(res.message ?? 'Failed to save thinking mode', 'error')
+        return
+      }
+      // Optimistic update: reflect the persisted thinking level immediately.
+      setAssignments(prev => ({
+        ...prev,
+        [slot]: { ...prev[slot], thinking: value },
+      }))
+    }
+
+    if (field === 'context_window') {
+      // Source cmId and identity fields from the projection store (not local state).
+      // Never split cmId to recover model id -- model ids contain ':' and '/'.
+      const cmId = isTierSlot
+        ? settings.presets['$last']?.slots[slot]?.configuredModelId
+        : settings.memoryBindings?.[slotToMemoryKind(slot) as 'embedding' | 'memory_llm' | 'reflect_llm']?.configured_model_id
+      if (!cmId) return
+      const cmEntry = settings.configuredModels.find(m => m.id === cmId)
+      if (!cmEntry) return
+      // Parse to positive int or null (empty / zero / negative = unset).
+      const parsed = parseInt(value, 10)
+      const contextWindow = !isNaN(parsed) && parsed > 0 ? parsed : null
+      const res = await api.setConfiguredModel({
+        id: cmId,
+        connection_id: cmEntry.connectionId,
+        model_id: cmEntry.modelId,
+        ...(cmEntry.resolvedFrom ? { resolved_from: cmEntry.resolvedFrom } : {}),
+        context_window: contextWindow,
+        // Full-upsert clobber-safety: carry embedding_dim so a concurrent dim save is not lost.
+        embedding_dim: cmEntry.embeddingDim ?? null,
+      })
+      if (!res.ok) {
+        pushToast(res.message ?? 'Failed to save context window', 'error')
+        return
+      }
+      // Optimistic update: reflect the new context window immediately.
+      setAssignments(prev => ({
+        ...prev,
+        [slot]: { ...prev[slot], contextWindow },
+      }))
     }
   }
 
   const onScoutConcurrencyChange = async (value: number) => {
     const res = await api.saveScoutConcurrency(value)
     if (!res.ok) pushToast(res.message ?? 'Failed to save concurrency', 'error')
+  }
+
+  /**
+   * Handles embedding dimension selection from the dimension selector.
+   *
+   * Gating wrapper: if the embedding binding already has an active identity
+   * (model + dimension already persisted, meaning memory has been indexed),
+   * changing the dimension requires dropping and re-embedding all entries.
+   * We gate the save behind an explicit user confirmation (pendingRebuildDim)
+   * to avoid accidental rebuilds.
+   *
+   * If there is no current embedding identity (embedding not yet configured),
+   * we save directly without a confirm.
+   *
+   * Non-recursive: this handler sets pending state and returns; the actual
+   * save fires from onEmbeddingDimConfirm.  onRoleChange never calls this.
+   */
+  const onEmbeddingDimChange = (dim: number) => {
+    const embCmId = settings.memoryBindings?.embedding?.configured_model_id
+    const embCm = embCmId != null ? settings.configuredModels.find(m => m.id === embCmId) : undefined
+    // If there's already a model+dim identity, require explicit confirmation.
+    if (embCm != null) {
+      setPendingRebuildDim(dim)
+    } else {
+      // No existing embedding identity: save directly without confirm.
+      void saveEmbeddingDim(dim)
+    }
+  }
+
+  const saveEmbeddingDim = async (dim: number) => {
+    const embCmId = settings.memoryBindings?.embedding?.configured_model_id
+    if (!embCmId) return
+    const embCm = settings.configuredModels.find(m => m.id === embCmId)
+    if (!embCm) return
+    setRebuildInProgress(true)
+    const res = await api.setConfiguredModel({
+      id: embCmId,
+      connection_id: embCm.connectionId,
+      model_id: embCm.modelId,
+      ...(embCm.resolvedFrom ? { resolved_from: embCm.resolvedFrom } : {}),
+      context_window: embCm.contextWindow ?? null,
+      embedding_dim: dim,
+    })
+    setRebuildInProgress(false)
+    if (!res.ok) {
+      pushToast(res.message ?? 'Failed to save embedding dimension', 'error')
+    } else if (res.rebuild_error) {
+      pushToast(`Re-embed failed: ${res.rebuild_error}`, 'error')
+    }
+  }
+
+  const onEmbeddingDimConfirm = async () => {
+    if (pendingRebuildDim == null) return
+    const dim = pendingRebuildDim
+    setPendingRebuildDim(null)
+    await saveEmbeddingDim(dim)
+  }
+
+  const onEmbeddingDimCancel = () => {
+    setPendingRebuildDim(null)
   }
 
   return (
@@ -1078,6 +1328,11 @@ function ConnectedSettingsPage() {
       assignments={assignments}
       modelsByConnection={modelsByConnection}
       onRoleChange={onRoleChange}
+      embeddingRebuildPending={rebuildInProgress}
+      embeddingDimConfirmPending={pendingRebuildDim != null}
+      onEmbeddingDimChange={onEmbeddingDimChange}
+      onEmbeddingDimConfirm={onEmbeddingDimConfirm}
+      onEmbeddingDimCancel={onEmbeddingDimCancel}
       scoutConcurrency={settings.defaultScoutConcurrency}
       onScoutConcurrencyChange={onScoutConcurrencyChange}
     />
@@ -1090,6 +1345,11 @@ function ConnectedSettingsPage() {
  * Computes readiness from connection/slot availability.  Per-run override rows
  * default from the $last slot assignments; edits are local only (run-scoped,
  * never persisted to global config).  Overrides are forwarded to startRun.
+ *
+ * Per-run override defaults are re-synced per role on a VALUE signature so an
+ * in-progress connection-only override (connection chosen, model not yet picked)
+ * survives unrelated SSE projection patches and genuine default changes on
+ * sibling roles.
  */
 function ConnectedNewRunForm() {
   const settings = useStore(s => s.settings)
@@ -1135,8 +1395,35 @@ function ConnectedNewRunForm() {
 
   const [overrides, setOverrides] = useState<Record<WorkflowRole, OverrideAssignment>>(defaultOverrides)
 
-  // Re-sync override defaults when the slot assignments change (e.g. after settings save).
-  useEffect(() => { setOverrides(defaultOverrides) }, [defaultOverrides])
+  // Re-sync override defaults when the persisted slot assignments change (e.g.
+  // after a settings save). Key on a VALUE signature, NOT defaultOverrides'
+  // object identity: the SSE store replaces `settings` (and recomputes
+  // defaultOverrides) on EVERY patch, so an identity-keyed effect would fire on
+  // the provider_models_listed patch that listConnectionModels triggers and
+  // clobber an in-progress connection-only override. Re-seed PER ROLE so a
+  // genuine change to one role's default does not wipe an in-progress edit on
+  // another role.
+  const defaultOverridesSignature = useMemo(
+    () => JSON.stringify(defaultOverrides),
+    [defaultOverrides],
+  )
+  const prevDefaultOverridesRef = useRef(defaultOverrides)
+  useEffect(() => {
+    const prev = prevDefaultOverridesRef.current
+    setOverrides(local => {
+      let next = local
+      for (const role of Object.keys(defaultOverrides) as WorkflowRole[]) {
+        if (JSON.stringify(defaultOverrides[role]) !== JSON.stringify(prev[role])) {
+          if (next === local) next = { ...local }
+          next[role] = defaultOverrides[role]
+        }
+      }
+      return next
+    })
+    prevDefaultOverridesRef.current = defaultOverrides
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-sync on value
+    // change only; defaultOverrides changes ref every patch.
+  }, [defaultOverridesSignature])
 
   // Readiness: all three tier slots must resolve to a configured model with a valid connection.
   const readiness = useMemo((): import('./components/organisms/NewRunForm').ConfigReadiness => {
@@ -1156,13 +1443,12 @@ function ConnectedNewRunForm() {
     return 'ready'
   }, [settings, connections])
 
-  const onOverrideChange = (role: WorkflowRole, field: 'connection' | 'model' | 'thinking', value: string) => {
+  const onOverrideChange = (role: WorkflowRole, field: 'connection' | 'model' | 'thinking' | 'context_window', value: string) => {
     setOverrides(prev => {
       const current = prev[role]
       if (field === 'connection') {
-        // Connection change clears model + thinking; trigger model listing.
-        // Only call listConnectionModels for listing-capable connection types;
-        // non-listing connections (voyage, bedrock) skip this call.
+        // Only trigger model listing for listing-capable connection types;
+        // non-listing connections (voyage, bedrock) use the free-text picker.
         const connType = settings.connections.find(c => c.id === value)?.connectionType
         if (connType && LISTING_CAPABLE_TYPES.has(connType)) {
           setModelsLoading(p => ({ ...p, [value]: true }))

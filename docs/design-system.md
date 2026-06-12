@@ -1161,9 +1161,9 @@ alignment (it renders inside centered containers).
 #### RoleRow
 
 The configuration row for one model role (Settings -> Model roles) or one memory
-binding (Settings -> Memory). A role/binding is fully described by **connection +
-model + thinking** — nothing else (see rationale "Model configuration is three
-fields").
+binding (Settings -> Memory). A role/binding is described by **connection + model +
+thinking + optional context-window override**. The context-window override is
+secondary and optional; the cascade (connection -> model -> thinking) is unchanged.
 
 Container: `0.5px solid --border-card`, `--radius-xl`, `background: --bg-card-warm`, `padding: 15px 18px`, `display: flex; align-items: center; gap: --gap-form-controls` (8px).
 
@@ -1174,40 +1174,43 @@ Layout, left to right (dependency order):
 3. **Connection** `Select` (`mono`), `flex: 0 0 ~180px`.
 4. **Model** `ModelPicker`, `flex: 1`.
 5. **Thinking** `Select`, `flex: 0 0 ~112px`.
+6. **Context window** plain text input (`mono`, `--type-breadcrumb`, `width: ~90px`, `flex-shrink: 0`), shown below the main row as a secondary label+input pair. Shown only in the `default` variant (not `compact`). Placeholder shows the capability-derived window (e.g. "131072") when no override is set. A positive integer sets the explicit override on the ConfiguredModel; clearing it removes the override. Auto-saves on blur. Logic stays in the connected parent (App.tsx `onRoleChange('context_window', value)`); the control is purely presentational.
 
 The Memory **Embedding** binding omits the thinking `Select` (embeddings have no
 thinking); its `ModelPicker` simply extends to where thinking would sit.
 
-**Variant `compact`** (`variant?: 'default' | 'compact'`, default `'default'` —
+**Variant `compact`** (`variant?: 'default' | 'compact'`, default `'default'` --
 the Settings rows above are the default and are pixel-identical with or without
 the variant prop). Used by `NewRunForm`'s per-run override, where the row must fit
 the 640px form column. Differences from default:
 
 - Row padding `11px 14px` (vs `15px 18px`); gap `6px` (vs `--gap-form-controls`).
 - `RoleMarker` rendered at `26px` x `26px` (CSS override inside the compact row).
-- Meta block `width: 84px` (vs 150px), **name only** — the description line is
+- Meta block `width: 84px` (vs 150px), **name only** -- the description line is
   not rendered.
 - Columns: connection `flex: 0 0 142px`; model `flex: 1`; thinking `flex: 0 0 80px`.
   Sized to the longest real values ("anthropic-main", "medium") so the model
-  column gets ~150px at form width — enough for a 15-char mono id.
+  column gets ~150px at form width -- enough for a 15-char mono id.
 - Controls compacted via descendant overrides (mono, `--type-breadcrumb`,
   `padding: 6px 22px 6px 8px`, chevron at `right 7px`, `width: 100%`,
   ellipsized values).
 - All states (assigned / unassigned cascade / broken / no-thinking) work
   unchanged; the broken helper line indents to the compact meta width (~130px).
+- Context-window input is **not rendered** in `compact` variant (per-run
+  overrides do not expose per-model context windows).
 
 **States:**
 
-- **Assigned** — all three set.
-- **Unassigned (cascade)** — connection `Select` shows a placeholder ("— select connection —", `--text-placeholder`); the model `ModelPicker` is **disabled** until a connection is chosen; the thinking `Select` is **disabled** until a model is chosen. Choosing a connection enables + loads the picker; choosing a model enables thinking. This cascade applies to every RoleRow, not only empty ones.
-- **Broken** — the slot points at a configured model whose connection was removed. `background: --bg-danger`; the connection `Select` renders in error state (border `--status-failed`) showing the dead id, followed by a `Badge` `error` ("removed"); thinking is disabled. A helper line sits below the row (`--type-label`, `--text-danger-body`): "Connection removed — choose another." The role counts as **not-runnable** (see New Run gate). Re-picking a connection clears it.
-- **No thinking support** — when the chosen model resolves to no thinking capability, the thinking `Select` stays present but **disabled**, showing `—`. Keeping it present (vs hiding) preserves column alignment across the three rows. When the model does support thinking, the options are `off` + the supported subset only.
+- **Assigned** -- all three set.
+- **Unassigned (cascade)** -- connection `Select` shows a placeholder ("-- select connection --", `--text-placeholder`); the model `ModelPicker` is **disabled** until a connection is chosen; the thinking `Select` is **disabled** until a model is chosen. Choosing a connection enables + loads the picker; choosing a model enables thinking. This cascade applies to every RoleRow, not only empty ones.
+- **Broken** -- the slot points at a configured model whose connection was removed. `background: --bg-danger`; the connection `Select` renders in error state (border `--status-failed`) showing the dead id, followed by a `Badge` `error` ("removed"); thinking is disabled. A helper line sits below the row (`--type-label`, `--text-danger-body`): "Connection removed -- choose another." The role counts as **not-runnable** (see New Run gate). Re-picking a connection clears it.
+- **No thinking support** -- when the chosen model resolves to no thinking capability, the thinking `Select` stays present but **disabled**, showing `--`. Keeping it present (vs hiding) preserves column alignment across the three rows. When the model does support thinking, the options are `off` + the supported subset only.
 
-**Save:** the three controls auto-save individually on change (no Save button — see
+**Save:** the controls auto-save individually on change (no Save button -- see
 `InlineForm` / "Save model" rationale). On a backend reject, the control reverts
 and an error `Notification` toast appears (rationale "Auto-save error surfacing").
 
-Props: `role: RoleSlot | 'embedding' | 'memory-llm' | 'reflect-llm'`, `connectionId`, `modelId`, `thinking`, `state: 'assigned' | 'unassigned' | 'broken' | 'no-thinking'`, `connections`, `models`, `modelsLoading`, `thinkingOptions`, `onChange(field, value)`, `showThinking?: boolean` (default true; false for embedding).
+Props: `role: RoleSlot | 'embedding' | 'memory-llm' | 'reflect-llm'`, `connectionId`, `modelId`, `thinking`, `contextWindow: number | null`, `capabilityContextWindow?: number`, `state: 'assigned' | 'unassigned' | 'broken' | 'no-thinking'`, `connections`, `models`, `modelsLoading`, `thinkingOptions`, `onChange(field, value)`, `showThinking?: boolean` (default true; false for embedding). Logic for `context_window` field changes stays in the App.tsx connected parent.
 
 #### RoleCard
 

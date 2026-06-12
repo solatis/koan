@@ -10,7 +10,9 @@ import { ConnectionRow } from '../molecules/ConnectionRow'
 import { ConnectionForm, type ConnectionDraft, type TestState } from '../molecules/ConnectionForm'
 import { RoleRow, type RoleSlot, type RoleRowState } from '../molecules/RoleRow'
 import { SettingRow } from '../molecules/SettingRow'
+import { InlineNotice } from '../molecules/InlineNotice'
 import { NumberInput } from '../atoms/NumberInput'
+import { Select } from '../atoms/Select'
 import { Button } from '../atoms/Button'
 import type { ProviderType } from '../atoms/ProviderBadge'
 
@@ -40,9 +42,19 @@ export interface RoleAssignment {
   connectionId: string | null
   modelId: string | null
   thinking: string | null
+  /** Explicit context window in tokens from ConfiguredModel; null = derive from capabilities. */
+  contextWindow: number | null
+  /** Capability-derived context window (from model_capabilities); used as placeholder. */
+  capabilityContextWindow: number
   state: RoleRowState
   /** {value, label} pairs built by the connected layer; value is the wire token. */
   thinkingOptions: { value: string; label: string }[]
+  /** Selected Voyage output dimension; null = use catalog default. Relevant for embedding only. */
+  embeddingDim: number | null
+  /** Available dimension options from the Voyage catalog for the selected model. [] = not applicable. */
+  embeddingDimOptions: number[]
+  /** Catalog-fixed context window for embedding models; null = not applicable or not set. */
+  fixedContextWindow: number | null
 }
 
 export interface SettingsPageProps {
@@ -64,7 +76,21 @@ export interface SettingsPageProps {
   // Role + memory assignments
   assignments: Record<RoleSlot, RoleAssignment>
   modelsByConnection: Record<string, ModelsForConnection>
-  onRoleChange: (slot: RoleSlot, field: 'connection' | 'model' | 'thinking', value: string) => void
+  onRoleChange: (slot: RoleSlot, field: 'connection' | 'model' | 'thinking' | 'context_window', value: string) => void
+
+  /** Whether a vector-index rebuild is pending/in-progress after an embedding config change. */
+  embeddingRebuildPending: boolean
+  /**
+   * Whether the user has picked a new dimension that will require a full re-embed
+   * and is waiting for explicit confirmation before the save is sent.
+   */
+  embeddingDimConfirmPending: boolean
+  /** Called when the user picks a new embedding output dimension. */
+  onEmbeddingDimChange: (dim: number) => void
+  /** Called when the user confirms a pending dimension change that would re-embed. */
+  onEmbeddingDimConfirm: () => void
+  /** Called when the user cancels a pending dimension change. */
+  onEmbeddingDimCancel: () => void
 
   // Runtime
   scoutConcurrency: number
@@ -125,6 +151,11 @@ export function SettingsPage({
   assignments,
   modelsByConnection,
   onRoleChange,
+  embeddingRebuildPending,
+  embeddingDimConfirmPending,
+  onEmbeddingDimChange,
+  onEmbeddingDimConfirm,
+  onEmbeddingDimCancel,
   scoutConcurrency,
   onScoutConcurrencyChange,
 }: SettingsPageProps) {
@@ -148,6 +179,8 @@ export function SettingsPage({
   const roleRow = (slot: RoleSlot, showThinking = true) => {
     const a = assignments[slot]
     const m = (a.connectionId != null && modelsByConnection[a.connectionId]) || NO_MODELS
+    // Voyage embedding models: fixed whitelist, no free-text entry.
+    const allowFreeText = slot !== 'embedding'
     return (
       <RoleRow
         key={slot}
@@ -156,17 +189,28 @@ export function SettingsPage({
         connectionId={a.connectionId}
         modelId={a.modelId}
         thinking={a.thinking}
+        contextWindow={a.contextWindow}
+        capabilityContextWindow={a.capabilityContextWindow}
         connections={roleConnections}
         models={m.models}
         families={m.families}
         modelsLoading={m.loading}
         catalogSuggestions={m.catalogSuggestions}
+        allowFreeText={allowFreeText}
         thinkingOptions={a.thinkingOptions}
         onChange={(field, value) => onRoleChange(slot, field, value)}
         showThinking={showThinking}
       />
     )
   }
+
+  const embeddingA = assignments['embedding']
+  const embeddingDimOptions = embeddingA.embeddingDimOptions
+  const embeddingDim = embeddingA.embeddingDim
+  const embeddingDimSelectOptions = embeddingDimOptions.map(d => ({
+    value: String(d),
+    label: String(d),
+  }))
 
   return (
     <div className="settings-page">
@@ -215,6 +259,37 @@ export function SettingsPage({
         <SectionCard title="Memory" description="Models used by the memory subsystem.">
           <div className="settings-roles">
             {roleRow('embedding', false)}
+            {embeddingDimOptions.length > 0 && (
+              <div className="mol-role-row-wrap">
+                <div className="mol-role-row__ctx-row">
+                  <span className="mol-role-row__ctx-label">output dimensions</span>
+                  <Select
+                    mono
+                    value={embeddingDim != null ? String(embeddingDim) : ''}
+                    onChange={v => onEmbeddingDimChange(Number(v))}
+                    options={embeddingDimSelectOptions}
+                    placeholder="— catalog default —"
+                    disabled={embeddingA.modelId == null || embeddingDimConfirmPending || embeddingRebuildPending}
+                  />
+                </div>
+                {embeddingDimConfirmPending && !embeddingRebuildPending && (
+                  <>
+                    <InlineNotice
+                      message="Changing output dimensions will drop and re-embed all memory entries. Memory search is unavailable during the rebuild."
+                      action={{ label: 'Re-embed', onClick: onEmbeddingDimConfirm }}
+                    />
+                    <div style={{ marginTop: '4px' }}>
+                      <Button variant="text" size="sm" onClick={onEmbeddingDimCancel}>Cancel</Button>
+                    </div>
+                  </>
+                )}
+                {embeddingRebuildPending && (
+                  <InlineNotice
+                    message="Re-embedding in progress -- memory search is temporarily unavailable."
+                  />
+                )}
+              </div>
+            )}
             {roleRow('memory-llm')}
             {roleRow('reflect-llm')}
           </div>

@@ -322,6 +322,17 @@ def build_configured_models_listed(configured_models: list[dict]) -> dict:
     return {"configured_models": configured_models}
 
 
+def build_embedding_models_listed(models: list[dict]) -> dict:
+    """Build embedding_models_listed payload.
+
+    Payload is a list of {model_id, context_window, dimensions, default_dimension}
+    dicts -- one per recognized Voyage embedding model.  Replace-all semantics:
+    each event replaces the entire Settings.embeddingModels list on the frontend.
+    Pushed once at startup; the list is static for the process lifetime.
+    """
+    return {"models": models}
+
+
 def build_presets_listed(presets: dict) -> dict:
     """Build presets_listed payload.
 

@@ -119,6 +119,8 @@ EventType = Literal[
     "reflect_cancelled",
     "reflect_failed",
     "reflect_cleared",
+    # Static Voyage embedding model catalog; pushed once at startup.
+    "embedding_models_listed",
 ]
 
 
@@ -456,12 +458,19 @@ class ConfiguredModelWire(KoanBaseModel):
     """Wire representation of a ConfiguredModel from config (M5).
 
     A (connection, model-id) pair; global, referenced by slot assignments.
+    context_window is the optional explicit override (tokens); None means
+    "derive from capabilities".  embedding_dim is the selected Voyage output
+    dimension; None means use the model's catalog default.  Both are emitted
+    as camelCase by to_camel (contextWindow, embeddingDim).
     """
 
     id: str
     connection_id: str
     model_id: str
     resolved_from: str | None = None
+    context_window: int | None = None
+    # Selected Voyage output dimension; None = use catalog default.
+    embedding_dim: int | None = None
 
 
 class ResolvedCapabilitiesWire(KoanBaseModel):
@@ -517,6 +526,21 @@ class ModelRegistryEntryWire(KoanBaseModel):
     context_window: int
     thinking_modes: list[str] = []
     tier_hint: str | None = None
+
+
+class EmbeddingModelWire(KoanBaseModel):
+    """Wire representation of one recognized Voyage embedding model (camelCase via to_camel).
+
+    Payload shape: {models: [{model_id, context_window, dimensions, default_dimension}, ...]}.
+    Fold sets Settings.embedding_models from the models list on the
+    embedding_models_listed event; replace-all semantics.
+    """
+
+    model_id: str
+    context_window: int
+    # Selectable output dimensions (ascending).
+    dimensions: list[int] = []
+    default_dimension: int = 0
 
 
 class ProviderModelWire(KoanBaseModel):
@@ -591,6 +615,9 @@ class Settings(KoanBaseModel):
     # that touches connections or configured_models (a connection's type
     # determines its models' resolved capabilities).
     model_capabilities: list[ResolvedCapabilitiesWire] = []
+    # Static catalog of recognized Voyage embedding models; populated once at
+    # startup by embedding_models_listed and never updated after that.
+    embedding_models: list[EmbeddingModelWire] = []
 
 
 class RunConfig(KoanBaseModel):
@@ -2132,7 +2159,8 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 return projection.model_copy(update={"settings": new_settings})
 
             case "configured_models_listed":
-                # Replace-all: {configured_models: [{id, connection_id, model_id, resolved_from}, ...]}.
+                # Replace-all: {configured_models: [{id, connection_id, model_id,
+                # resolved_from, context_window, embedding_dim}, ...]}.
                 raw_cms = payload.get("configured_models", [])
                 new_cms = [
                     ConfiguredModelWire(
@@ -2140,6 +2168,8 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                         connection_id=m.get("connection_id", ""),
                         model_id=m.get("model_id", ""),
                         resolved_from=m.get("resolved_from"),
+                        context_window=m.get("context_window"),
+                        embedding_dim=m.get("embedding_dim"),
                     )
                     for m in raw_cms
                 ]
@@ -2438,6 +2468,24 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
 
             case "reflect_cleared":
                 return projection.model_copy(update={"reflect": None})
+
+            case "embedding_models_listed":
+                # Replace-all: {models: [{model_id, context_window, dimensions,
+                # default_dimension}, ...]}.  Pushed once at startup; static for
+                # the process lifetime.  The frontend uses this to populate the
+                # dimension selector and the context window display.
+                raw_models = payload.get("models", [])
+                new_ems = [
+                    EmbeddingModelWire(
+                        model_id=m.get("model_id", ""),
+                        context_window=m.get("context_window", 0),
+                        dimensions=m.get("dimensions", []),
+                        default_dimension=m.get("default_dimension", 0),
+                    )
+                    for m in raw_models
+                ]
+                new_settings = projection.settings.model_copy(update={"embedding_models": new_ems})
+                return projection.model_copy(update={"settings": new_settings})
 
             case _:
                 log.warning("fold: unknown event_type=%r", event_type)

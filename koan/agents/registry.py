@@ -73,6 +73,11 @@ class AgentRegistry:
         Connection -> ModelSpec.  Raises AgentError(code='unconfigured') when
         the active preset, the slot assignment, the ConfiguredModel, or the
         Connection is missing.  No default model is ever substituted (brief D12).
+
+        Context-window precedence (highest to lowest):
+        1. cm.context_window -- explicit per-ConfiguredModel override from config.
+        2. slot.context_window when it is an advertised variant.
+        3. caps.context_window or context_window_for fallback for unknown models.
         """
         from ..agents.model_catalog import context_window_for
 
@@ -144,17 +149,17 @@ class AgentRegistry:
                 role, cm.model_id, slot.thinking, clamped,
             )
 
-        # Use the slot's chosen context-window variant when it is an advertised
-        # variant; otherwise fall back to the resolved base context window.
-        context_window = (
-            slot.context_window
-            if slot.context_window and slot.context_window in caps.context_window_variants
-            else caps.context_window
-        )
-        # Fall back to context_window_for if the capability resolver returned 0
-        # (unknown model, not in catalog or snapshot).
-        if context_window == 0:
-            context_window = context_window_for(conn.type, cm.model_id)
+        # Explicit cm.context_window wins (user configured this model explicitly).
+        # Slot variant applies only when it is an advertised variant (not arbitrary).
+        # context_window_for covers unknown models absent from catalog + snapshot.
+        if cm.context_window:
+            context_window = cm.context_window
+        elif slot.context_window and slot.context_window in caps.context_window_variants:
+            context_window = slot.context_window
+        else:
+            context_window = caps.context_window
+            if context_window == 0:
+                context_window = context_window_for(conn.type, cm.model_id)
 
         return ModelSpec(
             provider=conn.type,

@@ -310,3 +310,121 @@ class TestCredentialConfigRoundTrip:
 
         store2 = CredentialStore(loaded, backend)
         assert store2.resolve("google-direct") == "round-trip-key"
+
+
+# ---------------------------------------------------------------------------
+# embedding_dim round-trip
+# ---------------------------------------------------------------------------
+
+class TestEmbeddingDimRoundTrip:
+    @pytest.mark.anyio
+    async def test_embedding_dim_persists_and_loads(self, tmp_path, monkeypatch):
+        """ConfiguredModel.embedding_dim round-trips through save/load."""
+        config_path = tmp_path / "config.yaml"
+        monkeypatch.setattr("koan.config.CONFIG_PATH", config_path)
+        monkeypatch.setattr("koan.config._config_write_lock", None)
+
+        original = KoanConfig(
+            connections=[Connection(id="voyage-1", type="voyage")],
+            configured_models=[
+                ConfiguredModel(
+                    id="voyage-embed",
+                    connection_id="voyage-1",
+                    model_id="voyage-4-large",
+                    embedding_dim=512,
+                )
+            ],
+        )
+        await save_koan_config(original)
+        loaded = await load_koan_config()
+
+        assert len(loaded.configured_models) == 1
+        cm = loaded.configured_models[0]
+        assert cm.embedding_dim == 512
+
+    @pytest.mark.anyio
+    async def test_embedding_dim_none_omitted_from_yaml(self, tmp_path, monkeypatch):
+        """embedding_dim=None is not written to YAML (omit-when-None convention)."""
+        import yaml
+        config_path = tmp_path / "config.yaml"
+        monkeypatch.setattr("koan.config.CONFIG_PATH", config_path)
+        monkeypatch.setattr("koan.config._config_write_lock", None)
+
+        original = KoanConfig(
+            connections=[Connection(id="voyage-1", type="voyage")],
+            configured_models=[
+                ConfiguredModel(
+                    id="voyage-embed",
+                    connection_id="voyage-1",
+                    model_id="voyage-4-large",
+                    embedding_dim=None,
+                )
+            ],
+        )
+        await save_koan_config(original)
+        parsed = yaml.safe_load(config_path.read_text())
+        assert "embedding_dim" not in parsed["configured_models"][0]
+
+
+# ---------------------------------------------------------------------------
+# _effective_embedding_identity
+# ---------------------------------------------------------------------------
+
+class TestEffectiveEmbeddingIdentity:
+    """Pure-data tests for _effective_embedding_identity (web/app.py helper)."""
+
+    @staticmethod
+    def _cfg(
+        *,
+        conn_type: str = "voyage",
+        model_id: str = "voyage-4-large",
+        embedding_dim: int | None = None,
+    ) -> KoanConfig:
+        """Build a minimal KoanConfig wired up for the embedding binding."""
+        return KoanConfig(
+            connections=[Connection(id="v1", type=conn_type)],
+            configured_models=[
+                ConfiguredModel(
+                    id="em",
+                    connection_id="v1",
+                    model_id=model_id,
+                    embedding_dim=embedding_dim,
+                )
+            ],
+            memory=MemoryBindings(
+                embedding=MemoryBinding(configured_model_id="em"),
+            ),
+        )
+
+    def test_returns_model_and_resolved_dim(self):
+        from koan.web.app import _effective_embedding_identity
+        cfg = self._cfg(embedding_dim=None)
+        identity = _effective_embedding_identity(cfg)
+        assert identity == ("voyage-4-large", 1024)  # catalog default
+
+    def test_returns_explicit_dim(self):
+        from koan.web.app import _effective_embedding_identity
+        cfg = self._cfg(embedding_dim=512)
+        identity = _effective_embedding_identity(cfg)
+        assert identity == ("voyage-4-large", 512)
+
+    def test_non_voyage_connection_returns_none(self):
+        from koan.web.app import _effective_embedding_identity
+        cfg = self._cfg(conn_type="anthropic")
+        assert _effective_embedding_identity(cfg) is None
+
+    def test_unrecognized_model_returns_none(self):
+        from koan.web.app import _effective_embedding_identity
+        cfg = self._cfg(model_id="voyage-unknown")
+        assert _effective_embedding_identity(cfg) is None
+
+    def test_no_memory_returns_none(self):
+        from koan.web.app import _effective_embedding_identity
+        cfg = KoanConfig(
+            connections=[Connection(id="v1", type="voyage")],
+            configured_models=[
+                ConfiguredModel(id="em", connection_id="v1", model_id="voyage-4-large")
+            ],
+            memory=None,
+        )
+        assert _effective_embedding_identity(cfg) is None

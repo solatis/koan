@@ -124,6 +124,10 @@ def _parse_configured_models(raw: object) -> list[ConfiguredModel]:
     """Parse a list of ConfiguredModel from the snake_case config.
 
     Each entry requires 'id', 'connection_id', and 'model_id'.
+    Optional 'context_window' (positive integer) is preserved as-is;
+    absent or null values become None (derive from capabilities).
+    Optional 'embedding_dim' (integer) is preserved as-is; absent or null
+    values become None (use the voyage model default from the catalog).
     """
     if not isinstance(raw, list):
         return []
@@ -143,6 +147,8 @@ def _parse_configured_models(raw: object) -> list[ConfiguredModel]:
             connection_id=conn_id,
             model_id=model_id,
             resolved_from=entry.get("resolved_from") or None,
+            context_window=int(entry["context_window"]) if entry.get("context_window") is not None else None,
+            embedding_dim=int(entry["embedding_dim"]) if entry.get("embedding_dim") is not None else None,
         ))
     return results
 
@@ -341,6 +347,9 @@ def _config_to_dict(config: "KoanConfig") -> dict:
             "connection_id": cm.connection_id,
             "model_id": cm.model_id,
             **({"resolved_from": cm.resolved_from} if cm.resolved_from else {}),
+            **({"context_window": cm.context_window} if cm.context_window is not None else {}),
+            # Omit when None: an absent embedding_dim means "use model default".
+            **({"embedding_dim": cm.embedding_dim} if cm.embedding_dim is not None else {}),
         }
         for cm in config.configured_models
     ]

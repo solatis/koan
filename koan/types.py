@@ -231,6 +231,10 @@ class ConfiguredModel:
 
     Global; referenced by slots and memory bindings.  The same model_id on two
     connections is two distinct ConfiguredModels (brief D3).
+
+    context_window is an optional explicit override (tokens).  None means
+    "derive from capabilities"; used by resolve_model_spec and the Settings
+    display as top-priority override, falling through to caps/snapshot when unset.
     """
 
     id: str
@@ -238,6 +242,11 @@ class ConfiguredModel:
     model_id: str
     # newest-in-family provenance written at config-time (brief D11).
     resolved_from: str | None = None
+    # Explicit per-model context window; None defers to capabilities/snapshot.
+    context_window: int | None = None
+    # Selected Voyage output dimension; None means use the model default from the
+    # static catalog.  Relevant only for voyage embedding models; None for all others.
+    embedding_dim: int | None = None
 
 
 @dataclass
