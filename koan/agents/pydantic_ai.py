@@ -44,9 +44,12 @@ from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from .base import AgentDiagnostic, AgentError, AgentOptions
 from .events import StreamEvent
+from ..logger import get_logger
 
 if TYPE_CHECKING:
     from ..types import ModelSpec
+
+log = get_logger("pydantic_ai")
 
 
 def _parse_read_result_from_content(content: str) -> dict | None:
@@ -269,58 +272,18 @@ class PydanticAIAgent:
         # defeat the patch.
         import koan.agents.adapter as _adapter_mod
 
-        # Resolve credentials and connection settings from the per-run frozen
-        # config snapshot (app_state.run.frozen_config / frozen_credential_store),
-        # not live global config, so the run is immune to mid-run settings changes.
-        store = self._app_state.run.frozen_credential_store
-        cfg = self._app_state.run.frozen_config
-        conn_id = self._model_spec.connection_id
-        connection = next(
-            (c for c in (cfg.connections if cfg else [])
-             if c.id == conn_id),
-            None,
-        )
-        # Raise only when a non-empty connection_id was specified but not found.
-        # An empty connection_id means no connection was assigned (pre-M1 ModelSpec
-        # or test path); fall back to resolving by provider type in that case.
-        if connection is None and conn_id:
-            raise AgentError(AgentDiagnostic(
-                code="unconfigured",
-                agent=self.name,
-                stage="spawn",
-                message=(
-                    f"Connection '{conn_id}' not found in config. "
-                    "Ensure the connection is configured before starting a run."
-                ),
-            ))
-        if connection is not None:
-            resolved = _adapter_mod.resolve_provider_auth(connection, store)
-        else:
-            # Pre-M1 fallback: no connection_id on spec (empty string).
-            # Find the first connection of this provider type in the config
-            # and resolve credentials by its connection id.  Requires
-            # app_state.provider_config.config to carry a matching connection.
-            # M4: removed type-keyed store.resolve() call; now finds the
-            # connection by type from config.connections instead.
-            conn_for_type = next(
-                (c for c in (cfg.connections if cfg else [])
-                 if c.type == self._model_spec.provider),
-                None,
-            )
-            if conn_for_type is not None:
-                resolved = _adapter_mod.resolve_provider_auth(conn_for_type, store)
-            else:
-                resolved = _adapter_mod.ResolvedProviderAuth(
-                    api_key=None, region=None, base_url=None
-                )
+        # api_key is baked into the ModelSpec at flatten time (resolve_model_spec),
+        # so the spawn path reads it directly from the spec -- no credential store
+        # lookup is needed here. base_url and region are also inlined at flatten time.
+        api_key = self._model_spec.api_key
 
         # Build the provider model and settings from the resolved ModelSpec.
         try:
             model = _adapter_mod.build_model(
                 self._model_spec,
-                resolved.api_key,
-                region=resolved.region,
-                base_url=resolved.base_url,
+                api_key,
+                region=self._model_spec.region,
+                base_url=self._model_spec.base_url,
             )
             model_settings = _adapter_mod.build_model_settings(self._model_spec)
         except Exception as e:

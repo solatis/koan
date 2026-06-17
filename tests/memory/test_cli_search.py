@@ -9,9 +9,11 @@ import pytest
 
 import koan.cli.memory as cli_memory
 from koan.cli.memory import cmd_rag, cmd_search
+from koan.memory.bindings import MemoryModels
 from koan.memory.retrieval.types import SearchResult
 from koan.memory.store import MemoryStore
 from koan.memory.types import MemoryEntry
+from koan.types import ModelSpec
 
 
 # ---------------------------------------------------------------------------
@@ -20,6 +22,23 @@ from koan.memory.types import MemoryEntry
 
 def ns(**kwargs) -> argparse.Namespace:
     return argparse.Namespace(**kwargs)
+
+
+def _fake_embedding_spec() -> ModelSpec:
+    """Minimal ModelSpec for the embedding binding in tests."""
+    return ModelSpec(
+        provider="voyage",
+        model="voyage-4-large",
+        thinking="disabled",
+        connection_id="test-voyage",
+        embedding_dim=1024,
+        api_key="fake-key",
+    )
+
+
+def _fake_models() -> MemoryModels:
+    """MemoryModels with a fake embedding spec for search/rag tests."""
+    return MemoryModels(embedding=_fake_embedding_spec())
 
 
 def _make_entry(n: int = 1, etype: str = "context") -> MemoryEntry:
@@ -65,14 +84,14 @@ def search_env(store_env, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_cmd_search_human_readable(search_env, capsys) -> None:
-    cmd_search(ns(query="test", type=None, k=5, json_output=False))
+    cmd_search(ns(query="test", type=None, k=5, json_output=False), _fake_models())
     out = capsys.readouterr().out
     assert "0001" in out
     assert "Title 1" in out
 
 
 def test_cmd_search_json_output(search_env, capsys) -> None:
-    cmd_search(ns(query="test", type=None, k=5, json_output=True))
+    cmd_search(ns(query="test", type=None, k=5, json_output=True), _fake_models())
     out = capsys.readouterr().out
     result = json.loads(out)
     assert "results" in result
@@ -82,12 +101,12 @@ def test_cmd_search_json_output(search_env, capsys) -> None:
 def test_cmd_search_type_filter_forwarded(search_env, monkeypatch) -> None:
     captured = {}
 
-    async def mock_search(index, query, k=5, type_filter=None):
+    async def mock_search(index, query, model, k=5, type_filter=None):
         captured["type_filter"] = type_filter
         return FIXED_RESULTS
 
     monkeypatch.setattr(cli_memory, "retrieval_search", mock_search)
-    cmd_search(ns(query="x", type="decision", k=5, json_output=False))
+    cmd_search(ns(query="x", type="decision", k=5, json_output=False), _fake_models())
     assert captured["type_filter"] == "decision"
 
 
@@ -96,7 +115,7 @@ def test_cmd_search_type_filter_forwarded(search_env, monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 
 def test_cmd_rag_json_output(search_env, capsys) -> None:
-    cmd_rag(ns(directive="find stuff", anchor="some context", k=5, json_output=True))
+    cmd_rag(ns(directive="find stuff", anchor="some context", k=5, json_output=True), _fake_models())
     out = capsys.readouterr().out
     result = json.loads(out)
     assert "results" in result
@@ -109,7 +128,7 @@ def test_cmd_rag_at_file_anchor(search_env, tmp_path, capsys) -> None:
 
     captured = {}
 
-    async def mock_inject(index, directive, anchor, k=5):
+    async def mock_inject(index, models, directive, anchor, k=5):
         captured["anchor"] = anchor
         return FIXED_RESULTS
 
@@ -120,12 +139,12 @@ def test_cmd_rag_at_file_anchor(search_env, tmp_path, capsys) -> None:
             anchor=f"@{anchor_file}",
             k=5,
             json_output=False,
-        ))
+        ), _fake_models())
 
     assert captured["anchor"] == "anchor content from file"
 
 
 def test_cmd_rag_missing_anchor_file_exits(search_env, capsys) -> None:
     with pytest.raises(SystemExit) as exc:
-        cmd_rag(ns(directive="d", anchor="@/nonexistent/file.txt", k=5, json_output=False))
+        cmd_rag(ns(directive="d", anchor="@/nonexistent/file.txt", k=5, json_output=False), _fake_models())
     assert exc.value.code == 1

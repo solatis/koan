@@ -393,22 +393,16 @@ async def test_live_gemini_intake_turn_advances_step(tmp_path, real_credential_s
     # which may not be available on all API keys.  gemini-flash-latest is the
     # conservative baseline used for live tests; it is available on standard
     # GOOGLE_API_KEY grants and is sufficient to exercise the bootstrap path.
+    # api_key is baked into the spec here because pydantic_ai.py now reads
+    # self._model_spec.api_key directly (de-globalize refactor); it no longer
+    # resolves the key from frozen_credential_store at spawn time.
     model_spec = ModelSpec(
         provider="google",
         model="gemini-flash-latest",
         thinking="disabled",
+        connection_id="google-1",
+        api_key=real_credential_store.resolve("google-1"),
     )
-
-    # Wire the credential store and config so build_model can resolve the Google
-    # API key.  M4: the pre-M1 fallback in pydantic_ai.py finds the first google
-    # connection from cfg.connections and resolves credentials by its id, so the
-    # config must carry a google connection alongside the store.
-    app_state.provider_config.credential_store = real_credential_store
-    app_state.provider_config.config = real_credential_store._config
-    # pydantic_ai.py now reads the per-run frozen snapshot (Tranche A, step 7)
-    # instead of live provider_config, so the test must mirror both paths.
-    app_state.run.frozen_config = real_credential_store._config
-    app_state.run.frozen_credential_store = real_credential_store
 
     pai_agent = PydanticAIAgent(
         model_spec=model_spec,

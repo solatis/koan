@@ -9,12 +9,8 @@ import sys
 from pathlib import Path
 
 from ..config import load_koan_config, save_koan_config
-from ..credentials import (
-    CredentialStore,
-    get_key_backend,
-    set_active_credential_store,
-)
-from ..memory.bindings import set_active_provider_config
+from ..credentials import CredentialStore, get_key_backend
+from ..memory.bindings import MemoryModels, build_memory_models, require_memory_model
 from ..memory import ops
 from ..memory.retrieval import RetrievalIndex, search as retrieval_search, inject as rag_inject
 from ..memory.retrieval import (
@@ -40,37 +36,12 @@ def _die(msg: str) -> None:
     sys.exit(1)
 
 
-def _init_credentials() -> None:
-    """Initialize the active credential store and provider config for the memory CLI.
+def _has_api_key(models: MemoryModels) -> bool:
+    """True when the memory_llm binding is configured (has a resolved spec).
 
-    Loads config, constructs the store, and sets the module-level active store
-    and provider config.  Persists the config only when undecryptable envelopes
-    were pruned at construction.  M1: env-seeding removed (brief D13 --
-    credentials are fully manual).  M4: set_active_provider_config is called
-    so memory bindings can be resolved.  Must be called before any operation
-    that resolves a provider key (reflect, status, index).
+    Does not check whether the api_key is non-None; keyless providers are valid.
     """
-    config = asyncio.run(load_koan_config())
-    store = CredentialStore(config, get_key_backend())
-    if store.pruned:
-        asyncio.run(save_koan_config(config))
-    set_active_credential_store(store)
-    set_active_provider_config(config)
-
-
-def _has_api_key() -> bool:
-    """True when the memory_llm binding is configured and has credentials.
-
-    Uses resolve_memory_binding to verify the memory LLM can be instantiated.
-    _init_credentials() must have been called before this returns a meaningful
-    result (it is called at the top of cmd_memory dispatch).
-    """
-    try:
-        from ..memory.bindings import resolve_memory_binding
-        resolve_memory_binding("memory_llm")
-        return True
-    except Exception:
-        return False
+    return models.memory_llm is not None
 
 
 def _print_human_readable(result: dict) -> None:
@@ -124,16 +95,17 @@ def cmd_forget(args: argparse.Namespace) -> None:
     print(json.dumps(result))
 
 
-def cmd_status(args: argparse.Namespace) -> None:
+def cmd_status(args: argparse.Namespace, models: MemoryModels) -> None:
+    """Print memory status. Skips regeneration when memory_llm is not configured."""
     store = _make_store()
-    if store.summary_is_stale() and not _has_api_key():
+    if store.summary_is_stale() and not _has_api_key(models):
         print(
-            "koan status: summary is stale but no Google API key in credential store"
+            "koan status: summary is stale but memory_llm binding is not configured"
             " -- cannot regenerate",
             file=sys.stderr,
         )
         sys.exit(1)
-    result = asyncio.run(ops.status(store, type=getattr(args, "type", None)))
+    result = asyncio.run(ops.status(store, model=models.memory_llm, type=getattr(args, "type", None)))
     if getattr(args, "json_output", False):
         print(json.dumps(result))
     else:
@@ -142,14 +114,16 @@ def cmd_status(args: argparse.Namespace) -> None:
         print("(summary regenerated)", file=sys.stderr)
 
 
-def cmd_search(args: argparse.Namespace) -> None:
+def cmd_search(args: argparse.Namespace, models: MemoryModels) -> None:
+    """Search memory entries. Requires the embedding binding to be configured."""
     store = _make_store()
     index = _make_index(store)
     type_filter = getattr(args, "type", None)
     k = getattr(args, "k", 5)
     json_output = getattr(args, "json_output", False)
     try:
-        results = asyncio.run(retrieval_search(index, args.query, k=k, type_filter=type_filter))
+        embed = require_memory_model(models.embedding, "embedding")
+        results = asyncio.run(retrieval_search(index, args.query, embed, k=k, type_filter=type_filter))
     except RuntimeError as e:
         _die(str(e))
         return
@@ -178,7 +152,8 @@ def cmd_search(args: argparse.Namespace) -> None:
             print(sep)
 
 
-def cmd_rag(args: argparse.Namespace) -> None:
+def cmd_rag(args: argparse.Namespace, models: MemoryModels) -> None:
+    """Run the RAG injection pipeline. Requires embedding and memory_llm bindings."""
     store = _make_store()
     index = _make_index(store)
     directive = args.directive
@@ -196,7 +171,7 @@ def cmd_rag(args: argparse.Namespace) -> None:
         anchor = anchor_raw
 
     try:
-        results = asyncio.run(rag_inject(index, directive, anchor, k=k))
+        results = asyncio.run(rag_inject(index, models, directive, anchor, k=k))
     except RuntimeError as e:
         _die(str(e))
         return
@@ -226,7 +201,8 @@ def cmd_rag(args: argparse.Namespace) -> None:
             print(sep)
 
 
-def cmd_reflect(args: argparse.Namespace) -> None:
+def cmd_reflect(args: argparse.Namespace, models: MemoryModels) -> None:
+    """Run the reflection loop. Requires reflect_llm and embedding bindings."""
     store = _make_store()
     index = _make_index(store)
     json_output = getattr(args, "json_output", False)
@@ -248,6 +224,7 @@ def cmd_reflect(args: argparse.Namespace) -> None:
     try:
         result = asyncio.run(run_reflect_agent(
             index,
+            models,
             args.question,
             context=getattr(args, "context", None),
             on_trace=on_trace if show_trace else None,
@@ -281,22 +258,27 @@ def cmd_reflect(args: argparse.Namespace) -> None:
 
 
 def cmd_memory(args: argparse.Namespace) -> None:
-    # Initialize the credential store once at entry so all sub-commands
-    # (status, reflect, search) resolve provider keys from the store.
-    _init_credentials()
+    # Build the credential store and memory models once at entry so all
+    # sub-commands receive explicit specs rather than relying on a module global.
+    config = asyncio.run(load_koan_config())
+    store = CredentialStore(config, get_key_backend())
+    if store.pruned:
+        asyncio.run(save_koan_config(config))
+    models = build_memory_models(config, store)
+
     cmd = getattr(args, "memory_command", None)
     if cmd == "memorize":
         cmd_memorize(args)
     elif cmd == "forget":
         cmd_forget(args)
     elif cmd == "status":
-        cmd_status(args)
+        cmd_status(args, models)
     elif cmd == "search":
-        cmd_search(args)
+        cmd_search(args, models)
     elif cmd == "rag":
-        cmd_rag(args)
+        cmd_rag(args, models)
     elif cmd == "reflect":
-        cmd_reflect(args)
+        cmd_reflect(args, models)
     else:
         mem_parser = getattr(args, "_mem_parser", None)
         if mem_parser is not None:

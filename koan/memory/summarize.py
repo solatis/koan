@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import TYPE_CHECKING
 
 from .llm import generate
 from .store import MemoryStore
 from .types import MemoryEntry
+
+if TYPE_CHECKING:
+    from ..types import ModelSpec
 
 log = logging.getLogger("koan.memory.summarize")
 
@@ -46,9 +50,14 @@ def _seq_number(entry: MemoryEntry) -> int:
 
 async def generate_summary(
     store: MemoryStore,
+    model: "ModelSpec",
     project_name: str = "",
 ) -> str:
-    """Generate summary.md by reading all entries directly."""
+    """Generate summary.md by reading all entries directly.
+
+    The memory_llm model/key arrive via the explicit model parameter;
+    no module global is read.
+    """
     entries = store.list_entries()
 
     if not entries:
@@ -68,7 +77,7 @@ async def generate_summary(
 
     log.info("generate_summary: sending %d entries (%d chars) to LLM", len(entries), len(context))
     try:
-        summary = await generate(prompt, system=_SUMMARY_SYSTEM, max_tokens=2500)
+        summary = await generate(prompt, model=model, system=_SUMMARY_SYSTEM)
         log.info("generate_summary: LLM returned %d chars", len(summary))
     except Exception:
         log.exception("LLM call failed for project summary generation")
@@ -83,7 +92,11 @@ async def generate_summary(
 
 async def regenerate_summary(
     store: MemoryStore,
+    model: "ModelSpec",
     project_name: str = "",
 ) -> None:
-    """Regenerate the project summary after entries change."""
-    await generate_summary(store, project_name=project_name)
+    """Regenerate the project summary after entries change.
+
+    The memory_llm model/key arrive via the explicit model parameter.
+    """
+    await generate_summary(store, model=model, project_name=project_name)

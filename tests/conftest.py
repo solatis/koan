@@ -1,46 +1,23 @@
 # Test-suite configuration and hooks.
-#
-# (The M8 xfail hook that auto-xfailed test_web_flows.py / test_uploads.py
-# client-fixture tests is gone: the settings/startup path was reworked onto the
-# provider-credential model, so those tests run normally again.)
+
+import os
 
 import pytest
 
 
-@pytest.fixture(autouse=False)
-def real_credential_store(tmp_path, monkeypatch):
-    """Initialize the active credential store and provider config for integration tests.
+def _build_integration_cred_components(tmp_path, monkeypatch):
+    """Build KoanConfig + CredentialStore for integration tests.
 
-    Sets up a KoanConfig with google-1 and voyage-1 connections, matching
-    configured_models, and MemoryBindings for embedding/memory_llm/reflect_llm.
-    Seeds credentials from the environment under connection ids ("google-1",
-    "voyage-1", etc.) rather than provider-type strings.  Calls both
-    set_active_credential_store and set_active_provider_config so memory
-    subsystem operations resolve bindings correctly.
-
-    M4: credentials are keyed by connection id.  Use store.has("google-1") or
-    store.has("voyage-1") to check whether a key is available, not
-    store.has("google") / store.has("voyage").
+    Shared by real_credential_store and real_memory_models fixtures.
+    Seeds connection-id keyed credentials from well-known env vars.
+    Returns (config, store).
     """
     from koan.config import KoanConfig
-    from koan.credentials import (
-        CredentialStore,
-        FileKeyBackend,
-        set_active_credential_store,
-    )
-    from koan.memory.bindings import set_active_provider_config
-    from koan.types import (
-        Connection,
-        ConfiguredModel,
-        MemoryBinding,
-        MemoryBindings,
-    )
+    from koan.credentials import CredentialStore, FileKeyBackend
+    from koan.types import Connection, ConfiguredModel, MemoryBinding, MemoryBindings
 
-    # Use a tmp master key so we never touch the real ~/.koan/master.key.
     key_path = tmp_path / "master.key"
     monkeypatch.setattr("koan.credentials.MASTER_KEY_PATH", key_path)
-
-    import os
 
     config = KoanConfig(
         connections=[
@@ -73,9 +50,6 @@ def real_credential_store(tmp_path, monkeypatch):
     backend = FileKeyBackend()
     store = CredentialStore(config, backend)
 
-    # Seed credentials under connection ids.  Multiple env vars may provide
-    # the same connection's key (e.g. GOOGLE_API_KEY and GEMINI_API_KEY both
-    # map to "google-1"); take the first one found.
     _INTEGRATION_ENV_KEYS: dict[str, str] = {
         "GOOGLE_API_KEY": "google-1",
         "GEMINI_API_KEY": "google-1",
@@ -88,6 +62,32 @@ def real_credential_store(tmp_path, monkeypatch):
         if val and not store.has(conn_id):
             store.set(conn_id, val)
 
-    set_active_credential_store(store)
-    set_active_provider_config(config)
+    return config, store
+
+
+@pytest.fixture(autouse=False)
+def _real_cred_components(tmp_path, monkeypatch):
+    return _build_integration_cred_components(tmp_path, monkeypatch)
+
+
+@pytest.fixture(autouse=False)
+def real_credential_store(_real_cred_components):
+    """Return a CredentialStore seeded from env for integration tests.
+
+    Use store.has("google-1") / store.has("voyage-1") to check key presence.
+    M4: credentials are keyed by connection id, not provider type string.
+    """
+    _, store = _real_cred_components
     return store
+
+
+@pytest.fixture(autouse=False)
+def real_memory_models(_real_cred_components):
+    """Return a MemoryModels bundle for integration tests.
+
+    Built from real credentials seeded from env.  Fields are None when the
+    corresponding env var is absent (e.g. no VOYAGE_API_KEY -> embedding=None).
+    """
+    from koan.memory.bindings import build_memory_models
+    config, store = _real_cred_components
+    return build_memory_models(config, store)

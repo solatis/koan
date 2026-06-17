@@ -4,9 +4,13 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from .store import MemoryStore
 from .types import MEMORY_TYPES
+
+if TYPE_CHECKING:
+    from ..types import ModelSpec
 
 log = logging.getLogger(__name__)
 
@@ -128,10 +132,17 @@ def forget(
 
 async def status(
     store: MemoryStore,
+    model: "ModelSpec | None",
     type: str | None = None,
     regenerate: bool = True,
 ) -> dict:
-    """Return summary and entry listing. Regenerates stale summary when possible."""
+    """Return summary and entry listing. Regenerates stale summary when possible.
+
+    model is the memory_llm ModelSpec (may be None). Regeneration is attempted
+    only when regenerate=True and model is not None and the summary is stale.
+    When stale but model is None, regeneration is skipped and the existing
+    summary is returned.
+    """
     if type is not None:
         validate_memory_type(type)
 
@@ -140,10 +151,10 @@ async def status(
     regenerated = False
     regen_error: str | None = None
 
-    if regenerate and store.summary_is_stale():
+    if regenerate and model is not None and store.summary_is_stale():
         log.info("status regenerating stale summary")
         try:
-            await store.regenerate_summary()
+            await store.regenerate_summary(model=model)
             regenerated = True
             log.info("status summary regenerated")
         except Exception:

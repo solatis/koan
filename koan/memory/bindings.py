@@ -1,14 +1,16 @@
 # Memory-binding seam for the memory subsystem.
 #
-# The memory subsystem has no app_state; it uses module-level active stores.
-# This module provides a parallel active-provider-config seam (set once at
-# process startup, parallel to set_active_credential_store in credentials.py)
-# and a resolver that maps a MemoryBinding -> configured model -> connection ->
-# credential (by connection id).
+# Pure builder API: no module-level globals.
 #
-# Entrypoints (cli/run.py and cli/memory.py) must call set_active_provider_config
-# right after set_active_credential_store so all memory operations can resolve
-# their models from config.
+#   build_memory_models(config, credential_store) -> MemoryModels
+#       Resolve all three memory bindings from config + credentials in one
+#       shot.  Returns a frozen MemoryModels bundle.  Called once per run
+#       start; the bundle is stored in RunState.memory_models and threaded
+#       explicitly to every subsystem that needs it.
+#
+#   require_memory_model(spec, kind) -> ModelSpec
+#       Guard helper: raises RuntimeError if spec is None, otherwise
+#       returns the spec unchanged.
 
 from __future__ import annotations
 
@@ -17,65 +19,35 @@ from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from ..config import KoanConfig
+    from ..credentials import CredentialStore
 
-from ..credentials import active_credential_store
-
-_ACTIVE_CONFIG: "KoanConfig | None" = None
-
-
-def set_active_provider_config(config: "KoanConfig") -> None:
-    """Set the process-wide active provider config for the memory subsystem.
-
-    Called once per process entrypoint (cli/run.py, cli/memory.py) right
-    after set_active_credential_store.  Without this call, any memory
-    operation that resolves a model binding raises RuntimeError.
-    """
-    global _ACTIVE_CONFIG
-    _ACTIVE_CONFIG = config
-
-
-def _active_config() -> "KoanConfig":
-    """Return the active provider config, raising RuntimeError if unset.
-
-    Mirrors active_credential_store() -- intentionally early and loud so
-    misconfigured startup is caught at the first operation that needs it.
-    """
-    if _ACTIVE_CONFIG is None:
-        raise RuntimeError(
-            "Active provider config is not initialized. "
-            "Call set_active_provider_config() at process startup before "
-            "using any memory or provider operations."
-        )
-    return _ACTIVE_CONFIG
+from ..types import CachingPolicy, ModelSpec, ThinkingMode
 
 
 # ---------------------------------------------------------------------------
 # Static Voyage embedding model catalog
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class VoyageEmbeddingModel:
     """One entry in the koan-owned static Voyage embedding model catalog.
 
-    Carries the fixed context window and the set of selectable output
-    dimensions for each recognized Voyage embedding model.  All three
-    current models share the same dimension options and default.
+    Carries the set of selectable output dimensions for each recognized
+    Voyage embedding model.
     """
 
     model_id: str
-    context_window: int
     # Selectable output dimensions (ascending order).
     dimensions: tuple[int, ...]
     default_dimension: int
 
 
 # Three recognized Voyage embedding models; dimensions ascending, default 1024.
-# Context window is 32,000 tokens for all three (display/metadata only;
-# Voyage truncates server-side via embed(truncation=True)).
 VOYAGE_EMBEDDING_MODELS: dict[str, VoyageEmbeddingModel] = {
-    "voyage-4-large": VoyageEmbeddingModel("voyage-4-large", 32_000, (256, 512, 1024, 2048), 1024),
-    "voyage-4":       VoyageEmbeddingModel("voyage-4",       32_000, (256, 512, 1024, 2048), 1024),
-    "voyage-4-lite":  VoyageEmbeddingModel("voyage-4-lite",  32_000, (256, 512, 1024, 2048), 1024),
+    "voyage-4-large": VoyageEmbeddingModel("voyage-4-large", (256, 512, 1024, 2048), 1024),
+    "voyage-4":       VoyageEmbeddingModel("voyage-4",       (256, 512, 1024, 2048), 1024),
+    "voyage-4-lite":  VoyageEmbeddingModel("voyage-4-lite",  (256, 512, 1024, 2048), 1024),
 }
 
 
@@ -127,110 +99,114 @@ def resolve_voyage_embedding_dim(model_id: str, selected: int | None) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Resolved memory model
+# MemoryModels bundle and pure builder
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
-class ResolvedMemoryModel:
-    """Resolved provider + model + credential for one memory binding.
+class MemoryModels:
+    """Self-contained per-run memory model bundle.
 
-    Produced by resolve_memory_binding; consumed by memory LLM and
-    embedding/rerank callers.  Never persisted -- exists only for the
-    duration of a model-build or embed call.
-
-    api_key may be None for keyless providers (lmstudio) or when no
-    credential is stored for the connection.
-
-    embedding_dim is set for voyage embedding bindings (the resolved output
-    dimension, accounting for the user-selected override and the model
-    default).  None for all non-embedding or non-voyage bindings.
+    Each spec carries its baked api_key resolved from the per-run frozen
+    credential store. Fields are Optional so the bundle can be built even
+    when a binding is unconfigured; the 'binding not configured' error is
+    raised at point of use via require_memory_model.
     """
 
-    provider_type: str
-    model_id: str
-    api_key: str | None
-    base_url: str | None
-    region: str | None
-    # Resolved embedding output dimension; None for non-voyage or non-embedding.
-    embedding_dim: int | None = None
+    embedding: ModelSpec | None = None
+    memory_llm: ModelSpec | None = None
+    reflect_llm: ModelSpec | None = None
 
 
-def resolve_memory_binding(
-    kind: Literal["embedding", "memory_llm", "reflect_llm"]
-) -> ResolvedMemoryModel:
-    """Resolve a named memory binding to a provider + model + credential.
+def build_memory_models(
+    config: "KoanConfig",
+    credential_store: "CredentialStore | None",
+) -> MemoryModels:
+    """Build a MemoryModels bundle by resolving all three memory bindings.
 
-    Reads the active provider config (set_active_provider_config must have
-    been called at startup).  Resolution chain:
+    Pure: resolves all three bindings from explicit config + credential_store,
+    never reads a module global. Returns None fields for unconfigured or
+    unresolvable bindings -- does NOT raise on missing config so the CLI
+    can call this even with no bindings configured.
 
-        config.memory.<kind>.configured_model_id
-          -> config.configured_models (by id) -> connection_id
-          -> config.connections (by id)
-          -> active_credential_store().resolve(connection.id) -> api_key
-
-    For voyage embedding bindings, also resolves embedding_dim from the
-    model's optional embedding_dim override and the catalog default.
-
-    Raises RuntimeError with a clear message when:
-      - The active config is not set
-      - config.memory is absent or the binding for <kind> is unset
-      - The referenced configured_model_id is not in config.configured_models
-      - The referenced connection_id is not in config.connections
-
-    Returns a ResolvedMemoryModel with api_key=None when no credential is
-    stored for the connection (caller decides whether that is an error).
+    The credential_store may be None (degraded boot or keyless provider);
+    api_key is None on all specs in that case.
     """
-    config = _active_config()
-
     if config.memory is None:
-        raise RuntimeError(
-            f"Memory binding {kind!r} is not configured: config.memory is absent. "
-            "Add a 'memory:' block to ~/.koan/config.yaml."
+        return MemoryModels()
+
+    specs: dict[str, ModelSpec | None] = {}
+
+    for kind in ("embedding", "memory_llm", "reflect_llm"):
+        binding = getattr(config.memory, kind, None)
+        if binding is None:
+            specs[kind] = None
+            continue
+
+        cm_id = binding.configured_model_id
+        cm = next((c for c in config.configured_models if c.id == cm_id), None)
+        if cm is None:
+            specs[kind] = None
+            continue
+
+        conn_id = cm.connection_id
+        conn = next((c for c in config.connections if c.id == conn_id), None)
+        if conn is None:
+            specs[kind] = None
+            continue
+
+        api_key = (
+            credential_store.resolve(conn.id)
+            if credential_store and conn.id
+            else None
         )
 
-    binding = getattr(config.memory, kind, None)
-    if binding is None:
-        raise RuntimeError(
-            f"Memory binding {kind!r} is not configured in config.memory. "
-            "Add the binding to the 'memory:' block in ~/.koan/config.yaml."
-        )
+        if kind == "embedding":
+            # Build ModelSpec directly for embedding: voyage embedding models are
+            # not in the capability recognition table so build_resolved_model would
+            # emit spurious 'unrecognized model id' warnings for every embed call.
+            embedding_dim: int | None = None
+            if conn.type == "voyage" and is_recognized_voyage_model(cm.model_id):
+                embedding_dim = resolve_voyage_embedding_dim(cm.model_id, cm.embedding_dim)
+            specs[kind] = ModelSpec(
+                provider=conn.type,
+                model=cm.model_id,
+                thinking="disabled",
+                settings={},
+                caching=binding.caching,
+                connection_id=conn.id,
+                base_url=conn.base_url,
+                region=conn.region,
+                embedding_dim=embedding_dim,
+                api_key=api_key,
+            )
+        else:
+            # LLM bindings: build via build_resolved_model so thinking/caching baked.
+            from ..agents.registry import build_resolved_model
+            try:
+                specs[kind] = build_resolved_model(
+                    conn, cm, binding.thinking, binding.caching, cm.embedding_dim, api_key
+                )
+            except Exception:
+                specs[kind] = None
 
-    cm_id = binding.configured_model_id
-    cm = next(
-        (c for c in config.configured_models if c.id == cm_id),
-        None,
+    return MemoryModels(
+        embedding=specs.get("embedding"),
+        memory_llm=specs.get("memory_llm"),
+        reflect_llm=specs.get("reflect_llm"),
     )
-    if cm is None:
+
+
+def require_memory_model(spec: "ModelSpec | None", kind: str) -> "ModelSpec":
+    """Return spec when non-None; otherwise raise RuntimeError.
+
+    Preserves today's error contract at point of use: callers that need a
+    specific binding call this and get a clear error when unconfigured.
+    """
+    if spec is None:
         raise RuntimeError(
-            f"Memory binding {kind!r} references configured_model_id={cm_id!r} "
-            "which is not in config.configured_models."
+            f"Memory binding {kind!r} is not configured. "
+            f"Add the binding to the 'memory:' block in ~/.koan/config.yaml."
         )
+    return spec
 
-    conn_id = cm.connection_id
-    connection = next(
-        (c for c in config.connections if c.id == conn_id),
-        None,
-    )
-    if connection is None:
-        raise RuntimeError(
-            f"Memory binding {kind!r} -> configured_model {cm_id!r} "
-            f"references connection_id={conn_id!r} which is not in config.connections."
-        )
 
-    # Resolve the embedding dimension for voyage embedding bindings.
-    # Non-voyage and non-embedding bindings carry embedding_dim=None.
-    embedding_dim: int | None = None
-    if kind == "embedding" and connection.type == "voyage":
-        selected = getattr(cm, "embedding_dim", None)
-        if is_recognized_voyage_model(cm.model_id):
-            embedding_dim = resolve_voyage_embedding_dim(cm.model_id, selected)
-
-    api_key = active_credential_store().resolve(connection.id)
-    return ResolvedMemoryModel(
-        provider_type=connection.type,
-        model_id=cm.model_id,
-        api_key=api_key,
-        base_url=connection.base_url,
-        region=connection.region,
-        embedding_dim=embedding_dim,
-    )

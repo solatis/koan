@@ -58,7 +58,7 @@ def mem_dir(tmp_path: Path) -> Path:
 
 @_SKIP_NO_KEYS
 @pytest.mark.anyio
-async def test_reflect_cites_fixture_entries(mem_dir: Path, real_credential_store) -> None:
+async def test_reflect_cites_fixture_entries(mem_dir: Path, real_memory_models) -> None:
     """run_reflect_agent returns citations that all come from the fixture entry set."""
     # Five entries across three types so the model has enough to synthesize.
     _write_entry(
@@ -110,6 +110,7 @@ async def test_reflect_cites_fixture_entries(mem_dir: Path, real_credential_stor
     index = RetrievalIndex(mem_dir)
     result = await run_reflect_agent(
         index,
+        real_memory_models,
         question="How does the memory retrieval system work, and what models does it use?",
         on_trace=record_trace,
     )

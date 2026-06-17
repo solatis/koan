@@ -3,14 +3,14 @@
 # run_reflect_agent runs a single-conversation tool-calling loop that searches
 # memory as many times as needed, then returns a cited briefing. Uses
 # pydantic-ai with any chat provider via the adapter.
-# M4: model selection is now driven by the 'reflect_llm' binding in the active
-# provider config.  The KOAN_REFLECT_MODEL env var and DEFAULT_MODEL are removed.
+# Model selection is now driven by an explicit MemoryModels bundle passed to
+# run_reflect_agent; no module global is read.
 # Evaluation is handled through evals/, not unit mocks.
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Literal
+from typing import TYPE_CHECKING, Callable, Literal
 
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.exceptions import ModelRetry
@@ -27,10 +27,13 @@ from pydantic_ai.output import TextOutput
 from ..types import MemoryEntry
 from ..timestamps import iso_to_ms
 from ...logger import get_logger
-from ..bindings import resolve_memory_binding
 from .backend import search as retrieval_search
 from .index import RetrievalIndex
 from .types import SearchResult
+
+if TYPE_CHECKING:
+    from ..bindings import MemoryModels
+    from ...types import ModelSpec
 
 log = get_logger("memory.retrieval.reflect")
 
@@ -192,50 +195,32 @@ class _Deps:
     on_trace: Callable[[ReflectTraceEvent], None] | None = None
     iteration: int = 0
     done_result: _DoneResult | None = None
+    embedding: "ModelSpec | None" = None
 
 
 # ---------------------------------------------------------------------------
 # Agent construction
 # ---------------------------------------------------------------------------
 
-# Agent is constructed lazily inside run_reflect_agent so model/key
-# env vars are resolved at call time, not at import time.
+# Agent is constructed lazily inside run_reflect_agent so the model spec
+# is resolved at call time via the explicit MemoryModels bundle.
 
-def _build_agent() -> Agent[_Deps, None]:
-    """Build the reflect agent using the 'reflect_llm' binding.
+def _build_agent(model: "ModelSpec") -> Agent[_Deps, None]:
+    """Build the reflect agent using the explicit reflect_llm ModelSpec.
 
-    Model is resolved from the active provider config's reflect_llm binding
-    via resolve_memory_binding.  The model is built provider-agnostically
-    via adapter.build_model.  Existing inference settings are preserved:
-    temperature 0.0 and minimal thinking.  M4 changes which model is
-    selected, not the inference behavior.
+    The model/key arrive via the explicit model parameter; no module global
+    is read. Inference settings are preserved: temperature 0.0.
     """
     from ...agents.adapter import build_model
-    from ...types import ModelSpec
 
     def _reject_text(text: str) -> str:
         raise ModelRetry("Do not produce text output. Call the `done` tool instead.")
 
-    rmm = resolve_memory_binding("reflect_llm")
-    model = build_model(
-        ModelSpec(
-            provider=rmm.provider_type,
-            model=rmm.model_id,
-            thinking="disabled",
-        ),
-        api_key=rmm.api_key,
-        region=rmm.region,
-        base_url=rmm.base_url,
-    )
+    built_model = build_model(model, api_key=model.api_key, region=model.region, base_url=model.base_url)
     agent: Agent[_Deps, str] = Agent(
-        model=model,
+        model=built_model,
         system_prompt=SYSTEM_PROMPT,
-        model_settings={
-            "temperature": 0.0,
-            # Use minimal thinking: enough to plan searches without blowing the
-            # token budget; the 10-call cap is the primary guard.
-            "thinking": "minimal",
-        },
+        model_settings={**model.settings, "temperature": 0.0},
         output_type=TextOutput(_reject_text),
     )
 
@@ -266,7 +251,7 @@ def _build_agent() -> Agent[_Deps, None]:
                 Raise to 10-20 only for broad recall. Hard cap: 20.
         """
         args = {"query": query, "type": type, "k": k}
-        payload = await _dispatch_search(ctx.deps.index, args, ctx.deps.retrieved)
+        payload = await _dispatch_search(ctx.deps.index, args, ctx.deps.retrieved, ctx.deps.embedding)
         result_count = len(payload.get("results", []))
         if ctx.deps.on_trace is not None:
             ctx.deps.on_trace(ReflectTraceEvent(
@@ -347,9 +332,11 @@ async def _dispatch_search(
     index: RetrievalIndex,
     args: dict,
     retrieved: dict[int, MemoryEntry],
+    model: "ModelSpec | None",
 ) -> dict:
     """Execute one search tool call. Mutates retrieved; returns JSON-serializable payload for the LLM.
 
+    The embedding model/key arrive via the explicit model parameter.
     Capping k at 20 here rather than in the LLM's declaration so the server
     enforces the limit even if the model ignores the description.
     """
@@ -367,7 +354,7 @@ async def _dispatch_search(
 
     try:
         results: list[SearchResult] = await retrieval_search(
-            index, query, k=k, type_filter=type_filter
+            index, query, model, k=k, type_filter=type_filter
         )
     except RuntimeError as e:
         return {"error": str(e), "results": []}
@@ -398,6 +385,7 @@ async def _dispatch_search(
 
 async def run_reflect_agent(
     index: RetrievalIndex,
+    models: "MemoryModels",
     question: str,
     context: str | None = None,
     *,
@@ -406,17 +394,21 @@ async def run_reflect_agent(
 ) -> ReflectResult:
     """Run the pydantic-ai tool-calling reflection loop and return a cited briefing.
 
-    Raises IterationCapExceeded if the model does not call "done" within
-    max_iterations model-request turns. Raises RuntimeError when the
-    reflect_llm binding is not configured or the build fails. No
-    partial/best-effort answer is synthesized on overflow.
+    The memory model bundle arrives via the explicit models parameter; no module
+    global is read. Raises RuntimeError when reflect_llm or embedding bindings
+    are not configured (via require_memory_model). Raises IterationCapExceeded
+    if the model does not call "done" within max_iterations model-request turns.
+    No partial/best-effort answer is synthesized on overflow.
     """
-    resolve_memory_binding("reflect_llm")  # raise early if binding not configured
+    from ..bindings import require_memory_model
+
+    reflect_model = require_memory_model(models.reflect_llm, "reflect_llm")
+    embed_model = require_memory_model(models.embedding, "embedding")
 
     # Sync the index once before the loop; each retrieval_search call also
     # calls ensure_synced internally, but front-loading it avoids paying the
     # sync cost inside the first iteration's latency.
-    await index.ensure_synced()
+    await index.ensure_synced(embed_model)
 
     user_text = f"# Question\n{question}"
     if context:
@@ -425,8 +417,8 @@ async def run_reflect_agent(
             f"{context}"
         )
 
-    deps = _Deps(index=index, on_trace=on_trace)
-    agent = _build_agent()
+    deps = _Deps(index=index, on_trace=on_trace, embedding=embed_model)
+    agent = _build_agent(reflect_model)
     model_request_count = 0
 
     async with agent.iter(user_text, deps=deps) as run:

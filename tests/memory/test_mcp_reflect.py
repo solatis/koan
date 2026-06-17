@@ -122,7 +122,7 @@ class TestKoanReflect:
 
         captured_on_trace = []
 
-        async def _fake_run_reflect(index, question, context=None, *, on_trace=None, max_iterations=10):
+        async def _fake_run_reflect(index, models, question, context=None, *, on_trace=None, max_iterations=10):
             captured_on_trace.append(on_trace)
             return ReflectResult(
                 answer="The answer.",

@@ -105,7 +105,7 @@ def test_forget_missing_entry_raises(tmp_path):
 @pytest.mark.anyio
 async def test_status_empty_store(tmp_path):
     store = make_store(tmp_path)
-    result = await ops.status(store)
+    result = await ops.status(store, model=None)
     assert result["summary"] == "" or result["summary"] is None
     assert result["entries"] == []
     assert result["regenerated"] is False
@@ -122,5 +122,5 @@ async def test_status_fresh_summary_no_regen(tmp_path):
     future_mtime = time.time() + 2
     os.utime(summary_path, (future_mtime, future_mtime))
 
-    result = await ops.status(store)
+    result = await ops.status(store, model=None)
     assert result["regenerated"] is False

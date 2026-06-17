@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import voyageai
 
 from koan.logger import get_logger
 
-from ..bindings import resolve_memory_binding
 from ..parser import parse_entry
 from .index import RetrievalIndex, _embed_query
 from .types import SearchResult
+
+if TYPE_CHECKING:
+    from koan.types import ModelSpec
 
 log = get_logger("memory.retrieval.backend")
 
@@ -43,17 +46,17 @@ def _rrf_merge(dense_hits: list[dict], fts_hits: list[dict]) -> list[dict]:
 
 
 async def _voyage_rerank(
-    query: str, candidates: list[dict], k: int
+    query: str, candidates: list[dict], k: int, model: "ModelSpec"
 ) -> list[dict]:
     """Rerank candidates using the voyage reranker (model='rerank-2.5').
 
-    Resolves the api_key from the 'embedding' binding's voyage connection.
+    The embedding ModelSpec provides the api_key for the voyage connection.
     The reranker stays voyage-coupled and always uses model='rerank-2.5'
-    (the reranker is not separately configurable, brief D9).
+    (the reranker is not separately configurable, brief D9). The embedding
+    model/key arrive via the explicit model parameter; no module global is read.
     """
     log.debug("voyage_rerank: %d candidates, k=%d", len(candidates), k)
-    rmm = resolve_memory_binding("embedding")
-    client = voyageai.AsyncClient(api_key=rmm.api_key)
+    client = voyageai.AsyncClient(api_key=model.api_key)
     result = await client.rerank(
         query=query,
         documents=[c["body"] for c in candidates],
@@ -73,9 +76,13 @@ async def _voyage_rerank(
 # Without the split, the RAG path would run the Voyage reranker N times
 # (once per query) or duplicate the reranker logic.
 async def search_candidates(
-    index: RetrievalIndex, query: str, n: int = 20
+    index: RetrievalIndex, query: str, model: "ModelSpec", n: int = 20
 ) -> list[dict]:
-    query_vec = await _embed_query(query)
+    """Gather candidates by embedding the query and running hybrid search.
+
+    The embedding model/key arrive via the explicit model parameter.
+    """
+    query_vec = await _embed_query(query, model)
     dense = await index.dense_search(query_vec, n)
     fts = await index.fts_search(query, n)
     log.debug("search_candidates query=%r dense=%d fts=%d", query, len(dense), len(fts))
@@ -88,14 +95,19 @@ async def rerank_results(
     query: str,
     candidates: list[dict],
     k: int,
+    model: "ModelSpec",
     type_filter: str | None = None,
 ) -> list[SearchResult]:
+    """Rerank candidates using the voyage reranker and return top k results.
+
+    The embedding model/key arrive via the explicit model parameter.
+    """
     if type_filter:
         candidates = [c for c in candidates if c["type"] == type_filter]
         log.debug("type_filter=%r narrowed to %d candidates", type_filter, len(candidates))
     if not candidates:
         return []
-    reranked = await _voyage_rerank(query, candidates, k)
+    reranked = await _voyage_rerank(query, candidates, k, model)
     log.debug("reranked %d candidates to top %d", len(candidates), len(reranked))
     for c in reranked:
         log.debug("  entry_id=%d score=%.4f title=%r", c["entry_id"], c["_rerank_score"], c.get("title", ""))
@@ -113,9 +125,15 @@ async def rerank_results(
 async def search(
     index: RetrievalIndex,
     query: str,
+    model: "ModelSpec",
     k: int = 5,
     type_filter: str | None = None,
 ) -> list[SearchResult]:
-    await index.ensure_synced()
-    candidates = await search_candidates(index, query, n=20)
-    return await rerank_results(query, candidates, k, type_filter)
+    """Run hybrid search and return top k reranked results.
+
+    The embedding model/key arrive via the explicit model parameter;
+    no module global is read.
+    """
+    await index.ensure_synced(model)
+    candidates = await search_candidates(index, query, model, n=20)
+    return await rerank_results(query, candidates, k, model, type_filter)

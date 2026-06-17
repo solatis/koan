@@ -26,8 +26,6 @@ from koan.credentials import (
     decrypt_secret,
     encrypt_secret,
     get_key_backend,
-    set_active_credential_store,
-    active_credential_store,
 )
 from koan.types import Connection
 
@@ -298,29 +296,6 @@ class TestTypeAliasRemoved:
 
 
 # ---------------------------------------------------------------------------
-# Module-level active store
-# ---------------------------------------------------------------------------
-
-class TestActiveStore:
-    def test_active_store_raises_when_unset(self, monkeypatch):
-        """active_credential_store raises RuntimeError when not initialized."""
-        monkeypatch.setattr("koan.credentials._ACTIVE", None)
-        with pytest.raises(RuntimeError, match="Active credential store is not initialized"):
-            active_credential_store()
-
-    def test_set_then_active(self, tmp_path, monkeypatch):
-        """set_active_credential_store makes the store retrievable."""
-        key_path = tmp_path / "master.key"
-        monkeypatch.setattr("koan.credentials.MASTER_KEY_PATH", key_path)
-        monkeypatch.setattr("koan.credentials._ACTIVE", None)
-        config = KoanConfig()
-        backend = FileKeyBackend()
-        store = CredentialStore(config, backend)
-        set_active_credential_store(store)
-        assert active_credential_store() is store
-
-
-# ---------------------------------------------------------------------------
 # Config round-trip
 # ---------------------------------------------------------------------------
 
@@ -390,4 +365,31 @@ class TestConfigRoundTrip:
         store, _, _ = _make_store(tmp_path, monkeypatch)
         assert not hasattr(store, "seed_from_env"), (
             "seed_from_env must not exist on CredentialStore after M1"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Negative-presence: deleted globals must not exist
+# ---------------------------------------------------------------------------
+
+class TestDeletedGlobals:
+    def test_active_store_global_absent(self):
+        """_ACTIVE module global must not exist in credentials after de-globalization."""
+        import koan.credentials as creds_mod
+        assert not hasattr(creds_mod, "_ACTIVE"), (
+            "_ACTIVE must not exist in koan.credentials after de-globalization"
+        )
+
+    def test_set_active_credential_store_absent(self):
+        """set_active_credential_store must not exist in credentials."""
+        import koan.credentials as creds_mod
+        assert not hasattr(creds_mod, "set_active_credential_store"), (
+            "set_active_credential_store must not exist after de-globalization"
+        )
+
+    def test_active_credential_store_absent(self):
+        """active_credential_store must not exist in credentials."""
+        import koan.credentials as creds_mod
+        assert not hasattr(creds_mod, "active_credential_store"), (
+            "active_credential_store must not exist after de-globalization"
         )

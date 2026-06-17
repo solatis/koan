@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ..logger import get_logger
 from .types import MemoryEntry, MemoryType
 from .parser import parse_entry
 from .writer import write_entry as _write_entry, update_entry as _update_entry
+
+if TYPE_CHECKING:
+    from ..types import ModelSpec
 
 log = get_logger("memory.store")
 
@@ -132,10 +136,13 @@ class MemoryStore:
                 return True
         return False
 
-    async def regenerate_summary(self, project_name: str = "") -> None:
-        """Regenerate summary.md from all current entries."""
+    async def regenerate_summary(self, model: "ModelSpec", project_name: str = "") -> None:
+        """Regenerate summary.md from all current entries.
+
+        The memory_llm model/key arrive via the explicit model parameter.
+        """
         log.info("regenerate_summary starting (project_name=%r, entry_count=%d)", project_name, self.entry_count())
         from .summarize import regenerate_summary
 
-        await regenerate_summary(self, project_name=project_name)
+        await regenerate_summary(self, model=model, project_name=project_name)
         log.info("regenerate_summary complete")

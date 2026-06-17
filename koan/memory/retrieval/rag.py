@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from koan.logger import get_logger
 from koan.memory.llm import generate as llm_generate
 
 from .backend import rerank_results, search_candidates
 from .index import RetrievalIndex
 from .types import SearchResult
+
+if TYPE_CHECKING:
+    from koan.memory.bindings import MemoryModels
+    from koan.types import ModelSpec
 
 log = get_logger("memory.retrieval.rag")
 
@@ -17,8 +23,11 @@ _QUERY_GEN_SYSTEM = (
 )
 
 
-async def generate_queries(directive: str, anchor: str) -> list[str]:
+async def generate_queries(directive: str, anchor: str, model: "ModelSpec") -> list[str]:
     """Ask the memory LLM for 1-3 search queries relevant to the directive.
+
+    The memory_llm model/key arrive via the explicit model parameter;
+    no module global is read.
 
     Output budget is sized for reasoning models: a local reasoning model
     (e.g. Qwen3) spends output tokens on thinking before emitting query lines,
@@ -27,7 +36,7 @@ async def generate_queries(directive: str, anchor: str) -> list[str]:
     to protect paid providers.
     """
     prompt = f"Directive: {directive}\n\nContext:\n{anchor}"
-    raw = await llm_generate(prompt, system=_QUERY_GEN_SYSTEM, max_tokens=2048)
+    raw = await llm_generate(prompt, model=model, system=_QUERY_GEN_SYSTEM)
     lines = [line.strip() for line in raw.splitlines()]
     queries = [q for q in lines if q][:3]
     log.debug("generated %d queries: %s", len(queries), queries)
@@ -39,17 +48,29 @@ _generate_queries = generate_queries
 
 async def inject(
     index: RetrievalIndex,
+    models: "MemoryModels",
     directive: str,
     anchor: str,
     k: int = 5,
 ) -> list[SearchResult]:
-    await index.ensure_synced()
-    queries = await _generate_queries(directive, anchor)
+    """Run the mechanical RAG injection pipeline.
+
+    The memory model bundle arrives via the explicit models parameter;
+    no module global is read. Raises RuntimeError when a required binding
+    is not configured (via require_memory_model).
+    """
+    from koan.memory.bindings import require_memory_model
+
+    embed = require_memory_model(models.embedding, "embedding")
+    llm = require_memory_model(models.memory_llm, "memory_llm")
+
+    await index.ensure_synced(embed)
+    queries = await _generate_queries(directive, anchor, llm)
 
     # Gather candidates from each query, merge by entry_id (max RRF score)
     merged: dict[int, dict] = {}
     for query in queries:
-        candidates = await search_candidates(index, query, n=20)
+        candidates = await search_candidates(index, query, embed, n=20)
         log.debug("query=%r returned %d candidates", query, len(candidates))
         for c in candidates:
             eid = c["entry_id"]
@@ -61,7 +82,7 @@ async def inject(
     # Rerank against the directive (the human-authored intent statement), not
     # the generated queries. The directive unifies all queries and is what the
     # reranker should optimize for -- one API call instead of N.
-    results = await rerank_results(directive, merged_list, k)
+    results = await rerank_results(directive, merged_list, k, embed)
     log.debug("reranked to %d results", len(results))
     return results
 

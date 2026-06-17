@@ -1,7 +1,5 @@
 # Tests for koan.memory.summarize
 # Unit tests mock the LLM; integration tests require GEMINI_API_KEY or GOOGLE_API_KEY.
-# After the credential-store migration, integration tests use the real_credential_store
-# fixture to initialize the active store from env vars before any memory operation.
 
 from __future__ import annotations
 
@@ -16,11 +14,23 @@ from koan.memory.summarize import (
     generate_summary,
     regenerate_summary,
 )
+from koan.types import ModelSpec
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _fake_model() -> ModelSpec:
+    """Minimal ModelSpec for unit tests that mock the LLM generate call."""
+    return ModelSpec(
+        provider="google",
+        model="gemini-flash-lite-latest",
+        thinking="disabled",
+        connection_id="google-1",
+        api_key=None,
+    )
+
 
 def _populated_store(tmp_path):
     """Create a store with sample entries across types."""
@@ -73,13 +83,13 @@ class TestGenerateSummary:
         store = _populated_store(tmp_path)
         captured = {}
 
-        async def fake_generate(prompt, system="", max_tokens=1024):
+        async def fake_generate(prompt, model, system="", max_tokens=1024):
             captured["prompt"] = prompt
             captured["system"] = system
             return "# TrapperKeeper\n\nProject summary here."
 
         with patch("koan.memory.summarize.generate", side_effect=fake_generate):
-            summary = await generate_summary(store, project_name="TrapperKeeper")
+            summary = await generate_summary(store, _fake_model(), project_name="TrapperKeeper")
 
         prompt = captured["prompt"]
         # All entry titles should appear in the prompt (read directly, not indirectly via indexes)
@@ -102,7 +112,7 @@ class TestGenerateSummary:
         store = MemoryStore(tmp_path)
         store.init()
 
-        summary = await generate_summary(store)
+        summary = await generate_summary(store, _fake_model())
         assert "No memory entries" in summary
         # Written to disk too
         assert store.get_summary() is not None
@@ -111,12 +121,12 @@ class TestGenerateSummary:
     async def test_llm_failure_propagates(self, tmp_path):
         store = _populated_store(tmp_path)
 
-        async def failing_generate(prompt, system="", max_tokens=1024):
+        async def failing_generate(prompt, model, system="", max_tokens=1024):
             raise RuntimeError("API error")
 
         with patch("koan.memory.summarize.generate", side_effect=failing_generate):
             with pytest.raises(RuntimeError, match="API error"):
-                await generate_summary(store)
+                await generate_summary(store, _fake_model())
 
         # summary.md must not be written on failure
         assert not (store._memory_dir / "summary.md").exists()
@@ -130,12 +140,12 @@ class TestGenerateSummary:
 
         captured = {}
 
-        async def fake_generate(prompt, system="", max_tokens=1024):
+        async def fake_generate(prompt, model, system="", max_tokens=1024):
             captured["prompt"] = prompt
             return "summary"
 
         with patch("koan.memory.summarize.generate", side_effect=fake_generate):
-            await generate_summary(store)
+            await generate_summary(store, _fake_model())
 
         assert "PostgreSQL for Auth" not in captured["prompt"]
 
@@ -146,7 +156,7 @@ class TestRegenerateSummary:
         store = _populated_store(tmp_path)
         called = {}
 
-        async def fake_generate_summary(s, project_name=""):
+        async def fake_generate_summary(s, model, project_name=""):
             called["store"] = s
             called["name"] = project_name
             return "stub"
@@ -155,7 +165,7 @@ class TestRegenerateSummary:
             "koan.memory.summarize.generate_summary",
             side_effect=fake_generate_summary,
         ):
-            await regenerate_summary(store, project_name="Foo")
+            await regenerate_summary(store, _fake_model(), project_name="Foo")
 
         assert called["store"] is store
         assert called["name"] == "Foo"
@@ -167,12 +177,12 @@ class TestStoreRegenerateSummary:
         store = _populated_store(tmp_path)
         called = {}
 
-        async def mock_regen(s, project_name=""):
+        async def mock_regen(s, model, project_name=""):
             called["store"] = s
             called["name"] = project_name
 
         with patch("koan.memory.summarize.regenerate_summary", mock_regen):
-            await store.regenerate_summary(project_name="Foo")
+            await store.regenerate_summary(_fake_model(), project_name="Foo")
 
         assert called["store"] is store
         assert called["name"] == "Foo"
@@ -192,14 +202,10 @@ _SKIP_NO_KEY = pytest.mark.skipif(
 @_SKIP_NO_KEY
 class TestIntegrationSummary:
     @pytest.mark.anyio
-    async def test_produces_coherent_overview(self, tmp_path, real_credential_store):
-        """generate_summary produces a non-trivial result using the memory_llm binding.
-
-        real_credential_store sets up the active provider config (google-1 connection,
-        memory_llm binding pointing at gemini-2.0-flash-lite) and seeds the credential
-        store from env.  M4: model is driven by the binding, not KOAN_LLM_MODEL.
-        """
+    async def test_produces_coherent_overview(self, tmp_path, real_memory_models):
+        """generate_summary produces a non-trivial result using the memory_llm binding."""
         store = _populated_store(tmp_path)
-        summary = await generate_summary(store, project_name="TrapperKeeper")
+        model = real_memory_models.memory_llm
+        summary = await generate_summary(store, model, project_name="TrapperKeeper")
         assert len(summary) > 50
         assert store.get_summary() is not None

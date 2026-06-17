@@ -65,7 +65,7 @@ class TestResolveModelSpecThinkingClamp:
         registry = AgentRegistry()
         config = self._make_config(thinking="xhigh")
         with caplog.at_level(logging.INFO, logger="koan.agent_registry"):
-            spec = registry.resolve_model_spec("orchestrator", config)
+            spec = registry.resolve_model_spec("orchestrator", config, None)
         # claude-opus-4-0 thinking_modes from MODEL_CAPABILITIES = ["medium", "high"]
         assert spec.thinking == "high"
         assert "clamped" in caplog.text
@@ -76,7 +76,7 @@ class TestResolveModelSpecThinkingClamp:
         registry = AgentRegistry()
         config = self._make_config(thinking="medium")
         with caplog.at_level(logging.INFO, logger="koan.agent_registry"):
-            spec = registry.resolve_model_spec("orchestrator", config)
+            spec = registry.resolve_model_spec("orchestrator", config, None)
         assert spec.thinking == "medium"
         assert "clamped" not in caplog.text
 
@@ -84,7 +84,7 @@ class TestResolveModelSpecThinkingClamp:
         """resolve_model_spec allows 'disabled' even when model has non-empty thinking_modes."""
         registry = AgentRegistry()
         config = self._make_config(thinking="disabled")
-        spec = registry.resolve_model_spec("orchestrator", config)
+        spec = registry.resolve_model_spec("orchestrator", config, None)
         assert spec.thinking == "disabled"
 
 

@@ -174,7 +174,8 @@ async def spawn_subagent(
             registry = AgentRegistry()
             # resolve_model_spec replaces resolve_agent_config; returns a ModelSpec.
             # M5: builtin_profiles param removed from resolve_model_spec.
-            model_spec = registry.resolve_model_spec(role, config)
+            # The spec now carries its baked api_key resolved from the frozen store.
+            model_spec = registry.resolve_model_spec(role, config, app_state.run.frozen_credential_store)
             # M2 seam: PydanticAIAgent wired here; the legacy binary spawn path
             # is non-functional after the M1 config reshape.
             # Lazy import to avoid a circular dependency: koan/agents imports from
@@ -193,9 +194,8 @@ async def spawn_subagent(
             model = model_spec.model
             installation = None
             thinking_mode = None
-            # Carry provider and context_window for the fold's cost/percent derivation.
+            # Carry provider for the fold's cost derivation.
             provider = model_spec.provider
-            context_window = model_spec.context_window
         except AgentError as e:
             log.error("agent resolution failed for %s: %s", role, e.diagnostic.message)
             # Write diagnostic to EventLog
@@ -215,10 +215,9 @@ async def spawn_subagent(
         model = None
         installation = None
         thinking_mode = None
-        # No model_spec when agent_impl is injected (test path); defaults signal
-        # the fold that provider/context_window are unavailable for this agent.
+        # No model_spec when agent_impl is injected (test path); provider=None
+        # signals the fold that cost derivation is unavailable for this agent.
         provider = None
-        context_window = 0
 
     # Write task.json. mcp_url omitted in M4: the HTTP MCP transport is deleted
     # and the in-process agent reads tools from the PydanticAI toolset, not MCP.
@@ -272,7 +271,6 @@ async def spawn_subagent(
         event_log=event_log,
         model=model,
         provider=provider,
-        context_window=context_window,
         is_primary=(role == "orchestrator"),
         # runner_type carries the agent name ('claude', 'codex', 'gemini', 'fake'
         # in tests). Used by upload_ids_to_blocks and steering-drain routing (M2).

@@ -4,14 +4,17 @@ import asyncio
 import hashlib
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import lancedb
 import pyarrow as pa
 import voyageai
 from lancedb.index import FTS
 
-from ..bindings import resolve_memory_binding
 from ..parser import parse_entry
+
+if TYPE_CHECKING:
+    from ...types import ModelSpec
 
 TABLE_NAME = "entries"
 _ENTRY_PATTERN = re.compile(r"^(\d{4})-.*\.md$")
@@ -28,31 +31,30 @@ def _entry_id_from_name(name: str) -> int | None:
     return int(m.group(1))
 
 
-async def _embed_texts(texts: list[str], input_type: str) -> list[list[float]]:
-    """Embed texts using the voyage provider from the active 'embedding' binding.
+async def _embed_texts(texts: list[str], input_type: str, model: "ModelSpec") -> list[list[float]]:
+    """Embed texts using the voyage provider via the explicit embedding ModelSpec.
 
-    Uses the 'embedding' binding in the active provider config.  The binding
-    must point at a voyage connection; embeddings are voyage-only (brief D9).
-    Passes the resolved embedding dimension (rmm.embedding_dim) as
-    output_dimension so the vector width matches the active LanceDB schema.
-    Raises RuntimeError when the binding is missing or the provider is not voyage.
+    The embedding model/key arrive via the explicit model parameter; no module
+    global is read. The binding must point at a voyage connection;
+    embeddings are voyage-only (brief D9).
+    Raises RuntimeError when the provider is not voyage.
     """
-    rmm = resolve_memory_binding("embedding")
-    if rmm.provider_type != "voyage":
+    if model.provider != "voyage":
         raise RuntimeError(
             f"Memory embedding binding must use a voyage connection; "
-            f"got provider_type={rmm.provider_type!r}."
+            f"got provider={model.provider!r}."
         )
-    client = voyageai.AsyncClient(api_key=rmm.api_key)
+    client = voyageai.AsyncClient(api_key=model.api_key)
     result = await client.embed(
-        texts, model=rmm.model_id, input_type=input_type,
-        output_dimension=rmm.embedding_dim,
+        texts, model=model.model, input_type=input_type,
+        output_dimension=model.embedding_dim,
     )
     return result.embeddings
 
 
-async def _embed_query(text: str) -> list[float]:
-    result = await _embed_texts([text], "query")
+async def _embed_query(text: str, model: "ModelSpec") -> list[float]:
+    """Embed a single query text via the explicit embedding ModelSpec."""
+    result = await _embed_texts([text], "query", model)
     return result[0]
 
 
@@ -84,9 +86,10 @@ class RetrievalIndex:
         self._lock: asyncio.Lock = asyncio.Lock()
         self._synced: bool = False
 
-    async def ensure_synced(self) -> None:
+    async def ensure_synced(self, model: "ModelSpec") -> None:
+        """Ensure the vector index is up to date using the explicit embedding model."""
         async with self._lock:
-            await self._sync()
+            await self._sync(model)
             self._synced = True
 
     async def _existing_table_dim(self, conn) -> int | None:
@@ -108,24 +111,22 @@ class RetrievalIndex:
                 return field.type.list_size
         return None
 
-    async def _sync(self) -> None:
+    async def _sync(self, model: "ModelSpec") -> None:
         """Sync on-disk memory entries into the LanceDB vector index.
 
-        Resolves the active embedding binding to get the required vector
-        dimension.  When the existing table was built at a different dimension,
-        it is dropped and recreated so the schema is consistent with the
-        current binding.  After a drop, all stored entries are re-embedded
-        from scratch (stored hash dict is empty, so all disk entries are in
-        to_embed).
+        Uses the explicit embedding model for dimension and embedding calls;
+        no module global is read. When the existing table was built at a
+        different dimension, it is dropped and recreated so the schema is
+        consistent with the current binding. After a drop, all stored entries
+        are re-embedded from scratch.
 
         Re-embed failure (e.g. Voyage unreachable) leaves a newly created
         empty table; the next ensure_synced() call re-embeds, self-healing.
         """
         conn = await lancedb.connect_async(str(self._index_path))
 
-        # Resolve binding once; dim drives both the schema and the embed call.
-        rmm = resolve_memory_binding("embedding")
-        dim = rmm.embedding_dim
+        # dim drives both the schema and the embed call.
+        dim = model.embedding_dim
 
         # Self-heal: if the existing table dimension does not match the
         # current binding's dimension, drop it so it is recreated below.
@@ -162,7 +163,7 @@ class RetrievalIndex:
                 f"# {e.title}\ntype: {e.type}\n\n{e.body}"
                 for e in entries
             ]
-            vectors = await _embed_texts(texts, "document")
+            vectors = await _embed_texts(texts, "document", model)
 
             records = []
             for (eid, path), entry, vector in zip(to_embed, entries, vectors):
@@ -199,7 +200,7 @@ class RetrievalIndex:
             await table.create_index("body", config=FTS(), replace=True)
             await table.create_index("title", config=FTS(), replace=True)
 
-    async def rebuild(self) -> None:
+    async def rebuild(self, model: "ModelSpec") -> None:
         """Force-rebuild the vector index: drop the existing table and re-embed all entries.
 
         Acquires the non-reentrant self._lock and calls _sync() directly (NOT
@@ -207,7 +208,7 @@ class RetrievalIndex:
         ensure_synced() here would deadlock because asyncio.Lock is
         non-reentrant.  _sync() with a dropped table acts as a full rebuild:
         stored hashes are empty so every on-disk entry is re-embedded with
-        the current resolved model and dimension.
+        the explicit model.
         """
         async with self._lock:
             conn = await lancedb.connect_async(str(self._index_path))
@@ -215,7 +216,7 @@ class RetrievalIndex:
             tables = await conn.list_tables()
             if TABLE_NAME in tables.tables:
                 await conn.drop_table(TABLE_NAME)
-            await self._sync()
+            await self._sync(model)
 
     async def dense_search(self, query_vector: list[float], n: int = 20) -> list[dict]:
         conn = await lancedb.connect_async(str(self._index_path))

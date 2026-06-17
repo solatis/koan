@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..agents.base import AgentDiagnostic, AgentError
-from ..types import Connection, ModelSpec, ResolvedCapabilities, ThinkingMode
+from ..types import CachingPolicy, Connection, ModelSpec, ResolvedCapabilities, ThinkingMode
 
 
 @dataclass
@@ -160,23 +160,25 @@ def map_thinking(provider: str, caps: "ResolvedCapabilities", mode: ThinkingMode
     return {}
 
 
-def _caching_settings(spec: ModelSpec, caps: "ResolvedCapabilities") -> dict:
-    """Resolve the CachingPolicy into provider-specific cache settings.
+def _caching_settings(caching: "CachingPolicy", caps: "ResolvedCapabilities") -> dict:
+    """Resolve a CachingPolicy into provider-specific cache settings.
 
-    Gates on caps.supports_prompt_caching (capability-driven, brief D4/D5) rather
-    than a hardcoded provider check.  Currently only anthropic exposes explicit
-    cache-control settings; google/openai cache automatically server-side.
+    Takes caching directly (not the full ModelSpec) because this function is
+    called from build_resolved_model in registry.py at flatten time, before the
+    ModelSpec is constructed. The capability-gating is preserved: only providers
+    with explicit cache-control emit settings (anthropic); others (google/openai)
+    cache automatically server-side and need no settings.
 
     Returns {} when caching is off, or when the model does not support
     explicit prompt caching.
     """
-    if spec.caching.mode == "off":
+    if caching.mode == "off":
         return {}
     if not caps.supports_prompt_caching:
         # Provider handles caching automatically (google/openai) or has no
         # portable cache knob (bedrock/voyage) -- no settings to emit.
         return {}
-    ttl = spec.caching.ttl  # "5m" | "1h"
+    ttl = caching.ttl  # "5m" | "1h"
     return {
         "anthropic_cache_instructions": ttl,
         "anthropic_cache_tool_definitions": ttl,
@@ -184,21 +186,15 @@ def _caching_settings(spec: ModelSpec, caps: "ResolvedCapabilities") -> dict:
 
 
 def build_model_settings(spec: ModelSpec) -> dict:
-    """Build the pydantic-ai model_settings dict from a ModelSpec.
+    """Return the pre-baked model_settings dict from a ModelSpec.
 
-    Resolves capabilities once (pure function over provider+model) and merges:
-      spec.settings (temperature, max_tokens, etc.)
-      + map_thinking     (capability-driven thinking config)
-      + _caching_settings (capability-gated cache control)
+    Thinking and caching settings are baked into spec.settings at flatten time
+    (by build_resolved_model in registry.py), so this is now a trivial pass-through.
+    Keeping the function signature stable avoids changes in every caller.
 
     Returns a flat dict suitable for pydantic-ai's model_settings parameter.
     """
-    from .capability_resolver import resolve_capabilities
-    caps = resolve_capabilities(spec.provider, spec.model)
-    settings: dict = dict(spec.settings)
-    settings.update(map_thinking(spec.provider, caps, spec.thinking))
-    settings.update(_caching_settings(spec, caps))
-    return settings
+    return dict(spec.settings)
 
 
 def build_model(

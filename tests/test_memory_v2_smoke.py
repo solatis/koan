@@ -1,7 +1,5 @@
 # Smoke tests confirming the memory module runs under pydantic-ai v2.0.0b6.
 # Live Gemini tests are gated on credentials; they skip cleanly when absent.
-# After the credential-store migration, tests use the real_credential_store
-# fixture to initialize the active store from real env vars.
 
 from __future__ import annotations
 
@@ -24,22 +22,29 @@ _SKIP_NO_CREDS = pytest.mark.skipif(
 class TestMemoryLlmV2Smoke:
     @pytest.mark.anyio
     @_SKIP_NO_CREDS
-    async def test_generate_returns_nonempty_string(self, real_credential_store):
-        """koan.memory.llm.generate returns a non-empty string under v2.0.0b6."""
+    async def test_generate_returns_nonempty_string(self, real_memory_models):
+        """koan.memory.llm.generate returns a non-empty string."""
         from koan.memory.llm import generate
 
-        result = await generate("Reply with the single word: ok")
+        model = real_memory_models.memory_llm
+        if model is None:
+            pytest.skip("memory_llm binding not available in real_memory_models")
+        result = await generate("Reply with the single word: ok", model)
         assert isinstance(result, str)
         assert len(result) > 0
 
     @pytest.mark.anyio
     @_SKIP_NO_CREDS
-    async def test_generate_with_system_prompt(self, real_credential_store):
-        """koan.memory.llm.generate handles a system prompt under v2.0.0b6."""
+    async def test_generate_with_system_prompt(self, real_memory_models):
+        """koan.memory.llm.generate handles a system prompt."""
         from koan.memory.llm import generate
 
+        model = real_memory_models.memory_llm
+        if model is None:
+            pytest.skip("memory_llm binding not available in real_memory_models")
         result = await generate(
             "What is 2+2?",
+            model,
             system="You are a concise calculator. Reply with only the number.",
         )
         assert isinstance(result, str)
@@ -48,16 +53,19 @@ class TestMemoryLlmV2Smoke:
 
 class TestReflectAgentV2Import:
     def test_reflect_imports_cleanly(self):
-        """koan.memory.retrieval.reflect imports without error under v2.0.0b6."""
+        """koan.memory.retrieval.reflect imports without error."""
         import koan.memory.retrieval.reflect as r
         assert hasattr(r, "run_reflect_agent")
         assert hasattr(r, "ReflectResult")
         assert hasattr(r, "_build_agent")
 
-    def test_build_agent_constructs_with_store(self, real_credential_store):
+    def test_build_agent_constructs_with_store(self, real_credential_store, real_memory_models):
         """_build_agent() constructs a pydantic-ai Agent when the store has a key."""
         if not real_credential_store.has("google-1"):
             pytest.skip("no Google API key in credential store")
         from koan.memory.retrieval.reflect import _build_agent
-        agent = _build_agent()
+        model = real_memory_models.reflect_llm
+        if model is None:
+            pytest.skip("reflect_llm binding not available in real_memory_models")
+        agent = _build_agent(model)
         assert agent is not None

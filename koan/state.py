@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from .credentials import CredentialStore
+    from .memory.bindings import MemoryModels
 
 
 def _utcnow() -> datetime:
@@ -20,7 +21,7 @@ def _utcnow() -> datetime:
 
 from .config import KoanConfig
 from .projections import ProjectionStore
-from .types import WorkflowPhase, ConnectionStatus, ProviderModel, ModelRegistryEntry, SubagentRole
+from .types import ModelSpec, WorkflowPhase, ConnectionStatus, ProviderModel, ModelRegistryEntry, SubagentRole
 
 
 @dataclass
@@ -62,10 +63,9 @@ class AgentState:
     first_turn_completed: bool = False
     pending_tool: asyncio.Future | None = None
     model: str | None = None
-    # provider and context_window feed the fold's cost + context-window derivation.
-    # Set from model_spec at spawn time; None/0 when agent_impl is injected in tests.
+    # provider feeds the fold's cost derivation.
+    # Set from model_spec at spawn time; None when agent_impl is injected in tests.
     provider: str | None = None
-    context_window: int = 0
     token_count: dict = field(default_factory=lambda: {"sent": 0, "received": 0})
     final_response: str = ""
     is_primary: bool = True
@@ -121,6 +121,15 @@ class RunState:
     # never affect an active run.  Both are cleared by api_run_clear.
     frozen_config: "KoanConfig | None" = None
     frozen_credential_store: "CredentialStore | None" = None
+    # Eager-flattened ModelSpec constructs for all tier slots.
+    # Built by api_start_run so capability resolution (thinking clamping, caching
+    # settings) runs once per model at run start, not once per spawn.
+    # Keys: tier slots ("strong", "standard", "cheap"). Empty until run is started.
+    frozen_models: dict[str, "ModelSpec"] = field(default_factory=dict)
+    # Per-run self-contained memory model bundle, built at api_start_run and
+    # cleared by api_run_clear. Each spec carries its baked api_key so the
+    # memory subsystem never reads a module global during a run.
+    memory_models: "MemoryModels | None" = None
 
 
 @dataclass

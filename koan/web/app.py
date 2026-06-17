@@ -326,9 +326,7 @@ async def api_start_run(r: Request) -> Response:
     )
     log.debug("start-run task payload: %s", truncate_payload(task))
 
-    # Build the frozen CredentialStore over the frozen config.
-    # Do NOT call set_active_credential_store -- the memory subsystem must
-    # stay on the live active store.
+    # Build the frozen CredentialStore over the frozen config snapshot.
     from ..credentials import CredentialStore, get_key_backend
     frozen_store = CredentialStore(frozen_cfg, get_key_backend())
 
@@ -392,6 +390,34 @@ async def api_start_run(r: Request) -> Response:
     # Store the frozen snapshot on RunState so the spawn path reads it.
     st.run.frozen_config = frozen_cfg
     st.run.frozen_credential_store = frozen_store
+
+    # Eager-flatten: build frozen ModelSpec constructs for all tier slots so
+    # capability resolution (thinking clamping, caching settings) runs once at
+    # run start, not once per spawn.
+    from ..agents.registry import build_resolved_model
+    from ..memory.bindings import build_memory_models
+    from ..types import ModelSpec as _ModelSpec
+
+    frozen_models: dict[str, "_ModelSpec"] = {}
+
+    # Tier slots: one ModelSpec per configured slot. api_key is baked in.
+    for slot_name, slot in preset.slots.items():
+        cm = cm_by_id.get(slot.configured_model_id)
+        conn = conn_by_id.get(cm.connection_id) if cm else None
+        if cm and conn:
+            try:
+                api_key = frozen_store.resolve(conn.id) if frozen_store and conn.id else None
+                frozen_models[slot_name] = build_resolved_model(
+                    conn, cm, slot.thinking, slot.caching, cm.embedding_dim, api_key
+                )
+            except Exception:
+                log.warning("failed to build frozen ModelSpec for slot %r; skipping", slot_name)
+
+    st.run.frozen_models = frozen_models
+
+    # Build the per-run memory bundle from the frozen config + store.
+    # Each spec carries its baked api_key; no module global is set.
+    st.run.memory_models = build_memory_models(frozen_cfg, frozen_store)
 
     # Reset run-scoped state
     st.interactions.user_message_buffer.clear()
@@ -499,6 +525,11 @@ async def api_run_clear(r: Request) -> Response:
     # retained as the historical record and is never deleted here.
     st.run.frozen_config = None
     st.run.frozen_credential_store = None
+    st.run.frozen_models = {}
+    # Clear the per-run memory bundle; the module-global memory seam was
+    # removed. Out-of-run memory operations build their bundle on demand
+    # from app_state.provider_config.
+    st.run.memory_models = None
 
     st.projection_store.push_event("run_cleared", build_run_cleared())
     return JSONResponse({"ok": True})
@@ -751,7 +782,12 @@ async def api_memory_entries(r: Request) -> Response:
         return JSONResponse({"entries": []})
 
     try:
-        results = await memory_search(index, q, k=20, type_filter=type_str or None)
+        from ..memory.bindings import build_memory_models, require_memory_model
+        _models = build_memory_models(st.provider_config.config, st.provider_config.credential_store)
+        results = await memory_search(
+            index, q, require_memory_model(_models.embedding, "embedding"),
+            k=20, type_filter=type_str or None,
+        )
     except RuntimeError as exc:
         log.warning("memory search failed: %s", exc)
         return JSONResponse({"entries": []})
@@ -898,6 +934,7 @@ async def _run_reflect_background(
     CancelledError is re-raised so the DELETE handler can await the task and
     emit reflect_cancelled exactly once. All other exceptions emit reflect_failed.
     """
+    from ..memory.bindings import build_memory_models
     from ..memory.retrieval.reflect import (
         run_reflect_agent, IterationCapExceeded,
     )
@@ -918,9 +955,11 @@ async def _run_reflect_background(
             build_reflect_trace(session_id, trace),
         )
 
+    _models = build_memory_models(st.provider_config.config, st.provider_config.credential_store)
     try:
         result = await run_reflect_agent(
             index=st.memory.retrieval_index,
+            models=_models,
             question=question,
             context=context,
             on_trace=on_trace,
@@ -987,12 +1026,14 @@ async def api_memory_reflect_start(r: Request) -> Response:
             status_code=409,
         )
 
-    # M5: resolve model name from reflect_llm memory binding (replaces env var).
+    # Resolve model name from reflect_llm memory binding for the projection event.
     # Graceful fallback to a safe default when binding is not configured.
+    # Note: the old code read .model_id which does not exist on ModelSpec (it always
+    # raised into the fallback). The faithful fix uses .model (the correct field).
     try:
-        from ..memory.bindings import resolve_memory_binding as _rmb
-        _reflect_rmm = _rmb("reflect_llm")
-        model = _reflect_rmm.model_id
+        from ..memory.bindings import build_memory_models
+        _reflect_models = build_memory_models(st.provider_config.config, st.provider_config.credential_store)
+        model = _reflect_models.reflect_llm.model
     except Exception:
         model = os.environ.get("KOAN_REFLECT_MODEL") or "gemini-flash-latest"
     session_id = uuid.uuid4().hex
@@ -1434,7 +1475,10 @@ async def _rebuild_embedding_index(st: "AppState") -> dict:
     if st.memory.retrieval_index is None:
         return {"ok": True}
     try:
-        await st.memory.retrieval_index.rebuild()
+        from ..memory.bindings import build_memory_models, require_memory_model
+        _models = build_memory_models(st.provider_config.config, st.provider_config.credential_store)
+        embed = require_memory_model(_models.embedding, "embedding")
+        await st.memory.retrieval_index.rebuild(embed)
         return {"ok": True}
     except Exception as exc:
         log.error("_rebuild_embedding_index: rebuild failed: %s", exc)

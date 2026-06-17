@@ -120,10 +120,18 @@ class CachingPolicy:
 
 @dataclass
 class ModelSpec:
-    """Resolved provider+model+settings for one role's model selection.
+    """Unified denormalized resolved-model construct for one provider+model selection.
 
-    connection_id (M1) is set by resolve_model_spec so the adapter can resolve
-    credentials by connection rather than by provider type.
+    Used by both workflow agents and the memory subsystem. Built eagerly at run
+    start by build_resolved_model (registry.py); capability resolution (thinking
+    clamping, caching settings) is baked into 'settings' at construction time so
+    no per-spawn capability lookup is needed. base_url, region, and embedding_dim are
+    inlined from the Connection/ConfiguredModel at flatten time so the spawn path
+    never needs to look up the Connection again.
+
+    api_key is the credential resolved at flatten time from the per-run frozen
+    credential store. It is in-memory only and must never be serialized, logged,
+    or written to run-config.yaml, subagent task.json, or any projection event.
     """
 
     provider: str
@@ -131,8 +139,16 @@ class ModelSpec:
     thinking: ThinkingMode
     settings: dict = field(default_factory=dict)
     caching: CachingPolicy = field(default_factory=CachingPolicy)
-    # M1: connection id for credential lookup (empty string for legacy callers).
+    # connection_id is the credential-store key; empty string for legacy paths.
     connection_id: str = ""
+    # Inlined endpoint settings from the Connection, set at flatten time.
+    base_url: str | None = None
+    region: str | None = None
+    # Resolved embedding output dimension; None for non-voyage or non-embedding.
+    embedding_dim: int | None = None
+    # Resolved credential, baked once at flatten time from the per-run frozen
+    # credential store. None for keyless providers and test paths.
+    api_key: str | None = None
 
 
 @dataclass(frozen=True)

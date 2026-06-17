@@ -6,20 +6,21 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from koan.memory.bindings import ResolvedMemoryModel
 from koan.memory.retrieval.backend import _rrf_merge, rerank_results
 from koan.memory.retrieval.index import RetrievalIndex, _content_hash
 from koan.memory.retrieval.types import SearchResult
+from koan.types import ModelSpec
 
 
-def _fake_rmm() -> ResolvedMemoryModel:
-    """Return a fake ResolvedMemoryModel for patching resolve_memory_binding in rerank tests."""
-    return ResolvedMemoryModel(
-        provider_type="voyage",
-        model_id="voyage-4-large",
+def _fake_rmm() -> ModelSpec:
+    """Return a fake embedding ModelSpec for tests that mock VoyageAI calls."""
+    return ModelSpec(
+        provider="voyage",
+        model="voyage-4-large",
+        thinking="disabled",
+        connection_id="test-voyage-conn",
+        embedding_dim=1024,
         api_key="fake-key",
-        base_url=None,
-        region=None,
     )
 
 
@@ -67,15 +68,16 @@ FAKE_VECTOR = [0.1] * 1024
 
 
 @pytest.mark.anyio
-async def test_sync_indexes_new_files(mem_dir: Path, memory_config) -> None:
+async def test_sync_indexes_new_files(mem_dir: Path) -> None:
     """New files are embedded and inserted into the index on first sync."""
     write_entry(mem_dir, 1, "Entry One", "Body of entry one.")
     write_entry(mem_dir, 2, "Entry Two", "Body of entry two.")
 
+    model = _fake_rmm()
     index = RetrievalIndex(mem_dir)
 
     with patch("koan.memory.retrieval.index._embed_texts", new=AsyncMock(return_value=[FAKE_VECTOR, FAKE_VECTOR])):
-        await index.ensure_synced()
+        await index.ensure_synced(model)
 
     with patch("koan.memory.retrieval.index._embed_texts", new=AsyncMock(return_value=[])):
         rows = await index.dense_search(FAKE_VECTOR, n=10)
@@ -84,37 +86,39 @@ async def test_sync_indexes_new_files(mem_dir: Path, memory_config) -> None:
 
 
 @pytest.mark.anyio
-async def test_sync_skips_unchanged_files(mem_dir: Path, memory_config) -> None:
+async def test_sync_skips_unchanged_files(mem_dir: Path) -> None:
     """Unchanged files are not re-embedded on a second sync."""
     write_entry(mem_dir, 1, "Stable", "Body.")
+    model = _fake_rmm()
     index = RetrievalIndex(mem_dir)
 
     mock_embed = AsyncMock(return_value=[FAKE_VECTOR])
     with patch("koan.memory.retrieval.index._embed_texts", new=mock_embed):
-        await index.ensure_synced()
+        await index.ensure_synced(model)
         # Reset synced flag to force a second sync
         index._synced = False
-        await index.ensure_synced()
+        await index.ensure_synced(model)
 
     # embed called only once (second sync sees matching hash)
     assert mock_embed.call_count == 1
 
 
 @pytest.mark.anyio
-async def test_sync_removes_deleted_files(mem_dir: Path, memory_config) -> None:
+async def test_sync_removes_deleted_files(mem_dir: Path) -> None:
     """Rows for deleted files are pruned from the index on the next sync."""
     p1 = write_entry(mem_dir, 1, "Keep", "Body one.")
     p2 = write_entry(mem_dir, 2, "Delete", "Body two.")
+    model = _fake_rmm()
     index = RetrievalIndex(mem_dir)
 
     with patch("koan.memory.retrieval.index._embed_texts", new=AsyncMock(return_value=[FAKE_VECTOR, FAKE_VECTOR])):
-        await index.ensure_synced()
+        await index.ensure_synced(model)
 
     # Delete second file and re-sync
     p2.unlink()
     index._synced = False
     with patch("koan.memory.retrieval.index._embed_texts", new=AsyncMock(return_value=[])):
-        await index.ensure_synced()
+        await index.ensure_synced(model)
 
     rows = await index.dense_search(FAKE_VECTOR, n=10)
     assert len(rows) == 1
@@ -160,7 +164,7 @@ def _make_candidate(entry_id: int, etype: str = "context") -> dict:
 
 
 @pytest.mark.anyio
-async def test_search_applies_type_filter(mem_dir: Path, memory_config) -> None:
+async def test_search_applies_type_filter(mem_dir: Path) -> None:
     """type_filter narrows reranked candidates to the specified type."""
     write_entry(mem_dir, 1, "Decision A", "Body.", etype="decision")
     write_entry(mem_dir, 2, "Context B", "Body.", etype="context")
@@ -174,16 +178,14 @@ async def test_search_applies_type_filter(mem_dir: Path, memory_config) -> None:
         "results": [type("I", (), {"index": 0, "relevance_score": 0.9})()]
     })()
 
-    with patch("koan.memory.retrieval.backend.resolve_memory_binding",
-               return_value=_fake_rmm()):
-        with patch("voyageai.AsyncClient.rerank", new=AsyncMock(return_value=mock_rerank_result)):
-            results = await rerank_results("query", candidates, k=5, type_filter="decision")
+    with patch("voyageai.AsyncClient.rerank", new=AsyncMock(return_value=mock_rerank_result)):
+        results = await rerank_results("query", candidates, k=5, model=_fake_rmm(), type_filter="decision")
 
     assert all(r.entry.type == "decision" for r in results)
 
 
 @pytest.mark.anyio
-async def test_search_returns_top_k(mem_dir: Path, memory_config) -> None:
+async def test_search_returns_top_k(mem_dir: Path) -> None:
     """rerank_results returns at most k results from the candidates."""
     for i in range(1, 6):
         write_entry(mem_dir, i, f"Entry {i}", f"Body {i}.", etype="context")
@@ -199,9 +201,7 @@ async def test_search_returns_top_k(mem_dir: Path, memory_config) -> None:
     ]
     mock_rerank_result = type("R", (), {"results": mock_results})()
 
-    with patch("koan.memory.retrieval.backend.resolve_memory_binding",
-               return_value=_fake_rmm()):
-        with patch("voyageai.AsyncClient.rerank", new=AsyncMock(return_value=mock_rerank_result)):
-            results = await rerank_results("query", candidates, k=3)
+    with patch("voyageai.AsyncClient.rerank", new=AsyncMock(return_value=mock_rerank_result)):
+        results = await rerank_results("query", candidates, k=3, model=_fake_rmm())
 
     assert len(results) <= 3

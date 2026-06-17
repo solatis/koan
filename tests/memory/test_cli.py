@@ -58,20 +58,22 @@ def test_forget_prints_json_to_stdout(store_env, capsys):
 
 
 def test_status_stale_no_api_key_exits(store_env, monkeypatch, capsys):
-    """Early-exit guard: stale summary without a Google credential exits with code 1."""
+    """Early-exit guard: stale summary without a configured memory_llm exits with code 1."""
+    from koan.memory.bindings import MemoryModels
     ops.memorize(store_env, "context", "Entry", "Body.")
     # summary.md is absent -> summary_is_stale() returns True.
-    # With the credential-store model, _has_api_key() checks the active store
-    # (not env vars); the store is uninitialized here so it returns False.
+    # MemoryModels with no memory_llm -> _has_api_key returns False.
+    models = MemoryModels()
     with pytest.raises(SystemExit) as exc:
-        cmd_status(ns(type=None, json_output=True))
+        cmd_status(ns(type=None, json_output=True), models)
     assert exc.value.code == 1
     err = capsys.readouterr().err
-    assert "credential store" in err
+    assert "not configured" in err
 
 
 def test_status_human_readable_output(store_env, tmp_path, capsys):
     """Human-readable format: table header and entry titles appear in stdout."""
+    from koan.memory.bindings import MemoryModels
     ops.memorize(store_env, "context", "Alpha entry", "Body.")
     ops.memorize(store_env, "decision", "Beta entry", "Body.")
 
@@ -82,7 +84,7 @@ def test_status_human_readable_output(store_env, tmp_path, capsys):
     future = time.time() + 2
     os.utime(summary_path, (future, future))
 
-    cmd_status(ns(type=None, json_output=False))
+    cmd_status(ns(type=None, json_output=False), MemoryModels())
     out = capsys.readouterr().out
     assert "entry_id" in out
     assert "type" in out

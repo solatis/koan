@@ -18,9 +18,8 @@ from pathlib import Path
 import uvicorn
 
 from ..config import load_koan_config, save_koan_config
-from ..credentials import CredentialStore, get_key_backend, set_active_credential_store
+from ..credentials import CredentialStore, get_key_backend
 from ..logger import get_logger
-from ..memory.bindings import set_active_provider_config
 from ..state import AppState, hydrate_memory_projection
 from ..web.app import FRONTEND_DIST, create_app
 
@@ -125,10 +124,9 @@ def cmd_run(args: argparse.Namespace) -> None:
             asyncio.run(save_koan_config(config))
             log.info("credentials: persisted config after pruning stale envelopes")
         app_state.provider_config.credential_store = store
-        set_active_credential_store(store)
-        # M4: set the active provider config so the memory subsystem can
-        # resolve memory bindings (embedding, memory_llm, reflect_llm).
-        set_active_provider_config(config)
+        # The module-global active store/config seams were removed; the live
+        # credential store lives on app_state.provider_config and the per-run
+        # frozen state is built at api_start_run via build_memory_models.
     except Exception as exc:
         log.error("credentials: store initialization failed -- providers will be unavailable: %s", exc)
     app_state.server.port = port

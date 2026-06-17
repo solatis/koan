@@ -114,10 +114,9 @@ def test_caching_off_emits_nothing():
 
 
 def test_caching_anthropic_auto_sets_ttl():
-    """Anthropic auto mode emits cache_instructions and cache_tool_definitions with TTL."""
-    s = adapter.build_model_settings(
-        _spec("anthropic", model="claude-opus-4-0", caching=CachingPolicy(mode="auto", ttl="1h"))
-    )
+    """Anthropic auto mode: _caching_settings emits cache_instructions and cache_tool_definitions."""
+    caps = _caps(supports_prompt_caching=True)
+    s = adapter._caching_settings(CachingPolicy(mode="auto", ttl="1h"), caps)
     assert s["anthropic_cache_instructions"] == "1h"
     assert s["anthropic_cache_tool_definitions"] == "1h"
 
@@ -132,14 +131,14 @@ def test_caching_google_openai_bedrock_noop():
 
 
 def test_build_model_settings_merges_spec_settings_and_thinking():
-    """build_model_settings merges user settings with capability-driven thinking.
+    """build_model_settings returns the pre-baked settings from spec.settings.
 
-    Uses an o1-mini model which the OpenAI profile recognises as a reasoning model
-    (always-on thinking), ensuring thinking_modes is populated for the test.
+    Thinking and caching are baked into spec.settings at flatten time by
+    build_resolved_model; build_model_settings is a trivial pass-through.
     """
-    # o1-mini is an always-on reasoning model; thinking_modes should include "low".
+    pre_baked = {"temperature": 0.2, "openai_reasoning_effort": "low"}
     s = adapter.build_model_settings(
-        _spec("openai", model="o1-mini", thinking="low", settings={"temperature": 0.2})
+        _spec("openai", model="o1-mini", thinking="low", settings=pre_baked)
     )
     assert s["temperature"] == 0.2
     assert s["openai_reasoning_effort"] == "low"

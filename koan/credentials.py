@@ -234,37 +234,3 @@ class CredentialStore:
         return self._pruned
 
 
-# ---------------------------------------------------------------------------
-# Module-level active store
-# ---------------------------------------------------------------------------
-
-_ACTIVE: CredentialStore | None = None
-
-
-def set_active_credential_store(store: CredentialStore) -> None:
-    """Set the process-wide active credential store.
-
-    Called once per process entrypoint (cli/run.py, cli/memory.py) before
-    any provider or memory code runs. This replaces os.environ as the
-    credential source for all components that lack app_state access
-    (memory subsystem modules).
-    """
-    global _ACTIVE
-    _ACTIVE = store
-
-
-def active_credential_store() -> CredentialStore:
-    """Return the active credential store, raising RuntimeError if unset.
-
-    Components that call this (memory/llm.py, retrieval/reflect.py, etc.)
-    rely on the entrypoint having called set_active_credential_store()
-    before any operation that needs a credential. The RuntimeError is
-    intentionally early and loud so misconfigured startup is caught quickly.
-    """
-    if _ACTIVE is None:
-        raise RuntimeError(
-            "Active credential store is not initialized. "
-            "Call set_active_credential_store() at process startup before "
-            "using any memory or provider operations."
-        )
-    return _ACTIVE

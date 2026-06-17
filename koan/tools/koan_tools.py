@@ -163,8 +163,12 @@ async def _compute_memory_injection_core(app_state: AppState, agent: AgentState)
     try:
         from ..memory.retrieval.rag import inject, render_injection_block
         index = app_state.memory.retrieval_index
+        models = app_state.run.memory_models
+        if models is None:
+            return ""
         results = await inject(
             index=index,
+            models=models,
             directive=binding.retrieval_directive,
             anchor=anchor,
             k=5,
@@ -776,8 +780,9 @@ async def memory_status_core(deps: ToolDeps, type: str | None = None) -> str:
     agent = deps.agent
     app_state = deps.app_state
     store = app_state.memory.memory_store
+    models = app_state.run.memory_models
 
-    result = await memory_ops.status(store, type=type)
+    result = await memory_ops.status(store, model=(models.memory_llm if models else None), type=type)
 
     if result.get("regenerated"):
         app_state.projection_store.push_event(
@@ -815,14 +820,17 @@ async def search_core(
     # Import directly from the origin module; tests patch
     # koan.memory.retrieval.search (not the deleted mcp_endpoint namespace).
     from ..memory.retrieval import search as retrieval_search
+    from ..memory.bindings import require_memory_model
 
     app_state = deps.app_state
 
     if type is not None and type not in MEMORY_TYPES:
         raise ValueError(f"invalid type: {type!r}")
 
+    models = app_state.run.memory_models
+    embed = require_memory_model(models.embedding if models else None, "embedding")
     index = app_state.memory.retrieval_index
-    results = await retrieval_search(index, query, k=k, type_filter=type)
+    results = await retrieval_search(index, query, embed, k=k, type_filter=type)
     out = {
         "results": [
             {
@@ -873,8 +881,9 @@ async def reflect_core(
             agent_id=agent.agent_id,
         )
 
+    models = app_state.run.memory_models
     index = app_state.memory.retrieval_index
-    result = await run_reflect_agent(index, question, context=context, on_trace=_on_trace)
+    result = await run_reflect_agent(index, models, question, context=context, on_trace=_on_trace)
     out = {
         "answer": result.answer,
         "citations": [

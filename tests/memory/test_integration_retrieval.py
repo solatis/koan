@@ -31,15 +31,16 @@ def mem_dir(tmp_path: Path) -> Path:
 
 @requires_keys
 @pytest.mark.anyio
-async def test_end_to_end_search(mem_dir: Path, real_credential_store) -> None:
+async def test_end_to_end_search(mem_dir: Path, real_memory_models) -> None:
     _write_entry(mem_dir, 1, "Database choice", "We chose PostgreSQL for its ACID guarantees.", "decision")
     _write_entry(mem_dir, 2, "Auth system", "We use JWT tokens for authentication.", "decision")
     _write_entry(mem_dir, 3, "Caching layer", "Redis is used for session caching and rate limiting.", "context")
     _write_entry(mem_dir, 4, "Deployment", "The service is deployed on Kubernetes in AWS.", "context")
     _write_entry(mem_dir, 5, "Testing strategy", "We use pytest for all Python tests.", "procedure")
 
+    model = real_memory_models.embedding
     index = RetrievalIndex(mem_dir)
-    results = await search(index, "caching and Redis session management", k=2)
+    results = await search(index, "caching and Redis session management", model, k=2)
 
     assert len(results) > 0
     top_ids = [r.entry_id for r in results]
@@ -48,13 +49,14 @@ async def test_end_to_end_search(mem_dir: Path, real_credential_store) -> None:
 
 @requires_keys
 @pytest.mark.anyio
-async def test_search_type_filter_narrows_results(mem_dir: Path, real_credential_store) -> None:
+async def test_search_type_filter_narrows_results(mem_dir: Path, real_memory_models) -> None:
     _write_entry(mem_dir, 1, "Decision one", "We chose React for the frontend.", "decision")
     _write_entry(mem_dir, 2, "Procedure one", "Run pytest to execute all tests.", "procedure")
     _write_entry(mem_dir, 3, "Procedure two", "Use uv run to install dependencies.", "procedure")
 
+    model = real_memory_models.embedding
     index = RetrievalIndex(mem_dir)
-    results = await search(index, "running tests and procedures", k=5, type_filter="procedure")
+    results = await search(index, "running tests and procedures", model, k=5, type_filter="procedure")
 
     assert len(results) > 0
     assert all(r.entry.type == "procedure" for r in results)
@@ -62,7 +64,7 @@ async def test_search_type_filter_narrows_results(mem_dir: Path, real_credential
 
 @requires_keys
 @pytest.mark.anyio
-async def test_rag_inject_returns_relevant_entries(mem_dir: Path, real_credential_store) -> None:
+async def test_rag_inject_returns_relevant_entries(mem_dir: Path, real_memory_models) -> None:
     _write_entry(mem_dir, 1, "Auth decision", "JWT chosen over sessions for stateless auth.", "decision")
     _write_entry(mem_dir, 2, "DB decision", "PostgreSQL for relational data.", "decision")
     _write_entry(mem_dir, 3, "Caching lesson", "Redis TTL must match session timeout.", "lesson")
@@ -70,6 +72,7 @@ async def test_rag_inject_returns_relevant_entries(mem_dir: Path, real_credentia
     index = RetrievalIndex(mem_dir)
     results = await inject(
         index,
+        real_memory_models,
         directive="authentication and session management decisions",
         anchor="implementing the login flow using JWT",
         k=3,

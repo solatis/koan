@@ -85,7 +85,7 @@ class TestDispatchSearch:
         from unittest.mock import MagicMock
         index = MagicMock()
         retrieved: dict = {}
-        payload = await _dispatch_search(index, {"query": "x", "type": "invalid"}, retrieved)
+        payload = await _dispatch_search(index, {"query": "x", "type": "invalid"}, retrieved, model=None)
         assert "error" in payload
         assert payload["results"] == []
         assert "invalid" in payload["error"]
@@ -102,7 +102,7 @@ class TestDispatchSearch:
             "koan.memory.retrieval.reflect.retrieval_search",
             AsyncMock(return_value=results),
         ):
-            payload = await _dispatch_search(index, {"query": "test"}, retrieved)
+            payload = await _dispatch_search(index, {"query": "test"}, retrieved, model=None)
 
         assert 3 in retrieved
         assert 7 in retrieved
@@ -118,12 +118,12 @@ class TestDispatchSearch:
 
         captured_kwargs: dict = {}
 
-        async def fake_search(idx, query, k=5, type_filter=None):
+        async def fake_search(idx, query, model, k=5, type_filter=None):
             captured_kwargs["k"] = k
             return []
 
         with patch("koan.memory.retrieval.reflect.retrieval_search", fake_search):
-            await _dispatch_search(index, {"query": "x", "k": 100}, {})
+            await _dispatch_search(index, {"query": "x", "k": 100}, {}, model=None)
 
         assert captured_kwargs["k"] == 20
 
@@ -137,7 +137,7 @@ class TestDispatchSearch:
             "koan.memory.retrieval.reflect.retrieval_search",
             AsyncMock(side_effect=RuntimeError("voyage key missing")),
         ):
-            payload = await _dispatch_search(index, {"query": "x"}, {})
+            payload = await _dispatch_search(index, {"query": "x"}, {}, model=None)
 
         assert "error" in payload
         assert "voyage key missing" in payload["error"]

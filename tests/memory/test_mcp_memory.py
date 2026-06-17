@@ -12,12 +12,28 @@ from unittest.mock import patch
 
 import pytest
 
+from koan.memory.bindings import MemoryModels
 from koan.state import AgentState, AppState
+from koan.types import ModelSpec
 
 
 def _json(result: str) -> dict:
     """JSON-decode a core result string."""
     return json.loads(result)
+
+
+def _fake_memory_llm() -> ModelSpec:
+    """Minimal LLM ModelSpec for memory_status_core tests."""
+    return ModelSpec(provider="google", model="gemini", thinking="disabled", connection_id="g")
+
+
+def _fake_embed() -> ModelSpec:
+    return ModelSpec(provider="voyage", model="voyage-4-large", thinking="disabled",
+                     connection_id="v", embedding_dim=1024, api_key="k")
+
+
+def _fake_models() -> MemoryModels:
+    return MemoryModels(embedding=_fake_embed(), memory_llm=_fake_memory_llm())
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +62,8 @@ def mem_env(tmp_path):
     agent.step = 1
     app_state.agents[agent.agent_id] = agent
     app_state.init_memory_services()
+    # Provide fake memory models so memory_status_core can attempt summary regeneration.
+    app_state.run.memory_models = _fake_models()
 
     deps = ToolDeps(app_state=app_state, agent=agent)
 
@@ -221,7 +239,7 @@ class TestMemoryStatus:
         await memorize_core(deps, type="decision", title="D1", body="Body of decision one.")
         await memorize_core(deps, type="lesson", title="L1", body="Body of lesson one.")
 
-        async def fake_generate(prompt, system="", max_tokens=1024):
+        async def fake_generate(prompt, model=None, system="", max_tokens=1024):
             return "mocked summary body"
 
         with patch("koan.memory.summarize.generate", side_effect=fake_generate):
@@ -248,7 +266,7 @@ class TestMemoryStatus:
         await memorize_core(deps, type="decision", title="D1", body="Decision body.")
         await memorize_core(deps, type="lesson", title="L1", body="Lesson body.")
 
-        async def fake_generate(prompt, system="", max_tokens=1024):
+        async def fake_generate(prompt, model=None, system="", max_tokens=1024):
             return "mocked"
 
         with patch("koan.memory.summarize.generate", side_effect=fake_generate):
@@ -262,7 +280,7 @@ class TestMemoryStatus:
         from koan.tools.koan_tools import memorize_core, memory_status_core
         deps = mem_env["deps"]
 
-        async def fake_generate(prompt, system="", max_tokens=1024):
+        async def fake_generate(prompt, model=None, system="", max_tokens=1024):
             return "mocked"
 
         with patch("koan.memory.summarize.generate", side_effect=fake_generate):

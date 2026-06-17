@@ -5,7 +5,22 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from koan.memory.bindings import MemoryModels
 from koan.memory.retrieval.rag import generate_queries, inject
+from koan.types import ModelSpec
+
+
+def _fake_llm() -> ModelSpec:
+    return ModelSpec(provider="google", model="gemini", thinking="disabled", connection_id="g")
+
+
+def _fake_embed() -> ModelSpec:
+    return ModelSpec(provider="voyage", model="voyage-4-large", thinking="disabled",
+                     connection_id="v", embedding_dim=1024, api_key="k")
+
+
+def _fake_models() -> MemoryModels:
+    return MemoryModels(embedding=_fake_embed(), memory_llm=_fake_llm())
 
 
 # ---------------------------------------------------------------------------
@@ -15,21 +30,21 @@ from koan.memory.retrieval.rag import generate_queries, inject
 @pytest.mark.anyio
 async def test_generate_queries_parses_llm_output() -> None:
     with patch("koan.memory.retrieval.rag.llm_generate", new=AsyncMock(return_value="query one\nquery two\nquery three\n")):
-        result = await generate_queries("directive", "anchor")
+        result = await generate_queries("directive", "anchor", _fake_llm())
     assert result == ["query one", "query two", "query three"]
 
 
 @pytest.mark.anyio
 async def test_generate_queries_truncates_to_three() -> None:
     with patch("koan.memory.retrieval.rag.llm_generate", new=AsyncMock(return_value="q1\nq2\nq3\nq4\nq5\n")):
-        result = await generate_queries("d", "a")
+        result = await generate_queries("d", "a", _fake_llm())
     assert result == ["q1", "q2", "q3"]
 
 
 @pytest.mark.anyio
 async def test_generate_queries_filters_empty_lines() -> None:
     with patch("koan.memory.retrieval.rag.llm_generate", new=AsyncMock(return_value="q1\n\nq2\n")):
-        result = await generate_queries("d", "a")
+        result = await generate_queries("d", "a", _fake_llm())
     assert result == ["q1", "q2"]
 
 
@@ -64,7 +79,7 @@ async def test_inject_calls_search_candidates_per_query(tmp_path: Path) -> None:
     with patch("koan.memory.retrieval.rag.llm_generate", new=AsyncMock(return_value="query A\nquery B\n")):
         with patch("koan.memory.retrieval.rag.search_candidates", new=mock_sc):
             with patch("koan.memory.retrieval.rag.rerank_results", new=mock_rr):
-                await inject(index, directive="find stuff", anchor="some context")
+                await inject(index, _fake_models(), directive="find stuff", anchor="some context")
 
     # search_candidates called once per query (2 queries)
     assert mock_sc.call_count == 2
@@ -100,7 +115,7 @@ async def test_inject_deduplicates_across_queries(tmp_path: Path) -> None:
     with patch("koan.memory.retrieval.rag.llm_generate", new=AsyncMock(return_value="q1\nq2\n")):
         with patch("koan.memory.retrieval.rag.search_candidates", new=mock_sc):
             with patch("koan.memory.retrieval.rag.rerank_results", new=AsyncMock(side_effect=mock_rr)):
-                await inject(index, directive="d", anchor="a")
+                await inject(index, _fake_models(), directive="d", anchor="a")
 
     merged = captured_candidates[0]
     ids = [c["entry_id"] for c in merged]
@@ -133,6 +148,6 @@ async def test_inject_returns_top_k(tmp_path: Path) -> None:
     with patch("koan.memory.retrieval.rag.llm_generate", new=AsyncMock(return_value="q1\n")):
         with patch("koan.memory.retrieval.rag.search_candidates", new=mock_sc):
             with patch("koan.memory.retrieval.rag.rerank_results", new=mock_rr):
-                results = await inject(index, directive="d", anchor="a", k=3)
+                results = await inject(index, _fake_models(), directive="d", anchor="a", k=3)
 
     assert len(results) <= 3

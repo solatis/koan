@@ -1,24 +1,28 @@
-# Unit tests for koan.memory.bindings: Voyage embedding catalog, resolver helpers,
-# resolve_memory_binding, set_active_provider_config, and error cases.
+# Unit tests for koan.memory.bindings: Voyage embedding catalog, build_memory_models,
+# require_memory_model, and the resolver helpers.
 #
 # Hard cutover: EMBEDDING_DIMS and embedding_dim_for were removed and replaced by
-# the VoyageEmbeddingModel catalog.  This file covers the new catalog API and
-# includes a negative-presence test to guard against accidental re-introduction.
+# the VoyageEmbeddingModel catalog.  ResolvedMemoryModel was removed and replaced
+# by ModelSpec (unified resolved construct).  resolve_memory_binding and
+# set_active_provider_config will be deleted in Step 19 (de-globalization).
+#
+# This file covers the new pure API: build_memory_models and require_memory_model,
+# plus the catalog helpers (unchanged).  Negative-presence tests guard against
+# accidental re-introduction of removed symbols.
 
 from __future__ import annotations
 
 import pytest
 
 from koan.config import KoanConfig
-from koan.credentials import CredentialStore, FileKeyBackend, set_active_credential_store
+from koan.credentials import CredentialStore, FileKeyBackend
 from koan.memory.bindings import (
     VOYAGE_EMBEDDING_MODELS,
-    ResolvedMemoryModel,
     VoyageEmbeddingModel,
+    build_memory_models,
     is_recognized_voyage_model,
-    resolve_memory_binding,
+    require_memory_model,
     resolve_voyage_embedding_dim,
-    set_active_provider_config,
     voyage_dimension_options,
     voyage_embedding_models,
 )
@@ -27,6 +31,7 @@ from koan.types import (
     ConfiguredModel,
     MemoryBinding,
     MemoryBindings,
+    ModelSpec,
 )
 
 
@@ -49,6 +54,13 @@ class TestRemovedSymbols:
             "embedding_dim_for was re-introduced; hard cutover requires permanent removal"
         )
 
+    def test_resolved_memory_model_not_exported(self):
+        """ResolvedMemoryModel must not exist in koan.memory.bindings (hard cutover)."""
+        import koan.memory.bindings as mod
+        assert not hasattr(mod, "ResolvedMemoryModel"), (
+            "ResolvedMemoryModel was re-introduced; hard cutover requires permanent removal"
+        )
+
 
 # ---------------------------------------------------------------------------
 # VoyageEmbeddingModel catalog
@@ -63,10 +75,6 @@ class TestVoyageEmbeddingCatalog:
         """Every entry in VOYAGE_EMBEDDING_MODELS is a VoyageEmbeddingModel."""
         for entry in VOYAGE_EMBEDDING_MODELS.values():
             assert isinstance(entry, VoyageEmbeddingModel)
-
-    def test_each_model_has_context_window_32000(self):
-        for entry in VOYAGE_EMBEDDING_MODELS.values():
-            assert entry.context_window == 32_000
 
     def test_each_model_default_dimension_is_1024(self):
         for entry in VOYAGE_EMBEDDING_MODELS.values():
@@ -145,7 +153,7 @@ class TestResolveVoyageEmbeddingDim:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _setup_active_config(
+def _build_store(
     tmp_path,
     monkeypatch,
     *,
@@ -153,7 +161,7 @@ def _setup_active_config(
     google_key: str | None = "google-api-key",
     embedding_dim: int | None = None,
 ) -> tuple[KoanConfig, CredentialStore]:
-    """Build and activate a config with voyage + google connections and MemoryBindings."""
+    """Build a KoanConfig + CredentialStore with voyage + google connections."""
     key_path = tmp_path / "master.key"
     monkeypatch.setattr("koan.credentials.MASTER_KEY_PATH", key_path)
 
@@ -184,102 +192,78 @@ def _setup_active_config(
         store.set("voyage-1", voyage_key)
     if google_key:
         store.set("google-1", google_key)
-    set_active_credential_store(store)
-    set_active_provider_config(config)
     return config, store
 
 
 # ---------------------------------------------------------------------------
-# resolve_memory_binding -- happy paths
+# build_memory_models
 # ---------------------------------------------------------------------------
 
-class TestResolveMemoryBinding:
-    def test_embedding_returns_voyage_rmm(self, tmp_path, monkeypatch):
-        """resolve_memory_binding('embedding') returns voyage provider + model + key."""
-        _setup_active_config(tmp_path, monkeypatch)
-        rmm = resolve_memory_binding("embedding")
-        assert isinstance(rmm, ResolvedMemoryModel)
-        assert rmm.provider_type == "voyage"
-        assert rmm.model_id == "voyage-4-large"
-        assert rmm.api_key == "voyage-api-key"
+class TestBuildMemoryModels:
+    def test_embedding_returns_voyage_model_spec(self, tmp_path, monkeypatch):
+        """build_memory_models resolves embedding to a ModelSpec for voyage."""
+        config, store = _build_store(tmp_path, monkeypatch)
+        models = build_memory_models(config, store)
+        assert models.embedding is not None
+        assert isinstance(models.embedding, ModelSpec)
+        assert models.embedding.provider == "voyage"
+        assert models.embedding.model == "voyage-4-large"
+        assert models.embedding.api_key == "voyage-api-key"
 
     def test_embedding_resolves_dim_from_catalog_default(self, tmp_path, monkeypatch):
         """embedding binding with no explicit dim resolves to catalog default (1024)."""
-        _setup_active_config(tmp_path, monkeypatch, embedding_dim=None)
-        rmm = resolve_memory_binding("embedding")
-        assert rmm.embedding_dim == 1024
+        config, store = _build_store(tmp_path, monkeypatch, embedding_dim=None)
+        models = build_memory_models(config, store)
+        assert models.embedding is not None
+        assert models.embedding.embedding_dim == 1024
 
     def test_embedding_respects_explicit_dim(self, tmp_path, monkeypatch):
         """embedding binding with explicit dim=512 resolves to 512."""
-        _setup_active_config(tmp_path, monkeypatch, embedding_dim=512)
-        rmm = resolve_memory_binding("embedding")
-        assert rmm.embedding_dim == 512
+        config, store = _build_store(tmp_path, monkeypatch, embedding_dim=512)
+        models = build_memory_models(config, store)
+        assert models.embedding is not None
+        assert models.embedding.embedding_dim == 512
 
-    def test_memory_llm_returns_google_rmm(self, tmp_path, monkeypatch):
-        """resolve_memory_binding('memory_llm') returns google provider + model + key."""
-        _setup_active_config(tmp_path, monkeypatch)
-        rmm = resolve_memory_binding("memory_llm")
-        assert rmm.provider_type == "google"
-        assert rmm.model_id == "gemini-flash-lite-latest"
-        assert rmm.api_key == "google-api-key"
+    def test_memory_llm_returns_google_model_spec(self, tmp_path, monkeypatch):
+        """build_memory_models resolves memory_llm to a ModelSpec for google."""
+        config, store = _build_store(tmp_path, monkeypatch)
+        models = build_memory_models(config, store)
+        assert models.memory_llm is not None
+        assert isinstance(models.memory_llm, ModelSpec)
+        assert models.memory_llm.provider == "google"
+        assert models.memory_llm.model == "gemini-flash-lite-latest"
+        assert models.memory_llm.api_key == "google-api-key"
 
-    def test_reflect_llm_returns_google_rmm(self, tmp_path, monkeypatch):
-        """resolve_memory_binding('reflect_llm') returns google provider + model + key."""
-        _setup_active_config(tmp_path, monkeypatch)
-        rmm = resolve_memory_binding("reflect_llm")
-        assert rmm.provider_type == "google"
-        assert rmm.model_id == "gemini-flash-latest"
-        assert rmm.api_key == "google-api-key"
+    def test_reflect_llm_returns_google_model_spec(self, tmp_path, monkeypatch):
+        """build_memory_models resolves reflect_llm to a ModelSpec for google."""
+        config, store = _build_store(tmp_path, monkeypatch)
+        models = build_memory_models(config, store)
+        assert models.reflect_llm is not None
+        assert isinstance(models.reflect_llm, ModelSpec)
+        assert models.reflect_llm.provider == "google"
+        assert models.reflect_llm.model == "gemini-flash-latest"
+        assert models.reflect_llm.api_key == "google-api-key"
 
-    def test_missing_credential_returns_none_api_key(self, tmp_path, monkeypatch):
-        """api_key is None when no credential is stored for the connection."""
-        _setup_active_config(tmp_path, monkeypatch, voyage_key=None)
-        rmm = resolve_memory_binding("embedding")
-        assert rmm.api_key is None
-        assert rmm.provider_type == "voyage"
+    def test_missing_credential_produces_none_api_key(self, tmp_path, monkeypatch):
+        """api_key is None when no credential is stored for a connection."""
+        config, store = _build_store(tmp_path, monkeypatch, voyage_key=None)
+        models = build_memory_models(config, store)
+        assert models.embedding is not None
+        assert models.embedding.api_key is None
 
-
-# ---------------------------------------------------------------------------
-# resolve_memory_binding -- error cases (brief D12: unconfigured -> clear error)
-# ---------------------------------------------------------------------------
-
-class TestResolveMemoryBindingErrors:
-    def test_raises_when_config_not_set(self, monkeypatch):
-        """resolve_memory_binding raises RuntimeError when no active config is set."""
-        monkeypatch.setattr("koan.memory.bindings._ACTIVE_CONFIG", None)
-        with pytest.raises(RuntimeError, match="Active provider config is not initialized"):
-            resolve_memory_binding("embedding")
-
-    def test_raises_when_memory_block_absent(self, tmp_path, monkeypatch):
-        """resolve_memory_binding raises when config.memory is None."""
+    def test_no_memory_block_returns_empty_bundle(self, tmp_path, monkeypatch):
+        """config.memory=None -> all three fields None."""
         key_path = tmp_path / "master.key"
         monkeypatch.setattr("koan.credentials.MASTER_KEY_PATH", key_path)
         config = KoanConfig(memory=None)
         store = CredentialStore(config, FileKeyBackend())
-        set_active_credential_store(store)
-        set_active_provider_config(config)
-        with pytest.raises(RuntimeError, match="config.memory is absent"):
-            resolve_memory_binding("embedding")
+        models = build_memory_models(config, store)
+        assert models.embedding is None
+        assert models.memory_llm is None
+        assert models.reflect_llm is None
 
-    def test_raises_when_binding_is_none(self, tmp_path, monkeypatch):
-        """resolve_memory_binding raises when the binding field is None."""
-        key_path = tmp_path / "master.key"
-        monkeypatch.setattr("koan.credentials.MASTER_KEY_PATH", key_path)
-        config = KoanConfig(
-            memory=MemoryBindings(
-                embedding=None,
-                memory_llm=None,
-                reflect_llm=None,
-            )
-        )
-        store = CredentialStore(config, FileKeyBackend())
-        set_active_credential_store(store)
-        set_active_provider_config(config)
-        with pytest.raises(RuntimeError, match="is not configured in config.memory"):
-            resolve_memory_binding("embedding")
-
-    def test_raises_when_configured_model_missing(self, tmp_path, monkeypatch):
-        """resolve_memory_binding raises when the configured_model_id is not found."""
+    def test_missing_configured_model_returns_none_field(self, tmp_path, monkeypatch):
+        """Binding pointing to a nonexistent configured_model_id -> None field."""
         key_path = tmp_path / "master.key"
         monkeypatch.setattr("koan.credentials.MASTER_KEY_PATH", key_path)
         config = KoanConfig(
@@ -289,13 +273,11 @@ class TestResolveMemoryBindingErrors:
             ),
         )
         store = CredentialStore(config, FileKeyBackend())
-        set_active_credential_store(store)
-        set_active_provider_config(config)
-        with pytest.raises(RuntimeError, match="configured_model_id="):
-            resolve_memory_binding("embedding")
+        models = build_memory_models(config, store)
+        assert models.embedding is None
 
-    def test_raises_when_connection_missing(self, tmp_path, monkeypatch):
-        """resolve_memory_binding raises when the connection_id is not found."""
+    def test_missing_connection_returns_none_field(self, tmp_path, monkeypatch):
+        """ConfiguredModel with nonexistent connection_id -> None field."""
         key_path = tmp_path / "master.key"
         monkeypatch.setattr("koan.credentials.MASTER_KEY_PATH", key_path)
         config = KoanConfig(
@@ -308,32 +290,82 @@ class TestResolveMemoryBindingErrors:
             ),
         )
         store = CredentialStore(config, FileKeyBackend())
-        set_active_credential_store(store)
-        set_active_provider_config(config)
-        with pytest.raises(RuntimeError, match="connection_id="):
-            resolve_memory_binding("embedding")
+        models = build_memory_models(config, store)
+        assert models.embedding is None
+
+    def test_none_credential_store_produces_none_api_keys(self, tmp_path, monkeypatch):
+        """credential_store=None -> api_key=None on all specs."""
+        config, _ = _build_store(tmp_path, monkeypatch)
+        models = build_memory_models(config, None)
+        assert models.embedding is not None
+        assert models.embedding.api_key is None
+        assert models.memory_llm is not None
+        assert models.memory_llm.api_key is None
 
 
 # ---------------------------------------------------------------------------
-# Active config lifecycle
+# require_memory_model
 # ---------------------------------------------------------------------------
 
-class TestActiveConfig:
-    def test_set_active_provider_config_makes_config_accessible(self, tmp_path, monkeypatch):
-        """set_active_provider_config stores the config for resolve_memory_binding."""
-        key_path = tmp_path / "master.key"
-        monkeypatch.setattr("koan.credentials.MASTER_KEY_PATH", key_path)
-        config = KoanConfig()
-        store = CredentialStore(config, FileKeyBackend())
-        set_active_credential_store(store)
-        set_active_provider_config(config)
-        # Should raise "config.memory is absent" (not "not initialized").
-        with pytest.raises(RuntimeError, match="config.memory is absent"):
-            resolve_memory_binding("embedding")
+class TestRequireMemoryModel:
+    def test_returns_spec_when_not_none(self):
+        """require_memory_model returns the spec unchanged when it is not None."""
+        spec = ModelSpec(
+            provider="voyage",
+            model="voyage-4-large",
+            thinking="disabled",
+            connection_id="voyage-1",
+        )
+        result = require_memory_model(spec, "embedding")
+        assert result is spec
 
-    def test_raises_when_active_config_unset(self, monkeypatch):
-        """_active_config raises RuntimeError when _ACTIVE_CONFIG is None."""
-        monkeypatch.setattr("koan.memory.bindings._ACTIVE_CONFIG", None)
-        from koan.memory.bindings import _active_config
-        with pytest.raises(RuntimeError, match="Active provider config is not initialized"):
-            _active_config()
+    def test_raises_runtime_error_when_none(self):
+        """require_memory_model raises RuntimeError when spec is None."""
+        with pytest.raises(RuntimeError, match="not configured"):
+            require_memory_model(None, "embedding")
+
+    def test_error_message_includes_kind(self):
+        """The error message names the missing binding kind."""
+        with pytest.raises(RuntimeError, match="reflect_llm"):
+            require_memory_model(None, "reflect_llm")
+
+
+# ---------------------------------------------------------------------------
+# Negative-presence: deleted globals must not exist in bindings module
+# ---------------------------------------------------------------------------
+
+class TestDeletedBindingsGlobals:
+    def test_active_config_global_absent(self):
+        """_ACTIVE_CONFIG must not exist in bindings after de-globalization."""
+        import koan.memory.bindings as b
+        assert not hasattr(b, "_ACTIVE_CONFIG"), (
+            "_ACTIVE_CONFIG must not exist after de-globalization"
+        )
+
+    def test_active_frozen_models_global_absent(self):
+        """_ACTIVE_FROZEN_MODELS must not exist in bindings after de-globalization."""
+        import koan.memory.bindings as b
+        assert not hasattr(b, "_ACTIVE_FROZEN_MODELS"), (
+            "_ACTIVE_FROZEN_MODELS must not exist after de-globalization"
+        )
+
+    def test_set_active_provider_config_absent(self):
+        """set_active_provider_config must not exist in bindings."""
+        import koan.memory.bindings as b
+        assert not hasattr(b, "set_active_provider_config"), (
+            "set_active_provider_config must not exist after de-globalization"
+        )
+
+    def test_active_config_fn_absent(self):
+        """_active_config must not exist in bindings."""
+        import koan.memory.bindings as b
+        assert not hasattr(b, "_active_config"), (
+            "_active_config must not exist after de-globalization"
+        )
+
+    def test_resolve_memory_binding_absent(self):
+        """resolve_memory_binding must not exist in bindings."""
+        import koan.memory.bindings as b
+        assert not hasattr(b, "resolve_memory_binding"), (
+            "resolve_memory_binding must not exist after de-globalization"
+        )

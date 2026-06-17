@@ -57,7 +57,7 @@ class TestResolveModelSpec:
         """Orchestrator maps to 'strong' slot and returns a ModelSpec with connection_id."""
         config = _make_minimal_config()
         reg = AgentRegistry()
-        spec = reg.resolve_model_spec("orchestrator", config)
+        spec = reg.resolve_model_spec("orchestrator", config, None)
         assert spec.provider == "google"
         assert spec.model == "gemini-3.1-pro-preview"
         assert spec.thinking == "high"
@@ -67,14 +67,14 @@ class TestResolveModelSpec:
         """Executor maps to 'standard' slot."""
         config = _make_minimal_config()
         reg = AgentRegistry()
-        spec = reg.resolve_model_spec("executor", config)
+        spec = reg.resolve_model_spec("executor", config, None)
         assert spec.connection_id == "google-direct"
 
     def test_scout_resolves_cheap_slot(self, tmp_path, monkeypatch):
         """Scout maps to 'cheap' slot."""
         config = _make_minimal_config()
         reg = AgentRegistry()
-        spec = reg.resolve_model_spec("scout", config)
+        spec = reg.resolve_model_spec("scout", config, None)
         assert spec.connection_id == "google-direct"
         assert spec.thinking == "high"
 
@@ -84,7 +84,7 @@ class TestResolveModelSpec:
         config = KoanConfig()  # no presets
         reg = AgentRegistry()
         with pytest.raises(AgentError) as exc:
-            reg.resolve_model_spec("orchestrator", config)
+            reg.resolve_model_spec("orchestrator", config, None)
         assert exc.value.diagnostic.code == "unconfigured"
 
     def test_missing_slot_raises_unconfigured(self):
@@ -101,7 +101,7 @@ class TestResolveModelSpec:
         )
         reg = AgentRegistry()
         with pytest.raises(AgentError) as exc:
-            reg.resolve_model_spec("orchestrator", config)
+            reg.resolve_model_spec("orchestrator", config, None)
         assert exc.value.diagnostic.code == "unconfigured"
 
     def test_missing_configured_model_raises_unconfigured(self):
@@ -117,7 +117,7 @@ class TestResolveModelSpec:
         )
         reg = AgentRegistry()
         with pytest.raises(AgentError) as exc:
-            reg.resolve_model_spec("orchestrator", config)
+            reg.resolve_model_spec("orchestrator", config, None)
         assert exc.value.diagnostic.code == "unconfigured"
 
     def test_missing_connection_raises_unconfigured(self):
@@ -133,7 +133,7 @@ class TestResolveModelSpec:
         )
         reg = AgentRegistry()
         with pytest.raises(AgentError) as exc:
-            reg.resolve_model_spec("orchestrator", config)
+            reg.resolve_model_spec("orchestrator", config, None)
         assert exc.value.diagnostic.code == "unconfigured"
 
 

@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 from ..logger import get_logger
 from ..types import (
     ROLE_MODEL_TIER,
+    CachingPolicy,
     ModelSpec,
     ModelTier,
     ThinkingMode,
@@ -23,7 +24,8 @@ from .base import AgentDiagnostic, AgentError
 
 if TYPE_CHECKING:
     from ..config import KoanConfig
-    from ..types import SubagentRole
+    from ..credentials import CredentialStore
+    from ..types import ConfiguredModel, Connection, SubagentRole
 
 log = get_logger("agent_registry")
 
@@ -51,6 +53,61 @@ def _best_supported_thinking(
     return best
 
 
+# -- build_resolved_model ------------------------------------------------------
+
+def build_resolved_model(
+    conn: "Connection",
+    cm: "ConfiguredModel",
+    thinking: ThinkingMode,
+    caching: CachingPolicy,
+    embedding_dim: "int | None",
+    api_key: "str | None",
+) -> ModelSpec:
+    """Build a fully resolved ModelSpec from a Connection + ConfiguredModel.
+
+    Calls resolve_capabilities once to clamp thinking to what the model
+    supports and to compute caching settings. The resolved thinking + caching
+    settings are baked into ModelSpec.settings so no per-spawn capability
+    lookup is needed. base_url, region, embedding_dim, and api_key are inlined
+    from the Connection, ConfiguredModel, and credential store at flatten time.
+
+    api_key is the credential baked in at flatten time from the caller's
+    credential store. It is in-memory only and must never be serialized.
+
+    This is the single flatten function: called by resolve_model_spec (per-role
+    agent resolution) and by build_memory_models / api_start_run's eager-flatten
+    for tier slots.
+    """
+    from .adapter import _caching_settings, map_thinking
+    from .capability_resolver import resolve_capabilities
+
+    caps = resolve_capabilities(conn.type, cm.model_id)
+    clamped = _best_supported_thinking(frozenset(caps.thinking_modes), thinking)
+    if clamped != thinking:
+        log.info(
+            "thinking mode clamped for model '%s': requested '%s' -> supported '%s'",
+            cm.model_id, thinking, clamped,
+        )
+
+    # Bake thinking + caching settings once so build_model_settings is trivial.
+    settings: dict = {}
+    settings.update(map_thinking(conn.type, caps, clamped))
+    settings.update(_caching_settings(caching, caps))
+
+    return ModelSpec(
+        provider=conn.type,
+        model=cm.model_id,
+        thinking=clamped,
+        settings=settings,
+        caching=caching,
+        connection_id=conn.id,
+        base_url=conn.base_url,
+        region=conn.region,
+        embedding_dim=embedding_dim,
+        api_key=api_key,
+    )
+
+
 # -- AgentRegistry -------------------------------------------------------------
 
 class AgentRegistry:
@@ -66,13 +123,18 @@ class AgentRegistry:
         self,
         role: "SubagentRole",
         config: "KoanConfig",
+        credential_store: "CredentialStore | None",
     ) -> ModelSpec:
         """Resolve a ModelSpec for a role via the active preset's slot mapping.
 
         Maps role -> ModelTier slot -> SlotAssignment -> ConfiguredModel ->
-        Connection -> ModelSpec.  Raises AgentError(code='unconfigured') when
-        the active preset, the slot assignment, the ConfiguredModel, or the
-        Connection is missing.  No default model is ever substituted (brief D12).
+        Connection -> ModelSpec via build_resolved_model.  Raises
+        AgentError(code='unconfigured') when the active preset, the slot
+        assignment, the ConfiguredModel, or the Connection is missing.  No
+        default model is ever substituted (brief D12).
+
+        credential_store is used to resolve the api_key baked into the returned
+        ModelSpec at flatten time. Pass None for keyless providers or test paths.
         """
         tier = ROLE_MODEL_TIER.get(role, "standard")
         preset = config.presets.get(config.active)
@@ -98,7 +160,6 @@ class AgentRegistry:
                 ),
             ))
 
-        # Resolve the configured model by id.
         cm = next(
             (m for m in config.configured_models if m.id == slot.configured_model_id),
             None,
@@ -114,7 +175,6 @@ class AgentRegistry:
                 ),
             ))
 
-        # Resolve the connection by id.
         conn = next(
             (c for c in config.connections if c.id == cm.connection_id),
             None,
@@ -130,26 +190,12 @@ class AgentRegistry:
                 ),
             ))
 
-        # Resolve capabilities and clamp the requested thinking mode to what the
-        # model actually supports (the _claude_clamp pattern: deterministic +
-        # observable via an INFO log, brief D5 / M2 plan step 6).
-        from ..agents.capability_resolver import resolve_capabilities
-        caps = resolve_capabilities(conn.type, cm.model_id)
-        clamped = _best_supported_thinking(frozenset(caps.thinking_modes), slot.thinking)
-        if clamped != slot.thinking:
-            log.info(
-                "thinking mode clamped for role '%s' model '%s': requested '%s' -> supported '%s'",
-                role, cm.model_id, slot.thinking, clamped,
-            )
-
-        return ModelSpec(
-            provider=conn.type,
-            model=cm.model_id,
-            thinking=clamped,
-            settings={},
-            caching=slot.caching,
-            connection_id=conn.id,
+        api_key = (
+            credential_store.resolve(conn.id)
+            if (credential_store and conn.id)
+            else None
         )
+        return build_resolved_model(conn, cm, slot.thinking, slot.caching, cm.embedding_dim, api_key)
 
 
 # compute_builtin_profiles and compute_balanced_profile removed in M5:

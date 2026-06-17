@@ -12,9 +12,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from koan.memory.bindings import MemoryModels
 from koan.memory.retrieval.types import SearchResult
 from koan.memory.types import MemoryEntry
 from koan.state import AgentState, AppState
+from koan.types import ModelSpec
+
+
+def _fake_embed() -> ModelSpec:
+    return ModelSpec(provider="voyage", model="voyage-4-large", thinking="disabled",
+                     connection_id="v", embedding_dim=1024, api_key="k")
+
+
+def _fake_models() -> MemoryModels:
+    return MemoryModels(embedding=_fake_embed())
 
 
 def _json(result: str) -> dict:
@@ -66,6 +77,8 @@ def mem_env(tmp_path):
     agent.step = 1
     app_state.agents[agent.agent_id] = agent
     app_state.init_memory_services()
+    # Provide fake memory models so search_core can resolve the embedding binding.
+    app_state.run.memory_models = _fake_models()
 
     deps = ToolDeps(app_state=app_state, agent=agent)
 

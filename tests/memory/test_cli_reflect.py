@@ -57,6 +57,10 @@ class TestCmdReflect:
     # Tests must be synchronous too; calling asyncio.run() from within an anyio
     # event loop would raise "cannot be called from a running event loop".
 
+    def _models(self):
+        from koan.memory.bindings import MemoryModels
+        return MemoryModels()
+
     def test_json_output(self, tmp_path, monkeypatch, capsys):
         """--json flag emits a valid JSON object with the expected shape."""
         import koan.cli.memory as cli_memory
@@ -65,7 +69,7 @@ class TestCmdReflect:
         monkeypatch.setattr(cli_memory, "_make_store", lambda: _MockStore(tmp_path))
         monkeypatch.setattr(cli_memory, "_make_index", lambda s: object())
 
-        cli_memory.cmd_reflect(_make_args(json_output=True))
+        cli_memory.cmd_reflect(_make_args(json_output=True), self._models())
 
         captured = capsys.readouterr()
         body = json.loads(captured.out)
@@ -84,7 +88,7 @@ class TestCmdReflect:
         monkeypatch.setattr(cli_memory, "_make_store", lambda: _MockStore(tmp_path))
         monkeypatch.setattr(cli_memory, "_make_index", lambda s: object())
 
-        cli_memory.cmd_reflect(_make_args())
+        cli_memory.cmd_reflect(_make_args(), self._models())
 
         captured = capsys.readouterr()
         assert "# Briefing" in captured.out
@@ -102,7 +106,7 @@ class TestCmdReflect:
         )
 
         # Custom fake that invokes the on_trace callback before returning.
-        async def fake_reflect(index, question, context=None, *, on_trace=None, max_iterations=10):
+        async def fake_reflect(index, models, question, context=None, *, on_trace=None, max_iterations=10):
             if on_trace is not None:
                 on_trace(trace_event)
             return _fake_reflect_result()
@@ -111,7 +115,7 @@ class TestCmdReflect:
         monkeypatch.setattr(cli_memory, "_make_store", lambda: _MockStore(tmp_path))
         monkeypatch.setattr(cli_memory, "_make_index", lambda s: object())
 
-        cli_memory.cmd_reflect(_make_args(show_trace=True))
+        cli_memory.cmd_reflect(_make_args(show_trace=True), self._models())
 
         captured = capsys.readouterr()
         assert "[iter 1] search('vector storage') -> 3 results" in captured.err
@@ -128,7 +132,7 @@ class TestCmdReflect:
         monkeypatch.setattr(cli_memory, "_make_index", lambda s: object())
 
         with pytest.raises(SystemExit) as exc:
-            cli_memory.cmd_reflect(_make_args())
+            cli_memory.cmd_reflect(_make_args(), self._models())
         assert exc.value.code != 0
 
 
