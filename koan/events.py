@@ -40,8 +40,8 @@ def build_workflow_selected(workflow: str) -> dict:
 def build_agent_spawned(agent: AgentState) -> dict:
     """Build agent_spawned event payload.
 
-    Carries provider and context_window alongside identity so the projection
-    fold can derive cost and context-window percent without live lookups.
+    Carries provider alongside identity so the projection fold can derive cost
+    without live lookups.
     """
     return {
         "agent_id": agent.agent_id,
@@ -51,7 +51,6 @@ def build_agent_spawned(agent: AgentState) -> dict:
         "is_primary": agent.is_primary,
         "started_at_ms": int(agent.started_at.timestamp() * 1000),
         "provider": agent.provider,
-        "context_window": agent.context_window,
     }
 
 
@@ -276,8 +275,8 @@ def build_model_registry_listed(models: list[dict]) -> dict:
     """Build model_registry_listed payload.
 
     Args:
-        models: list of {provider, model, display_name, context_window,
-                thinking_modes, tier_hint} dicts -- one per MODEL_CAPABILITIES entry.
+        models: list of {provider, model, display_name, thinking_modes, tier_hint}
+                dicts -- one per MODEL_CAPABILITIES entry.
     """
     return {"models": models}
 
@@ -287,8 +286,8 @@ def build_provider_models_listed(models: list[dict], families: list[dict]) -> di
 
     Args:
         models: flat cross-provider list of {provider, model, display_name,
-                context_window, connection_id} dicts (snake_case; consumed by
-                the fold).  connection_id scopes each model to its originating
+                connection_id} dicts (snake_case; consumed by the fold).
+                connection_id scopes each model to its originating
                 connection so same-type connections keep independent lists.
                 Replace-all semantics: each event replaces the entire overlay.
         families: flat list of {provider, family, resolved, resolved_from,
@@ -325,8 +324,8 @@ def build_configured_models_listed(configured_models: list[dict]) -> dict:
 def build_embedding_models_listed(models: list[dict]) -> dict:
     """Build embedding_models_listed payload.
 
-    Payload is a list of {model_id, context_window, dimensions, default_dimension}
-    dicts -- one per recognized Voyage embedding model.  Replace-all semantics:
+    Payload is a list of {model_id, dimensions, default_dimension} dicts -- one
+    per recognized Voyage embedding model.  Replace-all semantics:
     each event replaces the entire Settings.embeddingModels list on the frontend.
     Pushed once at startup; the list is static for the process lifetime.
     """
@@ -365,9 +364,8 @@ def build_model_capabilities_listed(capabilities: list[dict]) -> dict:
 
     Args:
         capabilities: list of {configured_model_id, thinking_supported, thinking_modes,
-                      thinking_shape, supports_web_search, supports_tools, context_window,
-                      context_window_variants, supports_prompt_caching, tier_hint,
-                      recognized} dicts.
+                      thinking_shape, supports_web_search, supports_tools,
+                      supports_prompt_caching, tier_hint, recognized} dicts.
     """
     return {"capabilities": capabilities}
 

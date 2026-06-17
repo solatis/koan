@@ -136,15 +136,6 @@ class TestResolveModelSpec:
             reg.resolve_model_spec("orchestrator", config)
         assert exc.value.diagnostic.code == "unconfigured"
 
-    def test_context_window_set_from_catalog(self):
-        """ModelSpec.context_window is populated from context_window_for."""
-        config = _make_minimal_config(
-            model_id="gemini-3.1-pro-preview",
-        )
-        reg = AgentRegistry()
-        spec = reg.resolve_model_spec("orchestrator", config)
-        # gemini-3.1-pro-preview is in MODEL_CAPABILITIES with a 1_000_000 fallback.
-        assert spec.context_window == 1_000_000
 
 
 # compute_builtin_profiles tests removed in M5: function deleted (plan-milestone-5.md).

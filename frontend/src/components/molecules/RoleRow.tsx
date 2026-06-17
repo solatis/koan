@@ -2,15 +2,13 @@
  * RoleRow -- configuration row for one model role (Settings -> Model roles) or
  * one memory binding (Settings -> Memory).
  *
- * A role is connection + model + thinking + optional context-window override.
+ * A role is connection + model + thinking.
  * Layout follows dependency order; the cascade disables each control until its
  * dependency is set. Presentational: auto-save, validation, and error toasts
- * live in the parent. Logic for context_window changes stays in App.tsx
- * (onRoleChange('context_window', value)).
+ * live in the parent.
  */
 
 import './RoleRow.css'
-import { useState, useEffect } from 'react'
 import { RoleMarker } from '../atoms/RoleMarker'
 import { Select } from '../atoms/Select'
 import { Badge } from '../atoms/Badge'
@@ -43,17 +41,11 @@ export interface RoleRowProps {
   role: RoleSlot
   state: RoleRowState
   /** 'compact': tighter row for the New Run per-run override -- smaller marker,
-   *  name-only meta, narrower columns, compact mono controls. Context-window
-   *  input is not rendered in compact variant. */
+   *  name-only meta, narrower columns, compact mono controls. */
   variant?: 'default' | 'compact'
   connectionId: string | null
   modelId: string | null
   thinking: string | null
-  /** Explicit context window override from ConfiguredModel (tokens). null = unset.
-   *  Optional -- not rendered in compact variant; defaults to null when omitted. */
-  contextWindow?: number | null
-  /** Capability-derived context window used as placeholder when contextWindow is null. */
-  capabilityContextWindow?: number
   connections: { id: string; listingCapable: boolean }[]
   models: string[]
   families?: { family: string; resolved: string }[]
@@ -65,7 +57,7 @@ export interface RoleRowProps {
    *  display name (e.g. value='disabled', label='off').  Built by the connected
    *  layer via toThinkingOptions so this component stays store-free. */
   thinkingOptions: { value: string; label: string }[]
-  onChange: (field: 'connection' | 'model' | 'thinking' | 'context_window', value: string) => void
+  onChange: (field: 'connection' | 'model' | 'thinking', value: string) => void
   showThinking?: boolean
 }
 
@@ -76,8 +68,6 @@ export function RoleRow({
   connectionId,
   modelId,
   thinking,
-  contextWindow = null,
-  capabilityContextWindow = 0,
   connections,
   models,
   families,
@@ -97,15 +87,6 @@ export function RoleRow({
 
   const modelDisabled = connectionId == null || broken
   const thinkingEnabled = modelId != null && thinkingOptions.length > 0 && !broken
-
-  // Local display state for the context-window input. Synced from the prop when
-  // the prop changes (projection re-sync), but not clobbered mid-edit because we
-  // only update display on prop change (the per-slot value-keyed re-sync in App.tsx
-  // ensures prop changes only fire when the actual value changes).
-  const [cwDisplay, setCwDisplay] = useState(contextWindow != null ? String(contextWindow) : '')
-  useEffect(() => {
-    setCwDisplay(contextWindow != null ? String(contextWindow) : '')
-  }, [contextWindow])
 
   // Broken: the connection Select shows only the dead id (parent re-supplies
   // real options on repair). Otherwise the live connection list.
@@ -187,35 +168,6 @@ export function RoleRow({
             <path d="M12 9v4M12 17h.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
           </svg>
           <span>Connection removed -- choose another to make this role runnable.</span>
-        </div>
-      )}
-
-      {variant !== 'compact' && role !== 'embedding' && (
-        // Secondary context-window override row. Shown in default variant only;
-        // compact (NewRunForm) does not expose per-model context windows.
-        // Suppressed for the embedding role: context window is catalog-fixed
-        // and not user-configurable (voyage-only; always 32000).
-        <div className="mol-role-row__ctx-row">
-          <span className="mol-role-row__ctx-label">context window</span>
-          <input
-            className="mol-role-row__ctx-input"
-            type="text"
-            inputMode="numeric"
-            pattern="[0-9]*"
-            value={cwDisplay}
-            placeholder={capabilityContextWindow ? String(capabilityContextWindow) : ''}
-            onChange={e => {
-              const v = e.target.value
-              // Allow empty or digits only while typing.
-              if (v === '' || /^\d+$/.test(v)) setCwDisplay(v)
-            }}
-            onBlur={() => {
-              // Commit on blur: pass the raw display value to the parent.
-              // Parent (App.tsx onRoleChange) parses to positive int or null.
-              onChange('context_window', cwDisplay)
-            }}
-            disabled={modelId == null}
-          />
         </div>
       )}
     </div>

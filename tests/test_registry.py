@@ -87,44 +87,6 @@ class TestResolveModelSpecThinkingClamp:
         spec = registry.resolve_model_spec("orchestrator", config)
         assert spec.thinking == "disabled"
 
-    def test_variant_context_window_used_when_advertised(self):
-        """resolve_model_spec uses slot.context_window when it matches an advertised variant."""
-        # Temporarily inject a variant for the test model so we can verify selection.
-        from koan.agents import model_catalog
-        original = dict(model_catalog.CONTEXT_WINDOW_VARIANTS)
-        model_catalog.CONTEXT_WINDOW_VARIANTS[("anthropic", "claude-opus-4-0")] = [1_000_000]
-        try:
-            from koan.types import CachingPolicy, ConfiguredModel, Connection, Preset, SlotAssignment
-            from koan.config import KoanConfig
-            conn = Connection(id="test-conn2", type="anthropic")
-            cm = ConfiguredModel(id="test-cm2", connection_id="test-conn2", model_id="claude-opus-4-0")
-            slot = SlotAssignment(
-                configured_model_id="test-cm2",
-                thinking="disabled",
-                caching=CachingPolicy(),
-                context_window=1_000_000,
-            )
-            config = KoanConfig(
-                connections=[conn],
-                configured_models=[cm],
-                presets={"$last": Preset(slots={"strong": slot})},
-                active="$last",
-            )
-            registry = AgentRegistry()
-            spec = registry.resolve_model_spec("orchestrator", config)
-            assert spec.context_window == 1_000_000
-        finally:
-            model_catalog.CONTEXT_WINDOW_VARIANTS.clear()
-            model_catalog.CONTEXT_WINDOW_VARIANTS.update(original)
-
-    def test_base_context_window_used_when_no_variant(self):
-        """resolve_model_spec falls back to the resolved base context window."""
-        registry = AgentRegistry()
-        config = self._make_config(thinking="disabled")
-        spec = registry.resolve_model_spec("orchestrator", config)
-        # claude-opus-4-0 has 200_000 base context window in MODEL_CAPABILITIES.
-        assert spec.context_window == 200_000
-
 
 # -- save_koan_config write lock -----------------------------------------------
 

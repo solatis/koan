@@ -36,7 +36,7 @@ const PROVIDER_LABELS: Record<ProviderType, string> = {
   openai: 'OpenAI',
   google: 'Google',
   bedrock: 'AWS Bedrock',
-  lmstudio: 'LM Studio (local)',
+  openrouter: 'OpenRouter',
   voyage: 'Voyage',
 }
 
@@ -49,7 +49,7 @@ const LISTING_CAPABLE: ReadonlySet<ProviderType> = new Set<ProviderType>([
   'anthropic',
   'openai',
   'google',
-  'lmstudio',
+  'openrouter',
 ])
 
 function HelperLine({ children }: { children: ReactNode }) {
@@ -134,13 +134,10 @@ export function ConnectionForm({
             </HelperLine>
           </>
         )
-      case 'lmstudio':
-        return (
-          <>
-            {endpointRow('http://localhost:1234/v1', true)}
-            <HelperLine>Keyless — a local OpenAI-compatible server.</HelperLine>
-          </>
-        )
+      case 'openrouter':
+        // Key-only: no endpoint field (the library fixes https://openrouter.ai/api/v1
+        // internally; Decision 6). No region field either.
+        return apiKeyRow('sk-or-...')
       case 'voyage':
         return (
           <>

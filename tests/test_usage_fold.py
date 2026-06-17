@@ -36,7 +36,6 @@ def _proj_with_primary(
     agent_id: str = "a1",
     provider: str | None = None,
     model: str | None = None,
-    context_window: int = 0,
 ) -> Projection:
     """Return a Projection with a run and a primary agent carrying model identity."""
     p = Projection()
@@ -53,7 +52,6 @@ def _proj_with_primary(
         "is_primary": True,
         "started_at_ms": 1000,
         "provider": provider,
-        "context_window": context_window,
     }, agent_id=agent_id))
     return p
 
@@ -75,7 +73,6 @@ class TestCacheTokenFold:
             "is_primary": False,
             "started_at_ms": 0,
             "provider": None,
-            "context_window": 0,
         }, agent_id="a2"))
         # Exit a2 with cache usage; a1 inherits nothing.
         r = fold(p, _e("agent_exited", {
@@ -145,7 +142,6 @@ class TestCostDerivation:
             "a1",
             provider="google",
             model="gemini-2.5-flash",
-            context_window=1_000_000,
         )
         r = fold(p, _e("agent_exited", {
             "exit_code": 0,
@@ -180,7 +176,6 @@ class TestCostDerivation:
             "a1",
             provider="google",
             model="nonexistent-model-xyz-9999",
-            context_window=1_000_000,
         )
         # Should not raise -- the guard catches the ValueError from price_for_usage.
         r = fold(p, _e("agent_exited", {
@@ -197,87 +192,3 @@ class TestCostDerivation:
         assert r.run.agents["a1"].conversation.total_cost_usd == 0.0
 
 
-# ---------------------------------------------------------------------------
-# Context-window percent derivation
-# ---------------------------------------------------------------------------
-
-class TestContextWindowPercent:
-
-    def test_context_window_percent_in_range(self):
-        """context_window_percent is between 0 and 100 inclusive."""
-        p = _proj_with_primary(
-            "a1",
-            provider="google",
-            model="gemini-2.5-flash",
-            context_window=1_000_000,
-        )
-        r = fold(p, _e("agent_exited", {
-            "exit_code": 0,
-            "usage": {
-                "input_tokens": 100_000,
-                "output_tokens": 5_000,
-                "cache_read_tokens": 0,
-                "cache_write_tokens": 0,
-                "last_input_tokens": 100_000,
-            },
-        }, agent_id="a1"))
-        pct = r.run.agents["a1"].conversation.context_window_percent
-        assert 0 <= pct <= 100
-
-    def test_context_window_percent_clamped_at_100(self):
-        """When last_input_tokens exceeds context_window, percent is clamped to 100."""
-        p = _proj_with_primary(
-            "a1",
-            provider="google",
-            model="gemini-2.5-flash",
-            context_window=1_000,
-        )
-        r = fold(p, _e("agent_exited", {
-            "exit_code": 0,
-            "usage": {
-                "input_tokens": 5_000,
-                "output_tokens": 500,
-                "cache_read_tokens": 0,
-                "cache_write_tokens": 0,
-                "last_input_tokens": 5_000,
-            },
-        }, agent_id="a1"))
-        assert r.run.agents["a1"].conversation.context_window_percent == 100.0
-
-    def test_context_window_percent_zero_when_context_window_not_set(self):
-        """When context_window is 0, the percent stays at its default 0.0 (no division)."""
-        p = _proj_with_primary("a1", context_window=0)
-        r = fold(p, _e("agent_exited", {
-            "exit_code": 0,
-            "usage": {
-                "input_tokens": 1000,
-                "output_tokens": 500,
-                "cache_read_tokens": 0,
-                "cache_write_tokens": 0,
-                "last_input_tokens": 1000,
-            },
-        }, agent_id="a1"))
-        # Guard prevents zero-division; percent stays at 0.0.
-        assert r.run.agents["a1"].conversation.context_window_percent == 0.0
-
-    def test_context_window_percent_uses_last_input_not_cumulative(self):
-        """context_window_percent reflects the most recent turn's input, not a cumulative sum."""
-        p = _proj_with_primary(
-            "a1",
-            provider="google",
-            model="gemini-2.5-flash",
-            context_window=1_000_000,
-        )
-        # last_input_tokens = 50_000 (10% of 500k context)
-        r = fold(p, _e("agent_exited", {
-            "exit_code": 0,
-            "usage": {
-                "input_tokens": 50_000,
-                "output_tokens": 5_000,
-                "cache_read_tokens": 0,
-                "cache_write_tokens": 0,
-                "last_input_tokens": 50_000,
-            },
-        }, agent_id="a1"))
-        pct = r.run.agents["a1"].conversation.context_window_percent
-        assert pct == round(50_000 / 1_000_000 * 100, 1)

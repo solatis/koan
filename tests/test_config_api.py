@@ -586,9 +586,8 @@ def test_model_capabilities_populated_at_startup(app_state, config_path):
     assert len(caps) == 1
     cap = caps[0]
     assert cap.configured_model_id == "cm-haiku"
-    # Capabilities are populated: thinking_modes is a list, context_window is set.
+    # Capabilities are populated: thinking_modes is a list.
     assert isinstance(cap.thinking_modes, list)
-    assert isinstance(cap.context_window, int)
 
 
 def test_model_capabilities_refreshed_after_model_set(client, app_state, config_path):
@@ -616,81 +615,3 @@ def test_model_capabilities_refreshed_after_connection_set(client, app_state, co
     # Existing configured model still appears.
     cap_ids = [c["configured_model_id"] for c in ev["capabilities"]]
     assert "cm-haiku" in cap_ids
-
-
-# -- context_window config round-trip -----------------------------------------
-
-def test_configured_model_context_window_round_trip():
-    """ConfiguredModel.context_window persists through _config_to_dict + _parse_configured_models.
-
-    An explicitly set value survives serialization; an unset value is omitted
-    from the dict (clean YAML, mirrors resolved_from pattern).
-    """
-    from koan.config import _parse_configured_models, _config_to_dict
-    from koan.types import Connection
-
-    conn = Connection(id="lmstudio-1", type="lmstudio", base_url="http://localhost:1234/v1")
-    cm_with = ConfiguredModel(
-        id="lm-cm", connection_id="lmstudio-1", model_id="qwen/qwen3.6-35b-a3b",
-        context_window=131072,
-    )
-    cm_without = ConfiguredModel(
-        id="lm-cm2", connection_id="lmstudio-1", model_id="qwen/qwen3.6-27b",
-    )
-
-    cfg = KoanConfig(connections=[conn], configured_models=[cm_with, cm_without])
-    data = _config_to_dict(cfg)
-
-    # Set value is serialized.
-    serialized = {e["id"]: e for e in data["configured_models"]}
-    assert serialized["lm-cm"]["context_window"] == 131072
-    # Unset value is omitted (clean YAML).
-    assert "context_window" not in serialized["lm-cm2"]
-
-    # Round-trip: parse back and verify.
-    parsed = _parse_configured_models(data["configured_models"])
-    by_id = {m.id: m for m in parsed}
-    assert by_id["lm-cm"].context_window == 131072
-    assert by_id["lm-cm2"].context_window is None
-
-
-def test_model_set_persists_context_window(client, app_state, config_path):
-    """POST /api/config/models with context_window stores it on the ConfiguredModel."""
-    resp = client.post("/api/config/models", json={
-        "id": "cm-lm",
-        "connection_id": "anthropic-1",
-        "model_id": "claude-opus-4-0",
-        "context_window": 131072,
-    })
-    assert resp.status_code == 200
-    cfg = app_state.provider_config.config
-    cm = next(m for m in cfg.configured_models if m.id == "cm-lm")
-    assert cm.context_window == 131072
-
-
-def test_model_set_context_window_null_treated_as_unset(client, app_state, config_path):
-    """POST /api/config/models with context_window=null stores None (derive from caps)."""
-    resp = client.post("/api/config/models", json={
-        "id": "cm-null-cw",
-        "connection_id": "anthropic-1",
-        "model_id": "claude-opus-4-0",
-        "context_window": None,
-    })
-    assert resp.status_code == 200
-    cfg = app_state.provider_config.config
-    cm = next(m for m in cfg.configured_models if m.id == "cm-null-cw")
-    assert cm.context_window is None
-
-
-def test_configured_models_listed_carries_context_window(client, app_state, config_path):
-    """configured_models_listed event carries context_window for the updated model."""
-    client.post("/api/config/models", json={
-        "id": "cm-cw-event",
-        "connection_id": "anthropic-1",
-        "model_id": "claude-opus-4-0",
-        "context_window": 200000,
-    })
-    ev = _last_event_of_type(app_state, "configured_models_listed")
-    assert ev is not None
-    entry = next(m for m in ev["configured_models"] if m["id"] == "cm-cw-event")
-    assert entry["context_window"] == 200000

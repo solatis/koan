@@ -7,8 +7,10 @@ import { devtools } from 'zustand/middleware'
 // M5: Profile interface removed -- profiles/default_profile deleted from the backend Settings projection.
 // M5: ProviderStatus (env-key per-type shape) replaced by ConnectionStatusInfo (per-connection).
 
-// ProviderType mirrors backend Literal["google","anthropic","openai","bedrock","lmstudio","voyage"].
-export type ProviderType = 'google' | 'anthropic' | 'openai' | 'bedrock' | 'lmstudio' | 'voyage'
+// ProviderType mirrors backend Literal["google","anthropic","openai","bedrock","openrouter","voyage"].
+// NOTE: this type is joined to ProviderBadge's ProviderType by an explicit cast in App.tsx;
+// tsc will NOT catch divergence between the two. Both must be kept in sync manually.
+export type ProviderType = 'google' | 'anthropic' | 'openai' | 'bedrock' | 'openrouter' | 'voyage'
 
 /**
  * Wire: ConnectionWire (camelCase via to_camel alias).
@@ -24,15 +26,13 @@ export interface ConnectionInfo {
 /**
  * Wire: ConfiguredModelWire (camelCase).
  * A (connection, model-id) pair in the global library.
- * contextWindow is the optional explicit override (tokens); null means derive from
- * capabilities. Populated via the configured_models_listed SSE projection event.
+ * Populated via the configured_models_listed SSE projection event.
  */
 export interface ConfiguredModelInfo {
   id: string
   connectionId: string
   modelId: string
   resolvedFrom: string | null
-  contextWindow: number | null
   /** Selected Voyage output dimension; null means use the catalog default. */
   embeddingDim: number | null
 }
@@ -44,7 +44,6 @@ export interface ConfiguredModelInfo {
  */
 export interface EmbeddingModelInfo {
   modelId: string
-  contextWindow: number
   dimensions: number[]
   defaultDimension: number
 }
@@ -81,8 +80,6 @@ export interface ModelCapabilityInfo {
   thinkingShape: string
   supportsWebSearch: boolean
   supportsTools: boolean
-  contextWindow: number
-  contextWindowVariants: number[]
   supportsPromptCaching: boolean
   tierHint: string | null
   recognized: boolean
@@ -108,7 +105,6 @@ export interface ModelRegistryEntry {
   provider: string
   model: string
   displayName: string
-  contextWindow: number
   thinkingModes: string[]
   tierHint: string | null
 }
@@ -124,7 +120,6 @@ export interface ProviderModel {
   provider: string
   model: string
   displayName: string
-  contextWindow: number
   connectionId: string
 }
 
@@ -277,7 +272,6 @@ export interface Conversation {
   cacheReadTokens: number
   cacheWriteTokens: number
   totalCostUsd: number
-  contextWindowPercent: number
 }
 
 // -- Memory types -- mirrors backend KoanBaseModel.to_wire() camelCase output --

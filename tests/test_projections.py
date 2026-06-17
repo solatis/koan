@@ -1352,10 +1352,10 @@ class TestProviderModelsListedFold:
         p = Projection()
         models = [
             {
-                "provider": "lmstudio",
-                "model": "llama-3.2-3b",
-                "display_name": "Llama 3.2 3B",
-                "context_window": 131072,
+                "provider": "openrouter",
+                "model": "anthropic/claude-3-5-sonnet",
+                "display_name": "Claude 3.5 Sonnet",
+                "context_window": 200000,
             },
             {
                 "provider": "openai",
@@ -1368,9 +1368,8 @@ class TestProviderModelsListedFold:
         assert len(r.settings.provider_models) == 2
 
         by_model = {pm.model: pm for pm in r.settings.provider_models}
-        assert by_model["llama-3.2-3b"].provider == "lmstudio"
-        assert by_model["llama-3.2-3b"].display_name == "Llama 3.2 3B"
-        assert by_model["llama-3.2-3b"].context_window == 131072
+        assert by_model["anthropic/claude-3-5-sonnet"].provider == "openrouter"
+        assert by_model["anthropic/claude-3-5-sonnet"].display_name == "Claude 3.5 Sonnet"
         assert by_model["gpt-4o"].provider == "openai"
 
     def test_provider_models_listed_replaces_previous(self):
@@ -1380,10 +1379,10 @@ class TestProviderModelsListedFold:
             {"provider": "openai", "model": "gpt-4", "display_name": "GPT-4", "context_window": 8192},
         ]}))
         r = fold(p, _e("provider_models_listed", {"models": [
-            {"provider": "lmstudio", "model": "gemma-3b", "display_name": "Gemma 3B", "context_window": 8192},
+            {"provider": "openrouter", "model": "meta-llama/llama-3", "display_name": "Llama 3", "context_window": 8192},
         ]}))
         assert len(r.settings.provider_models) == 1
-        assert r.settings.provider_models[0].model == "gemma-3b"
+        assert r.settings.provider_models[0].model == "meta-llama/llama-3"
 
     def test_provider_models_listed_empty_payload_clears(self):
         """Empty models list clears the overlay."""
@@ -1398,7 +1397,7 @@ class TestProviderModelsListedFold:
         """provider_models_listed must not modify run state."""
         p = _proj_with_run()
         r = fold(p, _e("provider_models_listed", {"models": [
-            {"provider": "lmstudio", "model": "llama-3b", "display_name": "Llama 3B", "context_window": 4096},
+            {"provider": "openrouter", "model": "meta-llama/llama-3b", "display_name": "Llama 3B", "context_window": 4096},
         ]}))
         assert r.run is not None
         assert r.run.config == p.run.config

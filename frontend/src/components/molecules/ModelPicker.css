@@ -166,6 +166,16 @@
   color: var(--text-muted);
 }
 
+/* Non-interactive overflow hint shown when the filtered list exceeds
+   MAX_VISIBLE_ROWS. Styled as muted helper text; not keyboard-navigable. */
+.mol-model-picker__more-hint {
+  padding: 8px 14px;
+  font-size: 11px;
+  font-style: italic;
+  color: var(--text-subtle);
+  border-top: 1px solid var(--border-divider-light);
+}
+
 /* ===== Free-text footer ===== */
 .mol-model-picker__freetext {
   border-top: 1px solid var(--border-divider-light);

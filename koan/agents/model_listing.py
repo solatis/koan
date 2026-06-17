@@ -5,8 +5,10 @@
 # Results are returned as ProviderModel instances; the caller decides what to do
 # with them (overlay update, Test response, etc.).
 #
-# Listing-capable providers: lmstudio, openai, anthropic, google.
+# Listing-capable providers: openai, anthropic, google, openrouter.
 # Excluded: bedrock (no list API on the runtime client), voyage (embedding only).
+# Keyless providers (KEYLESS_PROVIDER_TYPES) are also listing-capable when
+# configured; dormant after M3 since KEYLESS_PROVIDER_TYPES is empty.
 
 from __future__ import annotations
 
@@ -31,8 +33,13 @@ class ModelListingError(Exception):
     """
 
 
+# OpenRouter's base URL mirrors the constant fixed internally by
+# pydantic_ai.providers.openrouter.OpenRouterProvider; kept here so the listing
+# path does not need to import the provider class at module load time.
+_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
 # Non-chat model families by id substring, used to filter id-only OpenAI-compatible
-# catalogs (openai and lmstudio). Checked via substring match so versioned ids
+# catalogs (openai, openrouter, keyless providers). Checked via substring match so versioned ids
 # (e.g. dall-e-3) and slash-prefixed ids (e.g. qwen/qwen3.6) are caught correctly.
 _NON_CHAT_ID_SUBSTRINGS = frozenset({
     "embedding",
@@ -51,10 +58,10 @@ _NON_CHAT_ID_SUBSTRINGS = frozenset({
 def _is_chat_model_id(model_id: str) -> bool:
     """Return True when an id-only model id looks like a chat/completion model.
 
-    Used by both the openai and lmstudio listing paths (both receive OpenAI-
-    compatible /v1/models responses with no type field). Excludes known non-chat
-    families (embeddings, TTS, DALL-E, moderation, etc.) by id substring match.
-    False positives are acceptable: this filters for display, not access control.
+    Used by the openai, openrouter, and keyless-provider listing paths (all receive
+    OpenAI-compatible /v1/models responses with no type field). Excludes known
+    non-chat families (embeddings, TTS, DALL-E, moderation, etc.) by id substring
+    match. False positives are acceptable: this filters for display, not access control.
     """
     lower = model_id.lower()
     return not any(sub in lower for sub in _NON_CHAT_ID_SUBSTRINGS)
@@ -68,17 +75,15 @@ async def _list_openai_compatible_models(
 ) -> list[ProviderModel]:
     """Fetch and filter chat models from any OpenAI-compatible /v1/models endpoint.
 
-    Works for OpenAI proper (provider='openai') and LM Studio (provider='lmstudio',
-    base_url='http://localhost:1234/v1'). Stamps the passed provider label onto every
-    returned ProviderModel -- callers must pass the correct label since the overlay
-    and per-connection family derivation in app.py key on it.
+    Works for OpenAI proper (provider='openai') and OpenRouter (provider='openrouter',
+    base_url=_OPENROUTER_BASE_URL), as well as any future keyless-local provider.
+    Stamps the passed provider label onto every returned ProviderModel -- callers must
+    pass the correct label since the overlay and per-connection family derivation in
+    app.py key on it.
 
-    api_key must be a non-empty string; keyless callers (e.g. LM Studio) should pass
-    the placeholder 'lm-studio' rather than an empty string (the OpenAI SDK rejects
-    empty keys). Both providers stamp context_window=0 because the /v1/models response
-    carries no context-length field; the window is configured per ConfiguredModel
-    (hard cutover from the old LMSTUDIO_DEFAULT_CONTEXT_WINDOW constant). Raises
-    ModelListingError on any network, auth, or parse failure.
+    api_key must be a non-empty string; keyless callers should pass the placeholder
+    'keyless-local' rather than an empty string (the OpenAI SDK rejects empty keys).
+    Raises ModelListingError on any network, auth, or parse failure.
     """
     try:
         from openai import AsyncOpenAI
@@ -88,15 +93,11 @@ async def _list_openai_compatible_models(
         client = AsyncOpenAI(**kwargs)
         async with asyncio.timeout(timeout):
             response = await client.models.list()
-        # Neither OpenAI nor LM Studio returns context-length in /v1/models;
-        # context window is configured per ConfiguredModel, not stamped here.
-        ctx = 0
         return [
             ProviderModel(
                 provider=provider,
                 model=m.id,
                 display_name=m.id,
-                context_window=ctx,
             )
             for m in response.data
             if _is_chat_model_id(m.id)
@@ -112,8 +113,7 @@ async def _list_anthropic_models(
     """Fetch Anthropic chat models.
 
     Anthropic's list endpoint returns chat models only, so no extra filtering
-    is needed. context_window is read from max_input_tokens when available.
-    Raises ModelListingError on any failure.
+    is needed. Raises ModelListingError on any failure.
     """
     try:
         from anthropic import AsyncAnthropic
@@ -125,7 +125,6 @@ async def _list_anthropic_models(
                 provider="anthropic",
                 model=m.id,
                 display_name=getattr(m, "display_name", None) or m.id,
-                context_window=getattr(m, "max_input_tokens", 0) or 0,
             )
             for m in response.data
         ]
@@ -157,12 +156,10 @@ async def _list_google_models(
             if not model_id:
                 continue
             display = getattr(m, "display_name", None) or model_id
-            ctx = getattr(m, "input_token_limit", None) or 0
             result.append(ProviderModel(
                 provider="google",
                 model=model_id,
                 display_name=display,
-                context_window=ctx,
             ))
         return result
     except Exception as exc:
@@ -185,12 +182,14 @@ async def list_provider_models(
     to the entire network round-trip; an unreachable provider raises within that
     window rather than blocking indefinitely.
 
-    openai and lmstudio both delegate to _list_openai_compatible_models (the
-    OpenAI-compat /v1/models path). lmstudio uses the "lm-studio" placeholder
-    key and defaults base_url to http://localhost:1234/v1. anthropic and google
-    have their own listing paths.
+    openai delegates to _list_openai_compatible_models (the OpenAI-compat /v1/models
+    path). anthropic and google have their own listing paths. openrouter delegates to
+    _list_openai_compatible_models with the library-fixed _OPENROUTER_BASE_URL; the
+    incoming base_url is ignored (openrouter's endpoint is fixed by the library).
+    Keyless providers (KEYLESS_PROVIDER_TYPES) also use _list_openai_compatible_models
+    with a configured base_url; dormant after M3 since KEYLESS_PROVIDER_TYPES is empty.
 
-    Listing-capable: lmstudio, openai, anthropic, google.
+    Listing-capable: openai, anthropic, google, openrouter.
     Not supported: bedrock (no runtime list API), voyage (embedding-only).
     """
     if provider == "openai":
@@ -208,21 +207,32 @@ async def list_provider_models(
             raise ModelListingError("no api_key provided for google")
         return await _list_google_models(api_key, timeout)
 
-    if provider == "lmstudio":
-        # LM Studio is an OpenAI-compatible local server, so listing now uses
-        # the OpenAI-compat /v1/models path via the shared helper, replacing the
-        # retired native /api/v0/models path. The "lm-studio" placeholder mirrors
-        # adapter._build_explicit_model: LM Studio ignores the key but the OpenAI
-        # SDK requires a non-empty string. Embedding exclusion relies on the
-        # "embedding" id substring (the /v1/models response has no type field).
-        effective_url = base_url or "http://localhost:1234/v1"
+    from ..types import KEYLESS_PROVIDER_TYPES
+    from ..credentials import LOCAL_PROVIDERS
+    # Dormant keyless-local seam: KEYLESS_PROVIDER_TYPES is empty after M3 so this
+    # branch is never reached; retained for a future local-provider re-add (Decision 1).
+    if provider in KEYLESS_PROVIDER_TYPES:
+        # Keyless providers speak the OpenAI protocol via a configured base_url.
+        # LOCAL_PROVIDERS is also empty after M3, so base_url must be configured.
+        # The "keyless-local" placeholder mirrors adapter._build_explicit_model.
+        effective_url = base_url or LOCAL_PROVIDERS.get(provider)
         return await _list_openai_compatible_models(
-            "lmstudio", api_key or "lm-studio", effective_url, timeout
+            provider, api_key or "keyless-local", effective_url, timeout
+        )
+
+    if provider == "openrouter":
+        # openrouter is key-required; endpoint is fixed by the library (Decision 6).
+        # The incoming base_url is intentionally ignored: openrouter's URL is not
+        # user-configurable, so passing it through would be misleading.
+        if not api_key:
+            raise ModelListingError("no api_key provided for openrouter")
+        return await _list_openai_compatible_models(
+            "openrouter", api_key, _OPENROUTER_BASE_URL, timeout
         )
 
     raise ModelListingError(
         f"provider '{provider}' does not support model listing "
-        f"(supported: openai, anthropic, google, lmstudio)"
+        f"(supported: openai, anthropic, google, openrouter)"
     )
 
 
@@ -237,10 +247,10 @@ async def list_models_for_connection(
     decrypts api_key from the store by connection.id, threads region and base_url
     from the Connection, then dispatches to list_provider_models(connection.type).
 
-    For listing-capable types (openai, anthropic, google, lmstudio) this returns
-    the provider's live model list. For non-listing types (bedrock, voyage) or
-    on any network/auth failure, ModelListingError is raised -- the caller treats
-    this as "listing unavailable; fall back to free-text entry."
+    For listing-capable types (openai, anthropic, google, openrouter) this returns
+    the provider's live model list. For non-listing types (bedrock, voyage) or on
+    any network/auth failure, ModelListingError is raised -- the caller treats this
+    as "listing unavailable; fall back to free-text entry."
 
     The static model_registry is NOT consulted or merged here (brief D7: the
     selectable list is the live provider response only).

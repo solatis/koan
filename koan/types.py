@@ -81,14 +81,13 @@ class ModelRegistryEntry:
     """One entry in the all-providers model catalog, surfaced via Settings projection.
 
     Describes a curated (provider, model) pair with capability annotations.
-    Sources: model lists and context_window from genai-prices bundled snapshot;
-    thinking_modes and tier_hint from the koan capability table in model_catalog.py.
+    Sources: model lists from genai-prices bundled snapshot; thinking_modes and
+    tier_hint from the koan capability table in model_catalog.py.
     """
 
     provider: str
     model: str
     display_name: str
-    context_window: int
     thinking_modes: list[ThinkingMode] = field(default_factory=list)
     tier_hint: ModelTier | None = None
 
@@ -105,7 +104,6 @@ class ProviderModel:
     provider: str
     model: str
     display_name: str
-    context_window: int = 0
 
 
 # -- Provider config types (M1: config schema reshape) ------------------------
@@ -133,7 +131,6 @@ class ModelSpec:
     thinking: ThinkingMode
     settings: dict = field(default_factory=dict)
     caching: CachingPolicy = field(default_factory=CachingPolicy)
-    context_window: int = 0
     # M1: connection id for credential lookup (empty string for legacy callers).
     connection_id: str = ""
 
@@ -143,8 +140,8 @@ class ResolvedCapabilities:
     """Resolved per (connection.type, model), read-only, never persisted, never asked (brief D4/D5).
 
     Assembled from three sources: PydanticAI model profile (thinking-shape, web-search,
-    tool/json), koan's bundled knowledge (context-window, variants, prompt-caching), and
-    the thin recognition parse (family/tier/version).  Computed on demand; never stored.
+    tool/json), koan's bundled knowledge (prompt-caching), and the thin recognition parse
+    (family/tier/version). Computed on demand; never stored.
     """
 
     thinking_supported: bool
@@ -156,14 +153,7 @@ class ResolvedCapabilities:
     thinking_shape: Literal["budget", "effort", "adaptive", "none"]
     supports_web_search: bool
     supports_tools: bool
-    # koan-sourced -- the model engine carries neither of these.
-    context_window: int
     supports_prompt_caching: bool
-    # Selectable larger windows beyond the base (e.g. the Anthropic 1M beta).
-    # Empty when no variant is available for this (provider, model).
-    context_window_variants: list[int] = field(default_factory=list)
-    # Embedding models only; None for chat/completion models.
-    embedding_dim: int | None = None
     # From the recognition parse (recognition.py).
     family: str | None = None
     tier_hint: ModelTier | None = None
@@ -196,18 +186,20 @@ ROLE_MODEL_TIER: dict[SubagentRole, ModelTier] = {
 
 # ProviderType drives the adapter dialect, the price/capability lookup, and the
 # PydanticAI provider class.  Multiple connections of the same type are allowed.
-ProviderType = Literal["google", "anthropic", "openai", "bedrock", "lmstudio", "voyage"]
+ProviderType = Literal["google", "anthropic", "openai", "bedrock", "openrouter", "voyage"]
 
 # RoleSlot mirrors ModelTier; kept as a separate alias so the intent is explicit.
 RoleSlot = Literal["strong", "standard", "cheap"]
 
 ALL_PROVIDER_TYPES: tuple[ProviderType, ...] = (
-    "google", "anthropic", "openai", "bedrock", "lmstudio", "voyage"
+    "google", "anthropic", "openai", "bedrock", "openrouter", "voyage"
 )
 
 # Keyless providers authenticate via a configured base_url rather than a stored
 # secret.  Availability is True when a Connection of that type has a base_url.
-KEYLESS_PROVIDER_TYPES: frozenset[str] = frozenset({"lmstudio"})
+# Intentionally empty -- lmstudio removed in M3. Retained (not deleted) as the
+# keyless-local seam for a future local-provider re-add (Decision 1).
+KEYLESS_PROVIDER_TYPES: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -231,10 +223,6 @@ class ConfiguredModel:
 
     Global; referenced by slots and memory bindings.  The same model_id on two
     connections is two distinct ConfiguredModels (brief D3).
-
-    context_window is an optional explicit override (tokens).  None means
-    "derive from capabilities"; used by resolve_model_spec and the Settings
-    display as top-priority override, falling through to caps/snapshot when unset.
     """
 
     id: str
@@ -242,8 +230,6 @@ class ConfiguredModel:
     model_id: str
     # newest-in-family provenance written at config-time (brief D11).
     resolved_from: str | None = None
-    # Explicit per-model context window; None defers to capabilities/snapshot.
-    context_window: int | None = None
     # Selected Voyage output dimension; None means use the model default from the
     # static catalog.  Relevant only for voyage embedding models; None for all others.
     embedding_dim: int | None = None
@@ -256,8 +242,6 @@ class SlotAssignment:
     configured_model_id: str
     thinking: ThinkingMode
     caching: CachingPolicy = field(default_factory=CachingPolicy)
-    # Selected context-window variant (None = use base window from capabilities).
-    context_window: int | None = None
 
 
 @dataclass
@@ -278,7 +262,6 @@ class MemoryBinding:
     configured_model_id: str
     thinking: ThinkingMode = "disabled"
     caching: CachingPolicy = field(default_factory=CachingPolicy)
-    context_window: int | None = None
 
 
 @dataclass

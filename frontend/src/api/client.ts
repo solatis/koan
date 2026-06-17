@@ -145,8 +145,6 @@ export interface ConfiguredModelBody {
   connection_id: string
   model_id: string
   resolved_from?: string
-  /** Explicit context window in tokens; omitted or null means derive from capabilities. */
-  context_window?: number | null
   /** Selected Voyage output dimension; omitted or null means use the catalog default. */
   embedding_dim?: number | null
 }
@@ -186,7 +184,6 @@ export async function listConnectionModels(id: string): Promise<ConfigApiResult>
  * Upsert a configured model (POST /api/config/models).
  * A configured model is a (connection, model-id) pair; the id is caller-assigned
  * and conventionally '<connectionId>:<modelId>' for auto-created entries.
- * Optional context_window (tokens); omitted/null means derive from capabilities at runtime.
  * This is a full upsert -- all fields (including resolved_from) must be preserved.
  */
 export async function setConfiguredModel(body: ConfiguredModelBody): Promise<ConfigApiResult> {

@@ -42,10 +42,6 @@ export interface RoleAssignment {
   connectionId: string | null
   modelId: string | null
   thinking: string | null
-  /** Explicit context window in tokens from ConfiguredModel; null = derive from capabilities. */
-  contextWindow: number | null
-  /** Capability-derived context window (from model_capabilities); used as placeholder. */
-  capabilityContextWindow: number
   state: RoleRowState
   /** {value, label} pairs built by the connected layer; value is the wire token. */
   thinkingOptions: { value: string; label: string }[]
@@ -53,8 +49,6 @@ export interface RoleAssignment {
   embeddingDim: number | null
   /** Available dimension options from the Voyage catalog for the selected model. [] = not applicable. */
   embeddingDimOptions: number[]
-  /** Catalog-fixed context window for embedding models; null = not applicable or not set. */
-  fixedContextWindow: number | null
 }
 
 export interface SettingsPageProps {
@@ -76,7 +70,7 @@ export interface SettingsPageProps {
   // Role + memory assignments
   assignments: Record<RoleSlot, RoleAssignment>
   modelsByConnection: Record<string, ModelsForConnection>
-  onRoleChange: (slot: RoleSlot, field: 'connection' | 'model' | 'thinking' | 'context_window', value: string) => void
+  onRoleChange: (slot: RoleSlot, field: 'connection' | 'model' | 'thinking', value: string) => void
 
   /** Whether a vector-index rebuild is pending/in-progress after an embedding config change. */
   embeddingRebuildPending: boolean
@@ -106,7 +100,7 @@ const LISTING_CAPABLE: ReadonlySet<ProviderType> = new Set<ProviderType>([
   'anthropic',
   'openai',
   'google',
-  'lmstudio',
+  'openrouter',
 ])
 
 const NO_MODELS: ModelsForConnection = { models: [] }
@@ -189,8 +183,6 @@ export function SettingsPage({
         connectionId={a.connectionId}
         modelId={a.modelId}
         thinking={a.thinking}
-        contextWindow={a.contextWindow}
-        capabilityContextWindow={a.capabilityContextWindow}
         connections={roleConnections}
         models={m.models}
         families={m.families}

@@ -1,12 +1,13 @@
 /**
- * ProviderBadge — a 30px rounded-square icon with a two-letter mono code
+ * ProviderBadge -- a 30px rounded-square icon with a two-letter mono code
  * identifying a connection's provider type.
  *
  * Colors are decorative anchors; the two-letter code disambiguates. google
- * and lmstudio reuse existing color values that are otherwise semantic —
- * acceptable, since a badge is not a status read-out.
+ * reuses an existing color value that is otherwise semantic -- acceptable,
+ * since a badge is not a status read-out. openrouter uses #8a7e70 (deep warm
+ * gray, hardcoded deliberately -- --status-queued was too light).
  *
- * Used in: ConnectionRow (Settings → Connections) and optionally
+ * Used in: ConnectionRow (Settings -> Connections) and optionally
  * ConnectionForm.
  */
 
@@ -17,7 +18,7 @@ export type ProviderType =
   | 'openai'
   | 'google'
   | 'bedrock'
-  | 'lmstudio'
+  | 'openrouter'
   | 'voyage'
 
 const CODES: Record<ProviderType, string> = {
@@ -25,7 +26,7 @@ const CODES: Record<ProviderType, string> = {
   openai: 'OA',
   google: 'GO',
   bedrock: 'BE',
-  lmstudio: 'LM',
+  openrouter: 'OR',
   voyage: 'VO',
 }
 

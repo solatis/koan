@@ -98,7 +98,6 @@ function useHeaderData() {
           cacheReadTokens: primary.conversation.cacheReadTokens,
           cacheWriteTokens: primary.conversation.cacheWriteTokens,
           totalCostUsd: primary.conversation.totalCostUsd,
-          contextWindowPercent: primary.conversation.contextWindowPercent,
         }
       : undefined,
   }
@@ -737,7 +736,7 @@ const PATH_BY_KEY: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 // Provider types that expose a live list-models endpoint.
-const LISTING_CAPABLE_TYPES = new Set(['anthropic', 'openai', 'google', 'lmstudio'])
+const LISTING_CAPABLE_TYPES = new Set(['anthropic', 'openai', 'google', 'openrouter'])
 
 // ---------------------------------------------------------------------------
 // Thinking display map -- connected layer only, so presentational components
@@ -887,26 +886,21 @@ function ConnectedSettingsPage() {
 
     // Default embedding-specific fields for all non-embedding slots (and for
     // embedding slots where the catalog lookup is not applicable).
-    const EMBEDDING_DEFAULTS = { embeddingDim: null, embeddingDimOptions: [], fixedContextWindow: null }
+    const EMBEDDING_DEFAULTS = { embeddingDim: null, embeddingDimOptions: [] }
 
     function resolveSlot(cmId: string | undefined, thinking: string | null): RoleAssignment {
-      if (!cmId) return { connectionId: null, modelId: null, thinking: null, contextWindow: null, capabilityContextWindow: 0, state: 'unassigned', thinkingOptions: [], ...EMBEDDING_DEFAULTS }
+      if (!cmId) return { connectionId: null, modelId: null, thinking: null, state: 'unassigned', thinkingOptions: [], ...EMBEDDING_DEFAULTS }
       const cm = cmById[cmId]
-      if (!cm) return { connectionId: null, modelId: null, thinking: null, contextWindow: null, capabilityContextWindow: 0, state: 'broken', thinkingOptions: [], ...EMBEDDING_DEFAULTS }
+      if (!cm) return { connectionId: null, modelId: null, thinking: null, state: 'broken', thinkingOptions: [], ...EMBEDDING_DEFAULTS }
       const conn = connById[cm.connectionId]
       const cap = capById[cmId]
-      if (!conn) return { connectionId: cm.connectionId, modelId: cm.modelId, thinking, contextWindow: cm.contextWindow, capabilityContextWindow: cap?.contextWindow ?? 0, state: 'broken', thinkingOptions: [], ...EMBEDDING_DEFAULTS }
+      if (!conn) return { connectionId: cm.connectionId, modelId: cm.modelId, thinking, state: 'broken', thinkingOptions: [], ...EMBEDDING_DEFAULTS }
       const rawModes = cap?.thinkingModes ?? []
       const thinkingOptions = toThinkingOptions(rawModes)
       return {
         connectionId: cm.connectionId,
         modelId: cm.modelId,
         thinking,
-        // Source contextWindow from the projection ConfiguredModel, not local state.
-        // This avoids splitting cmId (model ids contain ':' and '/') and ensures
-        // resolved_from is always available when we need to upsert.
-        contextWindow: cm.contextWindow,
-        capabilityContextWindow: cap?.contextWindow ?? 0,
         state: 'assigned',
         thinkingOptions,
         ...EMBEDDING_DEFAULTS,
@@ -936,7 +930,6 @@ function ConnectedSettingsPage() {
           ...embeddingSlotBase,
           embeddingDim: embeddingCm?.embeddingDim ?? null,
           embeddingDimOptions: catalogEntry.dimensions,
-          fixedContextWindow: catalogEntry.contextWindow,
         }
       }
     }
@@ -1099,19 +1092,10 @@ function ConnectedSettingsPage() {
    * - thinking: Persists the thinking level via setSlot/setMemoryBinding (using
    *   the already-persisted cmId from the projection store), then optimistically
    *   reflects it in local state.
-   * - context_window: Persists an explicit context-window override on the
-   *   ConfiguredModel via setConfiguredModel (full upsert). cmId and all identity
-   *   fields (connectionId, modelId, resolvedFrom) are sourced from the projection
-   *   configuredModels entry -- never by splitting cmId, since model ids legitimately
-   *   contain ':' and '/'. A positive integer value sets the override; empty string
-   *   or non-positive clears it (null). The value-keyed per-slot re-sync effect
-   *   (memory 0204) includes contextWindow so this field participates correctly
-   *   and is not clobbered by an unrelated SSE patch.
-   *
    * All branches update the local interim assignments state. The per-slot
    * re-sync effect reconciles local state with the projection once a patch lands.
    */
-  const onRoleChange = async (slot: RoleSlot, field: 'connection' | 'model' | 'thinking' | 'context_window', value: string) => {
+  const onRoleChange = async (slot: RoleSlot, field: 'connection' | 'model' | 'thinking', value: string) => {
     const current = assignments[slot]
     const isTierSlot = slot === 'strong' || slot === 'standard' || slot === 'cheap'
 
@@ -1125,13 +1109,10 @@ function ConnectedSettingsPage() {
           connectionId: value,
           modelId: null,
           thinking: null,
-          contextWindow: null,
-          capabilityContextWindow: 0,
           state: 'unassigned',
           thinkingOptions: [],
           embeddingDim: null,
           embeddingDimOptions: [],
-          fixedContextWindow: null,
         },
       }))
       // Only call listConnectionModels for listing-capable connection types.
@@ -1213,37 +1194,6 @@ function ConnectedSettingsPage() {
       }))
     }
 
-    if (field === 'context_window') {
-      // Source cmId and identity fields from the projection store (not local state).
-      // Never split cmId to recover model id -- model ids contain ':' and '/'.
-      const cmId = isTierSlot
-        ? settings.presets['$last']?.slots[slot]?.configuredModelId
-        : settings.memoryBindings?.[slotToMemoryKind(slot) as 'embedding' | 'memory_llm' | 'reflect_llm']?.configured_model_id
-      if (!cmId) return
-      const cmEntry = settings.configuredModels.find(m => m.id === cmId)
-      if (!cmEntry) return
-      // Parse to positive int or null (empty / zero / negative = unset).
-      const parsed = parseInt(value, 10)
-      const contextWindow = !isNaN(parsed) && parsed > 0 ? parsed : null
-      const res = await api.setConfiguredModel({
-        id: cmId,
-        connection_id: cmEntry.connectionId,
-        model_id: cmEntry.modelId,
-        ...(cmEntry.resolvedFrom ? { resolved_from: cmEntry.resolvedFrom } : {}),
-        context_window: contextWindow,
-        // Full-upsert clobber-safety: carry embedding_dim so a concurrent dim save is not lost.
-        embedding_dim: cmEntry.embeddingDim ?? null,
-      })
-      if (!res.ok) {
-        pushToast(res.message ?? 'Failed to save context window', 'error')
-        return
-      }
-      // Optimistic update: reflect the new context window immediately.
-      setAssignments(prev => ({
-        ...prev,
-        [slot]: { ...prev[slot], contextWindow },
-      }))
-    }
   }
 
   const onScoutConcurrencyChange = async (value: number) => {
@@ -1289,7 +1239,6 @@ function ConnectedSettingsPage() {
       connection_id: embCm.connectionId,
       model_id: embCm.modelId,
       ...(embCm.resolvedFrom ? { resolved_from: embCm.resolvedFrom } : {}),
-      context_window: embCm.contextWindow ?? null,
       embedding_dim: dim,
     })
     setRebuildInProgress(false)
@@ -1443,7 +1392,7 @@ function ConnectedNewRunForm() {
     return 'ready'
   }, [settings, connections])
 
-  const onOverrideChange = (role: WorkflowRole, field: 'connection' | 'model' | 'thinking' | 'context_window', value: string) => {
+  const onOverrideChange = (role: WorkflowRole, field: 'connection' | 'model' | 'thinking', value: string) => {
     setOverrides(prev => {
       const current = prev[role]
       if (field === 'connection') {

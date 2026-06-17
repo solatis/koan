@@ -3,12 +3,10 @@
 # Enforces two invariants:
 #   1. Every (provider, model) in MODEL_CAPABILITIES resolves in the genai-prices
 #      bundled snapshot -- price_for_usage succeeds and returns a positive Decimal.
-#   2. build_model_registry() returns one ModelRegistryEntry per capability entry,
-#      each with a positive (never null) context_window.
+#   2. build_model_registry() returns one ModelRegistryEntry per capability entry.
 #
-# M1: _GEMINI_TIER_SPECS and _GEMINI_FRONTIER_SPECS removed from registry.py
-# (built-in profiles deleted, brief D12).  The test_builtin_profile_model_price_resolves
-# parametrize that imported those constants is deleted.  context_window_for is added.
+# context_window removed (hard cutover): koan does not enforce a context budget;
+# the provider errors if context is exceeded (accepted behavior).
 
 from __future__ import annotations
 
@@ -20,7 +18,6 @@ from koan.agents.model_catalog import (
     MODEL_CAPABILITIES,
     PROVIDER_ID_MAP,
     build_model_registry,
-    context_window_for,
     price_for_usage,
 )
 
@@ -51,6 +48,20 @@ class TestPriceForUsage:
         )
         assert result > 0
 
+    def test_openrouter_price_resolves(self) -> None:
+        """price_for_usage resolves cost for an openrouter model via PROVIDER_ID_MAP.
+
+        openrouter maps to the bundled 'openrouter' genai-prices provider which
+        resolves namespaced vendor/model ids (e.g. 'anthropic/claude-3.5-sonnet').
+        No MODEL_CAPABILITIES entry is required -- the snapshot handles it.
+        """
+        result = price_for_usage(
+            "openrouter", "anthropic/claude-3.5-sonnet",
+            input_tokens=1000, output_tokens=500,
+        )
+        assert isinstance(result, Decimal)
+        assert result > 0
+
 
 # -- Model registry tests -----------------------------------------------------
 
@@ -61,14 +72,6 @@ class TestBuildModelRegistry:
         assert len(registry) == len(MODEL_CAPABILITIES), (
             f"Expected {len(MODEL_CAPABILITIES)} entries, got {len(registry)}"
         )
-
-    def test_every_entry_has_positive_context_window(self) -> None:
-        """Every registry entry has a context_window > 0 (never null, never zero)."""
-        registry = build_model_registry()
-        for e in registry:
-            assert e.context_window > 0, (
-                f"{e.provider}/{e.model} has non-positive context_window={e.context_window}"
-            )
 
     def test_every_entry_has_display_name(self) -> None:
         """Every registry entry has a non-empty display_name."""
@@ -95,72 +98,6 @@ class TestBuildModelRegistry:
         )
 
 
-# -- context_window_for tests -------------------------------------------------
-
-class TestContextWindowFor:
-    def test_known_catalog_model_returns_positive_window(self) -> None:
-        """context_window_for returns a positive int for a catalog-known model."""
-        result = context_window_for("google", "gemini-3.1-pro-preview")
-        assert isinstance(result, int)
-        assert result > 0
-
-    def test_known_anthropic_model(self) -> None:
-        """context_window_for returns a positive int for a known Anthropic model."""
-        result = context_window_for("anthropic", "claude-opus-4-0")
-        assert result > 0
-
-    def test_unknown_model_returns_zero(self) -> None:
-        """context_window_for returns 0 for a model not in any source."""
-        result = context_window_for("google", "this-model-does-not-exist-xyz")
-        assert result == 0
-
-    def test_unknown_provider_returns_zero(self) -> None:
-        """context_window_for returns 0 for an unknown provider."""
-        result = context_window_for("unknown-provider", "some-model")
-        assert result == 0
-
-    def test_lmstudio_context_window_unset_returns_zero(self) -> None:
-        """context_window_for returns 0 for any lmstudio model (absent from catalog/snapshot; hard cutover)."""
-        result = context_window_for("lmstudio", "some-local-model")
-        assert result == 0
-
-    @pytest.mark.parametrize("provider,model", _all_offered_models())
-    def test_all_catalog_models_have_positive_window(self, provider: str, model: str) -> None:
-        """context_window_for returns > 0 for every MODEL_CAPABILITIES entry."""
-        result = context_window_for(provider, model)
-        assert result > 0, (
-            f"Expected positive context_window for {provider}/{model}, got {result}"
-        )
-
-
-# -- context_window_variants_for tests ----------------------------------------
-
-class TestContextWindowVariantsFor:
-    def test_returns_empty_list_for_unknown_model(self) -> None:
-        """context_window_variants_for returns [] for a model not in CONTEXT_WINDOW_VARIANTS."""
-        from koan.agents.model_catalog import context_window_variants_for
-        assert context_window_variants_for("anthropic", "some-unknown-model") == []
-
-    def test_returns_empty_list_for_current_catalog_models(self) -> None:
-        """No current catalog model advertises a context-window variant."""
-        from koan.agents.model_catalog import context_window_variants_for
-        for provider, model in _all_offered_models():
-            result = context_window_variants_for(provider, model)
-            assert isinstance(result, list)
-
-    def test_reflects_injected_variant(self) -> None:
-        """context_window_variants_for returns the variant list when one is injected."""
-        from koan.agents import model_catalog
-        original = dict(model_catalog.CONTEXT_WINDOW_VARIANTS)
-        model_catalog.CONTEXT_WINDOW_VARIANTS[("anthropic", "test-model")] = [1_000_000]
-        try:
-            result = model_catalog.context_window_variants_for("anthropic", "test-model")
-            assert result == [1_000_000]
-        finally:
-            model_catalog.CONTEXT_WINDOW_VARIANTS.clear()
-            model_catalog.CONTEXT_WINDOW_VARIANTS.update(original)
-
-
 # -- supports_prompt_caching tests --------------------------------------------
 
 class TestSupportsPromptCaching:
@@ -172,9 +109,9 @@ class TestSupportsPromptCaching:
                 assert supports_prompt_caching("anthropic", model) is True
 
     def test_non_anthropic_returns_false(self) -> None:
-        """Google, OpenAI, Bedrock, lmstudio, and voyage return False."""
+        """Google, OpenAI, Bedrock, openrouter, and voyage return False."""
         from koan.agents.model_catalog import supports_prompt_caching
-        for provider in ("google", "openai", "bedrock", "lmstudio", "voyage"):
+        for provider in ("google", "openai", "bedrock", "openrouter", "voyage"):
             assert supports_prompt_caching(provider, "any-model") is False
 
     def test_unknown_provider_returns_false(self) -> None:
@@ -183,84 +120,38 @@ class TestSupportsPromptCaching:
         assert supports_prompt_caching("unknown-provider", "some-model") is False
 
 
-# -- Hard-cutover: LMSTUDIO_DEFAULT_CONTEXT_WINDOW removed --------------------
+# -- Hard-cutover: removed symbols must not exist -----------------------------
 
-class TestLmstudioDefaultContextWindowRemoved:
-    def test_symbol_not_importable(self) -> None:
-        """LMSTUDIO_DEFAULT_CONTEXT_WINDOW is no longer importable from koan.agents.model_catalog.
-
-        This is the negative-presence test for the hard cutover (project safe-deletion
-        procedure): an explicit 'removed' assertion guards against accidental re-introduction.
-        """
+class TestRemovedSymbols:
+    def test_lmstudio_default_context_window_not_importable(self) -> None:
+        """LMSTUDIO_DEFAULT_CONTEXT_WINDOW must not exist in koan.agents.model_catalog."""
         import importlib
         catalog = importlib.import_module("koan.agents.model_catalog")
         assert not hasattr(catalog, "LMSTUDIO_DEFAULT_CONTEXT_WINDOW"), (
             "LMSTUDIO_DEFAULT_CONTEXT_WINDOW was re-introduced; "
-            "this symbol was removed as a hard cutover (requires explicit ConfiguredModel.context_window)"
+            "this symbol was removed as a hard cutover"
         )
 
-
-# -- resolve_model_spec: cm.context_window takes top precedence ---------------
-
-class TestResolveModelSpecContextWindowPrecedence:
-    def test_explicit_cm_context_window_wins_over_caps(self) -> None:
-        """resolve_model_spec uses cm.context_window over caps/fallback for an lmstudio model.
-
-        For an lmstudio model (absent from catalog/snapshot, caps.context_window == 0),
-        an explicit ConfiguredModel.context_window is the only source and must win.
-        orchestrator maps to ModelTier 'strong', so the preset slot must be 'strong'.
-        """
-        from koan.agents.registry import AgentRegistry
-        from koan.config import KoanConfig
-        from koan.types import ConfiguredModel, Connection, Preset, SlotAssignment
-
-        conn = Connection(id="lm-conn", type="lmstudio", base_url="http://localhost:1234/v1")
-        cm = ConfiguredModel(
-            id="lm-cm",
-            connection_id="lm-conn",
-            model_id="qwen/qwen3.6-35b-a3b",
-            context_window=131072,
-        )
-        # orchestrator -> ROLE_MODEL_TIER['orchestrator'] == 'strong'
-        slot = SlotAssignment(configured_model_id="lm-cm", thinking="disabled")
-        preset = Preset(slots={"strong": slot})
-
-        cfg = KoanConfig(
-            connections=[conn],
-            configured_models=[cm],
-            presets={"$last": preset},
+    def test_context_window_for_not_importable(self) -> None:
+        """context_window_for must not exist in koan.agents.model_catalog (hard cutover)."""
+        import importlib
+        catalog = importlib.import_module("koan.agents.model_catalog")
+        assert not hasattr(catalog, "context_window_for"), (
+            "context_window_for was re-introduced; hard cutover requires permanent removal"
         )
 
-        registry = AgentRegistry()
-        spec = registry.resolve_model_spec("orchestrator", cfg)
-        assert spec.context_window == 131072
-
-    def test_unset_cm_context_window_falls_through_to_caps(self) -> None:
-        """resolve_model_spec falls through to caps.context_window when cm.context_window is None.
-
-        For a known anthropic model, caps.context_window > 0; the unset override
-        must not shadow it.
-        """
-        from koan.agents.registry import AgentRegistry
-        from koan.config import KoanConfig
-        from koan.types import ConfiguredModel, Connection, Preset, SlotAssignment
-
-        conn = Connection(id="ant-conn", type="anthropic")
-        cm = ConfiguredModel(
-            id="ant-cm",
-            connection_id="ant-conn",
-            model_id="claude-opus-4-0",
-            context_window=None,
-        )
-        slot = SlotAssignment(configured_model_id="ant-cm", thinking="disabled")
-        preset = Preset(slots={"strong": slot})
-
-        cfg = KoanConfig(
-            connections=[conn],
-            configured_models=[cm],
-            presets={"$last": preset},
+    def test_context_window_variants_for_not_importable(self) -> None:
+        """context_window_variants_for must not exist in koan.agents.model_catalog (hard cutover)."""
+        import importlib
+        catalog = importlib.import_module("koan.agents.model_catalog")
+        assert not hasattr(catalog, "context_window_variants_for"), (
+            "context_window_variants_for was re-introduced; hard cutover requires permanent removal"
         )
 
-        registry = AgentRegistry()
-        spec = registry.resolve_model_spec("orchestrator", cfg)
-        assert spec.context_window > 0
+    def test_context_window_variants_not_importable(self) -> None:
+        """CONTEXT_WINDOW_VARIANTS must not exist in koan.agents.model_catalog (hard cutover)."""
+        import importlib
+        catalog = importlib.import_module("koan.agents.model_catalog")
+        assert not hasattr(catalog, "CONTEXT_WINDOW_VARIANTS"), (
+            "CONTEXT_WINDOW_VARIANTS was re-introduced; hard cutover requires permanent removal"
+        )

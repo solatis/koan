@@ -1,14 +1,13 @@
 /**
  * UsageGauge -- compact usage readout for the HeaderBar right cluster.
  *
- * Shows the primary agent's token counts, cost, context-window percent, and
- * cache hit/write stats, all sourced from the projection's per-agent conversation.
+ * Shows the primary agent's token counts, cost, and cache hit/write stats,
+ * all sourced from the projection's per-agent conversation.
  * Presentational: all data arrives via props, no store access.
  *
  * Readouts (each gated on a non-zero check):
  *   tok   -- input / output token counts
  *   $     -- total accumulated cost in USD (shown when > 0)
- *   ctx   -- context-window fill percent (shown when > 0)
  *   cache -- cache read / write token counts (shown when either > 0)
  *
  * Used in: HeaderBar (workflow mode), beside the orchestrator model + elapsed.
@@ -22,7 +21,6 @@ interface UsageGaugeProps {
   cacheReadTokens: number
   cacheWriteTokens: number
   totalCostUsd: number
-  contextWindowPercent: number
 }
 
 /** Compact a token count: 12345 -> "12.3k", 850 -> "850". */
@@ -43,13 +41,11 @@ export function UsageGauge({
   cacheReadTokens,
   cacheWriteTokens,
   totalCostUsd,
-  contextWindowPercent,
 }: UsageGaugeProps) {
   const title =
     `${inputTokens.toLocaleString()} input tokens / ` +
     `${outputTokens.toLocaleString()} output tokens` +
     (totalCostUsd > 0 ? ` / cost ${fmtCost(totalCostUsd)}` : '') +
-    (contextWindowPercent > 0 ? ` / context ${contextWindowPercent}% full` : '') +
     ((cacheReadTokens > 0 || cacheWriteTokens > 0)
       ? ` / cache ${cacheReadTokens.toLocaleString()} read / ${cacheWriteTokens.toLocaleString()} write`
       : '')
@@ -66,14 +62,6 @@ export function UsageGauge({
           <span className="ug-divider">|</span>
           <span className="ug-label">cost</span>
           <span className="ug-cost">{fmtCost(totalCostUsd)}</span>
-        </>
-      )}
-
-      {contextWindowPercent > 0 && (
-        <>
-          <span className="ug-divider">|</span>
-          <span className="ug-label">ctx</span>
-          <span className="ug-ctx">{contextWindowPercent}%</span>
         </>
       )}
 

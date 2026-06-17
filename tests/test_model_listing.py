@@ -48,19 +48,18 @@ def test_is_chat_model_id_rejects_non_chat():
 async def test_list_openai_compatible_models_filters_and_labels(monkeypatch):
     """_list_openai_compatible_models keeps chat ids, excludes embeddings, stamps provider.
 
-    Uses the three live LM Studio model ids to confirm vlm-style chat ids pass
-    and the text-embedding-* id is excluded. Monkeypatches openai.AsyncOpenAI so
-    no real server is required. Asserts context_window is 0 (hard cutover from
-    the removed LMSTUDIO_DEFAULT_CONTEXT_WINDOW constant).
+    Uses namespaced vendor/model ids (as returned by OpenRouter) to confirm they pass
+    the chat-model filter and the text-embedding-* id is excluded. Monkeypatches
+    openai.AsyncOpenAI so no real server is required.
     """
-    live_ids = [
+    model_ids = [
         "qwen/qwen3.6-35b-a3b",
         "qwen/qwen3.6-27b",
         "text-embedding-nomic-embed-text-v1.5",
     ]
 
     class _FakeModelList:
-        data = [types.SimpleNamespace(id=mid) for mid in live_ids]
+        data = [types.SimpleNamespace(id=mid) for mid in model_ids]
 
     class _FakeModels:
         async def list(self):
@@ -76,7 +75,7 @@ async def test_list_openai_compatible_models_filters_and_labels(monkeypatch):
     from koan.agents.model_listing import _list_openai_compatible_models
 
     result = await _list_openai_compatible_models(
-        "lmstudio", "lm-studio", "http://localhost:1234/v1", 5.0
+        "openrouter", "sk-or-test", "https://openrouter.ai/api/v1", 5.0
     )
 
     assert len(result) == 2
@@ -84,19 +83,12 @@ async def test_list_openai_compatible_models_filters_and_labels(monkeypatch):
     assert "qwen/qwen3.6-35b-a3b" in returned_ids
     assert "qwen/qwen3.6-27b" in returned_ids
     assert "text-embedding-nomic-embed-text-v1.5" not in returned_ids
-    assert all(m.provider == "lmstudio" for m in result)
-    # context_window is 0 for all listed models: the /v1/models response carries
-    # no context-length field; window is configured per ConfiguredModel (hard cutover).
-    assert all(m.context_window == 0 for m in result)
+    assert all(m.provider == "openrouter" for m in result)
 
 
 @pytest.mark.asyncio
-async def test_list_openai_compatible_models_openai_keeps_zero_context(monkeypatch):
-    """_list_openai_compatible_models stamps context_window=0 for provider='openai'.
-
-    Negative test: the lmstudio-specific context window must not bleed into the
-    shared OpenAI listing path, which has no context-length field in its response.
-    """
+async def test_list_openai_compatible_models_openai_returns_chat_models(monkeypatch):
+    """_list_openai_compatible_models filters to chat models for provider='openai'."""
     model_ids = ["gpt-4o", "gpt-4o-mini"]
 
     class _FakeModelList:
@@ -120,44 +112,9 @@ async def test_list_openai_compatible_models_openai_keeps_zero_context(monkeypat
     )
 
     assert len(result) == 2
-    assert all(m.context_window == 0 for m in result)
+    assert all(m.provider == "openai" for m in result)
 
 
-@pytest.mark.asyncio
-async def test_list_provider_models_lmstudio_delegates(monkeypatch):
-    """list_provider_models for lmstudio delegates to _list_openai_compatible_models.
-
-    Verifies the placeholder key "lm-studio" and the default base_url fallback
-    are passed correctly when api_key and base_url are both None.
-    """
-    recorded: list[tuple] = []
-
-    async def _fake_list_openai_compatible_models(provider, api_key, base_url, timeout):
-        recorded.append((provider, api_key, base_url, timeout))
-        return []
-
-    import koan.agents.model_listing as ml
-    monkeypatch.setattr(
-        ml,
-        "_list_openai_compatible_models",
-        _fake_list_openai_compatible_models,
-    )
-
-    from koan.agents.model_listing import list_provider_models
-
-    await list_provider_models("lmstudio", api_key=None, base_url=None)
-
-    assert len(recorded) == 1
-    provider, api_key, base_url, _timeout = recorded[0]
-    assert provider == "lmstudio"
-    assert api_key == "lm-studio"
-    assert base_url == "http://localhost:1234/v1"
-
-
-def test_list_lmstudio_models_removed():
-    """_list_lmstudio_models has been deleted (hard cutover to OpenAI-compat path)."""
-    import koan.agents.model_listing as ml
-    assert not hasattr(ml, "_list_lmstudio_models")
 
 
 # -- list_provider_models unsupported provider --------------------------------
@@ -242,36 +199,45 @@ async def test_list_models_for_connection_voyage_raises(monkeypatch):
         await list_models_for_connection(conn, None)
 
 
-# -- Real LM Studio integration test ------------------------------------------
-# Requires a running LM Studio at http://localhost:1234.
-# Marked with a custom marker; CI can skip via -m "not lmstudio_live".
+# -- openrouter listing -------------------------------------------------------
 
 
 @pytest.mark.asyncio
-@pytest.mark.lmstudio_live
-async def test_list_lmstudio_models_live():
-    """Integration: list models from a real LM Studio at localhost:1234.
+async def test_list_provider_models_openrouter_delegates(monkeypatch):
+    """list_provider_models for openrouter delegates to _list_openai_compatible_models.
 
-    Exercises the OpenAI-compat /v1/models path (the native /api/v0/models path
-    has been retired). Asserts at least 2 chat models, provider='lmstudio' on
-    every result, and that no id containing 'embedding' is returned.
-    Skip this test when LM Studio is not running by using -m 'not lmstudio_live'.
+    Verifies the correct base URL (_OPENROUTER_BASE_URL) and api_key are passed;
+    the incoming base_url arg is ignored (endpoint is library-fixed, Decision 6).
     """
+    from koan.agents.model_listing import list_provider_models, _OPENROUTER_BASE_URL
+
+    captured: dict = {}
+
+    async def _fake_list_openai_compatible_models(provider, api_key, base_url, timeout):
+        captured["provider"] = provider
+        captured["api_key"] = api_key
+        captured["base_url"] = base_url
+        captured["timeout"] = timeout
+        return []
+
+    monkeypatch.setattr(
+        "koan.agents.model_listing._list_openai_compatible_models",
+        _fake_list_openai_compatible_models,
+    )
+
+    await list_provider_models("openrouter", api_key="sk-or-x", base_url=None)
+
+    assert captured["provider"] == "openrouter"
+    assert captured["api_key"] == "sk-or-x"
+    assert captured["base_url"] == _OPENROUTER_BASE_URL
+
+
+@pytest.mark.asyncio
+async def test_list_provider_models_openrouter_no_key_raises():
+    """list_provider_models raises ModelListingError for openrouter when api_key is None."""
     from koan.agents.model_listing import list_provider_models, ModelListingError
 
-    try:
-        models = await list_provider_models(
-            "lmstudio",
-            api_key=None,
-            base_url="http://localhost:1234/v1",
-            timeout=8.0,
-        )
-    except ModelListingError as exc:
-        pytest.skip(f"LM Studio not available: {exc}")
+    with pytest.raises(ModelListingError, match="api_key"):
+        await list_provider_models("openrouter", api_key=None, base_url=None)
 
-    assert len(models) >= 2
-    for m in models:
-        assert m.provider == "lmstudio"
-        assert m.model
-        assert m.display_name
-        assert "embedding" not in m.model.lower()
+

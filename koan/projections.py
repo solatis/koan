@@ -94,7 +94,7 @@ EventType = Literal[
     "workflows_listed",
     # M2: model catalog initial event (kept; provider_status_listed reshaped M5)
     "model_registry_listed",
-    # Dynamic per-provider model overlay (LM Studio + cloud providers)
+    # Dynamic per-provider model overlay (live per-connection)
     "provider_models_listed",
     # M5: new config entity events (replace profile events)
     "connections_listed",
@@ -358,11 +358,9 @@ class Conversation(KoanBaseModel):
     # M5: cache token facts (folded from turn_complete RequestUsage, cumulative sums).
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
-    # M5: derived fields -- computed in the fold, not recorded as event facts.
+    # M5: derived field -- computed in the fold, not recorded as event facts.
     # total_cost_usd: genai-prices bundled snapshot via price_for_usage (cumulative tokens).
-    # context_window_percent: latest request's input / context_window, clamped 0-100.
     total_cost_usd: float = 0.0
-    context_window_percent: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -398,10 +396,8 @@ class Agent(KoanBaseModel):
     label: str = ""
     model: str | None = None
     is_primary: bool = False
-    # M5: provider + context_window carried from agent_spawned so the fold can
-    # derive cost and context-window percent without live config lookups.
+    # provider carried from agent_spawned so the fold can derive cost without live config lookups.
     provider: str | None = None
-    context_window: int = 0
 
     # Lifecycle — state machine: queued → running → done | failed
     status: Literal["queued", "running", "done", "failed"] = "queued"
@@ -458,17 +454,14 @@ class ConfiguredModelWire(KoanBaseModel):
     """Wire representation of a ConfiguredModel from config (M5).
 
     A (connection, model-id) pair; global, referenced by slot assignments.
-    context_window is the optional explicit override (tokens); None means
-    "derive from capabilities".  embedding_dim is the selected Voyage output
-    dimension; None means use the model's catalog default.  Both are emitted
-    as camelCase by to_camel (contextWindow, embeddingDim).
+    embedding_dim is the selected Voyage output dimension; None means use the
+    model's catalog default.
     """
 
     id: str
     connection_id: str
     model_id: str
     resolved_from: str | None = None
-    context_window: int | None = None
     # Selected Voyage output dimension; None = use catalog default.
     embedding_dim: int | None = None
 
@@ -489,8 +482,6 @@ class ResolvedCapabilitiesWire(KoanBaseModel):
     thinking_shape: str = "none"
     supports_web_search: bool = False
     supports_tools: bool = True
-    context_window: int = 0
-    context_window_variants: list[int] = []
     supports_prompt_caching: bool = False
     tier_hint: str | None = None
     recognized: bool = True
@@ -515,15 +506,13 @@ class PresetWire(KoanBaseModel):
 class ModelRegistryEntryWire(KoanBaseModel):
     """Wire representation of ModelRegistryEntry pushed by the model_registry_listed event.
 
-    Payload shape: {models: [{provider, model, display_name, context_window,
-    thinking_modes, tier_hint}, ...]}.
-    Fold sets Settings.model_registry from the models list.
+    Payload shape: {models: [{provider, model, display_name, thinking_modes,
+    tier_hint}, ...]}.  Fold sets Settings.model_registry from the models list.
     """
 
     provider: str
     model: str
     display_name: str
-    context_window: int
     thinking_modes: list[str] = []
     tier_hint: str | None = None
 
@@ -531,13 +520,12 @@ class ModelRegistryEntryWire(KoanBaseModel):
 class EmbeddingModelWire(KoanBaseModel):
     """Wire representation of one recognized Voyage embedding model (camelCase via to_camel).
 
-    Payload shape: {models: [{model_id, context_window, dimensions, default_dimension}, ...]}.
+    Payload shape: {models: [{model_id, dimensions, default_dimension}, ...]}.
     Fold sets Settings.embedding_models from the models list on the
     embedding_models_listed event; replace-all semantics.
     """
 
     model_id: str
-    context_window: int
     # Selectable output dimensions (ascending).
     dimensions: list[int] = []
     default_dimension: int = 0
@@ -546,19 +534,16 @@ class EmbeddingModelWire(KoanBaseModel):
 class ProviderModelWire(KoanBaseModel):
     """Wire representation of ProviderModel pushed by the provider_models_listed event.
 
-    Payload shape: {models: [{provider, model, display_name, context_window,
-    connection_id}, ...]}.  The alias_generator=to_camel emits displayName,
-    contextWindow, and connectionId on the wire.  Fold sets
-    Settings.provider_models from the flat cross-provider models list;
-    replace-all semantics (same as model_registry_listed).  The frontend
-    overlay join is per-connection (by connectionId), not per provider type,
-    so two connections of the same type keep independent model lists.
+    Payload shape: {models: [{provider, model, display_name, connection_id}, ...]}.
+    The alias_generator=to_camel emits displayName and connectionId on the wire.
+    Fold sets Settings.provider_models from the flat cross-provider models list;
+    replace-all semantics (same as model_registry_listed). The frontend overlay
+    join is per-connection (by connectionId), not per provider type.
     """
 
     provider: str
     model: str
     display_name: str
-    context_window: int = 0
     connection_id: str = ""
 
 
@@ -907,20 +892,17 @@ def _update_agent_conversation(run: Run, agent_id: str, new_conv: Conversation, 
 
 
 def _derive_usage(conv: "Conversation", agent: "Agent", usage: dict) -> "Conversation":
-    """Accumulate cache token facts and derive cost + context-window percent.
+    """Accumulate cache token facts and derive total_cost_usd.
 
     Called from both agent_exited and agent_step_advanced usage blocks so the
-    derivation logic is in one place (mirrors the existing input/output dual-fold
-    pattern). cache_read/write_tokens are folded facts (cumulative sums from the
-    usage dict). total_cost_usd and context_window_percent are derived values:
-    they are never recorded as event facts and belong entirely to the fold.
+    derivation logic is in one place. cache_read/write_tokens are folded facts
+    (cumulative sums from the usage dict). total_cost_usd is a derived value:
+    never recorded as an event fact; belongs entirely to the fold.
 
     Fold-safety contract:
     - price_for_usage is imported lazily (bundled snapshot only; no network).
     - try/except around price_for_usage: keeps the prior cost on any failure
       (e.g. unresolvable model, missing provider) rather than raising.
-    - context_window_percent is only computed when agent.context_window > 0
-      to avoid zero-division.
     """
     # Accumulate cache token facts (cumulative sums).
     new_cache_read = conv.cache_read_tokens + usage.get("cache_read_tokens", 0)
@@ -950,14 +932,6 @@ def _derive_usage(conv: "Conversation", agent: "Agent", usage: dict) -> "Convers
         except Exception:
             # Keep the prior total_cost_usd on failure (e.g. unknown model).
             pass
-
-    # Derive context_window_percent from the most recent turn's input tokens.
-    # last_input_tokens is overwritten each turn (not summed) so it reflects
-    # current context fullness rather than a double-counted cumulative sum.
-    if agent.context_window > 0:
-        last_input = usage.get("last_input_tokens", 0)
-        percent = round(min(100.0, last_input / agent.context_window * 100), 1)
-        conv = conv.model_copy(update={"context_window_percent": percent})
 
     return conv
 
@@ -1106,7 +1080,6 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                         "label": payload.get("label", existing.label),
                         "model": payload.get("model", existing.model),
                         "provider": payload.get("provider"),
-                        "context_window": payload.get("context_window", 0),
                     })
                 else:
                     # New agent (primary agents are always new)
@@ -1119,7 +1092,6 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                         status="running",
                         started_at_ms=payload.get("started_at_ms", 0),
                         provider=payload.get("provider"),
-                        context_window=payload.get("context_window", 0),
                     )
 
                 new_run = projection.run.model_copy(update={"agents": new_agents})
@@ -1157,9 +1129,9 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 usage = payload.get("usage")
                 status: Literal["done", "failed"] = "failed" if error or exit_code != 0 else "done"
 
-                # Accumulate final usage into conversation and derive cost/context%.
+                # Accumulate final usage into conversation and derive cost.
                 # _derive_usage handles input/output/cache accumulation and
-                # derives total_cost_usd + context_window_percent in one call.
+                # derives total_cost_usd in one call.
                 new_conv = agent.conversation
                 if usage:
                     new_conv = _derive_usage(new_conv, agent, usage)
@@ -2160,7 +2132,7 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
 
             case "configured_models_listed":
                 # Replace-all: {configured_models: [{id, connection_id, model_id,
-                # resolved_from, context_window, embedding_dim}, ...]}.
+                # resolved_from, embedding_dim}, ...]}.
                 raw_cms = payload.get("configured_models", [])
                 new_cms = [
                     ConfiguredModelWire(
@@ -2168,7 +2140,6 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                         connection_id=m.get("connection_id", ""),
                         model_id=m.get("model_id", ""),
                         resolved_from=m.get("resolved_from"),
-                        context_window=m.get("context_window"),
                         embedding_dim=m.get("embedding_dim"),
                     )
                     for m in raw_cms
@@ -2246,8 +2217,8 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 return projection.model_copy(update={"settings": new_settings})
 
             case "model_registry_listed":
-                # Payload: {models: [{provider, model, display_name, context_window,
-                # thinking_modes, tier_hint}, ...]}.
+                # Payload: {models: [{provider, model, display_name, thinking_modes,
+                # tier_hint}, ...]}.
                 # Populates the all-providers model catalog in the Settings projection.
                 raw_models = payload.get("models", [])
                 new_mr = [
@@ -2255,7 +2226,6 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                         provider=m.get("provider", ""),
                         model=m.get("model", ""),
                         display_name=m.get("display_name", ""),
-                        context_window=m.get("context_window", 0),
                         thinking_modes=m.get("thinking_modes", []),
                         tier_hint=m.get("tier_hint"),
                     )
@@ -2265,8 +2235,7 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 return projection.model_copy(update={"settings": new_settings})
 
             case "provider_models_listed":
-                # Payload: {models: [{provider, model, display_name, context_window,
-                #                     connection_id}, ...],
+                # Payload: {models: [{provider, model, display_name, connection_id}, ...],
                 #           families: [{provider, family, resolved, resolved_from,
                 #                       connection_id}, ...]}.
                 # Flat cross-provider list; replace-all semantics (same as model_registry_listed).
@@ -2279,7 +2248,6 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                         provider=m.get("provider", ""),
                         model=m.get("model", ""),
                         display_name=m.get("display_name", ""),
-                        context_window=m.get("context_window", 0),
                         connection_id=m.get("connection_id", ""),
                     )
                     for m in raw_pm
@@ -2305,8 +2273,7 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
             case "model_capabilities_listed":
                 # Replace-all: {capabilities: [{configured_model_id, thinking_supported,
                 # thinking_modes, thinking_shape, supports_web_search, supports_tools,
-                # context_window, context_window_variants, supports_prompt_caching,
-                # tier_hint, recognized}, ...]}.
+                # supports_prompt_caching, tier_hint, recognized}, ...]}.
                 # Recomputed on startup and on any connection/configured-model mutation.
                 raw_caps = payload.get("capabilities", [])
                 new_caps = [
@@ -2317,8 +2284,6 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                         thinking_shape=c.get("thinking_shape", "none"),
                         supports_web_search=c.get("supports_web_search", False),
                         supports_tools=c.get("supports_tools", True),
-                        context_window=c.get("context_window", 0),
-                        context_window_variants=c.get("context_window_variants", []),
                         supports_prompt_caching=c.get("supports_prompt_caching", False),
                         tier_hint=c.get("tier_hint"),
                         recognized=c.get("recognized", True),
@@ -2470,15 +2435,13 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 return projection.model_copy(update={"reflect": None})
 
             case "embedding_models_listed":
-                # Replace-all: {models: [{model_id, context_window, dimensions,
-                # default_dimension}, ...]}.  Pushed once at startup; static for
-                # the process lifetime.  The frontend uses this to populate the
-                # dimension selector and the context window display.
+                # Replace-all: {models: [{model_id, dimensions, default_dimension}, ...]}.
+                # Pushed once at startup; static for the process lifetime.
+                # The frontend uses this to populate the dimension selector.
                 raw_models = payload.get("models", [])
                 new_ems = [
                     EmbeddingModelWire(
                         model_id=m.get("model_id", ""),
-                        context_window=m.get("context_window", 0),
                         dimensions=m.get("dimensions", []),
                         default_dimension=m.get("default_dimension", 0),
                     )

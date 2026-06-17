@@ -360,14 +360,14 @@ Per-type background + code:
 | `openai`      | `--color-navy`                    | `OA` |
 | `google`      | `--color-teal`                    | `GO` |
 | `bedrock`     | `--text-subtle`                   | `BE` |
-| `lmstudio`    | `#8a7e70` (hardcoded, deliberate) | `LM` |
+| `openrouter`  | `#8a7e70` (hardcoded, deliberate) | `OR` |
 | `voyage`      | `--color-purple`                  | `VO` |
 
 Colors are decorative anchors; the two-letter code disambiguates. `google`
-reuses an existing color value that is otherwise semantic — acceptable, since a
-badge is not a status read-out. The `lmstudio` background is a hardcoded deep
+reuses an existing color value that is otherwise semantic -- acceptable, since a
+badge is not a status read-out. The `openrouter` background is a hardcoded deep
 warm gray rather than `--status-queued`: the status token (`#b8aca0`) was too
-light on the warm card surfaces — the badge read as disabled and white text fell
+light on the warm card surfaces -- the badge read as disabled and white text fell
 below comfortable contrast. A decorative badge color, not a status read-out.
 
 Props: `type: ProviderType`.
@@ -1092,21 +1092,21 @@ Always-present `FormRow`s:
 
 Conditional `FormRow`s by provider type:
 
-| Provider    | API key                  | Region         | Endpoint            | Test |
-| ----------- | ------------------------ | -------------- | ------------------- | ---- |
-| `anthropic` | TextInput mono           | —              | TextInput mono, opt | yes  |
-| `openai`    | TextInput mono           | —              | TextInput mono, opt | yes  |
-| `google`    | TextInput mono           | —              | —                   | yes  |
-| `bedrock`   | — (AWS credential chain) | TextInput, req | TextInput mono, opt | no   |
-| `lmstudio`  | — (keyless)              | —              | TextInput, req      | yes  |
-| `voyage`    | TextInput mono           | —              | —                   | no   |
+| Provider     | API key                  | Region         | Endpoint            | Test |
+| ------------ | ------------------------ | -------------- | ------------------- | ---- |
+| `anthropic`  | TextInput mono           | --             | TextInput mono, opt | yes  |
+| `openai`     | TextInput mono           | --             | TextInput mono, opt | yes  |
+| `google`     | TextInput mono           | --             | --                  | yes  |
+| `bedrock`    | — (AWS credential chain) | TextInput, req | TextInput mono, opt | no   |
+| `openrouter` | TextInput mono           | --             | -- (library-fixed)  | yes  |
+| `voyage`     | TextInput mono           | --             | --                  | no   |
 
-- Optional fields append "(OPT)" to the FormRow label string — FormRow's label is a plain string, so a styled tag span is not available without modifying FormRow.
-- A `FormRow`-aligned helper line (`--type-label`, `--text-muted`, indented to the controls column) explains the absences: Bedrock -> "uses your AWS credential chain"; LM Studio -> "keyless local server"; Voyage -> "embedding provider; models entered by id".
+- Optional fields append "(OPT)" to the FormRow label string -- FormRow's label is a plain string, so a styled tag span is not available without modifying FormRow.
+- A `FormRow`-aligned helper line (`--type-label`, `--text-muted`, indented to the controls column) explains the absences: Bedrock -> "uses your AWS credential chain"; OpenRouter -> no endpoint field because the library fixes `https://openrouter.ai/api/v1` internally; Voyage -> "embedding provider; models entered by id".
 
-**Edit mode:** the API key field shows a placeholder "configured — enter to replace" and is left blank (the stored secret is never echoed). A `Button` `danger` (`sm`) "Delete connection" appears in the actions row.
+**Edit mode:** the API key field shows a placeholder "configured -- enter to replace" and is left blank (the stored secret is never echoed). A `Button` `danger` (`sm`) "Delete connection" appears in the actions row.
 
-**Test connection** (listing-capable providers only — `anthropic`, `openai`, `google`, `lmstudio`): a `Button` `teal` (`sm`) in the actions row. Result surfaces as a `Badge` next to it — `success` ("N models") or `error` (message). `bedrock` and `voyage` have no Test (no list endpoint). Test is save-then-list: no pre-save test endpoint exists, so Test persists the draft via the connection endpoint and then calls list-models, surfacing the count or the error. A Test click therefore saves the connection.
+**Test connection** (listing-capable providers only -- `anthropic`, `openai`, `google`, `openrouter`): a `Button` `teal` (`sm`) in the actions row. Result surfaces as a `Badge` next to it -- `success` ("N models") or `error` (message). `bedrock` and `voyage` have no Test (no list endpoint). Test is save-then-list: no pre-save test endpoint exists, so Test persists the draft via the connection endpoint and then calls list-models, surfacing the count or the error. A Test click therefore saves the connection.
 
 Actions render as two stacked rows: a utility row with Test connection (`teal`,
 `sm`) and its result Badge, plus Delete connection (`danger`, `sm`) pushed right
@@ -1786,12 +1786,14 @@ Cancel, so the error belongs in the form.
 
 ### OpenAI-compatible endpoints
 
-xAI/Grok, OpenRouter, Together, Groq and similar OpenAI-compatible APIs are reached
+xAI/Grok, Together, Groq and similar OpenAI-compatible APIs are reached
 by creating an `openai` connection with a custom endpoint (e.g.
-`https://api.x.ai/v1`), not by adding a provider type. `ProviderType` stays
-`google | anthropic | openai | bedrock | lmstudio | voyage`. Adding a first-class
-type is a backend change (capability table + adapter entry) and is out of scope for
-the UI.
+`https://api.x.ai/v1`), not by adding a provider type. `ProviderType` is
+`google | anthropic | openai | bedrock | openrouter | voyage`.
+`openrouter` is a first-class provider type (key-required, library-fixed endpoint
+`https://openrouter.ai/api/v1`); other OpenAI-compatible services use the `openai`
+type with a custom endpoint override instead. Adding another first-class type is
+a backend change (capability table + adapter entry) and is out of scope for the UI.
 
 ### RoleMarker vs MemoryTypeIcon
 

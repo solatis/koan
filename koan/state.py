@@ -175,7 +175,7 @@ class ProviderConfigState:
     and surfaced to the frontend via Settings projection initial events.
     credential_store is the decrypted, in-memory credential authority for the
     web/agent path. Set at startup (cli/run.py) before any availability check.
-    provider_models is the per-provider dynamic model overlay (LM Studio + cloud),
+    provider_models is the per-provider dynamic model overlay (live per-connection),
     keyed by provider name and populated by the eager startup task.
     """
 

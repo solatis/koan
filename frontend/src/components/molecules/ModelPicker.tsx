@@ -6,6 +6,12 @@
  * free-text + catalog for non-listing providers (bedrock, voyage).
  * Presentational: the parent owns fetching; this owns open/close, filter,
  * highlight, and commit.
+ *
+ * The listing-capable "All models" list is capped to MAX_VISIBLE_ROWS rows.
+ * When the filtered set exceeds the cap, a non-interactive hint shows the
+ * total count and prompts the user to refine the filter to see more. This
+ * keeps the mounted DOM bounded for large provider lists (e.g. openrouter's
+ * ~600 models) without adding a virtualization dependency.
  */
 
 import './ModelPicker.css'
@@ -26,6 +32,11 @@ export interface ModelPickerProps {
   allowFreeText?: boolean
   disabled?: boolean
 }
+
+// Cap the number of "All models" rows actually mounted so the DOM stays
+// bounded for large provider lists (e.g. openrouter ~600 models). Users reach
+// models beyond the cap by refining the filter. No virtualization dep needed.
+const MAX_VISIBLE_ROWS = 50
 
 const rowClass = (selected: boolean, highlighted: boolean, extra?: string) =>
   [
@@ -65,15 +76,23 @@ export function ModelPicker({
   const filterNorm = filter.trim().toLowerCase()
   const showPins = listingCapable && !loading && fams.length > 0 && filter.trim() === ''
   const filteredModels = models.filter(m => m.toLowerCase().includes(filterNorm))
+  // Slice filteredModels to keep the mounted DOM bounded. Both navCommits and
+  // the render map use this same slice so data-nav-index stays in sync with
+  // the keyboard highlight (the render-order == navCommits invariant).
+  const visibleModels = filteredModels.slice(0, MAX_VISIBLE_ROWS)
+  const overflowCount = filteredModels.length - visibleModels.length
   const suggestions = catalogSuggestions ?? []
   const conn = connectionId ?? 'connection'
 
   // The ordered list of selectable commits the keyboard highlight walks. Render
   // order must match this so data-nav-index lines up with the highlight index.
+  // In the listing-capable branch the "All models" rows are capped to
+  // visibleModels (same slice used by the render map) so the nav indices
+  // stay aligned with mounted rows even when the full list is truncated.
   const navCommits: string[] = loading
     ? []
     : listingCapable
-      ? [...(showPins ? fams.map(f => f.resolved) : []), ...filteredModels]
+      ? [...(showPins ? fams.map(f => f.resolved) : []), ...visibleModels]
       : suggestions
   const pinCount = showPins ? fams.length : 0
 
@@ -294,7 +313,12 @@ export function ModelPicker({
                 {filteredModels.length === 0 ? (
                   <div className="mol-model-picker__nomatch">No models match</div>
                 ) : (
-                  filteredModels.map((m, i) => Row(m, pinCount + i))
+                  visibleModels.map((m, i) => Row(m, pinCount + i))
+                )}
+                {overflowCount > 0 && (
+                  <div className="mol-model-picker__more-hint">
+                    Showing {visibleModels.length} of {filteredModels.length} -- refine your filter to see more
+                  </div>
                 )}
               </div>
 

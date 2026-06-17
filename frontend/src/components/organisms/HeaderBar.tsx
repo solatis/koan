@@ -31,7 +31,6 @@ interface HeaderBarProps {
     cacheReadTokens: number
     cacheWriteTokens: number
     totalCostUsd: number
-    contextWindowPercent: number
   }
   onSettingsClick?: () => void
 
@@ -133,7 +132,6 @@ export function HeaderBar({
                 cacheReadTokens={usage.cacheReadTokens}
                 cacheWriteTokens={usage.cacheWriteTokens}
                 totalCostUsd={usage.totalCostUsd}
-                contextWindowPercent={usage.contextWindowPercent}
               />
             )}
             {elapsed && <span className="hb-elapsed">{elapsed}</span>}

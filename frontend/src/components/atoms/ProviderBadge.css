@@ -18,5 +18,5 @@
 .atom-provider-badge--openai    { background: var(--color-navy); }
 .atom-provider-badge--google    { background: var(--color-teal); }
 .atom-provider-badge--bedrock   { background: var(--text-subtle); }
-.atom-provider-badge--lmstudio  { background: #8a7e70; } /* deep warm gray — deliberate hardcode; --status-queued was too light (read as disabled, poor white-text contrast). Decorative badge color, not a status. */
+.atom-provider-badge--openrouter { background: #8a7e70; } /* deep warm gray -- deliberate hardcode; --status-queued was too light (read as disabled, poor white-text contrast). Decorative badge color, not a status. */
 .atom-provider-badge--voyage    { background: var(--color-purple); }

@@ -124,8 +124,6 @@ def _parse_configured_models(raw: object) -> list[ConfiguredModel]:
     """Parse a list of ConfiguredModel from the snake_case config.
 
     Each entry requires 'id', 'connection_id', and 'model_id'.
-    Optional 'context_window' (positive integer) is preserved as-is;
-    absent or null values become None (derive from capabilities).
     Optional 'embedding_dim' (integer) is preserved as-is; absent or null
     values become None (use the voyage model default from the catalog).
     """
@@ -147,7 +145,6 @@ def _parse_configured_models(raw: object) -> list[ConfiguredModel]:
             connection_id=conn_id,
             model_id=model_id,
             resolved_from=entry.get("resolved_from") or None,
-            context_window=int(entry["context_window"]) if entry.get("context_window") is not None else None,
             embedding_dim=int(entry["embedding_dim"]) if entry.get("embedding_dim") is not None else None,
         ))
     return results
@@ -164,7 +161,6 @@ def _parse_slot_assignment(raw: object) -> SlotAssignment | None:
         configured_model_id=cm_id,
         thinking=raw.get("thinking", "disabled"),
         caching=_parse_caching_policy(raw.get("caching")),
-        context_window=int(raw["context_window"]) if raw.get("context_window") is not None else None,
     )
 
 
@@ -210,7 +206,6 @@ def _parse_memory_binding(raw: object) -> MemoryBinding | None:
         configured_model_id=cm_id,
         thinking=raw.get("thinking", "disabled"),
         caching=_parse_caching_policy(raw.get("caching")),
-        context_window=int(raw["context_window"]) if raw.get("context_window") is not None else None,
     )
 
 
@@ -304,14 +299,11 @@ async def load_koan_config() -> KoanConfig:
 
 def _serialize_slot_assignment(slot: SlotAssignment) -> dict:
     """Serialize a SlotAssignment to a snake_case dict for YAML output."""
-    d: dict = {
+    return {
         "configured_model_id": slot.configured_model_id,
         "thinking": slot.thinking,
         "caching": {"mode": slot.caching.mode, "ttl": slot.caching.ttl},
     }
-    if slot.context_window is not None:
-        d["context_window"] = slot.context_window
-    return d
 
 
 def _config_to_dict(config: "KoanConfig") -> dict:
@@ -347,7 +339,6 @@ def _config_to_dict(config: "KoanConfig") -> dict:
             "connection_id": cm.connection_id,
             "model_id": cm.model_id,
             **({"resolved_from": cm.resolved_from} if cm.resolved_from else {}),
-            **({"context_window": cm.context_window} if cm.context_window is not None else {}),
             # Omit when None: an absent embedding_dim means "use model default".
             **({"embedding_dim": cm.embedding_dim} if cm.embedding_dim is not None else {}),
         }
@@ -363,8 +354,6 @@ def _config_to_dict(config: "KoanConfig") -> dict:
                 if binding.thinking != "disabled":
                     entry["thinking"] = binding.thinking
                 entry["caching"] = {"mode": binding.caching.mode, "ttl": binding.caching.ttl}
-                if binding.context_window is not None:
-                    entry["context_window"] = binding.context_window
                 mem[binding_name] = entry
         if mem:
             data["memory"] = mem

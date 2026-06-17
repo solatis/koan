@@ -55,21 +55,23 @@ _OPENAI_EFFORT: dict[ThinkingMode, str | None] = {
 }
 
 # koan provider name -> pydantic-ai provider prefix (used to validate known providers).
-# lmstudio is the keyless OpenAI-compatible local provider; it reuses the openai build
-# path with a placeholder api_key and a configurable base_url.
+# openrouter uses the library's dedicated OpenRouterModel/OpenRouterProvider (key-required,
+# library-fixed endpoint).
 _PROVIDER_PREFIX: dict[str, str] = {
-    "google":    "google",
-    "anthropic": "anthropic",
-    "openai":    "openai",
-    "bedrock":   "bedrock",
-    "lmstudio":  "lmstudio",
+    "google":      "google",
+    "anthropic":   "anthropic",
+    "openai":      "openai",
+    "bedrock":     "bedrock",
+    "openrouter":  "openrouter",
 }
 
 # Providers that require an explicit API key (as opposed to bedrock which
 # can authenticate via AWS profile/SSO without a bearer token).
 # When api_key is None for a key-requiring provider, build_model raises
 # missing_credentials rather than silently falling back to os.environ.
-_KEY_REQUIRING_PROVIDERS = {"google", "anthropic", "openai"}
+# This set is documentation/guard-only: build_model uses explicit branches +
+# a fall-through for credential enforcement, not this set directly.
+_KEY_REQUIRING_PROVIDERS = {"google", "anthropic", "openai", "openrouter"}
 
 
 def provider_available(provider: str, store: "CredentialStore | None" = None) -> bool:
@@ -124,7 +126,6 @@ def map_thinking(provider: str, caps: "ResolvedCapabilities", mode: ThinkingMode
                  or {type: adaptive} for adaptive-capable models.
     - openai:    openai_reasoning_effort effort_string.
     - bedrock:   no-op (thinking is driven by the underlying model profile).
-    - lmstudio:  no-op (local server; no thinking knob).
     - unknown:   {} (graceful fallthrough per brief D5).
     """
     # Disabled or unsupported mode: nothing to emit.
@@ -150,10 +151,9 @@ def map_thinking(provider: str, caps: "ResolvedCapabilities", mode: ThinkingMode
             return {}
         return {"openai_reasoning_effort": effort}
 
-    if provider in ("bedrock", "lmstudio"):
+    if provider == "bedrock":
         # Bedrock: thinking controlled by the underlying model profile inside
         # pydantic_ai's BedrockConverseModel; no portable koan-level knob.
-        # lmstudio: local OpenAI-compatible server; no thinking knob exposed.
         return {}
 
     # Graceful fallthrough for unrecognized providers (brief D5).
@@ -174,47 +174,13 @@ def _caching_settings(spec: ModelSpec, caps: "ResolvedCapabilities") -> dict:
         return {}
     if not caps.supports_prompt_caching:
         # Provider handles caching automatically (google/openai) or has no
-        # portable cache knob (bedrock/lmstudio/voyage) -- no settings to emit.
+        # portable cache knob (bedrock/voyage) -- no settings to emit.
         return {}
     ttl = spec.caching.ttl  # "5m" | "1h"
     return {
         "anthropic_cache_instructions": ttl,
         "anthropic_cache_tool_definitions": ttl,
     }
-
-
-def _context_variant_settings(spec: ModelSpec, caps: "ResolvedCapabilities") -> dict:
-    """Return provider-specific opt-in settings when a context-window variant is selected.
-
-    When spec.context_window is set to a variant advertised in
-    caps.context_window_variants (a window larger than the base caps.context_window),
-    this function should emit the provider-specific opt-in (e.g. an Anthropic beta
-    header via the anthropic_betas model setting).
-
-    For the current installed pydantic_ai version no clean beta-name constant is
-    bundled for the 1M-context opt-in, so this logs a warning and returns {} rather
-    than failing the model build (brief D5 / plan constraint).  The variant remains
-    advertised in ResolvedCapabilities; the user sees the option but the header is
-    not applied until the beta string is confirmed.
-    """
-    if (
-        spec.context_window
-        and caps.context_window_variants
-        and spec.context_window in caps.context_window_variants
-        and spec.context_window > caps.context_window
-    ):
-        # A variant window is selected.  Log and return {} until the exact
-        # provider beta string is confirmed in the deployed pydantic_ai package.
-        # When the string is known, emit {"anthropic_betas": ["<beta-name>"]}
-        # or the equivalent for other providers.
-        from ..logger import get_logger
-        _log = get_logger("adapter")
-        _log.warning(
-            "context-window variant %d selected for %s/%s but no beta opt-in "
-            "is configured for the installed pydantic_ai -- variant not applied",
-            spec.context_window, spec.provider, spec.model,
-        )
-    return {}
 
 
 def build_model_settings(spec: ModelSpec) -> dict:
@@ -224,7 +190,6 @@ def build_model_settings(spec: ModelSpec) -> dict:
       spec.settings (temperature, max_tokens, etc.)
       + map_thinking     (capability-driven thinking config)
       + _caching_settings (capability-gated cache control)
-      + _context_variant_settings (opt-in for selected context-window variants)
 
     Returns a flat dict suitable for pydantic-ai's model_settings parameter.
     """
@@ -233,7 +198,6 @@ def build_model_settings(spec: ModelSpec) -> dict:
     settings: dict = dict(spec.settings)
     settings.update(map_thinking(spec.provider, caps, spec.thinking))
     settings.update(_caching_settings(spec, caps))
-    settings.update(_context_variant_settings(spec, caps))
     return settings
 
 
@@ -256,10 +220,14 @@ def build_model(
     - google/anthropic/openai: api_key is required; raises
       AgentError(code='missing_credentials') when absent. base_url optionally
       overrides the endpoint (google ignores base_url per scope decision).
-    - lmstudio: keyless; base_url is REQUIRED; raises
+    - openrouter: key-requiring; falls through to the key-requiring path below --
+      no explicit branch needed. base_url is not threaded (the library fixes
+      https://openrouter.ai/api/v1 internally). Model ids are namespaced vendor/model.
+    - keyless providers (KEYLESS_PROVIDER_TYPES): base_url is REQUIRED; raises
       AgentError(code='missing_base_url') when absent. A placeholder api_key is
-      injected because the OpenAI SDK requires a non-empty string even though
-      LM Studio ignores it. Never reads the credential store.
+      injected because the OpenAI SDK requires a non-empty string. Never reads the
+      credential store. Dormant -- KEYLESS_PROVIDER_TYPES is empty after M3; retained
+      for a future local-provider re-add (Decision 1).
 
     Raises AgentError(code='unknown_provider') for unrecognised providers.
     """
@@ -275,18 +243,20 @@ def build_model(
             ),
         ))
 
-    if spec.provider == "lmstudio":
-        # LM Studio is keyless: api_key is a non-empty placeholder (the OpenAI SDK
-        # requires a non-empty string even though LM Studio ignores it). base_url
-        # must be configured since there is no global default at build time.
+    from ..types import KEYLESS_PROVIDER_TYPES
+    # Dormant keyless-local seam: KEYLESS_PROVIDER_TYPES is empty after M3 so this
+    # branch is never reached; retained for a future local-provider re-add (Decision 1).
+    if spec.provider in KEYLESS_PROVIDER_TYPES:
+        # Keyless providers authenticate via base_url, not a stored secret.
+        # base_url must be configured since LOCAL_PROVIDERS is also empty after M3.
         if not base_url:
             raise AgentError(AgentDiagnostic(
                 code="missing_base_url",
                 agent=spec.provider,
                 stage="build_model",
                 message=(
-                    "No base_url configured for provider 'lmstudio'. "
-                    "Set a base_url (e.g. 'http://localhost:1234/v1') in provider settings."
+                    f"No base_url configured for provider '{spec.provider}'. "
+                    f"Set a base_url in provider settings."
                 ),
             ))
         return _build_explicit_model(spec, api_key, base_url=base_url)
@@ -347,9 +317,11 @@ def _build_explicit_model(
 
     api_key is required for bedrock (enforced by build_model's missing_credentials
     gate before this is called).  region and base_url are optional for non-bedrock
-    providers; base_url is not threaded for google (brief scope).
-    For lmstudio, api_key falls back to the placeholder 'lm-studio' -- the OpenAI
-    SDK requires a non-empty string even though LM Studio ignores it.
+    providers; base_url is not threaded for google (brief scope) or openrouter
+    (the library's OpenRouterProvider fixes the endpoint to https://openrouter.ai/api/v1).
+    For keyless providers (KEYLESS_PROVIDER_TYPES), api_key falls back to the
+    placeholder 'keyless-local' -- the OpenAI SDK requires a non-empty string.
+    openrouter uses namespaced vendor/model ids (e.g. 'anthropic/claude-3.5-sonnet').
     Explicit construction avoids any implicit os.environ reads.
     """
     if spec.provider == "google":
@@ -381,16 +353,29 @@ def _build_explicit_model(
             ),
         )
 
-    if spec.provider == "lmstudio":
-        # LM Studio speaks the OpenAI protocol via base_url. The OpenAI SDK requires
-        # a non-empty api_key string even when the server ignores it; use a stable
-        # placeholder so tests can assert the key value without depending on config.
+    if spec.provider == "openrouter":
+        # OpenRouterProvider fixes the endpoint to https://openrouter.ai/api/v1
+        # internally; no base_url threading (Decision 6). api_key is guaranteed
+        # non-None by build_model's key-requiring fall-through before this call.
+        from pydantic_ai.models.openrouter import OpenRouterModel
+        from pydantic_ai.providers.openrouter import OpenRouterProvider
+        return OpenRouterModel(
+            spec.model,
+            provider=OpenRouterProvider(api_key=api_key),
+        )
+
+    from ..types import KEYLESS_PROVIDER_TYPES
+    # Dormant keyless-local seam: KEYLESS_PROVIDER_TYPES is empty after M3 so this
+    # branch is never reached; retained for a future local-provider re-add (Decision 1).
+    if spec.provider in KEYLESS_PROVIDER_TYPES:
+        # Keyless providers speak the OpenAI protocol via base_url. The OpenAI SDK
+        # requires a non-empty api_key string; use a stable placeholder.
         from pydantic_ai.models.openai import OpenAIChatModel
         from pydantic_ai.providers.openai import OpenAIProvider
         return OpenAIChatModel(
             spec.model,
             provider=OpenAIProvider(
-                api_key=(api_key or "lm-studio"),
+                api_key=(api_key or "keyless-local"),
                 **({"base_url": base_url} if base_url else {}),
             ),
         )

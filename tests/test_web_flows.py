@@ -130,16 +130,17 @@ def test_start_run_blocked_no_providers(client, app_state):
 
 # -- Start-run denormalization (run-config.yaml + frozen snapshot) ------------
 
-def _make_lmstudio_config():
-    """Build a minimal KoanConfig with a keyless lmstudio connection.
+def _make_openrouter_config():
+    """Build a minimal KoanConfig with an openrouter connection.
 
-    Keyless providers require only a base_url -- no Fernet credential needed,
-    which simplifies test setup: no master-key I/O, no encryption overhead.
+    Availability is set manually via provider_status in each test; no Fernet
+    credential is stored because the driver is patched out -- the start-run
+    endpoint only freezes config and does not perform inference.
     """
     from koan.types import Connection, ConfiguredModel, Preset, SlotAssignment
-    conn = Connection(id="lms1", type="lmstudio", base_url="http://localhost:1234/v1")
-    cm = ConfiguredModel(id="cm-lms", connection_id="lms1", model_id="some-model")
-    slot = SlotAssignment(configured_model_id="cm-lms", thinking="disabled")
+    conn = Connection(id="or1", type="openrouter")
+    cm = ConfiguredModel(id="cm-or", connection_id="or1", model_id="some-model")
+    slot = SlotAssignment(configured_model_id="cm-or", thinking="disabled")
     preset = Preset(slots={"strong": slot, "standard": slot, "cheap": slot})
     return KoanConfig(
         connections=[conn],
@@ -164,26 +165,29 @@ async def test_start_run_writes_run_config_yaml(tmp_path):
     from koan.web.app import create_app
     from starlette.testclient import TestClient
 
-    cfg = _make_lmstudio_config()
+    cfg = _make_openrouter_config()
     st = AppState()
     st.provider_config.config = cfg
     st.provider_config.provider_status = [
-        ConnectionStatus(connection_id="lms1", connection_type="lmstudio", available=True),
+        ConnectionStatus(connection_id="or1", connection_type="openrouter", available=True),
     ]
 
     # _refresh_probe_state triggers build_model_registry() which calls into the
-    # genai-prices bundled snapshot.  Patch it to avoid the pre-existing
-    # 'gemini-3.5-flash not found' error that affects all create_app lifespan tests.
+    # genai-prices bundled snapshot.  Patch it to avoid pre-existing snapshot errors
+    # that affect all create_app lifespan tests.
     async def noop_refresh(app_state, broadcast=True):
         pass
 
     # write_run_config writes to the real ~/.koan/runs/<id>/ directory; this is
     # intentional -- the test verifies the actual file path returned by the API.
-    # _push_model_capabilities is mocked because resolve_capabilities has a
-    # pre-existing bug with lmstudio/openai profile objects (not relevant here).
+    # _push_model_capabilities is mocked because resolve_capabilities calls into
+    # the capability resolver (not relevant to the file-write behavior under test).
+    # CredentialStore.has is patched to avoid Fernet key I/O -- these tests cover
+    # config freezing and file-write behavior, not credential validation.
     with patch("koan.driver.driver_main", new_callable=AsyncMock), \
          patch("koan.web.app._refresh_probe_state", side_effect=noop_refresh), \
-         patch("koan.web.app._push_model_capabilities"):
+         patch("koan.web.app._push_model_capabilities"), \
+         patch("koan.credentials.CredentialStore.has", return_value=True):
         app = create_app(st)
         with TestClient(app) as client:
             resp = client.post("/api/start-run", json={"task": "build something"})
@@ -206,9 +210,9 @@ async def test_start_run_writes_run_config_yaml(tmp_path):
     # (c) Live cfg slot assignments are unchanged (deep copy was used).
     live_slot = cfg.presets["$last"].slots.get("strong")
     assert live_slot is not None
-    assert live_slot.configured_model_id == "cm-lms"  # not overridden
+    assert live_slot.configured_model_id == "cm-or"  # not overridden
 
-    # (d) No plaintext secret in run-config.yaml (credentials is empty for lmstudio).
+    # (d) No plaintext secret in run-config.yaml (credentials is empty; driver is patched).
     credentials = parsed.get("credentials", {})
     for key, envelope in credentials.items():
         # Each credential must be a Fernet envelope dict, never a raw string.
@@ -222,22 +226,22 @@ async def test_start_run_override_applies_to_frozen_config(tmp_path):
 
     Assertions:
     (a) The strong slot in the frozen config points to 'override:strong'.
-    (b) The live cfg strong slot is unchanged ('cm-lms').
+    (b) The live cfg strong slot is unchanged ('cm-or').
     (c) run-config.yaml reflects the override (contains the override cm id).
     """
     import yaml as _yaml
     from koan.web.app import create_app
     from starlette.testclient import TestClient
 
-    cfg = _make_lmstudio_config()
+    cfg = _make_openrouter_config()
     st = AppState()
     st.provider_config.config = cfg
     st.provider_config.provider_status = [
-        ConnectionStatus(connection_id="lms1", connection_type="lmstudio", available=True),
+        ConnectionStatus(connection_id="or1", connection_type="openrouter", available=True),
     ]
 
     overrides = {
-        "strong": {"connection_id": "lms1", "model_id": "override-model", "thinking": "disabled"},
+        "strong": {"connection_id": "or1", "model_id": "override-model", "thinking": "disabled"},
     }
 
     async def noop_refresh(app_state, broadcast=True):
@@ -245,7 +249,8 @@ async def test_start_run_override_applies_to_frozen_config(tmp_path):
 
     with patch("koan.driver.driver_main", new_callable=AsyncMock), \
          patch("koan.web.app._refresh_probe_state", side_effect=noop_refresh), \
-         patch("koan.web.app._push_model_capabilities"):
+         patch("koan.web.app._push_model_capabilities"), \
+         patch("koan.credentials.CredentialStore.has", return_value=True):
         app = create_app(st)
         with TestClient(app) as client:
             resp = client.post("/api/start-run", json={"task": "do something", "overrides": overrides})
@@ -268,7 +273,7 @@ async def test_start_run_override_applies_to_frozen_config(tmp_path):
     # (b) Live cfg is unchanged.
     live_slot = cfg.presets["$last"].slots.get("strong")
     assert live_slot is not None
-    assert live_slot.configured_model_id == "cm-lms"
+    assert live_slot.configured_model_id == "cm-or"
     assert not any(cm.id == "override:strong" for cm in cfg.configured_models)
 
     # (c) run-config.yaml reflects the override.
@@ -283,11 +288,11 @@ async def test_start_run_no_overrides_uses_persisted_slots(tmp_path):
     from koan.web.app import create_app
     from starlette.testclient import TestClient
 
-    cfg = _make_lmstudio_config()
+    cfg = _make_openrouter_config()
     st = AppState()
     st.provider_config.config = cfg
     st.provider_config.provider_status = [
-        ConnectionStatus(connection_id="lms1", connection_type="lmstudio", available=True),
+        ConnectionStatus(connection_id="or1", connection_type="openrouter", available=True),
     ]
 
     async def noop_refresh(app_state, broadcast=True):
@@ -295,7 +300,8 @@ async def test_start_run_no_overrides_uses_persisted_slots(tmp_path):
 
     with patch("koan.driver.driver_main", new_callable=AsyncMock), \
          patch("koan.web.app._refresh_probe_state", side_effect=noop_refresh), \
-         patch("koan.web.app._push_model_capabilities"):
+         patch("koan.web.app._push_model_capabilities"), \
+         patch("koan.credentials.CredentialStore.has", return_value=True):
         app = create_app(st)
         with TestClient(app) as client:
             resp = client.post("/api/start-run", json={"task": "no overrides"})
@@ -306,10 +312,10 @@ async def test_start_run_no_overrides_uses_persisted_slots(tmp_path):
     assert frozen is not None
     # No override:* configured-models in the frozen config.
     assert not any(cm.id.startswith("override:") for cm in frozen.configured_models)
-    # Strong slot still points to the persisted cm-lms.
+    # Strong slot still points to the persisted cm-or.
     frozen_slot = frozen.presets["$last"].slots.get("strong")
     assert frozen_slot is not None
-    assert frozen_slot.configured_model_id == "cm-lms"
+    assert frozen_slot.configured_model_id == "cm-or"
 
 
 # -- Start-run preflight -------------------------------------------------------
@@ -531,6 +537,28 @@ def test_settings_provider_negative_presence(client, app_state):
 
 
 # Provider test endpoint tests removed in M5: endpoint deleted (plan-milestone-5.md).
+
+
+def test_connection_set_accepts_openrouter(client, app_state):
+    """POST /api/config/connections accepts type='openrouter', validates _VALID_CONNECTION_TYPES.
+
+    openrouter is key-requiring; no base_url or region field is sent. This test
+    verifies that the type passes validation and the connection is persisted --
+    no live model listing is triggered or asserted here.
+    """
+    from koan.web.app import _VALID_CONNECTION_TYPES
+    assert "openrouter" in _VALID_CONNECTION_TYPES, (
+        "_VALID_CONNECTION_TYPES does not contain 'openrouter'"
+    )
+    resp = client.post("/api/config/connections", json={
+        "id": "openrouter-1",
+        "type": "openrouter",
+    })
+    assert resp.status_code == 200, resp.json()
+    assert resp.json()["ok"] is True
+    cfg = app_state.provider_config.config
+    conn_ids = [c.id for c in cfg.connections]
+    assert "openrouter-1" in conn_ids
 
 
 # -- Agent installation endpoints removed (M3) --------------------------------

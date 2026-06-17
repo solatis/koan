@@ -1158,7 +1158,6 @@ def _serialize_model_registry_entry(e: ModelRegistryEntry) -> dict:
         "provider": e.provider,
         "model": e.model,
         "display_name": e.display_name,
-        "context_window": e.context_window,
         "thinking_modes": e.thinking_modes,
         "tier_hint": e.tier_hint,
     }
@@ -1175,7 +1174,6 @@ def _serialize_provider_model(pm: ProviderModel, connection_id: str) -> dict:
         "provider": pm.provider,
         "model": pm.model,
         "display_name": pm.display_name,
-        "context_window": pm.context_window,
         "connection_id": connection_id,
     }
 
@@ -1224,9 +1222,9 @@ def _provider_probe_results(st: AppState) -> list[ConnectionStatus]:
 
     M5: replaces the old per-type ProviderStatus synthesis with per-connection
     ConnectionStatus.  One ConnectionStatus per Connection in config.connections.
-    For keyless types (KEYLESS_PROVIDER_TYPES, e.g. lmstudio), available is True
-    when the connection has a non-empty base_url.  For keyed types, available is
-    True when a credential is stored for the connection id.
+    For keyless types (KEYLESS_PROVIDER_TYPES), available is True when the
+    connection has a non-empty base_url.  For keyed types, available is True
+    when a credential is stored for the connection id.
     """
     from ..types import KEYLESS_PROVIDER_TYPES
     store = st.provider_config.credential_store
@@ -1284,15 +1282,13 @@ def _serialize_connection(conn) -> dict:
 def _serialize_configured_model(cm) -> dict:
     """Serialize a ConfiguredModel to a wire dict for configured_models_listed.
 
-    Carries context_window and embedding_dim (both optional) so the Settings
-    form can pre-fill them and distinguish set vs unset without an extra GET.
+    Carries embedding_dim (optional) so the Settings form can pre-fill it.
     """
     return {
         "id": cm.id,
         "connection_id": cm.connection_id,
         "model_id": cm.model_id,
         "resolved_from": getattr(cm, "resolved_from", None),
-        "context_window": getattr(cm, "context_window", None),
         "embedding_dim": getattr(cm, "embedding_dim", None),
     }
 
@@ -1331,10 +1327,6 @@ def _serialize_model_capabilities(st: "AppState") -> list[dict]:
     warning and skips the entry rather than crashing -- callers must tolerate
     partial results.  Secrets are never read here; only the connection type is
     needed for capability resolution.
-
-    context_window in the emitted dict uses cm.context_window (explicit
-    override) when set, falling back to the capability-resolved value.
-    This ensures the gauge and capability display reflect the configured window.
     """
     from ..agents.capability_resolver import resolve_capabilities
 
@@ -1361,8 +1353,6 @@ def _serialize_model_capabilities(st: "AppState") -> list[dict]:
             "thinking_shape": caps.thinking_shape,
             "supports_web_search": caps.supports_web_search,
             "supports_tools": caps.supports_tools,
-            "context_window": cm.context_window or caps.context_window,
-            "context_window_variants": list(caps.context_window_variants),
             "supports_prompt_caching": caps.supports_prompt_caching,
             "tier_hint": caps.tier_hint,
             "recognized": caps.recognized,
@@ -1395,7 +1385,6 @@ def _serialize_embedding_models() -> list[dict]:
     return [
         {
             "model_id": m.model_id,
-            "context_window": m.context_window,
             "dimensions": list(m.dimensions),
             "default_dimension": m.default_dimension,
         }
@@ -1577,7 +1566,7 @@ async def api_probe(r: Request) -> Response:
 # Connection types that expose a live list-models endpoint.
 # Hoisted here (not inside the eager task) so the save handler and eager task
 # share the same authoritative set without duplicating a literal.
-LISTING_CAPABLE: frozenset[str] = frozenset({"openai", "anthropic", "google", "lmstudio"})
+LISTING_CAPABLE: frozenset[str] = frozenset({"openai", "anthropic", "google", "openrouter"})
 
 async def _refresh_one_provider_models(
     st: "AppState",
@@ -1623,8 +1612,9 @@ async def _refresh_provider_models_eager(st: "AppState") -> None:
     """Populate the provider model overlay at startup for all configured connections.
 
     M5: iterates config.connections instead of config.provider_auth.  For keyed
-    providers a credential must exist in the store; for keyless types (lmstudio)
-    a non-empty base_url is required.  Each connection is wrapped in its own
+    providers a credential must exist in the store; for keyless providers
+    (KEYLESS_PROVIDER_TYPES) a non-empty base_url is required.  Each connection
+    is wrapped in its own
     try/except so one failure cannot abort others.  Runs as a non-blocking asyncio
     background task -- never called from within _refresh_probe_state.
     The overlay is keyed by connection id (LISTING_CAPABLE hoisted to module level).
@@ -1724,7 +1714,7 @@ async def api_settings_scout_concurrency(r: Request) -> Response:
 #   return JSONResponse({"ok": True}), 422 on validation error.
 # Secrets are never echoed in responses or the projection (brief D3).
 
-_VALID_CONNECTION_TYPES = {"google", "anthropic", "openai", "bedrock", "lmstudio", "voyage"}
+_VALID_CONNECTION_TYPES = {"google", "anthropic", "openai", "bedrock", "openrouter", "voyage"}
 _VALID_SLOT_NAMES = {"strong", "standard", "cheap"}
 _VALID_MEMORY_KINDS = {"embedding", "memory_llm", "reflect_llm"}
 
@@ -1910,12 +1900,9 @@ async def api_config_connection_delete(r: Request) -> Response:
 async def api_config_model_set(r: Request) -> Response:
     """Upsert a configured model (POST/PUT /api/config/models[/{id}]).
 
-    Body: {id, connection_id, model_id, resolved_from?, context_window?, embedding_dim?}.
+    Body: {id, connection_id, model_id, resolved_from?, embedding_dim?}.
     id may be in the path (PUT) or the body (POST).  Pushes
     configured_models_listed + model_capabilities_listed after saving.
-
-    context_window: positive integer token count or absent/null/non-positive,
-    treated as unset (None -- derive from capabilities at runtime).
 
     embedding_dim: integer from the model's recognized dimension options, or
     absent/null to use the catalog default.  For voyage connections only; 422
@@ -1990,10 +1977,6 @@ async def api_config_model_set(r: Request) -> Response:
                 )
             embedding_dim = parsed_dim
 
-    # Coerce context_window: accept a positive integer, treat missing/null/0 as unset.
-    raw_cw = body.get("context_window")
-    context_window: int | None = int(raw_cw) if isinstance(raw_cw, (int, float)) and int(raw_cw) > 0 else None
-
     # Capture the embedding identity before mutation for the rebuild trigger.
     old_identity = _effective_embedding_identity(cfg)
 
@@ -2002,7 +1985,6 @@ async def api_config_model_set(r: Request) -> Response:
         connection_id=connection_id,
         model_id=model_id,
         resolved_from=body.get("resolved_from") or None,
-        context_window=context_window,
         embedding_dim=embedding_dim,
     )
 

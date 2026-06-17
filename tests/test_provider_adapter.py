@@ -16,7 +16,7 @@ from koan.agents.base import AgentError
 from koan.types import CachingPolicy, ModelSpec, ResolvedCapabilities
 
 
-def _spec(provider, model="m", thinking="disabled", caching=None, settings=None, context_window=0):
+def _spec(provider, model="m", thinking="disabled", caching=None, settings=None):
     """Build a minimal ModelSpec for adapter tests."""
     return ModelSpec(
         provider=provider,
@@ -24,7 +24,6 @@ def _spec(provider, model="m", thinking="disabled", caching=None, settings=None,
         thinking=thinking,
         settings=settings or {},
         caching=caching or CachingPolicy(),
-        context_window=context_window,
     )
 
 
@@ -32,8 +31,6 @@ def _caps(
     thinking_shape="budget",
     thinking_modes=None,
     supports_prompt_caching=False,
-    context_window=200_000,
-    context_window_variants=None,
 ):
     """Build a minimal ResolvedCapabilities stub for map_thinking / caching tests."""
     return ResolvedCapabilities(
@@ -42,9 +39,7 @@ def _caps(
         thinking_shape=thinking_shape,
         supports_web_search=False,
         supports_tools=True,
-        context_window=context_window,
         supports_prompt_caching=supports_prompt_caching,
-        context_window_variants=list(context_window_variants or []),
     )
 
 
@@ -148,28 +143,6 @@ def test_build_model_settings_merges_spec_settings_and_thinking():
     )
     assert s["temperature"] == 0.2
     assert s["openai_reasoning_effort"] == "low"
-
-
-# -- context-window variant ----------------------------------------------------
-
-
-def test_context_variant_settings_no_variant_returns_empty():
-    """_context_variant_settings returns {} when no variant is selected."""
-    caps = _caps(context_window=200_000, context_window_variants=[])
-    spec = _spec("anthropic", model="claude-opus-4-0", context_window=0)
-    assert adapter._context_variant_settings(spec, caps) == {}
-
-
-def test_context_variant_settings_logs_warning_when_variant_selected(caplog):
-    """_context_variant_settings logs a warning and returns {} when a variant is selected
-    but no beta string is configured (plan constraint: never crash, log and continue)."""
-    import logging
-    caps = _caps(context_window=200_000, context_window_variants=[1_000_000])
-    spec = _spec("anthropic", model="claude-opus-4-0", context_window=1_000_000)
-    with caplog.at_level(logging.WARNING, logger="koan.adapter"):
-        result = adapter._context_variant_settings(spec, caps)
-    assert result == {}
-    assert "variant" in caplog.text.lower() or "beta" in caplog.text.lower()
 
 
 # -- build_model ---------------------------------------------------------------
@@ -287,70 +260,35 @@ def test_build_model_threads_base_url_openai(monkeypatch):
     assert "region" not in captured
     assert "region_name" not in captured
 
-# -- lmstudio -----------------------------------------------------------------
+# -- openrouter ---------------------------------------------------------------
 
 
-def test_map_thinking_lmstudio_returns_empty():
-    """lmstudio has no koan-managed thinking knob -- map_thinking returns {}."""
-    caps = _caps("none", thinking_modes=[])
-    assert adapter.map_thinking("lmstudio", caps, "disabled") == {}
-    assert adapter.map_thinking("lmstudio", caps, "high") == {}
+def test_build_model_openrouter_constructs_openrouter_model():
+    """build_model for openrouter constructs an OpenRouterModel (offline, no network call).
+
+    Confirms the dedicated library class is used rather than the OpenAI shim.
+    """
+    from pydantic_ai.models.openrouter import OpenRouterModel
+    model = adapter.build_model(
+        _spec("openrouter", model="anthropic/claude-3.5-sonnet"),
+        api_key="sk-or-test",
+    )
+    assert isinstance(model, OpenRouterModel)
 
 
-def test_build_model_lmstudio_raises_without_base_url():
-    """build_model raises missing_base_url when base_url is absent for lmstudio."""
-    from koan.agents.base import AgentError
+def test_build_model_openrouter_missing_key_raises():
+    """build_model raises missing_credentials for openrouter when api_key is None."""
     with pytest.raises(AgentError) as exc_info:
-        adapter.build_model(_spec("lmstudio", model="any-model"))
-    assert exc_info.value.diagnostic.code == "missing_base_url"
+        adapter.build_model(_spec("openrouter", model="anthropic/claude-3.5-sonnet"))
+    assert exc_info.value.diagnostic.code == "missing_credentials"
 
 
-def test_build_model_lmstudio_uses_openai_path(monkeypatch):
-    """build_model for lmstudio constructs OpenAIChatModel with placeholder api_key and base_url.
+def test_map_thinking_openrouter_returns_empty():
+    """openrouter has conservative capabilities (thinking_modes=[]) -- map_thinking returns {}.
 
-    Confirms no real credential is read and the OpenAI SDK path is used.
+    The empty thinking_modes list triggers the first-line guard in map_thinking,
+    so no explicit openrouter branch is needed (and none exists).
     """
-    captured: dict = {}
-
-    class _FakeProvider:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-    class _FakeModel:
-        def __init__(self, model, provider=None):
-            pass
-
-    monkeypatch.setattr("pydantic_ai.providers.openai.OpenAIProvider", _FakeProvider)
-    monkeypatch.setattr("pydantic_ai.models.openai.OpenAIChatModel", _FakeModel)
-    adapter.build_model(
-        _spec("lmstudio", model="local-model"),
-        base_url="http://localhost:1234/v1",
-    )
-    assert captured.get("api_key") == "lm-studio"
-    assert captured.get("base_url") == "http://localhost:1234/v1"
-
-
-def test_build_model_lmstudio_accepts_explicit_key(monkeypatch):
-    """build_model for lmstudio uses the provided api_key when given (non-None).
-
-    The OpenAI SDK placeholder is the fallback, not a hard override.
-    """
-    captured: dict = {}
-
-    class _FakeProvider:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-    class _FakeModel:
-        def __init__(self, model, provider=None):
-            pass
-
-    monkeypatch.setattr("pydantic_ai.providers.openai.OpenAIProvider", _FakeProvider)
-    monkeypatch.setattr("pydantic_ai.models.openai.OpenAIChatModel", _FakeModel)
-    adapter.build_model(
-        _spec("lmstudio", model="local-model"),
-        api_key="custom-key",
-        base_url="http://localhost:1234/v1",
-    )
-    # When an explicit key is supplied it should be used, not the placeholder.
-    assert captured.get("api_key") == "custom-key"
+    caps = _caps("none", thinking_modes=[])
+    assert adapter.map_thinking("openrouter", caps, "medium") == {}
+    assert adapter.map_thinking("openrouter", caps, "disabled") == {}

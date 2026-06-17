@@ -2,12 +2,12 @@
 #
 # Split of responsibility:
 #   - PydanticAI profile    -> thinking-shape, web-search, tool/json support
-#   - koan bundled catalog  -> context-window, context-window variants, prompt-caching
+#   - koan bundled catalog  -> prompt-caching
 #   - koan recognition      -> family / tier_hint / version
 #
 # resolve_capabilities is a pure function over (provider_type, model_id).  It is
-# cheap enough to call on every model build; results may optionally be memoized
-# by the caller (e.g. in ProviderConfigState) for repeated lookups.
+# called once at flatten time (build_resolved_model) and for the Settings capability
+# display; results are not stored in the resolved model construct.
 #
 # An unrecognized model id or a missing profile field degrades to conservative
 # defaults + a logged warning -- never a hard failure (brief D5).
@@ -32,6 +32,23 @@ _DEFAULT_THINKING_MODES: list[ThinkingMode] = ["low", "medium", "high"]
 
 # -- Profile resolution -------------------------------------------------------
 
+def _profile_to_dict(profile: object) -> dict:
+    """Convert a pydantic_ai profile object to a plain dict.
+
+    Newer pydantic_ai versions return typed profile objects instead of dicts.
+    We normalize to dict so all downstream callers can use .get() uniformly.
+    """
+    if profile is None:
+        return {}
+    if isinstance(profile, dict):
+        return profile
+    # Pydantic v2 model: use model_dump() for full field access.
+    if hasattr(profile, "model_dump"):
+        return profile.model_dump()
+    # Fallback: plain attribute dict.
+    return vars(profile)
+
+
 def _get_pydantic_ai_profile(provider_type: str, model_id: str) -> dict:
     """Get the merged PydanticAI ModelProfile dict for a given (provider, model).
 
@@ -43,17 +60,15 @@ def _get_pydantic_ai_profile(provider_type: str, model_id: str) -> dict:
     try:
         if provider_type == "anthropic":
             from pydantic_ai.profiles.anthropic import anthropic_model_profile
-            return anthropic_model_profile(model_id) or {}
+            return _profile_to_dict(anthropic_model_profile(model_id))
 
         if provider_type == "google":
             from pydantic_ai.profiles.google import google_model_profile
-            return google_model_profile(model_id) or {}
+            return _profile_to_dict(google_model_profile(model_id))
 
-        if provider_type == "openai" or provider_type == "lmstudio":
-            # lmstudio is an OpenAI-compatible server; use the OpenAI profile for
-            # web-search / tool capability flags but it has no thinking support.
+        if provider_type == "openai":
             from pydantic_ai.profiles.openai import openai_model_profile
-            return openai_model_profile(model_id) or {}
+            return _profile_to_dict(openai_model_profile(model_id))
 
         if provider_type == "bedrock":
             # Bedrock hosts models from multiple vendors; delegate to the vendor
@@ -62,10 +77,10 @@ def _get_pydantic_ai_profile(provider_type: str, model_id: str) -> dict:
             if model_id.startswith("anthropic."):
                 from pydantic_ai.profiles.anthropic import anthropic_model_profile
                 underlying = model_id[len("anthropic."):]
-                return anthropic_model_profile(underlying) or {}
+                return _profile_to_dict(anthropic_model_profile(underlying))
             if model_id.startswith("amazon."):
                 from pydantic_ai.profiles.amazon import amazon_model_profile
-                return amazon_model_profile(model_id) or {}
+                return _profile_to_dict(amazon_model_profile(model_id))
             # Other bedrock families (meta, cohere, ...) fall through to empty.
             return {}
 
@@ -91,7 +106,7 @@ def _derive_thinking_shape(
               for Gemini 3+ models, so budget is the correct koan-level shape)
     - bedrock: inherit from the underlying provider; defaults to none for non-
                anthropic bedrock models where the profile is returned as-is
-    - lmstudio / voyage / unknown: none
+    - voyage / unknown: none
     """
     if not profile.get("supports_thinking", False):
         return "none"
@@ -154,8 +169,10 @@ def resolve_capabilities(provider_type: str, model_id: str) -> ResolvedCapabilit
 
     Joins three sources (brief D4/D5):
       1. PydanticAI model profile -- thinking-shape, web-search, tool/json
-      2. koan bundled knowledge   -- context-window, variants, prompt-caching
+      2. koan bundled knowledge   -- prompt-caching
       3. koan recognition parse   -- family / tier_hint / version
+
+    Called once per model at flatten time and for the Settings capability display.
 
     Never raises: an unrecognized model id or a missing profile field degrades
     to conservative defaults and a logged warning (brief D5).
@@ -170,8 +187,6 @@ def resolve_capabilities(provider_type: str, model_id: str) -> ResolvedCapabilit
     """
     from .model_catalog import (
         MODEL_CAPABILITIES,
-        context_window_for,
-        context_window_variants_for,
         supports_prompt_caching,
     )
     from .recognition import parse_model_id
@@ -201,9 +216,6 @@ def resolve_capabilities(provider_type: str, model_id: str) -> ResolvedCapabilit
     # explicitly have no thinking support even though the profile says otherwise.
     supports_thinking = len(thinking_modes) > 0
 
-    # koan-sourced fields.
-    context_window = context_window_for(provider_type, model_id)
-    variants = context_window_variants_for(provider_type, model_id)
     caching = supports_prompt_caching(provider_type, model_id)
 
     return ResolvedCapabilities(
@@ -212,9 +224,7 @@ def resolve_capabilities(provider_type: str, model_id: str) -> ResolvedCapabilit
         thinking_shape=thinking_shape,
         supports_web_search=_derive_web_search(provider_type, profile),
         supports_tools=bool(profile.get("supports_tools", True)),
-        context_window=context_window,
         supports_prompt_caching=caching,
-        context_window_variants=variants,
         family=parsed.family,
         tier_hint=parsed.tier_hint,
         version=parsed.version,

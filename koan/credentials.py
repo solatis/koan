@@ -29,11 +29,10 @@ MASTER_KEY_PATH = Path.home() / ".koan" / "master.key"
 # Fernet scheme tag written into every envelope.
 SCHEME = "fernet"
 
-# Keyless local providers: enumerated for availability checks that need a
-# default base_url when none is configured.  No credential required.
-LOCAL_PROVIDERS: dict[str, str] = {
-    "lmstudio": "http://localhost:1234/v1",
-}
+# Keyless local providers: default base_url per provider for availability checks.
+# Intentionally empty -- lmstudio removed in M3. Retained (not deleted) as the
+# keyless-local seam for a future local-provider re-add (Decision 1).
+LOCAL_PROVIDERS: dict[str, str] = {}
 
 
 # ---------------------------------------------------------------------------
