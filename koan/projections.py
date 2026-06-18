@@ -169,21 +169,27 @@ class VersionedEvent(BaseModel):
 class ThinkingEntry(KoanBaseModel):
     type: Literal["thinking"] = "thinking"
     content: str                           # full accumulated thinking text
+    # Stable per-conversation id assigned in the fold (_assign_entry_ids); '' until assigned;
+    # aggregate children leave this unset and key by call_id.
+    entry_id: str = ""
 
 class TextEntry(KoanBaseModel):
     type: Literal["text"] = "text"
     text: str                              # full accumulated output text
+    entry_id: str = ""
 
 class StepEntry(KoanBaseModel):
     type: Literal["step"] = "step"
     step: int
     step_name: str
     total_steps: int | None = None
+    entry_id: str = ""
 
 class UserMessageEntry(KoanBaseModel):
     type: Literal["user_message"] = "user_message"
     content: str
     timestamp_ms: int
+    entry_id: str = ""
 
 class AttachmentEntry(KoanBaseModel):
     """Wire shape for a committed upload attached to a tool call.
@@ -205,9 +211,17 @@ class AttachmentEntry(KoanBaseModel):
 
 
 class BaseToolEntry(KoanBaseModel):
-    """Shared fields for all tool entries and aggregate children."""
+    """Shared fields for all tool entries and aggregate children.
+
+    entry_id is the stable per-conversation id for top-level entries, assigned
+    by _assign_entry_ids in the fold.  Aggregate children inherit the field but
+    leave it '' -- they are keyed by call_id instead.
+    """
     call_id: str                           # unique per tool invocation
     in_flight: bool                        # True until tool_result
+    # Stable per-conversation id assigned in the fold (_assign_entry_ids); '' until assigned;
+    # aggregate children leave this unset and key by call_id.
+    entry_id: str = ""
     # Populated by tool_completed when the backend committed uploads were
     # attached to this tool call (via build_tool_completed attachments arg).
     attachments: list[AttachmentEntry] | None = None
@@ -305,16 +319,19 @@ class ToolAggregateEntry(KoanBaseModel):
     type: Literal["tool_aggregate"] = "tool_aggregate"
     children: list[AggregateChild] = []
     started_at_ms: int = 0                 # timestamp of the first child's creation
+    entry_id: str = ""
 
 class DebugStepGuidanceEntry(KoanBaseModel):
     """Step guidance prompt shown in --debug mode."""
     type: Literal["debug_step_guidance"] = "debug_step_guidance"
     content: str                           # full formatted step guidance text
+    entry_id: str = ""
 
 class PhaseBoundaryEntry(KoanBaseModel):
     type: Literal["phase_boundary"] = "phase_boundary"
     phase: str
     message: str
+    entry_id: str = ""
 
 class Suggestion(KoanBaseModel):
     """A structured option presented to the user at a yield point."""
@@ -326,6 +343,7 @@ class YieldEntry(KoanBaseModel):
     """Conversation entry emitted when the orchestrator yields to the user."""
     type: Literal["yield"] = "yield"
     suggestions: list[Suggestion] = []     # clickable options shown in the UI
+    entry_id: str = ""
 
 class ActiveYield(KoanBaseModel):
     """Run-level state tracking the current yield's suggestions.
@@ -361,6 +379,9 @@ class Conversation(KoanBaseModel):
     # M5: derived field -- computed in the fold, not recorded as event facts.
     # total_cost_usd: genai-prices bundled snapshot via price_for_usage (cumulative tokens).
     total_cost_usd: float = 0.0
+    # Monotonic counter for entry_id assignment; in-memory only (exclude=True keeps it off
+    # the wire), rebuilt deterministically on restart by re-folding the event log.
+    next_entry_id: int = Field(default=0, exclude=True)
 
 
 # ---------------------------------------------------------------------------
@@ -874,11 +895,40 @@ def _primary_agent_id(run: Run) -> str | None:
 
 
 
+def _assign_entry_ids(conv: Conversation) -> Conversation:
+    """Assign a stable entry_id to every top-level entry that does not yet have one.
+
+    Advances conv.next_entry_id for each assignment.  Existing ids are preserved
+    so re-folding a no-op event never changes ids already assigned (idempotent,
+    append-only stability).  Aggregate children are intentionally left untouched --
+    they remain keyed by call_id.  Returns the same conversation object unchanged
+    when no assignment is needed, so unrelated re-folds produce no JSON Patch ops.
+    """
+    counter = conv.next_entry_id
+    new_entries = []
+    changed = False
+    for e in conv.entries:
+        if e.entry_id == "":
+            new_entries.append(e.model_copy(update={"entry_id": f"e{counter}"}))
+            counter += 1
+            changed = True
+        else:
+            new_entries.append(e)
+    if not changed:
+        return conv
+    return conv.model_copy(update={"entries": new_entries, "next_entry_id": counter})
+
+
 def _update_agent_conversation(run: Run, agent_id: str, new_conv: Conversation, **extra) -> Run:
-    """Return a new Run with the agent's conversation replaced and optional extra updates."""
+    """Return a new Run with the agent's conversation replaced and optional extra updates.
+
+    Assigns stable entry ids via _assign_entry_ids before writing back, so every
+    top-level entry carries a monotonic per-conversation id on the wire.
+    """
     agent = run.agents.get(agent_id)
     if agent is None:
         return run
+    new_conv = _assign_entry_ids(new_conv)
     new_agent = agent.model_copy(update={"conversation": new_conv, **extra})
     new_agents = dict(run.agents)
     new_agents[agent_id] = new_agent

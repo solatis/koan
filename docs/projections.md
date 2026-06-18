@@ -334,6 +334,7 @@ class Conversation(KoanBaseModel):
     is_thinking: bool = False     # True while thinking deltas are arriving
     input_tokens: int = 0
     output_tokens: int = 0
+    next_entry_id: int = Field(default=0, exclude=True)  # in-memory only; see entry_id below
 ```
 
 `pending_thinking` and `pending_text` hold incomplete LLM output that will
@@ -341,31 +342,48 @@ become conversation entries on the next state transition. "Flush" means: if the
 field is non-empty, create a completed entry (ThinkingEntry or TextEntry),
 append it to `entries`, reset the field to `""`.
 
+`next_entry_id` is a monotonic counter used by `_assign_entry_ids` to stamp
+each top-level entry with a stable `entry_id`.  `exclude=True` keeps it off the
+wire (no `nextEntryId` in JSON Patch or snapshots); the counter is rebuilt
+deterministically by re-folding the event log on restart.
+
 ### ConversationEntry — discriminated union
+
+Every top-level entry carries a stable `entry_id` (wire: `entryId`) assigned by
+`_assign_entry_ids` at the `_update_agent_conversation` seam from the
+per-`Conversation` `next_entry_id` counter.  The counter is excluded from the
+wire.  Aggregate children (`AggregateReadChild`, `AggregateGrepChild`,
+`AggregateLsChild`, `AggregateGlobChild`) inherit `entry_id` via `BaseToolEntry`
+but leave it `""` -- they are keyed by `call_id` instead.
 
 ```python
 class ThinkingEntry(KoanBaseModel):
     type: Literal["thinking"] = "thinking"
     content: str                        # full accumulated thinking text
+    entry_id: str = ""                  # stable id assigned by _assign_entry_ids
 
 class TextEntry(KoanBaseModel):
     type: Literal["text"] = "text"
     text: str                           # full accumulated output text
+    entry_id: str = ""
 
 class StepEntry(KoanBaseModel):
     type: Literal["step"] = "step"
     step: int
     step_name: str
     total_steps: int | None = None
+    entry_id: str = ""
+
+class UserMessageEntry(KoanBaseModel):
+    type: Literal["user_message"] = "user_message"
+    content: str
+    timestamp_ms: int
+    entry_id: str = ""
 
 class BaseToolEntry(KoanBaseModel):
     call_id: str        # unique per tool invocation
     in_flight: bool     # True until tool_completed
-
-class ToolReadEntry(BaseToolEntry):
-    type: Literal["tool_read"] = "tool_read"
-    file: str
-    lines: str = ""     # line range, e.g. "1-50"
+    entry_id: str = ""  # top-level entries: assigned; aggregate children: leave as ""
 
 class ToolWriteEntry(BaseToolEntry):
     type: Literal["tool_write"] = "tool_write"
@@ -379,35 +397,45 @@ class ToolBashEntry(BaseToolEntry):
     type: Literal["tool_bash"] = "tool_bash"
     command: str
 
-class ToolGrepEntry(BaseToolEntry):
-    type: Literal["tool_grep"] = "tool_grep"
-    pattern: str
-
-class ToolLsEntry(BaseToolEntry):
-    type: Literal["tool_ls"] = "tool_ls"
-    path: str
-
 class ToolGenericEntry(BaseToolEntry):
     type: Literal["tool_generic"] = "tool_generic"
     tool_name: str      # original tool name from the LLM
     summary: str = ""
 
-class UserMessageEntry(KoanBaseModel):
-    type: Literal["user_message"] = "user_message"
-    content: str
-    timestamp_ms: int
+class ToolKoanEntry(BaseToolEntry):
+    type: Literal["tool_koan"] = "tool_koan"
+    tool_name: str
+    args: dict = {}
+    result: dict | None = None
 
+class ToolAggregateEntry(KoanBaseModel):
+    type: Literal["tool_aggregate"] = "tool_aggregate"
+    children: list[AggregateChild] = []
+    started_at_ms: int = 0
+    entry_id: str = ""  # assigned to the aggregate; children remain "" and key by call_id
+
+class DebugStepGuidanceEntry(KoanBaseModel):
+    type: Literal["debug_step_guidance"] = "debug_step_guidance"
+    content: str
+    entry_id: str = ""
+
+class PhaseBoundaryEntry(KoanBaseModel):
+    type: Literal["phase_boundary"] = "phase_boundary"
+    phase: str
+    message: str
+    entry_id: str = ""
 
 class YieldEntry(KoanBaseModel):
     type: Literal["yield"] = "yield"
     suggestions: list[Suggestion] = []   # structured options presented at this yield point
+    entry_id: str = ""
 
 
 ConversationEntry = Annotated[
     ThinkingEntry | TextEntry | StepEntry | UserMessageEntry |
-    ToolReadEntry | ToolWriteEntry | ToolEditEntry |
-    ToolBashEntry | ToolGrepEntry | ToolLsEntry | ToolGenericEntry |
-    YieldEntry,
+    ToolWriteEntry | ToolEditEntry | ToolBashEntry | ToolGenericEntry |
+    ToolKoanEntry | ToolAggregateEntry |
+    DebugStepGuidanceEntry | PhaseBoundaryEntry | YieldEntry,
     Field(discriminator="type"),
 ]
 ```

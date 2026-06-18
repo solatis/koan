@@ -742,6 +742,63 @@ class TestFoldTools:
 
 
 # ---------------------------------------------------------------------------
+# fold: stable entry ids
+# ---------------------------------------------------------------------------
+
+class TestEntryIds:
+
+    def test_entries_receive_distinct_monotonic_ids_after_flush(self):
+        """Two top-level entries flushed in sequence get distinct ids 'e0' and 'e1'."""
+        p = _proj_with_primary("a1")
+        # thinking delta then step_advanced: flushes ThinkingEntry then StepEntry
+        p = fold(p, _e("thinking", {"delta": "hmm"}, agent_id="a1"))
+        r = fold(p, _e("agent_step_advanced", {"step": 1, "step_name": "Plan"}, agent_id="a1"))
+        conv = r.run.agents["a1"].conversation
+        assert len(conv.entries) == 2
+        assert conv.entries[0].entry_id == "e0"
+        assert conv.entries[1].entry_id == "e1"
+
+    def test_noop_fold_leaves_entry_ids_unchanged(self):
+        """A fold that returns projection unchanged does not alter assigned ids."""
+        p = _proj_with_primary("a1")
+        p = fold(p, _e("thinking", {"delta": "hmm"}, agent_id="a1"))
+        p = fold(p, _e("agent_step_advanced", {"step": 1, "step_name": "Plan"}, agent_id="a1"))
+        # tool_result_captured with unknown call_id is a documented noop
+        r = fold(p, _e("tool_result_captured", {
+            "call_id": "missing", "tool": "read", "metrics": {"lines_read": 1},
+        }, agent_id="a1"))
+        conv = r.run.agents["a1"].conversation
+        assert conv.entries[0].entry_id == "e0"
+        assert conv.entries[1].entry_id == "e1"
+
+    def test_aggregate_child_has_empty_entry_id_parent_has_non_empty(self):
+        """ToolAggregateEntry gets an entry_id; its AggregateReadChild does not."""
+        p = _proj_with_primary("a1")
+        r = fold(p, _e("tool_read", {"call_id": "c1", "file": "/f.py", "lines": "", "ts_ms": 1}, agent_id="a1"))
+        conv = r.run.agents["a1"].conversation
+        agg = conv.entries[0]
+        assert isinstance(agg, ToolAggregateEntry)
+        assert agg.entry_id == "e0"
+        # Child is keyed by call_id; entry_id stays '' (intentionally unset)
+        assert agg.children[0].call_id == "c1"
+        assert agg.children[0].entry_id == ""
+
+    def test_to_wire_includes_entry_id_excludes_next_entry_id(self):
+        """Serialized wire dict has entryId on entries but no nextEntryId on conversation."""
+        p = _proj_with_primary("a1")
+        p = fold(p, _e("stream_delta", {"delta": "hello"}, agent_id="a1"))
+        r = fold(p, _e("agent_step_advanced", {"step": 1, "step_name": "Plan"}, agent_id="a1"))
+        wire = r.to_wire()
+        conv_wire = wire["run"]["agents"]["a1"]["conversation"]
+        # counter is excluded from the wire
+        assert "nextEntryId" not in conv_wire
+        # every top-level entry carries entryId
+        for entry in conv_wire["entries"]:
+            assert "entryId" in entry, f"entryId missing on entry type={entry.get('type')}"
+            assert entry["entryId"] != ""
+
+
+# ---------------------------------------------------------------------------
 # fold: focus transitions
 # ---------------------------------------------------------------------------
 
