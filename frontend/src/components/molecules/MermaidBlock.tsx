@@ -15,10 +15,19 @@
  * Mermaid is initialised once at module load (see below) -- it is a process-
  * wide singleton and must not be re-initialised per component instance.
  *
+ * SVG cache: a module-level Map<string, string> (source -> rendered SVG) is
+ * keyed by diagram source and populated on successful render. The initial
+ * useState is seeded from it, so components remounted by virtualization
+ * (M4) render the cached SVG immediately without re-running mermaid.render.
+ * The cache is deterministic (same source always produces the same SVG) and
+ * run-bounded (cleared on page reload).
+ *
+ * Wrapped in React.memo: re-renders only when `code` changes.
+ *
  * Used in: <Md> (language-mermaid code blocks are routed here).
  */
 
-import { useEffect, useId, useRef, useState, type ReactElement } from 'react'
+import React, { useEffect, useId, useRef, useState, type ReactElement } from 'react'
 import mermaid from 'mermaid'
 import './MermaidBlock.css'
 
@@ -31,6 +40,11 @@ mermaid.initialize({
   startOnLoad: false,
   securityLevel: 'strict',
 })
+
+// Module-level deterministic memoization cache: source -> rendered SVG.
+// Keyed by diagram source; same source always yields the same SVG, so caching
+// is correct. Makes remounts (e.g. from M4 virtualization) instant.
+const svgCache = new Map<string, string>()
 
 // mermaid.render() creates temp container nodes (id and "d{id}") in document.body
 // for measurement, then removes them. If the calling component unmounts mid-render
@@ -47,8 +61,10 @@ interface MermaidBlockProps {
   code: string
 }
 
-export function MermaidBlock({ code }: MermaidBlockProps): ReactElement {
-  const [svg, setSvg]     = useState<string | null>(null)
+export const MermaidBlock = React.memo(function MermaidBlock({ code }: MermaidBlockProps): ReactElement {
+  // Seed from cache so remounted components (e.g. after virtualization scroll)
+  // render the cached SVG immediately without waiting for mermaid.render().
+  const [svg, setSvg]     = useState<string | null>(() => svgCache.get(code) ?? null)
   const [error, setError] = useState<string | null>(null)
   const renderToken       = useRef(0)
 
@@ -58,6 +74,15 @@ export function MermaidBlock({ code }: MermaidBlockProps): ReactElement {
   const id         = 'mb-' + rawId.replace(/[^a-zA-Z0-9_-]/g, '-')
 
   useEffect(() => {
+    // Cache hit: the SVG for this source was already rendered in this session.
+    // Skip parse/render entirely -- the initial useState already carries the
+    // cached value, so just ensure state is consistent and return early.
+    if (svgCache.has(code)) {
+      setSvg(svgCache.get(code)!)
+      setError(null)
+      return
+    }
+
     // Snapshot this invocation's token. The async callback checks it before
     // committing state so a stale response from a superseded render is dropped.
     const token = ++renderToken.current
@@ -81,6 +106,9 @@ export function MermaidBlock({ code }: MermaidBlockProps): ReactElement {
           .render(id, code)
           .then((result) => {
             if (token !== renderToken.current) return
+            // Populate the cache before setState so future mounts of the same
+            // source skip this async path entirely.
+            svgCache.set(code, result.svg)
             setSvg(result.svg)
             setError(null)
           })
@@ -123,6 +151,6 @@ export function MermaidBlock({ code }: MermaidBlockProps): ReactElement {
   return (
     <pre className="mb-error-source"><code>{code}</code></pre>
   )
-}
+})
 
 export default MermaidBlock

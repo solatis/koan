@@ -18,6 +18,7 @@
  * is delivered ahead of the card).
  */
 
+import React from 'react'
 import { StatusDot } from '../atoms/StatusDot'
 import './ToolStatBlock.css'
 
@@ -42,7 +43,7 @@ interface ToolStatBlockProps {
   active?: boolean
 }
 
-export function ToolStatBlock({
+export const ToolStatBlock = React.memo(function ToolStatBlock({
   type,
   name,
   opCount,
@@ -66,6 +67,6 @@ export function ToolStatBlock({
       )}
     </div>
   )
-}
+})
 
 export default ToolStatBlock

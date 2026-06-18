@@ -11,6 +11,9 @@
  * Per-proposal decision/feedback draft is store-only (accept-loss: cleared
  * when the batch clears). Batch data itself is server-backed and survives
  * a page refresh.
+ *
+ * Data reads use shared selectors (stable references under M2 structural
+ * sharing). Setter reads remain inline -- action refs are stable.
  */
 
 import { useEffect, useState } from 'react'
@@ -18,6 +21,7 @@ import type { ReactNode } from 'react'
 
 import { useStore } from '../../store/index'
 import type { Proposal, ActiveCurationBatch } from '../../store/index'
+import { selectActiveCurationBatch, selectMemoryCurationDraft } from '../../store/selectors'
 import { Md } from '../Md'
 import * as api from '../../api/client'
 
@@ -59,8 +63,8 @@ function mapProposal(p: Proposal, d: { decision?: 'approved' | 'rejected'; feedb
 // ---------------------------------------------------------------------------
 
 export function CurationTakeover() {
-  const batch = useStore(s => s.run?.activeCurationBatch) as ActiveCurationBatch
-  const draft = useStore(s => s.memoryCurationDraft)
+  const batch = useStore(selectActiveCurationBatch) as ActiveCurationBatch
+  const draft = useStore(selectMemoryCurationDraft)
   const setDecision = useStore(s => s.setMemoryCurationDecision)
   const setFeedback = useStore(s => s.setMemoryCurationFeedback)
   const resetDraft = useStore(s => s.resetMemoryCurationDraft)

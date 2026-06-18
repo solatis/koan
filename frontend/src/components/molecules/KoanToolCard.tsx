@@ -8,10 +8,15 @@
  * orchestration tools (koan_set_phase, koan_suggest_next) return null.
  * koan_complete_step was removed in M6.
  *
+ * Wrapped in React.memo: re-renders only when its props change. Because it
+ * lives inside an EntryRow (itself memo'd by entry reference), re-renders
+ * during token streaming that do not touch this entry's ToolKoanEntry are
+ * suppressed at the EntryRow boundary.
+ *
  * Used in: content stream, replacing ToolCallRow for koan MCP tool entries.
  */
 
-import type { ReactElement } from 'react'
+import React, { type ReactElement } from 'react'
 import './KoanToolCard.css'
 import { Md } from '../Md'
 
@@ -108,9 +113,12 @@ function ReflectCard({ toolInput, result, inFlight }: Omit<KoanToolCardProps, 't
   )
 }
 
-// ArtifactWriteCard shows a live markdown preview of the artifact content as
-// the LLM streams args. Reads toolInput (aggregate) so every delta tick updates
-// the preview. Args: filename, content per koan_artifact_write signature.
+// ArtifactWriteCard shows a live preview of the artifact content as the LLM
+// streams args. While inFlight, content is rendered as plain pre-wrapped text
+// to avoid the O(n^2) markdown re-parse cost of growing content on each token
+// delta. Once complete (not inFlight), the content is rendered via <Md> for
+// full formatting. Reads toolInput (aggregate) so every delta tick updates the
+// preview. Args: filename, content per koan_artifact_write signature.
 // Status display removed -- artifact lifecycle state is no longer tracked in frontmatter.
 function ArtifactWriteCard({ toolInput, inFlight }: Omit<KoanToolCardProps, 'toolName'>) {
   const filename = (toolInput?.filename as string) || ''
@@ -128,7 +136,10 @@ function ArtifactWriteCard({ toolInput, inFlight }: Omit<KoanToolCardProps, 'too
       </div>
       {content && (
         <div className="ktc-artifact-preview">
-          <Md>{content}</Md>
+          {inFlight
+            ? <pre className="ktc-artifact-streaming">{content}</pre>
+            : <Md>{content}</Md>
+          }
         </div>
       )}
     </div>
@@ -276,7 +287,7 @@ const TOOL_RENDERERS: Record<string, ToolRenderer> = {
   koan_request_executor: ExecutorCard,
 }
 
-export function KoanToolCard(props: KoanToolCardProps): ReactElement | null {
+export const KoanToolCard = React.memo(function KoanToolCard(props: KoanToolCardProps): ReactElement | null {
   if (SUPPRESSED_TOOLS.has(props.toolName)) {
     return null
   }
@@ -293,6 +304,6 @@ export function KoanToolCard(props: KoanToolCardProps): ReactElement | null {
   }
   const label = KOAN_TOOL_LABELS[props.toolName] ?? props.toolName
   return <FallbackCard label={label} inFlight={props.inFlight} />
-}
+})
 
 export default KoanToolCard

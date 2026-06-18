@@ -8,6 +8,7 @@
  * Used in: activity feed, between prose cards and thinking blocks.
  */
 
+import React from 'react'
 import './ToolCallRow.css'
 import { FileChip } from '../atoms/FileChip'
 import { formatSize } from '../../hooks/useFileAttachment'
@@ -30,7 +31,7 @@ const CheckSvg = () => (
   </svg>
 )
 
-export function ToolCallRow({ tool, command, status = 'done', metric, attachments }: ToolCallRowProps) {
+export const ToolCallRow = React.memo(function ToolCallRow({ tool, command, status = 'done', metric, attachments }: ToolCallRowProps) {
   const hasAttachments = attachments && attachments.length > 0
   return (
     <div className={`tcr tcr--${status}`}>
@@ -51,6 +52,6 @@ export function ToolCallRow({ tool, command, status = 'done', metric, attachment
       )}
     </div>
   )
-}
+})
 
 export default ToolCallRow

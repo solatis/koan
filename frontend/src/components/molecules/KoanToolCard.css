@@ -127,6 +127,16 @@
   overflow: auto;
 }
 
+/* Plain streaming preview shown while inFlight (avoids O(n^2) markdown
+   re-parse on each token delta). Snaps to <Md> rendered output on complete. */
+.ktc-artifact-streaming {
+  white-space: pre-wrap;
+  font-family: var(--font-mono);
+  font-size: var(--type-tool-path);
+  color: var(--text-body);
+  margin: 0;
+}
+
 /* ---- YieldCard ---- */
 .ktc--yield .ktc-suggestions {
   margin: 8px 0 0;

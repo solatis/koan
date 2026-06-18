@@ -7,6 +7,7 @@
  * Used in: content stream, for step entry events.
  */
 
+import React from 'react'
 import './StepHeader.css'
 
 interface StepHeaderProps {
@@ -16,7 +17,7 @@ interface StepHeaderProps {
   status?: 'active' | 'complete'
 }
 
-export function StepHeader({ stepNumber, totalSteps, stepName, status = 'active' }: StepHeaderProps) {
+export const StepHeader = React.memo(function StepHeader({ stepNumber, totalSteps, stepName, status = 'active' }: StepHeaderProps) {
   const label = totalSteps > 0 ? `step ${stepNumber}/${totalSteps}` : stepName
 
   return (
@@ -25,6 +26,6 @@ export function StepHeader({ stepNumber, totalSteps, stepName, status = 'active'
       {stepNumber > 0 && stepName && <span className="sh-name">{stepName}</span>}
     </div>
   )
-}
+})
 
 export default StepHeader

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, type KeyboardEvent } from 'react'
 import { useStore } from '../../store/index'
+import { selectChatDraft } from '../../store/selectors'
 import { useFileAttachment } from '../../hooks/useFileAttachment'
 import { Button } from '../atoms/Button'
 import { FileChip } from '../atoms/FileChip'
@@ -78,7 +79,10 @@ export function FeedbackInput({
   const [activeIndex, setActiveIndex] = useState(0)
   const ref = useRef<HTMLTextAreaElement>(null)
 
-  const chatDraft = useStore(s => s.chatDraft)
+  // Pre-existing exception: this molecule reads chatDraft from the store directly.
+  // Lifting it to props would change the FeedbackInput API and require touching the
+  // content-stream footer (FeedbackFooter in ContentStream.tsx) -- deferred.
+  const chatDraft = useStore(selectChatDraft)
   const setChatDraft = useStore(s => s.setChatDraft)
 
   const attach = useFileAttachment()

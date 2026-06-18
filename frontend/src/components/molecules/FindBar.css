@@ -1,0 +1,78 @@
+/* FindBar -- store-driven find/copy toolbar overlay.
+   Positioned absolutely inside .content-column so it floats above the list
+   without affecting Virtuoso's height measurements. */
+
+.fb {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-card);
+  border: 1.5px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 6px 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+.fb-input {
+  border: none;
+  background: transparent;
+  font-family: var(--font-body);
+  font-size: var(--type-body);
+  color: var(--text-primary);
+  outline: none;
+  width: 180px;
+  min-width: 0;
+}
+
+.fb-input::placeholder {
+  color: var(--text-placeholder);
+}
+
+.fb-count {
+  font-family: var(--font-mono);
+  font-size: var(--type-breadcrumb);
+  color: var(--text-muted);
+  white-space: nowrap;
+  /* Fixed width avoids layout shift as match count changes */
+  min-width: 60px;
+  text-align: right;
+}
+
+.fb-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.fb-btn {
+  background: none;
+  border: none;
+  padding: 2px 6px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: var(--type-body);
+  border-radius: var(--radius-sm);
+  transition: background var(--duration-fast), color var(--duration-fast);
+  white-space: nowrap;
+  line-height: 1.4;
+}
+
+.fb-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.fb-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.fb-btn--close {
+  color: var(--text-muted);
+  font-size: 14px;
+}

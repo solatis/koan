@@ -183,10 +183,11 @@ export interface RunConfig {
 
 // -- ConversationEntry — discriminated union ----------------------------------
 
-export interface ThinkingEntry { type: 'thinking'; content: string }
-export interface TextEntry { type: 'text'; text: string }
-export interface StepEntry { type: 'step'; step: number; stepName: string; totalSteps: number | null }
-export interface UserMessageEntry { type: 'user_message'; content: string; timestampMs: number }
+// Server-assigned stable key (camelCase wire of entry_id); consumed by virtualization in M4, ignored until then.
+export interface ThinkingEntry { type: 'thinking'; content: string; entryId?: string }
+export interface TextEntry { type: 'text'; text: string; entryId?: string }
+export interface StepEntry { type: 'step'; step: number; stepName: string; totalSteps: number | null; entryId?: string }
+export interface UserMessageEntry { type: 'user_message'; content: string; timestampMs: number; entryId?: string }
 
 // Mirrors backend AttachmentEntry with Pydantic's to_camel wire format.
 export interface AttachmentEntry {
@@ -202,12 +203,15 @@ export interface AttachmentEntry {
 // toolInput is the server-side aggregate of all received deltas (M1 fold sets
 // it on every tool_input_delta). toolInputDelta is the last-arrived chunk;
 // exposed for future highlight-the-just-changed use but not read by M2 consumers.
+// entryId: server-assigned stable key; consumed by virtualization in M4, ignored until then.
 interface BaseToolEntry {
   callId: string
   inFlight: boolean
   attachments?: AttachmentEntry[] | null
   toolInput?: Record<string, unknown> | null
   toolInputDelta?: Record<string, unknown> | string | null
+  // Server-assigned stable key (camelCase wire of entry_id); consumed by virtualization in M4, ignored until then.
+  entryId?: string
 }
 export interface ToolWriteEntry   extends BaseToolEntry { type: 'tool_write';   file: string }
 export interface ToolEditEntry    extends BaseToolEntry { type: 'tool_edit';    file: string }
@@ -248,13 +252,15 @@ export interface ToolAggregateEntry {
   type: 'tool_aggregate'
   children: AggregateChild[]
   startedAtMs: number
+  // Server-assigned stable key (camelCase wire of entry_id); consumed by virtualization in M4, ignored until then.
+  entryId?: string
 }
 
-export interface DebugStepGuidanceEntry { type: 'debug_step_guidance'; content: string }
-export interface PhaseBoundaryEntry { type: 'phase_boundary'; phase: string; message: string; description: string }
+export interface DebugStepGuidanceEntry { type: 'debug_step_guidance'; content: string; entryId?: string }
+export interface PhaseBoundaryEntry { type: 'phase_boundary'; phase: string; message: string; description: string; entryId?: string }
 
 export interface Suggestion { id: string; label: string; command: string; recommended?: boolean }
-export interface YieldEntry { type: 'yield'; prompt: string; suggestions: Suggestion[] }
+export interface YieldEntry { type: 'yield'; prompt: string; suggestions: Suggestion[]; entryId?: string }
 
 export type ConversationEntry =
   | ThinkingEntry | TextEntry | StepEntry | UserMessageEntry
@@ -459,7 +465,7 @@ export interface Run {
 
 // -- Store --------------------------------------------------------------------
 
-interface KoanState {
+export interface KoanState {
   // Connection
   connected: boolean
   lastVersion: number

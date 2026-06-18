@@ -12,6 +12,12 @@ import type { ReactNode } from 'react'
 
 import { useStore } from '../../store/index'
 import type { MemoryEntrySummary } from '../../store/index'
+import {
+  selectMemoryEntries,
+  selectMemorySummary,
+  selectMemorySidebar,
+  selectReflect,
+} from '../../store/selectors'
 import * as api from '../../api/client'
 import { Md } from '../Md'
 import { useMemorySearch } from '../../hooks/useMemorySearch'
@@ -89,11 +95,17 @@ function ReflectPaneEmpty() {
 // ConnectedMemoryOverview
 // ---------------------------------------------------------------------------
 
+/**
+ * Connected wrapper for the memory overview page.
+ * Data reads use shared selectors (stable references under M2 structural sharing).
+ * Setter reads remain inline -- action refs are stable and do not benefit from
+ * shared selectors.
+ */
 function ConnectedMemoryOverview() {
   const navigate = useNavigate()
-  const entries = useStore(s => s.memory.entries)
-  const storeSummary = useStore(s => s.memory.summary)
-  const sidebar = useStore(s => s.memorySidebar)
+  const entries = useStore(selectMemoryEntries)
+  const storeSummary = useStore(selectMemorySummary)
+  const sidebar = useStore(selectMemorySidebar)
   const setSidebarSearch = useStore(s => s.setMemorySidebarSearch)
   const setSidebarFilter = useStore(s => s.setMemorySidebarFilter)
   const upsertMemoryEntries = useStore(s => s.upsertMemoryEntries)
@@ -191,11 +203,17 @@ function ConnectedMemoryOverview() {
 // ConnectedMemoryDetail
 // ---------------------------------------------------------------------------
 
+/**
+ * Connected wrapper for the memory detail page.
+ * Data reads use shared selectors (stable references under M2 structural sharing).
+ * Setter reads remain inline -- action refs are stable and do not benefit from
+ * shared selectors.
+ */
 function ConnectedMemoryDetail() {
   const navigate = useNavigate()
   const { seq } = useParams<{ seq: string }>()
-  const entries = useStore(s => s.memory.entries)
-  const sidebar = useStore(s => s.memorySidebar)
+  const entries = useStore(selectMemoryEntries)
+  const sidebar = useStore(selectMemorySidebar)
   const setSidebarSearch = useStore(s => s.setMemorySidebarSearch)
   const setSidebarFilter = useStore(s => s.setMemorySidebarFilter)
   const upsertMemoryEntries = useStore(s => s.upsertMemoryEntries)
@@ -315,10 +333,17 @@ function ConnectedMemoryDetail() {
 // ConnectedMemoryReflect
 // ---------------------------------------------------------------------------
 
+/**
+ * Connected wrapper for the memory reflect page.
+ * Data reads use shared selectors (stable references under M2 structural sharing).
+ * reflect.answer is set atomically on reflect_done and rendered via <Md> only
+ * in the done state -- no streaming treatment needed (M3 Md memo suffices).
+ * Setter reads remain inline -- action refs are stable.
+ */
 function ConnectedMemoryReflect() {
-  const reflect = useStore(s => s.reflect)
-  const entries = useStore(s => s.memory.entries)
-  const sidebar = useStore(s => s.memorySidebar)
+  const reflect = useStore(selectReflect)
+  const entries = useStore(selectMemoryEntries)
+  const sidebar = useStore(selectMemorySidebar)
   const setSidebarSearch = useStore(s => s.setMemorySidebarSearch)
   const setSidebarFilter = useStore(s => s.setMemorySidebarFilter)
   const navigate = useNavigate()

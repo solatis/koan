@@ -8,6 +8,7 @@
  * behind it.
  */
 
+import React from 'react'
 import './PhaseMarker.css'
 
 interface PhaseMarkerProps {
@@ -15,7 +16,7 @@ interface PhaseMarkerProps {
   description: string
 }
 
-export function PhaseMarker({ name, description }: PhaseMarkerProps) {
+export const PhaseMarker = React.memo(function PhaseMarker({ name, description }: PhaseMarkerProps) {
   return (
     <div className="pm">
       <div className="pm-rule" />
@@ -28,6 +29,6 @@ export function PhaseMarker({ name, description }: PhaseMarkerProps) {
       </div>
     </div>
   )
-}
+})
 
 export default PhaseMarker

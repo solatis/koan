@@ -1,8 +1,11 @@
 // Renders both projection-synced notifications and client-only toasts.
 // Server notifications are append-only; client toasts are dismissed via
 // dismissToast (client-only channel that survives SSE merges).
+// Data reads use shared selectors (stable references under M2 structural
+// sharing). The dismissToast setter read remains inline -- action refs are stable.
 import { useEffect, useState } from 'react'
 import { useStore, Notification as NotificationData, ClientToast } from '../store/index'
+import { selectNotifications, selectToasts } from '../store/selectors'
 
 function NotificationItem({ entry }: { entry: NotificationData }) {
   const [fading, setFading] = useState(false)
@@ -55,8 +58,8 @@ function ToastItem({ toast, onDismiss }: { toast: ClientToast; onDismiss: (id: n
 
 /** Renders both projection notifications (append-only) and client toasts (dismissible). */
 export function Notification() {
-  const notifications = useStore(s => s.notifications)
-  const toasts = useStore(s => s.toasts)
+  const notifications = useStore(selectNotifications)
+  const toasts = useStore(selectToasts)
   const dismissToast = useStore(s => s.dismissToast)
 
   return (

@@ -10,8 +10,13 @@
  * across renders. An inline object literal would cause react-markdown to
  * re-register component overrides on every render, which is wasteful on the
  * streaming hot path.
+ *
+ * Memoized by its `children` content string: rows that re-render for a
+ * non-content reason (e.g. an inFlight flip) skip the react-markdown parse
+ * entirely, because the string reference equality check bails early.
  */
 
+import React from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { MermaidBlock } from './molecules/MermaidBlock'
@@ -31,7 +36,7 @@ const components: Components = {
   },
 }
 
-export function Md({ children }: { children: string }) {
+export const Md = React.memo(function Md({ children }: { children: string }) {
   return (
     <div className="markdown">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
@@ -39,4 +44,4 @@ export function Md({ children }: { children: string }) {
       </ReactMarkdown>
     </div>
   )
-}
+})

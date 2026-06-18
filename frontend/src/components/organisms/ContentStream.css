@@ -1,0 +1,49 @@
+/* plain streaming thinking: rendered as raw text, not markdown, per the
+   tailored-streaming decision (M2). Snaps to <Md> on commit via Virtuoso list. */
+.cs-pending-thinking {
+  white-space: pre-wrap;
+}
+
+/* Inter-entry gap via padding-bottom on the item wrapper.
+   Must be padding, NOT margin: margin collapse breaks Virtuoso's per-item
+   height measurement and causes scroll jitter on the virtualizer.
+   Value mirrors .content-stream { gap: var(--gap-content) } = 20px. */
+.cs-item {
+  padding-bottom: var(--gap-content); /* 20px -- matches the former flex gap */
+}
+
+/* FindBar sticky anchor: sticks to the top of the .content-column viewport
+   as the user scrolls. Full-width but pointer-events:none so the left area
+   does not capture clicks; the FindBar child re-enables pointer events. */
+.cs-findbar-sticky {
+  position: sticky;
+  top: 8px;
+  z-index: 20;
+  display: flex;
+  justify-content: flex-end;
+  pointer-events: none;
+}
+
+.cs-findbar-sticky > * {
+  pointer-events: auto;
+}
+
+/* Palette dim -- adjusted for Virtuoso structure (M4).
+   The original .content-stream--faded > *:not(:last-child) rule in
+   app-shell.css targeted flat flex children; under Virtuoso the entries and
+   footer are nested deeper. These descendant selectors reproduce the same
+   visual: entries + streaming leaf dim when the palette is open; the
+   feedback input (.cs-feedback-footer-wrap) stays crisp (intentionally
+   omitted from the dim rules below). */
+.content-stream--faded .cs-item {
+  opacity: 0.35;
+  transition: opacity var(--duration-fast) var(--ease-default);
+}
+
+.content-stream--faded .cs-streaming-leaf-wrap {
+  opacity: 0.35;
+  transition: opacity var(--duration-fast) var(--ease-default);
+}
+
+/* .cs-feedback-footer-wrap: no opacity rule -- remains fully visible
+   when palette is open so the user can type in the feedback input. */

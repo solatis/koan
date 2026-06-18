@@ -12,6 +12,7 @@
  * is delivered ahead of the card).
  */
 
+import React from 'react'
 import { StatusDot } from '../atoms/StatusDot'
 import './ToolLogRow.css'
 
@@ -28,7 +29,7 @@ interface ToolLogRowProps {
   metric?: string
 }
 
-export function ToolLogRow({ status, command, metric }: ToolLogRowProps) {
+export const ToolLogRow = React.memo(function ToolLogRow({ status, command, metric }: ToolLogRowProps) {
   const isRunning = status === 'running'
   return (
     <div className={`tlr tlr--${status}`}>
@@ -42,6 +43,6 @@ export function ToolLogRow({ status, command, metric }: ToolLogRowProps) {
       {metric && <span className="tlr-metric">{metric}</span>}
     </div>
   )
-}
+})
 
 export default ToolLogRow
