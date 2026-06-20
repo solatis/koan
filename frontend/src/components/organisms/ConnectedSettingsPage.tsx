@@ -370,6 +370,16 @@ export function ConnectedSettingsPage() {
     if (!res.ok) pushToast(res.message ?? 'Failed to save concurrency', 'error')
   }
 
+  const onMaxRetryAttemptsChange = async (value: number) => {
+    const res = await api.saveRetrySettings(value, settings.maxRetryWaitSeconds)
+    if (!res.ok) pushToast(res.message ?? 'Failed to save retry attempts', 'error')
+  }
+
+  const onMaxRetryWaitSecondsChange = async (value: number) => {
+    const res = await api.saveRetrySettings(settings.maxRetryAttempts, value)
+    if (!res.ok) pushToast(res.message ?? 'Failed to save retry wait', 'error')
+  }
+
   /**
    * Handles embedding dimension selection from the dimension selector.
    *
@@ -453,6 +463,10 @@ export function ConnectedSettingsPage() {
       onEmbeddingDimCancel={onEmbeddingDimCancel}
       scoutConcurrency={settings.defaultScoutConcurrency}
       onScoutConcurrencyChange={onScoutConcurrencyChange}
+      maxRetryAttempts={settings.maxRetryAttempts}
+      onMaxRetryAttemptsChange={onMaxRetryAttemptsChange}
+      maxRetryWaitSeconds={settings.maxRetryWaitSeconds}
+      onMaxRetryWaitSecondsChange={onMaxRetryWaitSecondsChange}
     />
   )
 }

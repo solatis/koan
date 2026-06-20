@@ -89,6 +89,10 @@ export interface SettingsPageProps {
   // Runtime
   scoutConcurrency: number
   onScoutConcurrencyChange: (value: number) => void
+  maxRetryAttempts: number
+  onMaxRetryAttemptsChange: (value: number) => void
+  maxRetryWaitSeconds: number
+  onMaxRetryWaitSecondsChange: (value: number) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -152,6 +156,10 @@ export function SettingsPage({
   onEmbeddingDimCancel,
   scoutConcurrency,
   onScoutConcurrencyChange,
+  maxRetryAttempts,
+  onMaxRetryAttemptsChange,
+  maxRetryWaitSeconds,
+  onMaxRetryWaitSecondsChange,
 }: SettingsPageProps) {
   const roleConnections = connections.map(c => ({ id: c.id, listingCapable: c.listingCapable }))
 
@@ -291,6 +299,12 @@ export function SettingsPage({
         <SectionCard title="Runtime">
           <SettingRow label="Scout concurrency" description="Maximum number of parallel scout agents">
             <NumberInput value={scoutConcurrency} onChange={onScoutConcurrencyChange} min={1} max={32} />
+          </SettingRow>
+          <SettingRow label="Max retry attempts" description="Maximum number of transient-error retries before escalating">
+            <NumberInput value={maxRetryAttempts} onChange={onMaxRetryAttemptsChange} min={1} max={100} />
+          </SettingRow>
+          <SettingRow label="Max retry wait (seconds)" description="Backoff ceiling in seconds between retry attempts">
+            <NumberInput value={maxRetryWaitSeconds} onChange={onMaxRetryWaitSecondsChange} min={1} max={600} />
           </SettingRow>
         </SectionCard>
       </div>
