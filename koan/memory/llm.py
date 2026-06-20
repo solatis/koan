@@ -24,10 +24,15 @@ async def generate(prompt: str, model: "ModelSpec", system: str = "") -> str:
     Model selection: the passed memory_llm ModelSpec, self-contained with its
     baked api_key. No module global is read.
 
-    Inference settings: temperature 0.0 (deterministic for summaries).
-    Thinking and caching settings are baked into the spec at flatten time.
+    Inference settings: model settings (thinking + caching, baked into the spec
+    at flatten time) come from the spec via build_model_settings. Temperature is
+    intentionally left to the provider/PydanticAI default -- no explicit
+    temperature is set, avoiding the Anthropic 400 that occurs when temperature
+    is forced to 0.0 alongside thinking/adaptive mode.
     """
-    from ..agents.adapter import build_model
+    # Late-binding import so monkeypatching adapter attributes in tests is observed
+    # at call time (same pattern used throughout the agent layer).
+    from ..agents.adapter import build_model, build_model_settings
 
     log.info(
         "generate provider=%s model=%s prompt_len=%d system_len=%d",
@@ -36,7 +41,7 @@ async def generate(prompt: str, model: "ModelSpec", system: str = "") -> str:
     built_model = build_model(model, api_key=model.api_key, region=model.region, base_url=model.base_url)
     agent: Agent[None, str] = Agent(
         model=built_model,
-        model_settings={**model.settings, "temperature": 0.0},
+        model_settings=build_model_settings(model),
         output_type=str,
         **({"system_prompt": system} if system else {}),
     )

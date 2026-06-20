@@ -54,18 +54,24 @@ KOAN_MCP_TOOLS: frozenset[str] = frozenset({
     "koan_set_phase",
     "koan_request_scouts",
     "koan_ask_question",
-    "koan_request_executor",
-    "koan_select_story",
-    "koan_complete_story",
-    "koan_retry_story",
-    "koan_skip_story",
+    # koan_request_executor removed in M4: execution rides on
+    # koan_set_phase("execute", plan_file=...) which freezes the named plan,
+    # spawns the executor mechanically, and returns the deviation report.
+    # Story tools (koan_select/complete/retry/skip_story) removed in M1:
+    # the legacy "execution" phase that gated them is deleted.
     "koan_memorize",
     "koan_forget",
     "koan_memory_status",
     "koan_search",
     "koan_reflect",
     "koan_artifact_write",
-    "koan_memory_propose",
+    # koan_artifact_edit added in M3: the orchestrator appends sidecar
+    # dispositions with it, and the projection fold must classify it as a
+    # koan tool call. Previously absent because the artifact edit tool
+    # was not load-bearing for the fold.
+    "koan_artifact_edit",
+    # koan_memory_propose removed in M7: curation writes memory directly via
+    # koan_memorize/koan_forget; the propose/approve gate is retired.
     "koan_artifact_list",
     "koan_artifact_read",
 })

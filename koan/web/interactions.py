@@ -29,7 +29,7 @@ def _emit_interaction_request(app_state: AppState, interaction: PendingInteracti
     payload = interaction.payload
     agent_id = interaction.agent_id
 
-    if interaction.type == "ask":
+    if interaction.type in ("ask", "retry_escalation"):
         store.push_event(
             "questions_asked",
             build_questions_asked(token, payload.get("questions", [])),
@@ -42,7 +42,7 @@ def _emit_interaction_request(app_state: AppState, interaction: PendingInteracti
 async def enqueue_interaction(
     agent: AgentState,
     app_state: AppState,
-    interaction_type: Literal["ask"],
+    interaction_type: Literal["ask", "retry_escalation"],
     payload: dict,
 ) -> asyncio.Future:
     total = len(app_state.interactions.interaction_queue) + (1 if app_state.interactions.active_interaction else 0)

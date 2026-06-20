@@ -85,12 +85,17 @@ EventType = Literal[
     "artifact_created",
     "artifact_modified",
     "artifact_removed",
+    # M4: artifact freeze/execution lifecycle (sourced from execute_entry /
+    # execute_completion; derived state lives in ArtifactInfo.frozen/executed).
+    "execute_entry",
+    "execute_completion",
     # Settings
     # probe_completed / installation_* removed in M4: installation concept and
     # CLI binary probe deleted; provider credentials are the availability model.
     # profile_created/modified/removed/default_profile_changed removed in M5:
     # profile types deleted; replaced by connections/presets config events.
     "default_scout_concurrency_changed",
+    "retry_settings_changed",
     "workflows_listed",
     # M2: model catalog initial event (kept; provider_status_listed reshaped M5)
     "model_registry_listed",
@@ -104,9 +109,8 @@ EventType = Literal[
     "memory_bindings_listed",
     # M5: provider_status_listed retained but reshaped to per-connection
     "provider_status_listed",
-    # Memory curation — orchestrator blocked in koan_memory_propose
-    "memory_curation_started",
-    "memory_curation_cleared",
+    # memory_curation_started / memory_curation_cleared removed in M7:
+    # koan_memory_propose gate retired; no blocking curation events.
     # Memory mutation — emitted by koan_memorize / koan_forget / koan_memory_status
     "memory_entry_created",
     "memory_entry_updated",
@@ -335,7 +339,7 @@ class PhaseBoundaryEntry(KoanBaseModel):
 
 class Suggestion(KoanBaseModel):
     """A structured option presented to the user at a yield point."""
-    id: str                                # machine key (e.g. "plan-spec", "done")
+    id: str                                # machine key (e.g. "plan", "done")
     label: str                             # display text (e.g. "Write implementation plan")
     command: str = ""                      # pre-fills the chat input when the pill is clicked
 
@@ -609,6 +613,8 @@ class Settings(KoanBaseModel):
     # M5: per-connection availability (replaces per-type provider_status from M2)
     provider_status: list[ConnectionStatusWire] = []
     default_scout_concurrency: int = 8
+    max_retry_attempts: int = 10
+    max_retry_wait_seconds: float = 60.0
     workflows: list[WorkflowInfo] = []            # populated once by workflows_listed at startup
     # M2: all-providers model registry (capability/listing surface; M6 owns reshape)
     model_registry: list[ModelRegistryEntryWire] = []
@@ -641,32 +647,9 @@ class RunConfig(KoanBaseModel):
 # ---------------------------------------------------------------------------
 
 # -- Memory types -------------------------------------------------------------
-# Flat optional strings rather than a discriminated union so the wire shape
-# maps directly to MemoryCurationPage.tsx proposal types without a discriminator.
 
-def _coerce_str(v: object) -> str:
-    if isinstance(v, str):
-        return v
-    if isinstance(v, dict):
-        return json.dumps(v)
-    return str(v)
-
-class Proposal(KoanBaseModel):
-    id: str
-    op: Literal["add", "update", "deprecate"]
-    type: Literal["decision", "context", "lesson", "procedure"]
-    seq: Annotated[str, BeforeValidator(_coerce_str)] = ""
-    title: str
-    meta: Annotated[str, BeforeValidator(_coerce_str)] = ""
-    rationale: str
-    body: str = ""       # used by add and deprecate
-    before: str = ""     # used by update
-    after: str = ""      # used by update
-
-class ActiveCurationBatch(KoanBaseModel):
-    proposals: list[Proposal]
-    batch_id: str
-    context_note: str = ""
+# Proposal, ActiveCurationBatch, and _coerce_str removed in M7: the
+# koan_memory_propose approval gate is retired; curation writes memory directly.
 
 class MemoryEntrySummary(KoanBaseModel):
     seq: str
@@ -719,9 +702,20 @@ class ReflectRun(KoanBaseModel):
 # -- Basic projection types ---------------------------------------------------
 
 class ArtifactInfo(KoanBaseModel):
+    """Per-artifact metadata and lifecycle state.
+
+    path/size/modified_at are set by artifact_created/artifact_modified events.
+    frozen/executed/exec_outcome are derived exclusively from execute_entry and
+    execute_completion events -- never set directly by a writer.
+    """
+
     path: str
     size: int = 0
     modified_at: int = 0                   # milliseconds since epoch
+    # Lifecycle fields folded from execute_entry / execute_completion (M4).
+    frozen: bool = False                   # True once named for execution (execute_entry)
+    executed: bool = False                 # True after the executor exits (execute_completion)
+    exec_outcome: Literal["", "clean", "non_conforming"] = ""
 
 class CompletionInfo(KoanBaseModel):
     success: bool
@@ -751,7 +745,7 @@ class SteeringMessage(KoanBaseModel):
 
 class PhaseInfo(KoanBaseModel):
     """A phase the user can transition to, as shown in the command palette."""
-    id: str                                # phase key (e.g. "plan-spec")
+    id: str                                # phase key (e.g. "plan")
     description: str                       # one-line description from the workflow
 
 class WorkflowInfo(KoanBaseModel):
@@ -782,7 +776,7 @@ class Run(KoanBaseModel):
     completion: CompletionInfo | None = None
     steering: list[SteeringMessage] = []   # pending steering messages shown above chat
     active_yield: ActiveYield | None = None  # non-None while orchestrator is in koan_yield
-    active_curation_batch: ActiveCurationBatch | None = None  # non-None while orchestrator is in koan_memory_propose
+    # active_curation_batch removed in M7: koan_memory_propose gate retired.
 
 class Projection(KoanBaseModel):
     settings: Settings = Field(default_factory=Settings)
@@ -1041,7 +1035,6 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 new_run = projection.run.model_copy(update={
                     "phase": payload.get("phase", ""),
                     "active_yield": None,          # clear yield when a new phase starts
-                    "active_curation_batch": None,  # clear any pending curation on phase transition
                 })
                 return projection.model_copy(update={"run": new_run})
 
@@ -1057,7 +1050,6 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 new_run = projection.run.model_copy(update={
                     "completion": completion,
                     "active_yield": None,          # clear yield on completion
-                    "active_curation_batch": None,  # clear any pending curation on completion
                 })
                 return projection.model_copy(update={"run": new_run})
 
@@ -2158,6 +2150,38 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 new_run = projection.run.model_copy(update={"artifacts": new_artifacts})
                 return projection.model_copy(update={"run": new_run})
 
+            case "execute_entry":
+                # Freeze the named plan artifact. No-op when run is None or the
+                # artifact is not yet in the projection (it will be folded on the
+                # next artifact_created/modified event after the write).
+                if projection.run is None:
+                    return projection
+                plan_file = payload.get("plan_file", "")
+                existing = projection.run.artifacts.get(plan_file)
+                if existing is None:
+                    existing = ArtifactInfo(path=plan_file)
+                new_info = existing.model_copy(update={"frozen": True})
+                new_artifacts = dict(projection.run.artifacts)
+                new_artifacts[plan_file] = new_info
+                new_run = projection.run.model_copy(update={"artifacts": new_artifacts})
+                return projection.model_copy(update={"run": new_run})
+
+            case "execute_completion":
+                # Mark the plan as executed and record the exit-based outcome.
+                # The plan remains frozen; executed=True prevents a repeat execution.
+                if projection.run is None:
+                    return projection
+                plan_file = payload.get("plan_file", "")
+                outcome = payload.get("outcome", "")
+                existing = projection.run.artifacts.get(plan_file)
+                if existing is None:
+                    existing = ArtifactInfo(path=plan_file)
+                new_info = existing.model_copy(update={"executed": True, "exec_outcome": outcome})
+                new_artifacts = dict(projection.run.artifacts)
+                new_artifacts[plan_file] = new_info
+                new_run = projection.run.model_copy(update={"artifacts": new_artifacts})
+                return projection.model_copy(update={"run": new_run})
+
             # ── Settings ──────────────────────────────────────────────────
 
             # probe_completed / installation_* fold cases removed in M4:
@@ -2234,6 +2258,13 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
             case "default_scout_concurrency_changed":
                 new_settings = projection.settings.model_copy(update={
                     "default_scout_concurrency": payload.get("value", 8),
+                })
+                return projection.model_copy(update={"settings": new_settings})
+
+            case "retry_settings_changed":
+                new_settings = projection.settings.model_copy(update={
+                    "max_retry_attempts": payload.get("max_retry_attempts", 10),
+                    "max_retry_wait_seconds": payload.get("max_retry_wait_seconds", 60.0),
                 })
                 return projection.model_copy(update={"settings": new_settings})
 
@@ -2377,23 +2408,9 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 return projection.model_copy(update={"run": new_run})
 
             # ── Memory curation ────────────────────────────────────────────
-
-            case "memory_curation_started":
-                if projection.run is None:
-                    return projection
-                batch = ActiveCurationBatch.model_validate(payload["batch"])
-                new_run = projection.run.model_copy(update={
-                    "active_curation_batch": batch,
-                })
-                return projection.model_copy(update={"run": new_run})
-
-            case "memory_curation_cleared":
-                if projection.run is None:
-                    return projection
-                new_run = projection.run.model_copy(update={
-                    "active_curation_batch": None,
-                })
-                return projection.model_copy(update={"run": new_run})
+            # memory_curation_started / memory_curation_cleared fold cases
+            # removed in M7: the koan_memory_propose approval gate is retired;
+            # curation writes memory directly via koan_memorize/koan_forget.
 
             # ── Memory mutations ───────────────────────────────────────────
 

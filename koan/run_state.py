@@ -1,5 +1,7 @@
-# On-disk state I/O for run and story state files.
+# On-disk state I/O for run state files.
 # All JSON writes use atomic tmp+rename to prevent partial reads.
+# Story state I/O (load/save_story_state, load_all_story_states, discover_story_ids)
+# deleted in M1: the legacy "execution" phase that used them is removed.
 
 from __future__ import annotations
 
@@ -44,41 +46,6 @@ async def save_run_state(run_dir: str | Path, state: dict) -> None:
     await atomic_write_json(Path(run_dir) / "run-state.json", state)
 
 
-async def load_story_state(run_dir: str | Path, story_id: str) -> dict:
-    p = Path(run_dir) / "stories" / story_id / "state.json"
-    try:
-        async with aiofiles.open(p, "r") as f:
-            data = json.loads(await f.read())
-        log.debug("load_story_state: path=%s story_id=%s", p, story_id)
-        return data
-    except (FileNotFoundError, json.JSONDecodeError) as exc:
-        log.warning("load_story_state failed for %s: %s", p, exc)
-        return {}
-
-
-async def save_story_state(
-    run_dir: str | Path, story_id: str, updates: dict
-) -> None:
-    existing = await load_story_state(run_dir, story_id)
-    merged = {**existing, **updates}
-    await atomic_write_json(
-        Path(run_dir) / "stories" / story_id / "state.json", merged
-    )
-
-
-async def load_all_story_states(run_dir: str | Path) -> list[dict]:
-    run = await load_run_state(run_dir)
-    story_ids = [s.get("id", s) if isinstance(s, dict) else s
-                 for s in run.get("stories", [])]
-    results = []
-    for sid in story_ids:
-        st = await load_story_state(run_dir, sid)
-        if st:
-            st.setdefault("storyId", sid)
-            results.append(st)
-    return results
-
-
 async def ensure_subagent_directory(
     run_dir: str | Path, label: str
 ) -> str:
@@ -87,10 +54,3 @@ async def ensure_subagent_directory(
     return str(d)
 
 
-async def discover_story_ids(run_dir: str | Path) -> list[str]:
-    stories_dir = Path(run_dir) / "stories"
-    if not stories_dir.is_dir():
-        return []
-    return sorted(
-        d.name for d in stories_dir.iterdir() if d.is_dir()
-    )

@@ -246,6 +246,146 @@ async def resolve_turn_outcome(
     return ("inject", prompt)
 
 
+# -- Retry helper -------------------------------------------------------------
+
+
+async def _stream_model_request_with_retry(
+    node: Any,
+    agent_run: Any,
+    agent_state: "AgentState",
+    app_state: "AppState",
+) -> "AsyncIterator[Any]":
+    """Wrap ModelRequestNode.stream in bounded exponential-backoff retry.
+
+    On a transient provider error (classify_provider_error returns "transient"),
+    the helper sleeps compute_backoff_seconds(attempt, cap) and retries up to
+    max_retry_attempts times. Retry bounds are read from
+    app_state.provider_config.config at retry time (live config, not frozen) so
+    a user can adjust them mid-run via "Wait longer" at the escalation prompt.
+
+    On budget exhaustion, an escalation interaction is enqueued via
+    enqueue_interaction(agent_state, app_state, "retry_escalation", ...) and
+    the helper blocks until the user chooses:
+      - "abort"  -> raise AgentError(provider_retry_aborted)
+      - "wait"   -> reset the attempt counter and resume retrying with current bounds
+      - "proceed_unreviewed" (reviewer role only) -> raise AgentError(reviewer_proceeded_unreviewed)
+
+    Unexpected errors fail fast: re-raised unchanged after emitting a full
+    stack trace to the logger.
+
+    Yields pydantic-ai stream events (PartStartEvent / PartDeltaEvent /
+    PartEndEvent) so the caller can translate them into StreamEvents as before.
+    """
+    import asyncio
+
+    from ..logger import get_logger
+    from .retry import classify_provider_error, compute_backoff_seconds
+    from ..agents.base import AgentDiagnostic, AgentError
+    from ..web.interactions import enqueue_interaction
+
+    log = get_logger("loop.retry")
+
+    attempt = 0
+
+    while True:
+        try:
+            async with node.stream(agent_run.ctx) as stream:
+                async for ev in stream:
+                    yield ev
+            return  # success -- no exception
+        except BaseException as err:
+            kind = classify_provider_error(err)
+            if kind != "transient":
+                # Unexpected errors fail fast with a full traceback.
+                log.exception(
+                    "provider error is not transient -- failing fast | agent=%s err=%r",
+                    agent_state.agent_id[:8],
+                    err,
+                    exc_info=True,
+                )
+                raise
+
+        # Transient error path.
+        attempt += 1
+        cfg = app_state.provider_config.config
+        max_attempts = cfg.max_retry_attempts
+        cap = cfg.max_retry_wait_seconds
+
+        if attempt <= max_attempts:
+            wait = compute_backoff_seconds(attempt, cap)
+            log.warning(
+                "transient provider error on attempt %d/%d -- sleeping %.1fs | agent=%s",
+                attempt,
+                max_attempts,
+                wait,
+                agent_state.agent_id[:8],
+            )
+            await asyncio.sleep(wait)
+            continue
+
+        # Budget exhausted -- escalate to the user.
+        log.warning(
+            "retry budget exhausted after %d attempts -- escalating | agent=%s",
+            attempt - 1,
+            agent_state.agent_id[:8],
+        )
+
+        is_reviewer = (agent_state.role == "reviewer")
+        options_list = [
+            {"value": "abort", "label": "Abort this agent run"},
+            {"value": "wait", "label": "Wait and keep retrying (resets the attempt counter)"},
+        ]
+        if is_reviewer:
+            options_list.append(
+                {"value": "proceed_unreviewed", "label": "Proceed without review (skip this review step)"},
+            )
+
+        question = {
+            "question": (
+                f"Provider is unresponsive after {attempt - 1} retry attempts. "
+                "What would you like to do?"
+            ),
+            "options": options_list,
+        }
+
+        future = await enqueue_interaction(
+            agent_state,
+            app_state,
+            "retry_escalation",
+            {"questions": [question]},
+        )
+        result = await future
+        choice_val = result.get("answers", [{}])[0].get("answer", "abort")
+
+        if choice_val == "wait":
+            # Reset attempt counter so the user gets the full budget again.
+            attempt = 0
+            cfg2 = app_state.provider_config.config
+            log.info(
+                "user chose wait -- resetting retry counter | agent=%s new_max=%d cap=%.1f",
+                agent_state.agent_id[:8],
+                cfg2.max_retry_attempts,
+                cfg2.max_retry_wait_seconds,
+            )
+            continue
+
+        if choice_val == "proceed_unreviewed" and is_reviewer:
+            raise AgentError(AgentDiagnostic(
+                code="reviewer_proceeded_unreviewed",
+                agent=agent_state.agent_id,
+                stage="stream",
+                message="reviewer_proceeded_unreviewed: user chose to proceed without review after retry budget exhausted",
+            ))
+
+        # Default: abort.
+        raise AgentError(AgentDiagnostic(
+            code="provider_retry_aborted",
+            agent=agent_state.agent_id,
+            stage="stream",
+            message=f"provider_retry_aborted: user aborted after {attempt - 1} retry attempts",
+        ))
+
+
 # -- Multi-turn loop -----------------------------------------------------------
 
 
@@ -339,72 +479,73 @@ async def run_agent_loop(
             async for node in agent_run:
 
                 if isinstance(node, ModelRequestNode):
-                    async with node.stream(agent_run.ctx) as stream:
-                        async for ev in stream:
-                            if isinstance(ev, PartStartEvent):
-                                part = ev.part
-                                if isinstance(part, ToolCallPart):
-                                    yield StreamEvent(
-                                        type="tool_start",
-                                        tool_name=part.tool_name,
-                                        tool_use_id=part.tool_call_id,
-                                        block_index=ev.index,
-                                    )
-                                # Gemini delivers the first text/thinking chunk
-                                # inside the PartStartEvent rather than a follow-up
-                                # PartDeltaEvent. Emit it now so it is not dropped;
-                                # PartDeltaEvents carry the remainder without overlap.
-                                elif isinstance(part, TextPart) and part.content:
-                                    yield StreamEvent(
-                                        type="token_delta",
-                                        content=part.content,
-                                    )
-                                elif isinstance(part, ThinkingPart) and part.content:
+                    async for ev in _stream_model_request_with_retry(
+                        node, agent_run, agent_state, app_state,
+                    ):
+                        if isinstance(ev, PartStartEvent):
+                            part = ev.part
+                            if isinstance(part, ToolCallPart):
+                                yield StreamEvent(
+                                    type="tool_start",
+                                    tool_name=part.tool_name,
+                                    tool_use_id=part.tool_call_id,
+                                    block_index=ev.index,
+                                )
+                            # Gemini delivers the first text/thinking chunk
+                            # inside the PartStartEvent rather than a follow-up
+                            # PartDeltaEvent. Emit it now so it is not dropped;
+                            # PartDeltaEvents carry the remainder without overlap.
+                            elif isinstance(part, TextPart) and part.content:
+                                yield StreamEvent(
+                                    type="token_delta",
+                                    content=part.content,
+                                )
+                            elif isinstance(part, ThinkingPart) and part.content:
+                                yield StreamEvent(
+                                    type="thinking",
+                                    content=part.content,
+                                    is_thinking=True,
+                                )
+                        elif isinstance(ev, PartDeltaEvent):
+                            delta = ev.delta
+                            if isinstance(delta, TextPartDelta):
+                                yield StreamEvent(
+                                    type="token_delta",
+                                    content=delta.content_delta,
+                                )
+                            elif isinstance(delta, ThinkingPartDelta):
+                                if delta.content_delta:
                                     yield StreamEvent(
                                         type="thinking",
-                                        content=part.content,
+                                        content=delta.content_delta,
                                         is_thinking=True,
                                     )
-                            elif isinstance(ev, PartDeltaEvent):
-                                delta = ev.delta
-                                if isinstance(delta, TextPartDelta):
-                                    yield StreamEvent(
-                                        type="token_delta",
-                                        content=delta.content_delta,
+                            elif isinstance(delta, ToolCallPartDelta):
+                                if delta.args_delta is not None:
+                                    args_str = (
+                                        delta.args_delta
+                                        if isinstance(delta.args_delta, str)
+                                        else str(delta.args_delta)
                                     )
-                                elif isinstance(delta, ThinkingPartDelta):
-                                    if delta.content_delta:
-                                        yield StreamEvent(
-                                            type="thinking",
-                                            content=delta.content_delta,
-                                            is_thinking=True,
-                                        )
-                                elif isinstance(delta, ToolCallPartDelta):
-                                    if delta.args_delta is not None:
-                                        args_str = (
-                                            delta.args_delta
-                                            if isinstance(delta.args_delta, str)
-                                            else str(delta.args_delta)
-                                        )
-                                        yield StreamEvent(
-                                            type="tool_input_delta",
-                                            content=args_str,
-                                            block_index=ev.index,
-                                        )
-                            elif isinstance(ev, PartEndEvent):
-                                part = ev.part
-                                if isinstance(part, ToolCallPart):
                                     yield StreamEvent(
-                                        type="tool_stop",
+                                        type="tool_input_delta",
+                                        content=args_str,
                                         block_index=ev.index,
                                     )
-                                if isinstance(part, TextPart) and part.content:
-                                    # Capture the full assistant text for the hand-back check.
-                                    final_text = part.content
-                                    yield StreamEvent(
-                                        type="assistant_text",
-                                        content=part.content,
-                                    )
+                        elif isinstance(ev, PartEndEvent):
+                            part = ev.part
+                            if isinstance(part, ToolCallPart):
+                                yield StreamEvent(
+                                    type="tool_stop",
+                                    block_index=ev.index,
+                                )
+                            if isinstance(part, TextPart) and part.content:
+                                # Capture the full assistant text for the hand-back check.
+                                final_text = part.content
+                                yield StreamEvent(
+                                    type="assistant_text",
+                                    content=part.content,
+                                )
 
                 elif isinstance(node, CallToolsNode):
                     async with node.stream(agent_run.ctx) as events_iter:

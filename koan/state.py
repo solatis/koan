@@ -144,9 +144,8 @@ class InteractionState:
     # build_phase_suggestions is the fallback when None (koan_suggest_next never
     # called for this hand-back).
     next_suggestions: list[dict] | None = None
-    # Separate future for koan_memory_propose -- same isolation rationale as
-    # the removed artifact_review_future (koan_artifact_propose is gone in M5).
-    memory_propose_future: asyncio.Future | None = None
+    # memory_propose_future removed in M7: the koan_memory_propose tool is
+    # retired; curation writes memory directly via koan_memorize/koan_forget.
     # Background reflect task and its session id for the cancel path.
     reflect_task: asyncio.Task | None = None
     reflect_session_id: str | None = None

@@ -104,6 +104,11 @@ def _build_phase_ctx(task: dict, subagent_dir: str) -> PhaseContext:
         scout_question=task.get("question"),
         scout_investigator_role=task.get("investigator_role"),
         retry_context=task.get("retryContext") or task.get("retry_context"),
+        # Reviewer sub-agent fields: populated from task.json written by
+        # _spawn_reviewer in koan/tools/koan_tools.py.
+        reviewer_target=task.get("reviewer_target"),
+        reviewer_prompt=task.get("reviewer_prompt"),
+        reviewer_predecessor_chain=task.get("reviewer_predecessor_chain", []),
     )
 
 

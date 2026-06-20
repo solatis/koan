@@ -39,7 +39,7 @@ def main() -> None:
     run_parser.add_argument("--yolo", action="store_true",
                             help="Skip all agent permission prompts (dangerous)")
     run_parser.add_argument("--directed-phases", nargs="+", default=None,
-                            help="Fixed phase sequence for eval runs (e.g. intake plan-spec done)")
+                            help="Fixed phase sequence for eval runs (e.g. intake plan done)")
     # default=None rather than default=[] because argparse action="append" mutates
     # the default in place; a shared [] would accumulate across parse calls.
     run_parser.add_argument(

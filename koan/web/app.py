@@ -51,6 +51,7 @@ from ..events import (
     build_memory_bindings_listed,
     build_model_capabilities_listed,
     build_default_scout_concurrency_changed,
+    build_retry_settings_changed,
     build_workflows_listed,
     build_reflect_started,
     build_reflect_trace,
@@ -873,52 +874,9 @@ async def api_memory_summary(r: Request) -> Response:
     return JSONResponse({"summary": store.get_summary() or ""})
 
 
-# -- Memory curation submit ---------------------------------------------------
-
-async def api_memory_curation_submit(r: Request) -> Response:
-    """Resolve the koan_memory_propose future with the user's curation decisions.
-
-    Commits per-decision attachment uploads before resolving so the tool handler
-    can find files in run_dir when it calls _render_curation_payload.
-    Sets the raw decisions list on the future (rendering happens inside
-    koan_memory_propose where agent.runner_type and app_state.uploads are in scope).
-    """
-    body = await r.json()
-    batch_id = body.get("batch_id", "")
-    decisions = body.get("decisions", [])
-
-    st = _app_state(r)
-
-    # Validate active batch exists and batch_id matches.
-    active_run = st.projection_store.projection.run
-    active_batch = active_run.active_curation_batch if active_run else None
-    if active_batch is None or active_batch.batch_id != batch_id:
-        return JSONResponse({"error": "no_active_curation"}, status_code=409)
-
-    future = st.interactions.memory_propose_future
-    if future is None or future.done():
-        return JSONResponse({"error": "no_active_propose"}, status_code=409)
-
-    # Collect all attachment IDs from all decisions and commit them upfront.
-    all_ids: list[str] = []
-    for d in decisions:
-        if isinstance(d, dict):
-            all_ids.extend(d.get("attachments") or [])
-
-    if all_ids:
-        if st.run.run_dir is None:
-            return JSONResponse({"error": "no_run"}, status_code=409)
-        from .uploads import commit_to_run
-        commit_to_run(st.uploads, all_ids, st.run.run_dir)
-
-    log.info(
-        "memory curation submitted: batch_id=%s decisions=%d",
-        batch_id, len(decisions),
-    )
-    # Pass raw decisions list; koan_memory_propose renders with uploads context.
-    future.set_result(decisions)
-    return JSONResponse({"ok": True})
-
+# api_memory_curation_submit removed in M7: the koan_memory_propose approval
+# gate is retired; curation writes memory directly via koan_memorize/koan_forget.
+# The /api/memory/curation route is removed accordingly.
 
 # -- Reflect endpoints --------------------------------------------------------
 
@@ -1089,7 +1047,7 @@ async def api_answer(r: Request) -> Response:
 
     st = _app_state(r)
     active = st.interactions.active_interaction
-    if active is None or active.type != "ask" or active.token != token:
+    if active is None or active.type not in ("ask", "retry_escalation") or active.token != token:
         return _stale_response()
 
     interaction = active
@@ -1537,6 +1495,12 @@ def _push_initial_config_events(st: AppState) -> None:
         build_default_scout_concurrency_changed(cfg.scout_concurrency),
     )
 
+    # Retry settings.
+    store.push_event(
+        "retry_settings_changed",
+        build_retry_settings_changed(cfg.max_retry_attempts, cfg.max_retry_wait_seconds),
+    )
+
     # Workflows registry: static for the process lifetime.
     from ..lib.workflows import WORKFLOWS as _WORKFLOWS
     workflows_payload: list[dict] = []
@@ -1721,6 +1685,8 @@ async def api_settings_body(r: Request) -> Response:
         "presets": {name: _serialize_preset(p) for name, p in cfg.presets.items()},
         "active": cfg.active,
         "scoutConcurrency": cfg.scout_concurrency,
+        "maxRetryAttempts": cfg.max_retry_attempts,
+        "maxRetryWaitSeconds": cfg.max_retry_wait_seconds,
     })
 
 
@@ -1744,6 +1710,32 @@ async def api_settings_scout_concurrency(r: Request) -> Response:
     from ..config import save_koan_config
     await save_koan_config(st.provider_config.config)
     st.projection_store.push_event("default_scout_concurrency_changed", build_default_scout_concurrency_changed(value))
+    return JSONResponse({"ok": True})
+
+
+async def api_settings_retry(r: Request) -> Response:
+    body = await r.json()
+    max_retry_attempts = body.get("max_retry_attempts")
+    max_retry_wait_seconds = body.get("max_retry_wait_seconds")
+    if not isinstance(max_retry_attempts, int) or max_retry_attempts < 1 or max_retry_attempts > 100:
+        return JSONResponse(
+            {"error": "validation_error", "message": "max_retry_attempts must be an integer between 1 and 100"},
+            status_code=422,
+        )
+    if not isinstance(max_retry_wait_seconds, (int, float)) or isinstance(max_retry_wait_seconds, bool) or max_retry_wait_seconds < 1 or max_retry_wait_seconds > 600:
+        return JSONResponse(
+            {"error": "validation_error", "message": "max_retry_wait_seconds must be a number between 1 and 600"},
+            status_code=422,
+        )
+    st = _app_state(r)
+    st.provider_config.config.max_retry_attempts = int(max_retry_attempts)
+    st.provider_config.config.max_retry_wait_seconds = float(max_retry_wait_seconds)
+    from ..config import save_koan_config
+    await save_koan_config(st.provider_config.config)
+    st.projection_store.push_event(
+        "retry_settings_changed",
+        build_retry_settings_changed(int(max_retry_attempts), float(max_retry_wait_seconds)),
+    )
     return JSONResponse({"ok": True})
 
 
@@ -2526,7 +2518,7 @@ def create_app(app_state: AppState) -> Starlette:
         Route("/api/memory/summary", api_memory_summary, methods=["GET"]),
         Route("/api/memory/reflect", api_memory_reflect_start, methods=["POST"]),
         Route("/api/memory/reflect", api_memory_reflect_cancel, methods=["DELETE"]),
-        Route("/api/memory/curation", api_memory_curation_submit, methods=["POST"]),
+        # /api/memory/curation removed in M7: koan_memory_propose gate retired.
         Route("/api/artifacts", api_artifacts_list),
         Route("/api/artifacts/{path:path}", api_artifact_content),
         Route("/api/eval-harvest", api_eval_harvest, methods=["GET"]),
@@ -2536,6 +2528,7 @@ def create_app(app_state: AppState) -> Starlette:
         # /api/agents removed in M4: installation concept fully deleted.
         Route("/api/settings/body", api_settings_body, methods=["GET"]),
         Route("/api/settings/scout-concurrency", api_settings_scout_concurrency, methods=["PUT"]),
+        Route("/api/settings/retry", api_settings_retry, methods=["PUT"]),
         # /api/settings/profile-form removed in M5: profile form endpoints deleted.
         # /api/settings/provider routes removed in M5: provider mutation is M6 scope.
         # -- M6: config mutation routes --

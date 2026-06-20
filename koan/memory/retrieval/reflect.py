@@ -209,9 +209,14 @@ def _build_agent(model: "ModelSpec") -> Agent[_Deps, None]:
     """Build the reflect agent using the explicit reflect_llm ModelSpec.
 
     The model/key arrive via the explicit model parameter; no module global
-    is read. Inference settings are preserved: temperature 0.0.
+    is read. Model settings (thinking + caching, baked into the spec at flatten
+    time) come from the spec via build_model_settings. Temperature is left to
+    the provider/PydanticAI default -- forcing 0.0 alongside thinking/adaptive
+    mode causes an Anthropic 400.
     """
-    from ...agents.adapter import build_model
+    # Late-binding import so monkeypatching adapter attributes in tests is observed
+    # at call time (same pattern used throughout the agent layer).
+    from ...agents.adapter import build_model, build_model_settings
 
     def _reject_text(text: str) -> str:
         raise ModelRetry("Do not produce text output. Call the `done` tool instead.")
@@ -220,7 +225,7 @@ def _build_agent(model: "ModelSpec") -> Agent[_Deps, None]:
     agent: Agent[_Deps, str] = Agent(
         model=built_model,
         system_prompt=SYSTEM_PROMPT,
-        model_settings={**model.settings, "temperature": 0.0},
+        model_settings=build_model_settings(model),
         output_type=TextOutput(_reject_text),
     )
 

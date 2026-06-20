@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import tempfile
 import uuid
@@ -220,52 +219,7 @@ def upload_ids_to_blocks(
     return blocks, manifest
 
 
-def _render_curation_payload(
-    batch: "ActiveCurationBatch",
-    decisions: list[dict],
-    uploads: UploadState,
-    run_dir: str,
-    runner_type: str,
-) -> tuple[list[ContentBlock], list[dict]]:
-    """Render a curation payload into MCP content blocks and an audit manifest.
-
-    Block 0 is always the JSON blob (preserves json.loads(result[0].text) parse
-    in the orchestrator). Per-decision attachment sections follow as separate
-    blocks so the orchestrator receives file content adjacent to each decision.
-
-    Moved from mcp_endpoint.py during the MCP-transport removal.
-    """
-    by_id = {p.id: p for p in batch.proposals}
-    items = []
-    for d in decisions:
-        pid = d.get("proposal_id", "")
-        p = by_id.get(pid)
-        if p is None:
-            continue
-        items.append({
-            "proposal_id": pid,
-            "op": p.op,
-            "seq": p.seq,
-            "type": p.type,
-            "title": p.title,
-            "decision": d.get("decision", "rejected"),
-            "feedback": d.get("feedback", ""),
-        })
-    payload_json = {"batch_id": batch.batch_id, "decisions": items}
-
-    blocks: list[ContentBlock] = [TextContent(type="text", text=json.dumps(payload_json, indent=2))]
-    manifest: list[dict] = []
-
-    # Append per-decision attachment sections after the JSON blob.
-    # The label block preserves adjacency between context and attachments
-    # so the orchestrator can correlate files with the decision they annotate.
-    for d in decisions:
-        attach_ids = d.get("attachments") or []
-        if attach_ids:
-            pid = d.get("proposal_id", "?")
-            blocks.append(TextContent(type="text", text=f"-- Attachments for proposal {pid} --"))
-            bs, ms = upload_ids_to_blocks(uploads, run_dir, attach_ids, runner_type)
-            blocks.extend(bs)
-            manifest.extend(ms)
-
-    return blocks, manifest
+# _render_curation_payload removed in M7: the koan_memory_propose approval gate
+# is retired; no curation payload is built or delivered to the orchestrator.
+# upload_ids_to_blocks is retained -- it is still used by the chat-attachment
+# delivery path (agents/loop.py) and the steering-drain path (agents/steering.py).

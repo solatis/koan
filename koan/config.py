@@ -57,6 +57,8 @@ class KoanConfig:
     configured_models: list[ConfiguredModel] = field(default_factory=list)
     memory: MemoryBindings | None = None
     scout_concurrency: int = 8
+    max_retry_attempts: int = 10
+    max_retry_wait_seconds: float = 60.0
     # Preset map: '$'-prefixed keys are reserved for the system (brief D7).
     presets: dict[str, Preset] = field(default_factory=dict)
     active: str = "$last"
@@ -254,6 +256,30 @@ def _parse_scout_concurrency(raw: dict) -> int:
     return 8
 
 
+def _parse_max_retry_attempts(raw: dict) -> int:
+    """Read max_retry_attempts from the parsed config dict; default 10 on missing or invalid input."""
+    if not isinstance(raw, dict):
+        return 10
+    v = raw.get("max_retry_attempts")
+    if isinstance(v, bool):
+        return 10
+    if isinstance(v, int) and v > 0:
+        return v
+    return 10
+
+
+def _parse_max_retry_wait_seconds(raw: dict) -> float:
+    """Read max_retry_wait_seconds from the parsed config dict; default 60.0 on missing or invalid input."""
+    if not isinstance(raw, dict):
+        return 60.0
+    v = raw.get("max_retry_wait_seconds")
+    if isinstance(v, bool):
+        return 60.0
+    if isinstance(v, (int, float)) and v > 0:
+        return float(v)
+    return 60.0
+
+
 # -- Loaders / savers ---------------------------------------------------------
 
 async def load_koan_config() -> KoanConfig:
@@ -292,6 +318,8 @@ async def load_koan_config() -> KoanConfig:
         configured_models=_parse_configured_models(parsed.get("configured_models", [])),
         memory=_parse_memory(parsed.get("memory")),
         scout_concurrency=_parse_scout_concurrency(parsed),
+        max_retry_attempts=_parse_max_retry_attempts(parsed),
+        max_retry_wait_seconds=_parse_max_retry_wait_seconds(parsed),
         presets=_parse_presets(parsed.get("presets", {})),
         active=active,
     )
@@ -359,6 +387,8 @@ def _config_to_dict(config: "KoanConfig") -> dict:
             data["memory"] = mem
 
     data["scout_concurrency"] = config.scout_concurrency
+    data["max_retry_attempts"] = config.max_retry_attempts
+    data["max_retry_wait_seconds"] = config.max_retry_wait_seconds
 
     data["presets"] = {
         preset_name: {

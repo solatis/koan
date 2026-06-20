@@ -28,7 +28,7 @@ def build_run_started(
 
 def build_run_cleared() -> dict:
     # Empty payload: run_cleared carries no fields. Follows the same convention
-    # as build_agents_cleared, build_memory_curation_cleared, build_reflect_cleared.
+    # as build_agents_cleared and build_reflect_cleared.
     return {}
 
 
@@ -409,6 +409,13 @@ def build_default_scout_concurrency_changed(value: int) -> dict:
     return {"value": value}
 
 
+def build_retry_settings_changed(max_retry_attempts: int, max_retry_wait_seconds: float) -> dict:
+    return {
+        "max_retry_attempts": max_retry_attempts,
+        "max_retry_wait_seconds": max_retry_wait_seconds,
+    }
+
+
 def build_workflows_listed(workflows: list[dict]) -> dict:
     """Build workflows_listed event payload.
 
@@ -423,16 +430,9 @@ def build_workflows_listed(workflows: list[dict]) -> dict:
     return {"workflows": workflows}
 
 
-# -- Memory curation event builders -------------------------------------------
-
-def build_memory_curation_started(batch: dict) -> dict:
-    """Payload for memory_curation_started. batch is ActiveCurationBatch.to_wire()."""
-    return {"batch": batch}
-
-
-def build_memory_curation_cleared() -> dict:
-    return {}
-
+# Memory curation event builders (build_memory_curation_started /
+# build_memory_curation_cleared) removed in M7: the koan_memory_propose
+# approval gate is retired; no blocking curation events are emitted.
 
 # -- Memory mutation event builders -------------------------------------------
 
