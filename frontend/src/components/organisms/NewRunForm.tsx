@@ -113,7 +113,7 @@ const PaperclipIcon = () => (
 )
 
 /**
- * Convert a workflow id (e.g. 'plan', 'milestone-spec') into a Title-cased
+ * Convert a workflow id (e.g. 'plan', 'milestone') into a Title-cased
  * display name. Splits on '-' and capitalises each token; keeps the rest
  * of each token lowercase so ids like 'PLAN' still render as 'Plan'.
  */

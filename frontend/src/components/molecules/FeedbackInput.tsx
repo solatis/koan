@@ -24,8 +24,8 @@ interface FeedbackInputProps {
  * Transform a slash-command input into a structured chat message
  * the orchestrator (an LLM) parses to decide which MCP tool to call.
  *
- * - Phase commands (e.g. `/plan-spec instruction`) become
- *   "The user wishes to transition to phase `plan-spec` ..."
+ * - Phase commands (e.g. `/plan instruction`) become
+ *   "The user wishes to transition to phase `plan` ..."
  * - Workflow commands (e.g. `/workflow:plan instruction`) become
  *   "The user wishes to switch to workflow `plan` ..."
  *

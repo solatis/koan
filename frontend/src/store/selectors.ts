@@ -2,8 +2,9 @@ import { useMemo } from 'react'
 import { createSelector } from 'reselect'
 import { useStore, KoanState, ArtifactInfo, ConversationEntry,
          Conversation, SteeringMessage, Agent, Focus, CompletionInfo,
-         MemoryEntrySummary, MemoryType, ReflectRun, ActiveCurationBatch,
+         MemoryEntrySummary, MemoryType, ReflectRun,
          Notification, ClientToast } from './index'
+// ActiveCurationBatch import removed in M7: koan_memory_propose gate retired.
 
 // ---------------------------------------------------------------------------
 // Artifact tree selector (pre-existing)
@@ -160,7 +161,7 @@ export const selectCompletion = (s: KoanState): CompletionInfo | null =>
   s.run?.completion ?? null
 
 /**
- * The active phase string for the current run (e.g. 'plan-spec').
+ * The active phase string for the current run (e.g. 'plan').
  * Empty string when there is no active run.
  */
 export const selectPhase = (s: KoanState): string =>
@@ -210,12 +211,12 @@ const selectWorkflows = (s: KoanState) => s.settings.workflows
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Memory / curation / notification leaf selectors
+// Memory / notification leaf selectors
 //
-// These serve MemoryRoutes connected wrappers, CurationTakeover, Notification,
-// and FeedbackInput. Each returns a primitive or a stable slice reference.
-// Structural sharing (M2 Immer applicator) keeps these references stable
-// across patches that do not touch the slice.
+// These serve MemoryRoutes connected wrappers, Notification, and FeedbackInput.
+// Each returns a primitive or a stable slice reference. Structural sharing
+// (M2 Immer applicator) keeps these references stable across patches that do
+// not touch the slice. Curation takeover removed in M7.
 // ---------------------------------------------------------------------------
 
 /**
@@ -246,24 +247,8 @@ export const selectMemorySidebar = (s: KoanState): { search: string; filter: 'al
 export const selectReflect = (s: KoanState): ReflectRun | null =>
   s.reflect
 
-/**
- * The active curation batch proposed by koan_memory_propose.
- * Returns null when there is no active run or no batch is pending.
- * Uses `?? null` rather than `?? undefined` so the return type is a stable
- * literal (Object.is(null, null) === true) when the run is absent.
- */
-export const selectActiveCurationBatch = (s: KoanState): ActiveCurationBatch | null =>
-  s.run?.activeCurationBatch ?? null
-
-/**
- * Per-proposal decision/feedback draft for the current curation batch.
- * Keyed by proposal id; seeded by resetMemoryCurationDraft on batch mount.
- * Referentially stable across patches that do not touch memoryCurationDraft.
- */
-export const selectMemoryCurationDraft = (
-  s: KoanState
-): Record<string, { decision?: 'approved' | 'rejected'; feedback: string }> =>
-  s.memoryCurationDraft
+// selectActiveCurationBatch and selectMemoryCurationDraft removed in M7:
+// koan_memory_propose gate retired; no active curation batch or draft state.
 
 /**
  * Server-synced notification list (append-only from projection patches).

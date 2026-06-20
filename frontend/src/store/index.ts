@@ -148,6 +148,8 @@ export interface Settings {
   // installations removed in M4: agent installation concept deleted.
   // M5: profiles/default_profile removed from the backend Settings projection.
   defaultScoutConcurrency: number
+  maxRetryAttempts: number
+  maxRetryWaitSeconds: number
   workflows: WorkflowInfo[]   // populated once at startup by workflows_listed; static for the process lifetime
   connections: ConnectionInfo[]
   configuredModels: ConfiguredModelInfo[]
@@ -292,24 +294,8 @@ export interface MemoryEntrySummary {
   modifiedMs: number
 }
 
-export interface Proposal {
-  id: string
-  op: 'add' | 'update' | 'deprecate'
-  type: MemoryType
-  seq: string
-  title: string
-  meta: string
-  rationale: string
-  body?: string
-  before?: string
-  after?: string
-}
-
-export interface ActiveCurationBatch {
-  proposals: Proposal[]
-  batchId: string
-  contextNote: string
-}
+// Proposal and ActiveCurationBatch interfaces removed in M7: the
+// koan_memory_propose approval gate is retired; curation writes memory directly.
 
 export interface MemoryState {
   entries: Record<string, MemoryEntrySummary>
@@ -460,7 +446,7 @@ export interface Run {
   completion: CompletionInfo | null
   steering: SteeringMessage[]
   activeYield: ActiveYield | null  // non-null while orchestrator is blocked in koan_yield
-  activeCurationBatch: ActiveCurationBatch | null  // non-null while orchestrator is blocked in koan_memory_propose
+  // activeCurationBatch removed in M7: koan_memory_propose gate retired.
 }
 
 // -- Store --------------------------------------------------------------------
@@ -508,12 +494,8 @@ export interface KoanState {
   lastTouchpointMs: number | null
   setLastTouchpointMs: (ms: number) => void
 
-  // Store-only curation draft (accept-loss: cleared on memory_curation_cleared).
-  // Keyed by proposal id; seeded by resetMemoryCurationDraft on batch mount.
-  memoryCurationDraft: Record<string, { decision?: 'approved' | 'rejected'; feedback: string }>
-  setMemoryCurationDecision: (id: string, decision: 'approved' | 'rejected' | undefined) => void
-  setMemoryCurationFeedback: (id: string, text: string) => void
-  resetMemoryCurationDraft: (batch: ActiveCurationBatch | null) => void
+  // memoryCurationDraft and its setters removed in M7: koan_memory_propose
+  // gate retired; no per-proposal decision/feedback draft state needed.
 
   // Store-only memory sidebar state (shared across overview/detail/reflect pages)
   memorySidebar: { search: string; filter: 'all' | MemoryType }
@@ -540,6 +522,8 @@ export const useStore = create<KoanState>()(
         // installations removed in M4: agent installation concept deleted.
         // M5: profiles/defaultProfile init values removed.
         defaultScoutConcurrency: 8,
+        maxRetryAttempts: 10,
+        maxRetryWaitSeconds: 60,
         workflows: [],
         connections: [],
         configuredModels: [],
@@ -564,36 +548,8 @@ export const useStore = create<KoanState>()(
       chatDraft: '',
       reviewingArtifact: null,
       lastTouchpointMs: null,
-      memoryCurationDraft: {},
+      // memoryCurationDraft initial value removed in M7: koan_memory_propose retired.
       memorySidebar: { search: '', filter: 'all' },
-
-      setMemoryCurationDecision: (id, decision) =>
-        set(s => ({
-          memoryCurationDraft: {
-            ...s.memoryCurationDraft,
-            [id]: { ...(s.memoryCurationDraft[id] ?? { feedback: '' }), decision },
-          },
-        }), false, 'setMemoryCurationDecision'),
-
-      setMemoryCurationFeedback: (id, text) =>
-        set(s => ({
-          memoryCurationDraft: {
-            ...s.memoryCurationDraft,
-            [id]: { ...(s.memoryCurationDraft[id] ?? {}), feedback: text },
-          },
-        }), false, 'setMemoryCurationFeedback'),
-
-      resetMemoryCurationDraft: (batch) => {
-        if (batch === null) {
-          set({ memoryCurationDraft: {} }, false, 'resetMemoryCurationDraft/clear')
-        } else {
-          const draft: KoanState['memoryCurationDraft'] = {}
-          for (const p of batch.proposals) {
-            draft[p.id] = { feedback: '' }
-          }
-          set({ memoryCurationDraft: draft }, false, 'resetMemoryCurationDraft/seed')
-        }
-      },
 
       setMemorySidebarSearch: (v) =>
         set(s => ({ memorySidebar: { ...s.memorySidebar, search: v } }), false, 'setMemorySidebarSearch'),
@@ -648,11 +604,16 @@ export type KoanStore = typeof useStore
 
 // -- ALL_PHASES (frontend-only derivation helper) ----------------------------
 
+// Final 8-phase set (brief 5.4, M6 cutover). The *-review phases are removed:
+// plan-review, milestone-review, tech-plan-review, exec-review are collapsed
+// into the mechanical reviewer sub-agent (M3) and inline execute review (M5).
+// Ghost phases (brief-generation, ticket-breakdown, cross-artifact-validation,
+// execution, implementation-validation) were removed in M1.
 export const ALL_PHASES = [
-  // Pre-plan workflow phases
-  'intake', 'brief-generation', 'core-flows', 'tech-plan',
-  'ticket-breakdown', 'cross-artifact-validation',
-  'execution', 'implementation-validation',
-  // Plan workflow phases
-  'plan-spec', 'plan-review', 'execute',
+  'intake', 'core-flows',
+  'tech-plan',
+  'milestone',
+  'plan',
+  'execute',
+  'curation', 'frame',
 ]

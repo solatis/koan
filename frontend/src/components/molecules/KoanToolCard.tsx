@@ -48,17 +48,13 @@ const SUPPRESSED_TOOLS = new Set(['koan_set_phase', 'koan_suggest_next'])
 const KOAN_TOOL_LABELS: Record<string, string> = {
   koan_request_scouts: 'Dispatching scouts',
   koan_request_executor: 'Starting executor',
-  koan_select_story: 'Selecting story',
-  koan_complete_story: 'Completing story',
-  koan_retry_story: 'Retrying story',
-  koan_skip_story: 'Skipping story',
   koan_artifact_list: 'Listing artifacts',
   koan_artifact_read: 'Reading artifact',
   koan_memorize: 'Recording memory',
   koan_forget: 'Forgetting memory entry',
   koan_memory_status: 'Reading memory status',
   koan_search: 'Searching memory',
-  koan_memory_propose: 'Proposing memory updates',
+  // koan_memory_propose label removed in M7: tool retired.
 }
 
 // -- Shared SVG --------------------------------------------------------------

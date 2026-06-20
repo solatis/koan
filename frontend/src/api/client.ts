@@ -221,6 +221,13 @@ export async function saveScoutConcurrency(value: number) {
   })
 }
 
+export async function saveRetrySettings(maxRetryAttempts: number, maxRetryWaitSeconds: number) {
+  return put<{ ok: boolean; message?: string }>('/api/settings/retry', {
+    max_retry_attempts: maxRetryAttempts,
+    max_retry_wait_seconds: maxRetryWaitSeconds,
+  })
+}
+
 // -- Initial prompt ----------------------------------------------------------
 
 export async function getInitialPrompt(): Promise<{ prompt: string; project_dir?: string }> {
@@ -317,19 +324,8 @@ export async function cancelReflect() {
   return del<{ ok: boolean; error?: string }>('/api/memory/reflect')
 }
 
-export interface CurationDecision {
-  proposal_id: string
-  decision: 'approved' | 'rejected'
-  feedback: string
-  attachments?: string[]
-}
-
-export async function submitMemoryCuration(batch_id: string, decisions: CurationDecision[]) {
-  return post<{ ok: boolean; error?: string }>(
-    '/api/memory/curation',
-    { batch_id, decisions },
-  )
-}
+// CurationDecision and submitMemoryCuration removed in M7: koan_memory_propose
+// gate retired; the /api/memory/curation endpoint no longer exists.
 
 // -- File uploads -------------------------------------------------------------
 

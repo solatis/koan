@@ -31,7 +31,8 @@ import { ConnectedNewRunForm } from './components/organisms/ConnectedNewRunForm'
 import { Notification } from './components/Notification'
 import { SessionsPage } from './components/organisms/SessionsPage'
 import { MemoryRoutes } from './components/organisms/MemoryRoutes'
-import { CurationTakeover } from './components/organisms/CurationTakeover'
+// Curation takeover removed in M7: koan_memory_propose gate retired; curation
+// writes memory directly via koan_memorize/koan_forget.
 
 // ---------------------------------------------------------------------------
 // Navigation items
@@ -148,26 +149,6 @@ export default function App() {
       <div className="app-root">
         <HeaderBar phase="" step="" totalSteps={0} currentStep={0} />
         <div className="single-column"><div className="loading-center">connecting...</div></div>
-      </div>
-    )
-  }
-
-  // --- Curation takeover: supersedes all run-scoped views ---
-  // Placed before hasInteraction/completion/review branches so it takes
-  // priority whenever the orchestrator is blocked in koan_memory_propose.
-  if (run?.activeCurationBatch) {
-    return (
-      <div className="app-root">
-        <HeaderBar
-          phase="" step="" totalSteps={0} currentStep={0}
-          mode="navigation"
-          navItems={NAV_ITEMS}
-          activeNav=""
-          crumbs={[{ label: 'Memory curation' }]}
-          onNavChange={k => navigate(PATH_BY_KEY[k] ?? '/')}
-        />
-        <CurationTakeover />
-        <Notification />
       </div>
     )
   }
