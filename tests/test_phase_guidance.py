@@ -56,18 +56,6 @@ def test_milestone_spec_step1_reads_brief_md():
 
 
 # ---------------------------------------------------------------------------
-# milestone_review
-# ---------------------------------------------------------------------------
-
-def test_milestone_review_step1_reads_brief_md():
-    from koan.phases import milestone_review
-    g = milestone_review.step_guidance(1, _ctx())
-    text = "\n".join(g.instructions)
-    assert "brief.md" in text
-    assert "Read initiative context" in text
-
-
-# ---------------------------------------------------------------------------
 # plan_spec
 # ---------------------------------------------------------------------------
 
@@ -80,27 +68,39 @@ def test_plan_spec_step1_reads_brief_md():
 
 
 # ---------------------------------------------------------------------------
-# plan_review
+# M6: negative-presence -- *-review modules are not importable
 # ---------------------------------------------------------------------------
 
-def test_plan_review_step1_reads_brief_md():
-    from koan.phases import plan_review
-    g = plan_review.step_guidance(1, _ctx())
-    text = "\n".join(g.instructions)
-    assert "brief.md" in text
-    assert "Read initiative context" in text
+def test_plan_review_not_importable():
+    """M6: koan.phases.plan_review must not be importable -- module deleted."""
+    import importlib
+    import pytest
+    with pytest.raises((ImportError, ModuleNotFoundError)):
+        importlib.import_module("koan.phases.plan_review")
 
 
-# ---------------------------------------------------------------------------
-# exec_review
-# ---------------------------------------------------------------------------
+def test_milestone_review_not_importable():
+    """M6: koan.phases.milestone_review must not be importable -- module deleted."""
+    import importlib
+    import pytest
+    with pytest.raises((ImportError, ModuleNotFoundError)):
+        importlib.import_module("koan.phases.milestone_review")
 
-def test_exec_review_step1_reads_brief_md():
-    from koan.phases import exec_review
-    g = exec_review.step_guidance(1, _ctx())
-    text = "\n".join(g.instructions)
-    assert "brief.md" in text
-    assert "Read initiative context" in text
+
+def test_tech_plan_review_not_importable():
+    """M6: koan.phases.tech_plan_review must not be importable -- module deleted."""
+    import importlib
+    import pytest
+    with pytest.raises((ImportError, ModuleNotFoundError)):
+        importlib.import_module("koan.phases.tech_plan_review")
+
+
+def test_exec_review_not_importable():
+    """M6: koan.phases.exec_review must not be importable -- module deleted."""
+    import importlib
+    import pytest
+    with pytest.raises((ImportError, ModuleNotFoundError)):
+        importlib.import_module("koan.phases.exec_review")
 
 
 # ---------------------------------------------------------------------------
@@ -147,19 +147,20 @@ def test_phasebinding_has_next_phase_field_default_none():
 def test_phasebinding_next_phase_can_be_set():
     from koan.lib.workflows import PhaseBinding
     from koan.phases import intake
-    b = PhaseBinding(module=intake, next_phase="plan-spec")
-    assert b.next_phase == "plan-spec"
+    b = PhaseBinding(module=intake, next_phase="plan")
+    assert b.next_phase == "plan"
 
 
 def test_plan_workflow_next_phase_defaults():
+    """M6: plan workflow has no *-review phases; plan.next_phase=None (names plan for execute)."""
     from koan.lib.workflows import PLAN_WORKFLOW
     expected = {
-        "intake":       "plan-spec",
-        "plan-spec":    "plan-review",
-        "plan-review":  None,
-        "execute":      "exec-review",
-        "exec-review":  None,
-        "curation":     None,
+        "intake":    "plan",
+        # M6: plan.next_phase=None -- the step instructions call
+        # koan_set_phase("execute", plan_file=...) directly after reconciling findings.
+        "plan":      None,
+        "execute":   None,
+        "curation":  None,
     }
     for phase_name, expected_next in expected.items():
         binding = PLAN_WORKFLOW.phases[phase_name]
@@ -170,16 +171,17 @@ def test_plan_workflow_next_phase_defaults():
 
 
 def test_milestones_workflow_next_phase_defaults():
+    """M6: milestones workflow has no *-review phases; producer next_phase values updated."""
     from koan.lib.workflows import MILESTONES_WORKFLOW
     expected = {
-        "intake":           "milestone-spec",
-        "milestone-spec":   "milestone-review",
-        "milestone-review": None,
-        "plan-spec":        "plan-review",
-        "plan-review":      None,
-        "execute":          "exec-review",
-        "exec-review":      None,
-        "curation":         None,
+        "intake":    "milestone",
+        # M6: milestone.next_phase=None -- step instructions advance to plan
+        # after reconciling MILESTONE_REVIEWER findings.
+        "milestone": None,
+        # M6: plan.next_phase=None -- step instructions name plan for execute.
+        "plan":      None,
+        "execute":   None,
+        "curation":  None,
     }
     for phase_name, expected_next in expected.items():
         binding = MILESTONES_WORKFLOW.phases[phase_name]
@@ -205,19 +207,19 @@ def test_phase_context_has_next_phase_and_suggested_phases_defaults():
 
 def test_terminal_invoke_with_next_phase_calls_set_phase():
     from koan.phases.format_step import terminal_invoke
-    text = terminal_invoke("plan-spec", [])
-    assert 'koan_set_phase("plan-spec")' in text
+    text = terminal_invoke("plan", [])
+    assert 'koan_set_phase("plan")' in text
 
 
 def test_terminal_invoke_with_none_hands_back():
     from koan.phases.format_step import terminal_invoke
-    text = terminal_invoke(None, ["plan-spec", "execute"])
+    text = terminal_invoke(None, ["plan", "execute"])
     # koan_yield is gone -- the terminal-text turn is the hand-back.
     assert "koan_yield" not in text
     assert "End your turn" in text
     # The user-confirmed transition still commits via koan_set_phase.
     assert "koan_set_phase" in text
-    assert "plan-spec" in text
+    assert "plan" in text
     assert "execute" in text
 
 
@@ -258,57 +260,37 @@ def _ctx_with_next(next_phase, suggested_phases=None):
 def test_intake_last_step_invoke_after_is_terminal_invoke():
     from koan.phases import intake
     from koan.phases.format_step import terminal_invoke
-    ctx = _ctx_with_next("plan-spec", ["plan-spec"])
+    ctx = _ctx_with_next("plan", ["plan"])
     g = intake.step_guidance(intake.TOTAL_STEPS, ctx)
-    assert g.invoke_after == terminal_invoke("plan-spec", ["plan-spec"])
+    assert g.invoke_after == terminal_invoke("plan", ["plan"])
 
 
 def test_milestone_spec_last_step_invoke_after_is_terminal_invoke():
+    """M6: milestone.next_phase=None (yields to advance to plan after reconcile)."""
     from koan.phases import milestone_spec
     from koan.phases.format_step import terminal_invoke
-    ctx = _ctx_with_next("plan-spec", ["milestone-review", "plan-spec"])
+    ctx = _ctx_with_next(None, ["plan"])
     g = milestone_spec.step_guidance(milestone_spec.TOTAL_STEPS, ctx)
-    assert g.invoke_after == terminal_invoke("plan-spec", ["milestone-review", "plan-spec"])
-
-
-def test_milestone_review_last_step_invoke_after_is_terminal_invoke():
-    from koan.phases import milestone_review
-    from koan.phases.format_step import terminal_invoke
-    ctx = _ctx_with_next(None, ["milestone-spec", "plan-spec"])
-    g = milestone_review.step_guidance(milestone_review.TOTAL_STEPS, ctx)
-    assert g.invoke_after == terminal_invoke(None, ["milestone-spec", "plan-spec"])
+    assert g.invoke_after == terminal_invoke(None, ["plan"])
 
 
 def test_plan_spec_last_step_invoke_after_is_terminal_invoke():
+    """M6: plan.next_phase=None (step instructions call set_phase(execute) directly)."""
     from koan.phases import plan_spec
     from koan.phases.format_step import terminal_invoke
-    ctx = _ctx_with_next("plan-review", ["plan-review", "execute"])
+    ctx = _ctx_with_next(None, ["execute"])
     g = plan_spec.step_guidance(plan_spec.TOTAL_STEPS, ctx)
-    assert g.invoke_after == terminal_invoke("plan-review", ["plan-review", "execute"])
-
-
-def test_plan_review_last_step_invoke_after_is_terminal_invoke():
-    from koan.phases import plan_review
-    from koan.phases.format_step import terminal_invoke
-    ctx = _ctx_with_next(None, ["plan-spec", "execute"])
-    g = plan_review.step_guidance(plan_review.TOTAL_STEPS, ctx)
-    assert g.invoke_after == terminal_invoke(None, ["plan-spec", "execute"])
+    assert g.invoke_after == terminal_invoke(None, ["execute"])
 
 
 def test_execute_last_step_invoke_after_is_terminal_invoke():
+    # M5: execute.next_phase is now None (review outcome determines the path);
+    # the last step yields to the user with the workflow's suggested phases.
     from koan.phases import execute
     from koan.phases.format_step import terminal_invoke
-    ctx = _ctx_with_next("exec-review", ["exec-review", "curation"])
+    ctx = _ctx_with_next(None, ["plan", "curation", "milestone"])
     g = execute.step_guidance(execute.TOTAL_STEPS, ctx)
-    assert g.invoke_after == terminal_invoke("exec-review", ["exec-review", "curation"])
-
-
-def test_exec_review_last_step_invoke_after_is_terminal_invoke():
-    from koan.phases import exec_review
-    from koan.phases.format_step import terminal_invoke
-    ctx = _ctx_with_next(None, ["curation", "plan-spec"])
-    g = exec_review.step_guidance(exec_review.TOTAL_STEPS, ctx)
-    assert g.invoke_after == terminal_invoke(None, ["curation", "plan-spec"])
+    assert g.invoke_after == terminal_invoke(None, ["plan", "curation", "milestone"])
 
 
 def test_curation_last_step_invoke_after_is_terminal_invoke():
@@ -320,107 +302,111 @@ def test_curation_last_step_invoke_after_is_terminal_invoke():
 
 
 # ---------------------------------------------------------------------------
-# M4: rewrite-or-loopback in review phases
+# M6: milestone_spec is CREATE-only; RE-DECOMPOSE branch removed
 # ---------------------------------------------------------------------------
 
-def test_plan_review_step2_has_rewrite_or_loopback():
-    from koan.phases import plan_review
-    g = plan_review.step_guidance(2, _ctx())
-    text = "\n".join(g.instructions)
-    assert "Rewrite-or-loop-back classification" in text
-    assert "koan_artifact_write" in text
-    assert "loop-back to plan-spec" in text or "plan-spec" in text
-    assert "new-files-needed" in text
-
-
-def test_milestone_review_step2_has_rewrite_or_loopback():
-    from koan.phases import milestone_review
-    g = milestone_review.step_guidance(2, _ctx())
-    text = "\n".join(g.instructions)
-    assert "Rewrite-or-loop-back classification" in text
-    assert "koan_artifact_write" in text
-    assert "milestone-spec" in text
-    assert "new-files-needed" in text
-
-
-def test_exec_review_step2_has_rewrite_or_loopback():
-    from koan.phases import exec_review
-    g = exec_review.step_guidance(2, _ctx())
-    text = "\n".join(g.instructions)
-    assert "Rewrite-or-loop-back of the plan artifact" in text
-    assert "koan_artifact_write" in text
-    assert "new-files-needed" in text
-
-
-def test_exec_review_step2_has_milestones_update_block():
-    from koan.phases import exec_review
-    g = exec_review.step_guidance(2, _ctx())
-    text = "\n".join(g.instructions)
-    assert "milestones.md UPDATE" in text
-    assert "Integration points created" in text
-    assert "Patterns established" in text
-    assert "Constraints discovered" in text
-    assert "Deviations from plan" in text
-
-
-def test_exec_review_step1_reads_milestones_md():
-    from koan.phases import exec_review
-    g = exec_review.step_guidance(1, _ctx())
-    text = "\n".join(g.instructions)
-    assert "milestones.md" in text
-    assert "Read milestone state" in text
-
-
-def test_milestone_spec_step1_redecompose_mode_replaces_update():
+def test_milestone_spec_step1_create_only():
+    """M6: milestone_spec is CREATE-only; RE-DECOMPOSE mode removed (discard hook replaces it)."""
     from koan.phases import milestone_spec
     g = milestone_spec.step_guidance(1, _ctx())
     text = "\n".join(g.instructions)
-    # RE-DECOMPOSE must appear
-    assert "RE-DECOMPOSE" in text
-    # UPDATE mode directives must be gone -- exec-review owns these transitions
+    # Must NOT contain RE-DECOMPOSE mode directive (removed in M6)
+    assert "RE-DECOMPOSE" not in text
+    # UPDATE mode directives must be gone
     assert "mark the completed milestone" not in text.lower()
-    assert "add an Outcome section" not in text.lower() or "do NOT add Outcome" in text
 
 
-def test_milestone_spec_phase_binding_guidance_redecompose_framing():
+def test_milestone_spec_phase_binding_no_redecompose():
+    """M6: milestone binding guidance must not instruct RE-DECOMPOSE mode (discard hook replaces it)."""
     from koan.lib.workflows import MILESTONES_WORKFLOW
-    guidance = MILESTONES_WORKFLOW.phases["milestone-spec"].guidance
-    assert "RE-DECOMPOSE" in guidance
+    guidance = MILESTONES_WORKFLOW.phases["milestone"].guidance
+    # The guidance may mention "no RE-DECOMPOSE" as a negative, but must not
+    # instruct the orchestrator to enter RE-DECOMPOSE mode itself.
+    assert "you are in RE-DECOMPOSE mode" not in guidance
+    assert "If milestones.md exists, you are in RE-DECOMPOSE" not in guidance
     # Old UPDATE-mode framing must be gone
     assert "UPDATE mode" not in guidance
-    assert "mark the completed\nmilestone [done]" not in guidance
 
 
-def test_exec_review_milestones_guidance_specifies_update():
-    from koan.lib.workflows import _EXEC_REVIEW_MILESTONES_GUIDANCE
-    assert "milestones.md UPDATE" in _EXEC_REVIEW_MILESTONES_GUIDANCE
-    assert "Integration points" in _EXEC_REVIEW_MILESTONES_GUIDANCE
-    assert "four-subsection Outcome" in _EXEC_REVIEW_MILESTONES_GUIDANCE
+def test_exec_review_guidance_constants_removed():
+    """M6: _EXEC_REVIEW_MILESTONES_GUIDANCE and _EXEC_REVIEW_PLAN_GUIDANCE removed from workflows."""
+    import koan.lib.workflows as wf_mod
+    # These constants are removed in M6; accessing them must raise AttributeError.
+    assert not hasattr(wf_mod, "_EXEC_REVIEW_MILESTONES_GUIDANCE"), (
+        "_EXEC_REVIEW_MILESTONES_GUIDANCE must be removed from workflows.py in M6"
+    )
+    assert not hasattr(wf_mod, "_EXEC_REVIEW_PLAN_GUIDANCE"), (
+        "_EXEC_REVIEW_PLAN_GUIDANCE must be removed from workflows.py in M6"
+    )
 
 
-def test_exec_review_plan_guidance_no_milestones_update():
-    from koan.lib.workflows import _EXEC_REVIEW_PLAN_GUIDANCE
-    # Plan workflow has no milestones.md; UPDATE block must not appear there
-    assert "milestones.md UPDATE" not in _EXEC_REVIEW_PLAN_GUIDANCE
-
-
-def test_milestones_workflow_exec_review_transitions_order():
+def test_milestones_workflow_no_exec_review_transition():
+    """M6: milestones workflow must have no exec-review key in transitions."""
     from koan.lib.workflows import MILESTONES_WORKFLOW
-    assert MILESTONES_WORKFLOW.transitions["exec-review"] == [
-        "plan-spec", "curation", "milestone-spec"
-    ]
+    assert "exec-review" not in MILESTONES_WORKFLOW.transitions
 
 
-def test_phase_trust_doc_describes_rewrite_or_loopback():
+def test_plan_workflow_transitions_final_shape():
+    """M6: plan workflow transitions match brief 5.4 final shape."""
+    from koan.lib.workflows import PLAN_WORKFLOW
+    assert PLAN_WORKFLOW.transitions == {
+        "intake":   ["plan"],
+        "plan":     ["execute"],
+        "execute":  ["curation", "plan"],
+        "curation": [],
+    }
+
+
+def test_milestones_workflow_transitions_final_shape():
+    """M6: milestones workflow transitions match brief 5.4 final shape."""
+    from koan.lib.workflows import MILESTONES_WORKFLOW
+    assert MILESTONES_WORKFLOW.transitions == {
+        "intake":    ["milestone"],
+        "milestone": ["plan"],
+        "plan":      ["execute"],
+        "execute":   ["plan", "curation", "milestone"],
+        "curation":  [],
+    }
+
+
+def test_initiative_workflow_transitions_final_shape():
+    """M6: initiative workflow transitions match brief 5.4 final shape."""
+    from koan.lib.workflows import INITIATIVE_WORKFLOW
+    assert INITIATIVE_WORKFLOW.transitions == {
+        "intake":     ["core-flows", "tech-plan"],
+        "core-flows": ["tech-plan", "core-flows"],
+        "tech-plan":  ["milestone"],
+        "milestone":  ["plan"],
+        "plan":       ["execute"],
+        "execute":    ["plan", "curation", "milestone", "tech-plan"],
+        "curation":   [],
+    }
+
+
+def test_phase_trust_doc_describes_inline_reconcile():
+    """M6: phase-trust.md must describe the mechanical reviewer / inline reconcile model.
+
+    The old rewrite-or-loop-back *-review phase model was replaced in M6 with the
+    mechanical reviewer sub-agent triggered by koan_artifact_write.  The doc must
+    now describe INCORPORATED / OVERRULED / ESCALATED inline reconcile semantics.
+    """
     import pathlib
     doc = pathlib.Path(__file__).parent.parent / "docs" / "phase-trust.md"
     text = doc.read_text()
-    assert "rewrite-or-loop-back" in text.lower() or "rewrite-or-loopback" in text.lower()
+    # M6 inline reconcile terminology
+    assert "incorporated" in text.lower()
+    assert "overruled" in text.lower()
+    assert "escalated" in text.lower()
     assert "role-level" in text.lower()
     assert "prompt discipline" in text.lower()
     # Old advisory-only framing must be gone
     assert "advisory only" not in text.lower()
     assert "reports findings, does not modify" not in text.lower()
+    # *-review phases must not appear as active workflow steps in this doc;
+    # they may appear in the historical "Why the model changed" section only.
+    # Guard: if any *-review phase appears outside a "### " heading, flag it.
+    # (Simple check: confirm the doc mentions mechanical reviewer terminology.)
+    assert "mechanical reviewer" in text.lower() or "tech_plan_reviewer" in text.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -602,7 +588,7 @@ def test_core_flows_role_context_includes_mermaid_syntax_hazards():
 # ---------------------------------------------------------------------------
 
 def test_tech_plan_spec_step1_reads_brief_and_core_flows():
-    """Tech-plan-spec step 1 must reference both brief.md and core-flows.md."""
+    """tech-plan step 1 must reference both brief.md and core-flows.md."""
     from koan.phases import tech_plan_spec
     g = tech_plan_spec.step_guidance(1, _ctx())
     text = "\n".join(g.instructions)
@@ -611,7 +597,7 @@ def test_tech_plan_spec_step1_reads_brief_and_core_flows():
 
 
 def test_tech_plan_spec_step2_writes_tech_plan_md():
-    """Tech-plan-spec step 2 must write tech-plan.md with the three required sections."""
+    """tech-plan step 2 must write tech-plan.md with the three required sections."""
     from koan.phases import tech_plan_spec
     g = tech_plan_spec.step_guidance(2, _ctx())
     text = "\n".join(g.instructions)
@@ -623,7 +609,7 @@ def test_tech_plan_spec_step2_writes_tech_plan_md():
 
 
 def test_tech_plan_spec_role_context_includes_slot_mapping():
-    """Tech-plan-spec PHASE_ROLE_CONTEXT must reference the CON/CMP/SEQ/STT slot mapping."""
+    """tech-plan PHASE_ROLE_CONTEXT must reference the CON/CMP/SEQ/STT slot mapping."""
     from koan.phases import tech_plan_spec
     ctx_text = tech_plan_spec.PHASE_ROLE_CONTEXT
     # At minimum, the four diagram types must appear
@@ -634,7 +620,7 @@ def test_tech_plan_spec_role_context_includes_slot_mapping():
 
 
 def test_tech_plan_spec_role_context_includes_grounding_rule():
-    """Tech-plan-spec PHASE_ROLE_CONTEXT must include the suppression rule (no marker) and grounding rule."""
+    """tech-plan PHASE_ROLE_CONTEXT must include the suppression rule (no marker) and grounding rule."""
     from koan.phases import tech_plan_spec
     ctx_text = tech_plan_spec.PHASE_ROLE_CONTEXT
     assert "below threshold" in ctx_text.lower()
@@ -646,7 +632,7 @@ def test_tech_plan_spec_role_context_includes_grounding_rule():
 
 
 def test_tech_plan_spec_role_context_includes_mermaid_syntax_hazards():
-    """Tech-plan-spec PHASE_ROLE_CONTEXT must include the mermaid syntax-hazards subsection (semicolon, <br>, doc reference)."""
+    """tech-plan PHASE_ROLE_CONTEXT must include the mermaid syntax-hazards subsection (semicolon, <br>, doc reference)."""
     from koan.phases import tech_plan_spec
     ctx_text = tech_plan_spec.PHASE_ROLE_CONTEXT
     assert "Mermaid syntax hazards" in ctx_text
@@ -656,77 +642,28 @@ def test_tech_plan_spec_role_context_includes_mermaid_syntax_hazards():
 
 
 # ---------------------------------------------------------------------------
-# tech_plan_review
-# ---------------------------------------------------------------------------
-
-def test_tech_plan_review_step1_reads_brief_core_flows_tech_plan():
-    """Tech-plan-review step 1 must reference all three upstream artifacts."""
-    from koan.phases import tech_plan_review
-    g = tech_plan_review.step_guidance(1, _ctx())
-    text = "\n".join(g.instructions)
-    assert "brief.md" in text
-    assert "core-flows.md" in text
-    assert "tech-plan.md" in text
-
-
-def test_tech_plan_review_step2_classifies_findings():
-    """Tech-plan-review step 2 must describe internal/new-files classification and koan_artifact_write."""
-    from koan.phases import tech_plan_review
-    g = tech_plan_review.step_guidance(2, _ctx())
-    text = "\n".join(g.instructions)
-    assert "internal" in text.lower()
-    assert "new-files" in text.lower()
-    assert "koan_artifact_write" in text
-
-
-def test_tech_plan_review_role_context_no_legacy_gate_language():
-    """Tech-plan-review PHASE_ROLE_CONTEXT must not contain koan_artifact_propose or legacy Approved gate phrases."""
-    from koan.phases import tech_plan_review
-    ctx_text = tech_plan_review.PHASE_ROLE_CONTEXT
-    assert "koan_artifact_propose" not in ctx_text
-    assert "transition to Approved" not in ctx_text
-    assert "Approved before" not in ctx_text
-
-
-def test_tech_plan_review_role_context_diagram_accuracy_check():
-    """Tech-plan-review PHASE_ROLE_CONTEXT must mention grounding, suppression, and level-separation."""
-    from koan.phases import tech_plan_review
-    ctx_text = tech_plan_review.PHASE_ROLE_CONTEXT
-    assert "grounding" in ctx_text.lower()
-    assert "suppression" in ctx_text.lower()
-    # Marker text only allowed in the "reject if found" guidance, never as a positive instruction.
-    assert "level-separation" in ctx_text.lower() or "level separation" in ctx_text.lower()
-
-
-def test_tech_plan_review_role_context_authorizes_scouts():
-    """Tech-plan-review PHASE_ROLE_CONTEXT must authorize koan_request_scouts (not forbid it)."""
-    from koan.phases import tech_plan_review
-    ctx_text = tech_plan_review.PHASE_ROLE_CONTEXT
-    assert "koan_request_scouts" in ctx_text
-    # Must be in an authorization context, not a prohibition
-    assert "MUST NOT call koan_request_scouts" not in ctx_text
-    assert "MUST NOT call `koan_request_scouts`" not in ctx_text
-
-
-# ---------------------------------------------------------------------------
 # Workflow binding tests
 # ---------------------------------------------------------------------------
 
 def test_initiative_workflow_phase_next_phase_bindings():
-    """INITIATIVE_WORKFLOW per-phase next_phase values must match the expected map."""
+    """INITIATIVE_WORKFLOW per-phase next_phase values must match the M6 final map.
+
+    M6: *-review phases removed. Producers advance directly to their successors
+    after reconciling the mechanical reviewer's findings inline.
+    """
     from koan.lib.workflows import INITIATIVE_WORKFLOW
     expected = {
-        "intake":           "core-flows",
-        "core-flows":       None,
-        "tech-plan-spec":   "tech-plan-review",
-        "tech-plan-review": None,
-        "milestone-spec":   "milestone-review",
-        "milestone-review": None,
-        "plan-spec":        "plan-review",
-        "plan-review":      None,
-        "execute":          "exec-review",
-        "exec-review":      None,
-        "curation":         None,
+        "intake":     "core-flows",
+        "core-flows": None,
+        # M6: tech-plan advances to milestone (TECH_PLAN_REVIEWER runs on write).
+        "tech-plan":  "milestone",
+        # M6: milestone.next_phase=None -- step instructions advance to plan
+        # after reconciling MILESTONE_REVIEWER findings.
+        "milestone":  None,
+        # M6: plan.next_phase=None -- step instructions call set_phase(execute).
+        "plan":       None,
+        "execute":    None,
+        "curation":   None,
     }
     for phase_name, expected_next in expected.items():
         binding = INITIATIVE_WORKFLOW.phases[phase_name]

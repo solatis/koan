@@ -539,6 +539,60 @@ def test_settings_provider_negative_presence(client, app_state):
 # Provider test endpoint tests removed in M5: endpoint deleted (plan-milestone-5.md).
 
 
+def test_settings_retry_accepts_valid_payload(client, app_state, tmp_path, monkeypatch):
+    """PUT /api/settings/retry persists valid bounds and emits retry_settings_changed."""
+    config_path = tmp_path / "config.yaml"
+    monkeypatch.setattr("koan.config.CONFIG_PATH", config_path)
+    monkeypatch.setattr("koan.config._config_write_lock", None)
+
+    resp = client.put("/api/settings/retry", json={"max_retry_attempts": 5, "max_retry_wait_seconds": 30})
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True}
+    assert app_state.provider_config.config.max_retry_attempts == 5
+    assert app_state.provider_config.config.max_retry_wait_seconds == 30.0
+    assert any(
+        e.event_type == "retry_settings_changed"
+        for e in app_state.projection_store.events
+    )
+
+
+def test_settings_retry_rejects_invalid_attempts(client, app_state, tmp_path, monkeypatch):
+    """PUT /api/settings/retry returns 422 when max_retry_attempts is out of range."""
+    config_path = tmp_path / "config.yaml"
+    monkeypatch.setattr("koan.config.CONFIG_PATH", config_path)
+    monkeypatch.setattr("koan.config._config_write_lock", None)
+
+    resp = client.put("/api/settings/retry", json={"max_retry_attempts": 0, "max_retry_wait_seconds": 30})
+    assert resp.status_code == 422
+
+    resp = client.put("/api/settings/retry", json={"max_retry_attempts": 101, "max_retry_wait_seconds": 30})
+    assert resp.status_code == 422
+
+
+def test_settings_retry_rejects_invalid_wait(client, app_state, tmp_path, monkeypatch):
+    """PUT /api/settings/retry returns 422 when max_retry_wait_seconds is out of range."""
+    config_path = tmp_path / "config.yaml"
+    monkeypatch.setattr("koan.config.CONFIG_PATH", config_path)
+    monkeypatch.setattr("koan.config._config_write_lock", None)
+
+    resp = client.put("/api/settings/retry", json={"max_retry_attempts": 5, "max_retry_wait_seconds": 0})
+    assert resp.status_code == 422
+
+    resp = client.put("/api/settings/retry", json={"max_retry_attempts": 5, "max_retry_wait_seconds": 601})
+    assert resp.status_code == 422
+
+
+def test_settings_body_includes_retry_fields(client, app_state):
+    """GET /api/settings/body includes maxRetryAttempts and maxRetryWaitSeconds."""
+    resp = client.get("/api/settings/body")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "maxRetryAttempts" in body, "expected maxRetryAttempts in settings body"
+    assert "maxRetryWaitSeconds" in body, "expected maxRetryWaitSeconds in settings body"
+    assert body["maxRetryAttempts"] == 10
+    assert body["maxRetryWaitSeconds"] == 60.0
+
+
 def test_connection_set_accepts_openrouter(client, app_state):
     """POST /api/config/connections accepts type='openrouter', validates _VALID_CONNECTION_TYPES.
 
@@ -763,7 +817,7 @@ def _make_orchestrator_agent(tmp_path, agent_id="test-write"):
 
     app_state = AppState()
     app_state.server.yolo = True
-    app_state.run.phase = "plan-spec"
+    app_state.run.phase = "plan"
     app_state.run.run_dir = str(tmp_path)
 
     agent = AgentState(
@@ -782,16 +836,21 @@ def _make_orchestrator_agent(tmp_path, agent_id="test-write"):
 
 @pytest.mark.anyio
 async def test_artifact_write_creates_plain_file(tmp_path):
-    """koan_artifact_write writes the body verbatim -- artifacts have no frontmatter."""
+    """koan_artifact_write writes the body verbatim -- artifacts have no frontmatter.
+
+    Uses brief.md in the intake phase (unreviewed family, no reviewer spawn).
+    """
     from koan.tools.koan_tools import ToolDeps, artifact_write_core
 
     app_state, agent = _make_orchestrator_agent(tmp_path, "test-write-plain")
+    # brief.md is only legal in the intake phase (validated by the registry in M3).
+    app_state.run.phase = "intake"
     deps = ToolDeps(app_state=app_state, agent=agent)
 
-    result = await artifact_write_core(deps, "smoke.md", "hello")
+    result = await artifact_write_core(deps, "brief.md", "hello")
 
-    assert (tmp_path / "smoke.md").exists()
-    text = (tmp_path / "smoke.md").read_text()
+    assert (tmp_path / "brief.md").exists()
+    text = (tmp_path / "brief.md").read_text()
     # Plain file: the body is on disk verbatim, no YAML frontmatter preamble.
     assert text == "hello"
     assert not text.startswith("---")
@@ -800,7 +859,7 @@ async def test_artifact_write_creates_plain_file(tmp_path):
     import json
     payload = json.loads(result)
     assert payload["ok"] is True
-    assert payload["filename"] == "smoke.md"
+    assert payload["filename"] == "brief.md"
 
 
 @pytest.mark.anyio
@@ -809,7 +868,8 @@ async def test_artifact_write_emits_diff_events(tmp_path):
     from koan.tools.koan_tools import ToolDeps, artifact_write_core
 
     app_state, agent = _make_orchestrator_agent(tmp_path, "test-write-diff")
-    await artifact_write_core(ToolDeps(app_state=app_state, agent=agent), "smoke.md", "hello")
+    app_state.run.phase = "intake"  # brief.md is valid in intake (M3 registry validation)
+    await artifact_write_core(ToolDeps(app_state=app_state, agent=agent), "brief.md", "hello")
 
     event_types = [e.event_type for e in app_state.projection_store.events]
     assert any(t in event_types for t in ("artifact_created", "artifact_modified", "artifact_diff"))
@@ -821,7 +881,8 @@ async def test_artifact_write_does_not_emit_review_events(tmp_path):
     from koan.tools.koan_tools import ToolDeps, artifact_write_core
 
     app_state, agent = _make_orchestrator_agent(tmp_path, "test-write-noreview")
-    await artifact_write_core(ToolDeps(app_state=app_state, agent=agent), "smoke.md", "hello")
+    app_state.run.phase = "intake"  # brief.md is valid in intake (M3 registry validation)
+    await artifact_write_core(ToolDeps(app_state=app_state, agent=agent), "brief.md", "hello")
 
     event_types = [e.event_type for e in app_state.projection_store.events]
     assert "artifact_review_started" not in event_types
@@ -834,7 +895,8 @@ async def test_artifact_write_does_not_block(tmp_path):
     from koan.tools.koan_tools import ToolDeps, artifact_write_core
 
     app_state, agent = _make_orchestrator_agent(tmp_path, "test-write-noblock")
-    result = await artifact_write_core(ToolDeps(app_state=app_state, agent=agent), "smoke.md", "hello")
+    app_state.run.phase = "intake"  # brief.md is valid in intake (M3 registry validation)
+    result = await artifact_write_core(ToolDeps(app_state=app_state, agent=agent), "brief.md", "hello")
     assert result is not None
 
 
@@ -844,7 +906,8 @@ async def test_artifact_write_does_not_block_2(tmp_path):
     from koan.tools.koan_tools import ToolDeps, artifact_write_core
 
     app_state, agent = _make_orchestrator_agent(tmp_path, "test-write-noarg")
-    result = await artifact_write_core(ToolDeps(app_state=app_state, agent=agent), "smoke.md", "content")
+    app_state.run.phase = "intake"  # brief.md is valid in intake (M3 registry validation)
+    result = await artifact_write_core(ToolDeps(app_state=app_state, agent=agent), "brief.md", "content")
     assert result is not None
 
 
@@ -863,14 +926,20 @@ def _body_anchor_token(body: str, line_index: int) -> str:
 
 @pytest.mark.anyio
 async def test_artifact_read_returns_anchored_content(tmp_path):
-    """koan_artifact_read returns anchored, line-numbered content of the artifact."""
-    from koan.tools.koan_tools import ToolDeps, artifact_write_core, artifact_read_core
+    """koan_artifact_read returns anchored, line-numbered content of the artifact.
+
+    The file is written directly (bypassing artifact_write_core) because this
+    test exercises artifact_read_core mechanics, not the write path.
+    """
+    from koan.tools.koan_tools import ToolDeps, artifact_read_core
     from koan.tools.line_anchors import ANCHOR_DELIMITER
 
     app_state, agent = _make_orchestrator_agent(tmp_path, "test-read")
     deps = ToolDeps(app_state=app_state, agent=agent)
 
-    await artifact_write_core(deps, "doc.md", "# Hello\nbody text\n")
+    # Write the file directly -- this test is about reading, not about the
+    # M3 write-once validation or reviewer spawning.
+    (tmp_path / "doc.md").write_text("# Hello\nbody text\n", encoding="utf-8")
 
     # Anchored output: "{lineno}\t{anchor}§{content}".
     returned_text = await artifact_read_core(deps, "doc.md")
@@ -900,15 +969,21 @@ async def test_artifact_read_large_artifact_no_rejection(tmp_path):
     Writes an artifact whose body exceeds 500 lines, then reads it via
     artifact_read_core and asserts the full content is returned (no
     'tool result too large' error). Guards Decision 6 / enforce_limits=False.
+
+    The file is written directly (bypassing artifact_write_core) because the
+    filename "large.md" is not in the M3 artifact grammar; this test exercises
+    artifact_read_core's size handling, not the write path.
     """
-    from koan.tools.koan_tools import ToolDeps, artifact_write_core, artifact_read_core
+    from koan.tools.koan_tools import ToolDeps, artifact_read_core
 
     app_state, agent = _make_orchestrator_agent(tmp_path, "test-read-large")
     deps = ToolDeps(app_state=app_state, agent=agent)
 
     # 600 lines -- well over the 500-line reject ceiling for untrusted tools.
     body = "\n".join(f"line {i}" for i in range(600)) + "\n"
-    await artifact_write_core(deps, "large.md", body)
+    # Write directly so we test read mechanics with arbitrary content, not the
+    # M3 write-once validation (which only allows grammar-conformant names).
+    (tmp_path / "large.md").write_text(body, encoding="utf-8")
 
     result = await artifact_read_core(deps, "large.md")
 
@@ -946,14 +1021,19 @@ async def test_artifact_list_omits_status(tmp_path):
 
 @pytest.mark.anyio
 async def test_artifact_edit_replaces_anchored_line(tmp_path):
-    """koan_artifact_edit replaces the anchored line and updates the body."""
+    """koan_artifact_edit replaces the anchored line and updates the body.
+
+    The file is written directly (bypassing artifact_write_core) because this
+    test exercises edit mechanics, not the M3 write-once validation.
+    """
     import json
-    from koan.tools.koan_tools import ToolDeps, artifact_write_core, artifact_edit_core
+    from koan.tools.koan_tools import ToolDeps, artifact_edit_core
 
     app_state, agent = _make_orchestrator_agent(tmp_path, "test-edit-replace")
     deps = ToolDeps(app_state=app_state, agent=agent)
 
-    await artifact_write_core(deps, "doc.md", "hello world\n")
+    # Write the file directly -- this test is about editing, not about the M3 write path.
+    (tmp_path / "doc.md").write_text("hello world\n", encoding="utf-8")
 
     token = _body_anchor_token("hello world\n", 0)
     result = await artifact_edit_core(deps, "doc.md", token, "hello koan")
@@ -969,12 +1049,13 @@ async def test_artifact_edit_replaces_anchored_line(tmp_path):
 @pytest.mark.anyio
 async def test_artifact_edit_disambiguates_duplicate_lines(tmp_path):
     """Identical body lines get distinct anchors; editing one leaves the others."""
-    from koan.tools.koan_tools import ToolDeps, artifact_write_core, artifact_edit_core
+    from koan.tools.koan_tools import ToolDeps, artifact_edit_core
 
     app_state, agent = _make_orchestrator_agent(tmp_path, "test-edit-dup")
     deps = ToolDeps(app_state=app_state, agent=agent)
 
-    await artifact_write_core(deps, "doc.md", "foo\nfoo\n")
+    # Write the file directly -- this test is about edit disambiguation, not write path.
+    (tmp_path / "doc.md").write_text("foo\nfoo\n", encoding="utf-8")
     # Edit the second 'foo' (index 1) only -- the ~2 ordinal anchor.
     token = _body_anchor_token("foo\nfoo\n", 1)
     await artifact_edit_core(deps, "doc.md", token, "baz")
@@ -986,14 +1067,15 @@ async def test_artifact_edit_disambiguates_duplicate_lines(tmp_path):
 async def test_artifact_edit_then_read_round_trip(tmp_path):
     """An anchor from koan_artifact_read resolves in koan_artifact_edit; the change sticks."""
     from koan.tools.koan_tools import (
-        ToolDeps, artifact_write_core, artifact_read_core, artifact_edit_core,
+        ToolDeps, artifact_read_core, artifact_edit_core,
     )
     from koan.tools.line_anchors import ANCHOR_DELIMITER
 
     app_state, agent = _make_orchestrator_agent(tmp_path, "test-edit-roundtrip")
     deps = ToolDeps(app_state=app_state, agent=agent)
 
-    await artifact_write_core(deps, "doc.md", "alpha\nbeta\n")
+    # Write the file directly -- this test is about the read->anchor->edit round trip.
+    (tmp_path / "doc.md").write_text("alpha\nbeta\n", encoding="utf-8")
 
     # Take the anchor straight from read output (not a precomputed helper).
     read_out = await artifact_read_core(deps, "doc.md")
@@ -1022,12 +1104,13 @@ async def test_artifact_edit_file_not_found(tmp_path):
 @pytest.mark.anyio
 async def test_artifact_edit_anchor_not_found(tmp_path):
     """koan_artifact_edit raises 'edit_failed:' when the anchor is absent from the body."""
-    from koan.tools.koan_tools import ToolDeps, artifact_write_core, artifact_edit_core
+    from koan.tools.koan_tools import ToolDeps, artifact_edit_core
 
     app_state, agent = _make_orchestrator_agent(tmp_path, "test-edit-nomatch")
     deps = ToolDeps(app_state=app_state, agent=agent)
 
-    await artifact_write_core(deps, "doc.md", "hello world\n")
+    # Write the file directly -- this test is about anchor resolution, not write path.
+    (tmp_path / "doc.md").write_text("hello world\n", encoding="utf-8")
 
     with pytest.raises(ValueError) as exc_info:
         await artifact_edit_core(deps, "doc.md", "deadbeef§nonexistent", "x")
@@ -1038,13 +1121,14 @@ async def test_artifact_edit_anchor_not_found(tmp_path):
 @pytest.mark.anyio
 async def test_artifact_edit_content_mismatch(tmp_path):
     """koan_artifact_edit raises 'edit_failed:' on inline-content drift."""
-    from koan.tools.koan_tools import ToolDeps, artifact_write_core, artifact_edit_core
+    from koan.tools.koan_tools import ToolDeps, artifact_edit_core
     from koan.tools.line_anchors import ANCHOR_DELIMITER, compute_anchors
 
     app_state, agent = _make_orchestrator_agent(tmp_path, "test-edit-drift")
     deps = ToolDeps(app_state=app_state, agent=agent)
 
-    await artifact_write_core(deps, "doc.md", "real line\n")
+    # Write the file directly -- this test is about content-mismatch detection.
+    (tmp_path / "doc.md").write_text("real line\n", encoding="utf-8")
     anchor = compute_anchors(["real line"])[0]
 
     with pytest.raises(ValueError) as exc_info:
@@ -1056,12 +1140,13 @@ async def test_artifact_edit_content_mismatch(tmp_path):
 @pytest.mark.anyio
 async def test_artifact_edit_invalid_edit_type(tmp_path):
     """koan_artifact_edit raises 'edit_failed:' for an unknown edit_type."""
-    from koan.tools.koan_tools import ToolDeps, artifact_write_core, artifact_edit_core
+    from koan.tools.koan_tools import ToolDeps, artifact_edit_core
 
     app_state, agent = _make_orchestrator_agent(tmp_path, "test-edit-badtype")
     deps = ToolDeps(app_state=app_state, agent=agent)
 
-    await artifact_write_core(deps, "doc.md", "content\n")
+    # Write the file directly -- this test is about edit_type validation.
+    (tmp_path / "doc.md").write_text("content\n", encoding="utf-8")
     token = _body_anchor_token("content\n", 0)
 
     with pytest.raises(ValueError) as exc_info:
@@ -1072,12 +1157,13 @@ async def test_artifact_edit_invalid_edit_type(tmp_path):
 @pytest.mark.anyio
 async def test_artifact_edit_emits_diff_events(tmp_path):
     """koan_artifact_edit triggers artifact_diff so the sidebar refreshes."""
-    from koan.tools.koan_tools import ToolDeps, artifact_write_core, artifact_edit_core
+    from koan.tools.koan_tools import ToolDeps, artifact_edit_core
 
     app_state, agent = _make_orchestrator_agent(tmp_path, "test-edit-diff")
     deps = ToolDeps(app_state=app_state, agent=agent)
 
-    await artifact_write_core(deps, "doc.md", "before edit\n")
+    # Write the file directly -- this test is about edit diff events, not write path.
+    (tmp_path / "doc.md").write_text("before edit\n", encoding="utf-8")
     # Clear events recorded during write so we can isolate the edit's events
     events_before = len(app_state.projection_store.events)
 

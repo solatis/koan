@@ -170,8 +170,8 @@ _WORKFLOW_ENTRY_A = {
 _WORKFLOW_ENTRY_B = {
     "id": "milestones",
     "description": "Phased delivery",
-    "phases": [{"id": "milestone-spec", "description": "Define milestones"}],
-    "initial_phase": "milestone-spec",
+    "phases": [{"id": "milestone", "description": "Define milestones"}],
+    "initial_phase": "milestone",
 }
 
 
@@ -854,6 +854,19 @@ class TestFoldFocus:
         p = Projection()
         r = fold(p, _e("default_scout_concurrency_changed", {"value": 16}))
         assert r.settings.default_scout_concurrency == 16
+
+    def test_retry_settings_changed(self):
+        p = Projection()
+        r = fold(p, _e("retry_settings_changed", {"max_retry_attempts": 5, "max_retry_wait_seconds": 30.0}))
+        assert r.settings.max_retry_attempts == 5
+        assert r.settings.max_retry_wait_seconds == 30.0
+
+    def test_retry_settings_changed_defaults_on_missing_payload(self):
+        """Missing keys in payload fall back to dataclass defaults."""
+        p = Projection()
+        r = fold(p, _e("retry_settings_changed", {}))
+        assert r.settings.max_retry_attempts == 10
+        assert r.settings.max_retry_wait_seconds == 60.0
 
     def test_settings_events_do_not_touch_run(self):
         """Settings events must not modify run state."""

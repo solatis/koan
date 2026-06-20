@@ -24,7 +24,7 @@ async def test_suggest_next_core_stores_suggestions():
     deps = ToolDeps(app_state=app_state, agent=agent)
 
     suggestions = [
-        {"id": "plan-spec", "label": "Write plan", "command": "write the plan", "recommended": True},
+        {"id": "plan", "label": "Write plan", "command": "write the plan", "recommended": True},
         {"id": "done", "label": "End workflow", "command": "end"},
     ]
     result = await suggest_next_core(deps, suggestions)
@@ -106,7 +106,7 @@ async def test_loop_handback_consumes_and_clears_recorded_suggestions(tmp_path):
     app_state.agents[agent_state.agent_id] = agent_state
 
     # Pre-record suggestions.
-    recorded = [{"id": "plan-spec", "label": "Write plan", "command": "plan-spec", "recommended": True}]
+    recorded = [{"id": "plan", "label": "Write plan", "command": "plan", "recommended": True}]
     app_state.interactions.next_suggestions = list(recorded)
 
     spec = ModelSpec(provider="google", model="gemini-2.0-flash", thinking="disabled")
@@ -140,7 +140,7 @@ async def test_loop_handback_consumes_and_clears_recorded_suggestions(tmp_path):
         yield_events = [e for e in app_state.projection_store.events if e.event_type == "yield_started"]
         assert yield_events, "expected yield_started event"
         sugg_ids = [s["id"] for s in yield_events[0].payload.get("suggestions", [])]
-        assert "plan-spec" in sugg_ids
+        assert "plan" in sugg_ids
 
         app_state.run.workflow_done = True
         app_state.interactions.yield_future.set_result(None)

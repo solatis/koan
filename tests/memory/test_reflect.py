@@ -6,13 +6,16 @@ from __future__ import annotations
 import pytest
 from unittest.mock import AsyncMock, patch
 
+from koan.agents import adapter as adapter_mod
 from koan.memory.retrieval.reflect import (
     Citation,
+    _build_agent,
     _dispatch_search,
     _resolve_citations,
 )
 from koan.memory.retrieval.types import SearchResult
 from koan.memory.types import MemoryEntry
+from koan.types import CachingPolicy, ModelSpec
 
 
 # ---------------------------------------------------------------------------
@@ -142,3 +145,48 @@ class TestDispatchSearch:
         assert "error" in payload
         assert "voyage key missing" in payload["error"]
         assert payload["results"] == []
+
+
+# ---------------------------------------------------------------------------
+# _build_agent routing regression
+# ---------------------------------------------------------------------------
+
+class TestBuildAgentRouting:
+    def test_routes_settings_through_build_model_settings(self, monkeypatch):
+        """_build_agent routes model settings through build_model_settings; sets no temperature.
+
+        Guards that the memory reflect constructor never re-introduces a direct
+        temperature override or diverges from the shared adapter seam.
+        """
+        from pydantic_ai.models.test import TestModel
+
+        spec = ModelSpec(
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            thinking="high",
+            settings={"anthropic_thinking": {"type": "adaptive"}},
+            caching=CachingPolicy(),
+            api_key="k",
+        )
+
+        # Replace build_model with a stub that returns a TestModel (no network needed).
+        monkeypatch.setattr(
+            adapter_mod,
+            "build_model",
+            lambda s, api_key=None, **_: TestModel(call_tools=[]),
+        )
+
+        # Wrap the real build_model_settings in a spy so we can assert it was called.
+        real_build_model_settings = adapter_mod.build_model_settings
+        calls: list = []
+
+        def spy_build_model_settings(s):
+            calls.append(s)
+            return real_build_model_settings(s)
+
+        monkeypatch.setattr(adapter_mod, "build_model_settings", spy_build_model_settings)
+
+        _build_agent(spec)
+
+        assert len(calls) == 1
+        assert calls[0] is spec

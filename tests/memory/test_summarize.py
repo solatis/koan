@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from koan.agents import adapter as adapter_mod
 from koan.memory.store import MemoryStore
 from koan.memory.summarize import (
     _render_entries_for_prompt,
@@ -186,6 +187,55 @@ class TestStoreRegenerateSummary:
 
         assert called["store"] is store
         assert called["name"] == "Foo"
+
+
+# ---------------------------------------------------------------------------
+# generate() routing regression
+# ---------------------------------------------------------------------------
+
+class TestGenerateRouting:
+    @pytest.mark.anyio
+    async def test_routes_settings_through_build_model_settings(self, monkeypatch):
+        """generate() routes model settings through build_model_settings; sets no temperature.
+
+        Guards that koan.memory.llm.generate never re-introduces a direct
+        temperature override or diverges from the shared adapter seam.
+        """
+        from pydantic_ai.models.test import TestModel
+        from koan.memory.llm import generate
+        from koan.types import CachingPolicy, ModelSpec
+
+        spec = ModelSpec(
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            thinking="high",
+            settings={"anthropic_thinking": {"type": "adaptive"}},
+            caching=CachingPolicy(),
+            api_key="k",
+        )
+
+        # TestModel with custom_output_text so the Agent returns a string immediately.
+        monkeypatch.setattr(
+            adapter_mod,
+            "build_model",
+            lambda s, api_key=None, **_: TestModel(custom_output_text="ok"),
+        )
+
+        # Spy on build_model_settings to assert it is called with the spec.
+        real_build_model_settings = adapter_mod.build_model_settings
+        calls: list = []
+
+        def spy_build_model_settings(s):
+            calls.append(s)
+            return real_build_model_settings(s)
+
+        monkeypatch.setattr(adapter_mod, "build_model_settings", spy_build_model_settings)
+
+        result = await generate("hi", spec)
+
+        assert result == "ok"
+        assert len(calls) == 1
+        assert calls[0] is spec
 
 
 # ---------------------------------------------------------------------------

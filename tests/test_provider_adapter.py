@@ -144,6 +144,24 @@ def test_build_model_settings_merges_spec_settings_and_thinking():
     assert s["openai_reasoning_effort"] == "low"
 
 
+def test_build_model_settings_never_injects_temperature():
+    """build_model_settings does not inject a temperature key when the spec carries none.
+
+    Regression guard: Anthropic returns 400 ('temperature may only be set to 1
+    when thinking is enabled or in adaptive mode') when temperature is forced
+    alongside an anthropic_thinking spec. build_model_settings must be a pure
+    pass-through that never adds temperature on its own.
+    """
+    # Simulate a spec that has been flattened with adaptive thinking baked in
+    # but no temperature (the normal path for memory/reflect agents).
+    baked = {"anthropic_thinking": {"type": "adaptive"}}
+    s = adapter.build_model_settings(
+        _spec("anthropic", model="claude-sonnet-4-6", settings=baked)
+    )
+    assert s["anthropic_thinking"] == {"type": "adaptive"}
+    assert "temperature" not in s
+
+
 # -- build_model ---------------------------------------------------------------
 
 

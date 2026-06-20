@@ -41,7 +41,7 @@ from koan.types import ModelSpec
 def test_yolo_yield_response_prefers_recommended_non_done():
     suggestions = [
         {"id": "done", "command": "stop"},
-        {"id": "plan-spec", "command": "write the plan", "recommended": True},
+        {"id": "plan", "command": "write the plan", "recommended": True},
     ]
     assert _yolo_yield_response(suggestions) == "write the plan"
 
@@ -53,8 +53,8 @@ def test_yolo_yield_response_falls_back_to_first_non_done_then_proceed():
 
 
 def test_directed_yolo_response_steers_to_next_phase():
-    directed = ["intake", "plan-spec", "execute", "done"]
-    assert "plan-spec" in _directed_yolo_response(directed, "intake")
+    directed = ["intake", "plan", "execute", "done"]
+    assert "plan" in _directed_yolo_response(directed, "intake")
     # Last real phase -> done tombstone instruction.
     assert 'koan_set_phase("done")' in _directed_yolo_response(directed, "execute")
     # Unknown current phase -> proceed.
@@ -441,7 +441,7 @@ async def test_koan_suggest_next_suggestions_appear_on_yield_started(tmp_path):
     """
     app_state, agent_state = _make("loop-sugg", str(tmp_path), is_primary=True)
     # Pre-record orchestrator-authored suggestions.
-    recorded = [{"id": "plan-spec", "label": "Write plan", "command": "plan-spec", "recommended": True}]
+    recorded = [{"id": "plan", "label": "Write plan", "command": "plan", "recommended": True}]
     app_state.interactions.next_suggestions = list(recorded)
     events = []
 
@@ -473,4 +473,4 @@ async def test_koan_suggest_next_suggestions_appear_on_yield_started(tmp_path):
     assert yield_events, "expected yield_started event"
     payload = yield_events[0].payload
     sugg_ids = [s["id"] for s in payload.get("suggestions", [])]
-    assert "plan-spec" in sugg_ids
+    assert "plan" in sugg_ids

@@ -227,6 +227,62 @@ class TestConfigRoundTrip:
 
 # TestShimProperties removed in M5: profiles/active_profile shim deleted from KoanConfig.
 
+
+# -- Retry config round-trip --------------------------------------------------
+
+class TestRetryConfigRoundTrip:
+
+    @pytest.mark.anyio
+    async def test_retry_fields_default(self, tmp_path, monkeypatch):
+        """Default KoanConfig has max_retry_attempts=10, max_retry_wait_seconds=60.0."""
+        config_path = tmp_path / "config.yaml"
+        monkeypatch.setattr("koan.config.CONFIG_PATH", config_path)
+        monkeypatch.setattr("koan.config._config_write_lock", None)
+
+        # File absent -> defaults used.
+        loaded = await load_koan_config()
+        assert loaded.max_retry_attempts == 10
+        assert loaded.max_retry_wait_seconds == 60.0
+
+    @pytest.mark.anyio
+    async def test_retry_fields_round_trip(self, tmp_path, monkeypatch):
+        """max_retry_attempts and max_retry_wait_seconds persist through save+load."""
+        config_path = tmp_path / "config.yaml"
+        monkeypatch.setattr("koan.config.CONFIG_PATH", config_path)
+        monkeypatch.setattr("koan.config._config_write_lock", None)
+
+        original = KoanConfig(max_retry_attempts=5, max_retry_wait_seconds=30.0)
+        await save_koan_config(original)
+        loaded = await load_koan_config()
+
+        assert loaded.max_retry_attempts == 5
+        assert loaded.max_retry_wait_seconds == 30.0
+
+    @pytest.mark.anyio
+    async def test_retry_attempts_invalid_falls_back_to_default(self, tmp_path, monkeypatch):
+        """Non-positive or non-integer max_retry_attempts falls back to 10."""
+        import yaml
+        config_path = tmp_path / "config.yaml"
+        monkeypatch.setattr("koan.config.CONFIG_PATH", config_path)
+        monkeypatch.setattr("koan.config._config_write_lock", None)
+
+        config_path.write_text(yaml.safe_dump({"max_retry_attempts": -1}))
+        loaded = await load_koan_config()
+        assert loaded.max_retry_attempts == 10
+
+    @pytest.mark.anyio
+    async def test_retry_wait_invalid_falls_back_to_default(self, tmp_path, monkeypatch):
+        """Non-positive max_retry_wait_seconds falls back to 60.0."""
+        import yaml
+        config_path = tmp_path / "config.yaml"
+        monkeypatch.setattr("koan.config.CONFIG_PATH", config_path)
+        monkeypatch.setattr("koan.config._config_write_lock", None)
+
+        config_path.write_text(yaml.safe_dump({"max_retry_wait_seconds": 0}))
+        loaded = await load_koan_config()
+        assert loaded.max_retry_wait_seconds == 60.0
+
+
 # -- resolve_provider_auth (new signature) ------------------------------------
 
 class TestResolveProviderAuth:

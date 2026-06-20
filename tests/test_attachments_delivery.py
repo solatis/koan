@@ -5,8 +5,10 @@
 #      notice (in-process path; koan_yield removed in M5).
 #   2. A binary EmbeddedResource (runner_type "claude") cannot ride the single-
 #      string resume prompt -- documents the text-only delivery limitation.
-#   3. Per-decision attachments on /api/memory/curation reach _render_curation_payload
-#      as File blocks in the correct order (unit-tests the relocated function).
+#
+# Scenario 3 (per-decision attachments via _render_curation_payload) was
+# removed in M7: the koan_memory_propose approval gate is retired, so
+# _render_curation_payload and its test no longer exist.
 #
 # Scenarios 4 and 5 (start-run attachment delivery on the first koan_complete_step)
 # tested the HTTP MCP handler wrapper path which was removed in M1. That attachment
@@ -15,36 +17,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import io
-import json
-import tempfile
-from pathlib import Path
-from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from koan.state import AgentState, AppState, UploadState
-from koan.phases import PhaseContext
-from koan.web.app import create_app
-
-
-# -- Shared helpers ------------------------------------------------------------
-
-def _make_agent(app_state: AppState, tmp_path: Path, runner_type: str = "claude") -> AgentState:
-    agent = AgentState(
-        agent_id="test-attach-agent",
-        role="orchestrator",
-        subagent_dir=str(tmp_path),
-        run_dir=str(tmp_path),
-        step=2,
-        is_primary=True,
-        runner_type=runner_type,
-        event_log=AsyncMock(),
-        phase_ctx=PhaseContext(run_dir=str(tmp_path), subagent_dir=str(tmp_path)),
-    )
-    app_state.agents[agent.agent_id] = agent
-    return agent
+from koan.state import AppState
 
 
 # -- Scenario 1: in-process resume delivers attachment text notice to the next turn ---
@@ -147,69 +124,3 @@ async def test_resume_prompt_all_runners_receive_text_notice(tmp_path):
     assert manifest[0]["filename"] == "data.csv"
 
 
-# -- Scenario 3: Per-decision attachments via _render_curation_payload ----------
-#
-# This unit-tests the relocated _render_curation_payload function directly.
-# propose_memory_core discards the attachment blocks (returns only the JSON text),
-# so the attachment interleaving logic must be tested on the function itself.
-
-@pytest.mark.anyio
-async def test_memory_curation_per_decision_attachments(tmp_path):
-    """_render_curation_payload emits per-decision text-notice blocks after the JSON blob.
-
-    M4: EmbeddedResource delivery removed; upload_ids_to_blocks always returns
-    a TextContent notice (binary delivery is out of scope, brief).
-    """
-    from mcp.types import TextContent
-    from koan.web.uploads import init_upload_state, register_upload, commit_to_run, _render_curation_payload
-    from koan.projections import ActiveCurationBatch, Proposal
-
-    app_state = AppState()
-    app_state.run.run_dir = str(tmp_path)
-    app_state.run.phase = "curation"
-    init_upload_state(app_state.uploads)
-
-    # Upload a file and commit it (simulating api_memory_curation_submit).
-    class FakeFile:
-        filename = "evidence.md"
-        content_type = "text/plain"
-        file = io.BytesIO(b"# Evidence")
-
-    record = await register_upload(app_state.uploads, FakeFile())
-    commit_to_run(app_state.uploads, [record.id], tmp_path)
-
-    # Build a curation batch with one proposal.
-    proposal = Proposal(
-        id="p1", op="add", seq="", type="context",
-        title="Test entry", body="Some body", rationale="test",
-    )
-    batch = ActiveCurationBatch(
-        proposals=[proposal], batch_id="batch-test-1", context_note="",
-    )
-
-    decisions = [
-        {
-            "proposal_id": "p1",
-            "decision": "approved",
-            "feedback": "",
-            "attachments": [record.id],
-        }
-    ]
-
-    # Call _render_curation_payload directly -- the unit under test.
-    result, manifest = _render_curation_payload(
-        batch, decisions, app_state.uploads, str(tmp_path), runner_type="claude"
-    )
-
-    # Block 0: the JSON blob (json.loads(result[0].text) must work)
-    assert isinstance(result[0], TextContent)
-    parsed = json.loads(result[0].text)
-    assert parsed.get("batch_id") == "batch-test-1"
-
-    # Block 1: the label separator
-    assert isinstance(result[1], TextContent)
-    assert "Attachments for proposal p1" in result[1].text
-
-    # Block 2: the text notice for evidence.md (EmbeddedResource removed in M4)
-    assert isinstance(result[2], TextContent)
-    assert "evidence.md" in result[2].text
