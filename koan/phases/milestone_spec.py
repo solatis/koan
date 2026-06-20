@@ -1,11 +1,15 @@
-# Milestone-spec phase -- 2-step workflow.
+# Milestone phase -- 2-step workflow.
 #
-#   Step 1 (Analyze)  -- determine mode (CREATE/RE-DECOMPOSE), analyze scope; no writes
-#   Step 2 (Write)    -- write or revise milestones.md via koan_artifact_write
+#   Step 1 (Analyze)  -- analyze scope; no writes
+#   Step 2 (Write)    -- write milestones.md via koan_artifact_write
 #
-# Handles initial decomposition (CREATE mode) and explicit RE-DECOMPOSE when
-# the user redirects here after a major deviation. Routine post-execution UPDATE
-# (mark [done], append Outcome, advance next) has moved to exec-review in M4.
+# M6: CREATE-only. The discard hook in apply_set_phase deletes milestones.md
+# on every milestone re-entry (when it exists), so this phase always CREATEs --
+# the RE-DECOMPOSE (revise-in-place) branch is removed (brief 9.3: stale
+# milestones.md is discarded and re-created fresh from the codebase, not patched).
+# The MILESTONE_REVIEWER runs mechanically on write (M3); findings are reconciled
+# inline before advancing to plan.
+#
 # Scope: "milestones" -- specific to the milestones workflow.
 
 from __future__ import annotations
@@ -24,13 +28,11 @@ STEP_NAMES: dict[int, str] = {
 
 PHASE_ROLE_CONTEXT = (
     "You are a technical architect managing milestone decomposition for a broad initiative.\n"
-    # M4: UPDATE mode removed; routine post-execution UPDATE is now exec-review's job.
-    # milestone-spec retains CREATE + manual RE-DECOMPOSE entry path only.
-    "You may be creating the initial decomposition (CREATE mode) or revising it after\n"
-    "the user has explicitly redirected here following a major deviation (RE-DECOMPOSE\n"
-    "mode). Routine post-execution UPDATE work has moved to exec-review.\n"
-    "Read `milestones.md` in the run directory -- if it exists, you are in RE-DECOMPOSE\n"
-    "mode; if not, you are creating from intake findings.\n"
+    # M6: RE-DECOMPOSE mode removed. The discard hook in apply_set_phase deletes
+    # milestones.md on every milestone re-entry, so this phase always creates fresh.
+    # Routine post-execution UPDATE work has moved to the execute phase (M5).
+    "You decompose the initiative into milestones grounded in the codebase's dependency\n"
+    "structure. Read the codebase, propose milestones, write milestones.md.\n"
     "\n"
     "## What a milestone is\n"
     "\n"
@@ -48,7 +50,7 @@ PHASE_ROLE_CONTEXT = (
     "2. **Grounded in code structure**: the milestone's scope maps to a connected\n"
     "   subgraph of the affected codebase. Milestones that slice across strongly-\n"
     "   connected components guarantee integration pain.\n"
-    "3. **Plannable in one plan-spec session**: plan-spec can read the milestone's\n"
+    "3. **Plannable in one plan session**: plan can read the milestone's\n"
     "   files and produce a specific implementation plan without exhausting context.\n"
     "4. **Executable in one executor session**: the resulting plan fits in roughly\n"
     "   10-30 implementation steps.\n"
@@ -73,7 +75,7 @@ PHASE_ROLE_CONTEXT = (
     "\n"
     "### Outcome\n"
     "\n"
-    "<post-execution notes added during milestone-spec update>\n"
+    "<post-execution notes added during milestone update>\n"
     "\n"
     "## Milestone 2: <title> [in-progress]\n"
     "\n"
@@ -93,19 +95,22 @@ PHASE_ROLE_CONTEXT = (
     "\n"
     "## Strict rules\n"
     "\n"
-    "- MUST read milestones.md (if it exists) before writing.\n"
     "- MUST use koan_artifact_write to write milestones.md.\n"
     "- MUST NOT plan implementation details -- rough sketches only.\n"
-    # M4: "When updating: MUST add an Outcome section" removed -- exec-review
-    # now owns Outcome authoring. RE-DECOMPOSE must NOT add Outcomes.
-    "- In RE-DECOMPOSE mode: MUST preserve all [done] milestones and their\n"
-    "  Outcome sections intact. MUST NOT mark milestones [done] or add Outcomes.\n"
+    "- MUST NOT mark milestones [done] or add Outcomes -- execute phase owns that.\n"
 )
 
 
 # -- Step guidance -------------------------------------------------------------
 
 def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
+    """Build step guidance for the given step number.
+
+    Step 1 (Analyze): read brief.md and codebase module structure; identify
+    affected subgraph; propose milestones. Step 2 (Write): write milestones.md
+    via koan_artifact_write (always CREATE -- never RE-DECOMPOSE), which triggers
+    the mechanical MILESTONE_REVIEWER. Reconcile findings inline, then advance to plan.
+    """
     if step == 1:
         lines: list[str] = []
         # phase_instructions at top per established pattern (intake.py, execute.py)
@@ -114,52 +119,40 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
         if ctx.memory_injection:
             lines.extend([ctx.memory_injection, ""])
         # brief.md directive comes first so the orchestrator reads initiative context
-        # before deciding mode or proposing milestones (plan decision 4).
+        # before proposing milestones (plan decision 4).
         lines.extend([
             "## Read initiative context",
             "",
-            "Read `brief.md` from the run directory before deciding mode (CREATE / UPDATE) or",
-            "proposing milestones. It contains the frozen initiative scope, decisions,",
-            "constraints, and affected subsystems from intake -- treat it as authoritative.",
+            "Read `brief.md` from the run directory before proposing milestones.",
+            "It contains the frozen initiative scope, decisions, constraints,",
+            "and affected subsystems from intake -- treat it as authoritative.",
             "",
             "Read and analyze before writing. Do NOT write milestones.md in this step.",
             "",
-            "## Determine mode",
-            "",
-            "Check whether milestones.md exists in the run directory.",
-            "- If it does NOT exist: you are in **CREATE** mode.",
-            # M4: UPDATE mode retired; routine post-execution UPDATE is exec-review's job.
-            # milestone-spec is only entered explicitly after a major deviation.
-            "- If it DOES exist: you are in **RE-DECOMPOSE** mode.",
-            "",
-            "---",
-            "",
-            "## CREATE mode",
-            "",
-            "### 1. Understand the initiative scope",
+            "## Understand the initiative scope",
             "",
             "Read intake findings from the conversation context.",
             "",
-            "### 2. Read the project's module structure",
+            "## Read the project's module structure",
             "",
             "Read the directory tree and top-level packages -- not individual files.",
             "This is the prior for where milestones should cut. Use `find`, `ls`, or",
             "`tree` to see the structure. Understand the visible module boundaries.",
             "",
-            "### 3. Identify the affected subgraph",
+            "## Identify the affected subgraph",
             "",
             "From intake findings, identify which packages/modules the initiative",
             "touches. Read the import graph among those (or at least the outgoing",
             "imports from entry points). Understand how the affected modules relate",
             "to each other.",
             "",
-            "### 4. Consult project memory",
+            "## Consult project memory",
             "",
             "Run `koan_reflect` for architectural constraints relevant to milestone",
             "scope and ordering. Use `koan_search` for specific past decomposition",
             "patterns or subsystem boundary decisions.",
             "",
-            "### 5. Propose milestones",
+            "## Propose milestones",
             "",
             "Identify 3-7 milestones. For each proposed milestone:",
             "- Name the files or modules it owns. If the scope cannot be named in",
@@ -171,39 +164,8 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
             "  sentence sketch). If a milestone exceeds these, split it.",
             "- Order by dependency: earlier milestones must not depend on later ones.",
             "",
-            "---",
-            "",
-            # M4: RE-DECOMPOSE replaces UPDATE mode. The key framing distinction is
-            # that this mode is for changing the milestone graph (adding, splitting,
-            # merging milestones), NOT for routine post-execution bookkeeping.
-            "## RE-DECOMPOSE mode",
-            "",
-            "### 1. Read milestones.md and the trigger context",
-            "",
-            "You are in this mode because milestones.md already exists AND the user has",
-            "explicitly redirected to milestone-spec (typically after a major deviation",
-            "surfaced in exec-review). Read milestones.md to understand the current state.",
-            "Read the conversation context to understand WHY the user wants re-decomposition",
-            "(what changed, what assumption was wrong, what scope shifted).",
-            "",
-            "### 2. Plan the revisions",
-            "",
-            "Identify which `[pending]` and `[in-progress]` milestones need revision. You",
-            "may add new milestones, split existing ones, merge two pending milestones, or",
-            "adjust scope sketches. You MUST preserve all `[done]` milestones and their",
-            "Outcome sections intact -- those represent work already shipped.",
-            "",
-            "Routine post-execution UPDATE work (mark completed [done], append Outcome,",
-            "advance next [pending]) does NOT happen here -- exec-review owns that flow",
-            "per the M4 design. RE-DECOMPOSE is for when the milestone graph itself",
-            "needs to change.",
-            "",
-            "---",
-            "",
             "End your turn with:",
-            "- Mode (CREATE or RE-DECOMPOSE)",
-            "- CREATE: proposed milestone list with rough sketches and file/module scope",
-            "- RE-DECOMPOSE: what changed and why, proposed adjustments to [pending]/[in-progress] milestones",
+            "- Proposed milestone list with rough sketches and file/module scope",
         ])
         return StepGuidance(title=STEP_NAMES[1], instructions=lines)
 
@@ -211,7 +173,7 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
         return StepGuidance(
             title=STEP_NAMES[2],
             instructions=[
-                "Write or update milestones.md via `koan_artifact_write`.",
+                "Write milestones.md via `koan_artifact_write`.",
                 "",
                 "```",
                 "koan_artifact_write(",
@@ -225,27 +187,43 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 ")",
                 "```",
                 "",
-                "## CREATE mode",
+                # M6: always CREATE because the discard hook removes milestones.md
+                # on every milestone re-entry, so this phase never sees an existing file.
+                "Give the **first** milestone `[in-progress]` status; give all subsequent",
+                "milestones `[pending]` status.",
+                "Write a rough sketch (3-6 sentences) describing what each milestone covers.",
+                "Order milestones by dependency: earlier milestones must not depend on later ones.",
                 "",
-                "- Give the **first** milestone `[in-progress]` status; give all subsequent milestones `[pending]` status.",
-                "- Write a rough sketch (3-6 sentences) describing what this milestone covers.",
-                "- Order milestones by dependency: earlier milestones must not depend on later ones.",
+                "## Reconcile reviewer findings (inline, after write returns)",
                 "",
-                # M4: RE-DECOMPOSE replaces UPDATE mode in step 2. The critical
-                # constraint is that exec-review is the sole owner of [done] transitions
-                # and Outcome authoring; milestone-spec must not usurp that role.
-                "## RE-DECOMPOSE mode",
+                # M6: reconcile folded into the Write step -- the write triggers the
+                # MILESTONE_REVIEWER mechanically and returns its findings as the tool result.
+                "Once `koan_artifact_write` returns, you have the MILESTONE_REVIEWER's",
+                "freeform findings. Judge each finding and act:",
                 "",
-                "- Add, split, merge, or revise `[pending]` and `[in-progress]` milestone sketches.",
-                "- Preserve all `[done]` milestones and their Outcome sections intact.",
-                "- Adjust the `[in-progress]` marker if the next milestone to work on changes.",
-                "- Do NOT mark any milestone `[done]` -- exec-review owns that transition.",
-                "- Do NOT add Outcome sections -- exec-review owns Outcome authoring.",
+                "- **Valid finding**: incorporate it by editing milestones.md in place via",
+                "  `koan_artifact_edit`.",
+                "- **Reviewer misconception**: overrule it by editing to add missing context.",
+                "- **Approach-invalidating finding**: escalate via `koan_ask_question`.",
+                "",
+                "Then append a per-finding disposition to the sidecar:",
+                "",
+                "```",
+                "koan_artifact_edit(",
+                '    filename="milestones.review.md",',
+                "    old_string=\"## Plan review (pre-exec)\",",
+                '    new_string="""## Plan review (pre-exec)',
+                "",
+                "### Orchestrator disposition",
+                "",
+                "- Finding 1: [INCORPORATED / OVERRULED / ESCALATED] -- <rationale>",
+                '""",',
+                ")",
+                "```",
+                "",
+                "## Advance to plan",
                 "",
             ],
-            # terminal_invoke replaces the "After artifact is approved" block.
-            # next_phase="milestone-review" is bound in the workflow, mirroring
-            # plan-spec -> plan-review and execute -> exec-review.
             invoke_after=terminal_invoke(ctx.next_phase, ctx.suggested_phases),
         )
 
@@ -255,14 +233,17 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
 # -- Lifecycle -----------------------------------------------------------------
 
 def get_next_step(step: int, ctx: PhaseContext) -> int | None:
+    """Return step + 1 if more steps remain; None after the terminal step."""
     if step < TOTAL_STEPS:
         return step + 1
     return None
 
 
 def validate_step_completion(step: int, ctx: PhaseContext) -> str | None:
+    """Return None -- step completion validation is not implemented."""
     return None
 
 
 async def on_loop_back(from_step: int, to_step: int, ctx: PhaseContext) -> None:
+    """No-op -- milestone_spec has no loop-back state to manage."""
     pass

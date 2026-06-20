@@ -1,7 +1,14 @@
-# Plan-spec phase -- 2-step workflow.
+# Plan phase -- 2-step workflow.
 #
 #   Step 1 (Analyze)  -- review intake context and codebase; no writes
-#   Step 2 (Write)    -- write the plan artifact to the run directory
+#   Step 2 (Write)    -- write the plan artifact, reconcile reviewer findings
+#                        inline, then name the plan for execution
+#
+# M6: review-phase collapse. The PLAN_REVIEWER now runs mechanically when
+# koan_artifact_write is called (M3). The producer reconciles findings inline
+# in step 2 (judge each, edit-in-place or escalate), then names the plan for
+# execution via koan_set_phase("execute", plan_file=...) -- which freezes it,
+# spawns the executor, and returns the deviation report. plan-review is gone.
 #
 # Scope: "general" -- reusable by any workflow.
 
@@ -76,6 +83,14 @@ PHASE_ROLE_CONTEXT = (
 # -- Step guidance -------------------------------------------------------------
 
 def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
+    """Build step guidance for the given step number.
+
+    Step 1 (Analyze): read brief.md + codebase; no writes. Step 2 (Write):
+    compose and submit the plan via koan_artifact_write, which triggers the
+    mechanical PLAN_REVIEWER (blocking). The producer then reconciles each
+    finding inline (edit-in-place or escalate), appends dispositions to the
+    .review.md sidecar, and names the plan for execution via koan_set_phase.
+    """
     if step == 1:
         lines: list[str] = []
         # phase_instructions at top per established pattern (intake.py, execute.py)
@@ -198,14 +213,67 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "## About the tool",
                 "",
                 "`koan_artifact_write` writes the plan artifact to the run directory"
-                " immediately (non-blocking). The artifact is visible in the sidebar."
-                " Full-rewrite semantics: call it with the same filename to update.",
+                " (write-once). The PLAN_REVIEWER sub-agent runs automatically and"
+                " returns its findings as the tool result. The artifact and its"
+                " `.review.md` sidecar are visible in the sidebar.",
                 "",
                 "Do NOT use Write or Edit -- those tools are not available in"
                 " this phase.",
+                "",
+                "## Reconcile reviewer findings (inline, after write returns)",
+                "",
+                # M6: reconcile is folded into the Write step -- the write returns
+                # the reviewer's findings directly. A separate Reconcile step was
+                # rejected to keep the change bounded (plan key decision 1).
+                "Once `koan_artifact_write` returns, you have the PLAN_REVIEWER's",
+                "freeform findings. Judge each finding and act:",
+                "",
+                "- **Valid finding**: incorporate it by editing the plan in place via",
+                "  `koan_artifact_edit` (the plan is still a draft; edits are allowed).",
+                "- **Reviewer misconception**: overrule it by editing the plan to add",
+                "  the missing context that corrects the reviewer's assumption.",
+                "- **Approach-invalidating finding**: escalate via `koan_ask_question`",
+                "  before proceeding -- do not silently discard a finding that",
+                "  invalidates the whole approach.",
+                "",
+                "Then append a per-finding disposition record to the plan's `.review.md`",
+                "sidecar via `koan_artifact_edit` (the sidecar is always writable):",
+                "",
+                "```",
+                "koan_artifact_edit(",
+                '    filename="<plan-stem>.review.md",',
+                "    old_string=\"## Plan review (pre-exec)\",",
+                '    new_string="""## Plan review (pre-exec)',
+                "",
+                "### Orchestrator disposition",
+                "",
+                "- Finding 1: [INCORPORATED / OVERRULED / ESCALATED] -- <one line rationale>",
+                "- Finding 2: ...",
+                '""",',
+                ")",
+                "```",
+                "",
+                "## Name the plan for execution",
+                "",
+                # The terminal action names the plan for execution rather than
+                # auto-advancing to a review phase, because execution requires
+                # plan_file and must freeze the plan (plan key decision 2).
+                "After reconciling all findings, name the plan for execution:",
+                "",
+                "```",
+                "koan_set_phase(",
+                '    "execute",',
+                '    plan_file="<the plan filename you just wrote>",',
+                ")",
+                "```",
+                "",
+                "This freezes the plan byte-identical, spawns the executor (blocking),",
+                "and returns the deviation report.",
             ],
-            # terminal_invoke supplies the phase-boundary invoke_after.
-            # auto-advance target (plan-review) is bound per workflow at PhaseBinding.
+            # next_phase=None: the plan yields to name the plan for execution.
+            # The step instructions above call koan_set_phase("execute", plan_file=...)
+            # directly, so no terminal_invoke auto-advance is needed. The suggested
+            # phases come from the workflow transitions (["execute"]).
             invoke_after=terminal_invoke(ctx.next_phase, ctx.suggested_phases),
         )
 

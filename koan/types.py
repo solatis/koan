@@ -5,24 +5,21 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 WorkflowPhase = Literal[
-    # Active workflow phases
+    # Final 8-phase set (brief 5.4, M6 cutover).
+    # M1: legacy literals removed (plan-spec, milestone-spec, tech-plan-spec,
+    # execution, implementation-validation, ticket-breakdown,
+    # cross-artifact-validation).
+    # M6: *-review literals removed (plan-review, milestone-review,
+    # tech-plan-review, exec-review) -- collapsed into the mechanical reviewer
+    # (M3) and inline execute review (M5).
     "intake",
-    "brief-generation",
     "core-flows",
     "tech-plan",
-    "ticket-breakdown",
-    "cross-artifact-validation",
-    "execution",
-    "implementation-validation",
-    "completed",
-    # Plan workflow phases
-    "plan-spec",
-    "plan-review",
+    "milestone",
+    "plan",
     "execute",
-    # Curation (memory maintenance) -- reusable across workflows
     "curation",
-    # M4: legacy phase literals kept to avoid breaking state.py WorkflowPhase
-    # annotation until the phase taxonomy is revisited in M6/M7.
+    "frame",
 ]
 
 SubagentRole = Literal[
@@ -31,6 +28,7 @@ SubagentRole = Literal[
     "orchestrator",
     "planner",
     "executor",
+    "reviewer",
 ]
 
 ModelTier = Literal["strong", "standard", "cheap"]
@@ -191,6 +189,9 @@ ROLE_MODEL_TIER: dict[SubagentRole, ModelTier] = {
     "orchestrator": "strong",
     "planner": "strong",
     "executor": "standard",
+    # Reviewer runs at the strong tier: review-finding quality gates whether
+    # defects reach execution, so the same quality bar as the orchestrator applies.
+    "reviewer": "strong",
 }
 
 # ROLE_EFFORT removed in M4: superseded by the provider adapter's per-provider

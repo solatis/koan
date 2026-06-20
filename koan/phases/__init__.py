@@ -37,6 +37,14 @@ class PhaseContext:
     available_phases: list[str] = field(default_factory=list)
     scout_question: str | None = None
     scout_investigator_role: str | None = None
+    # Reviewer sub-agent fields -- populated from task.json by _build_phase_ctx.
+    # reviewer_target: filename of the artifact being reviewed.
+    # reviewer_prompt: charter tag ("PLAN_REVIEWER" etc.) selecting the charter.
+    # reviewer_predecessor_chain: ordered list of predecessor artifact names for
+    #   remediation-context review (empty for first-pass reviews).
+    reviewer_target: str | None = None
+    reviewer_prompt: str | None = None
+    reviewer_predecessor_chain: list[str] = field(default_factory=list)
     # Pre-rendered markdown block set by _step_phase_handshake. Phase modules
     # prepend this to step 1 guidance. Empty string means no injection (either
     # no directive on the binding or retrieval failed gracefully).
@@ -71,9 +79,12 @@ class PhaseModule(Protocol):
 # spawns (scouts, executors). Orchestrator phase dispatch uses
 # Workflow.get_module() instead -- see koan/lib/workflows.py.
 
-from . import executor, scout
+from . import executor, reviewer, scout
 
 PHASE_MODULE_MAP: dict[str, Any] = {
     "scout": scout,
     "executor": executor,
+    # reviewer is a fresh-context, read-only sub-agent spawned mechanically by
+    # artifact_write_core when the written artifact's family carries a reviewer.
+    "reviewer": reviewer,
 }

@@ -18,7 +18,7 @@
 # tool-call elision impossible):
 #
 #   1 (Inventory) -- koan_memory_status + gather source + classify candidates
-#   2 (Memorize)  -- yield -> koan_memorize / koan_forget loop, then verify
+#   2 (Memorize)  -- koan_memorize / koan_forget loop, then verify
 #
 # The screenshots from the previous run showed the orchestrator confusing
 # "Survey" with intake-style exploration and reaching "phase complete"
@@ -63,10 +63,10 @@ PHASE_ROLE_CONTEXT = (
     "\n"
     "## Structural invariant\n"
     "\n"
-    "You propose, the user approves, then you write. Every memory mutation\n"
-    "(create, update, delete) must be presented to the user -- end your turn\n"
-    "with the proposal (no tool call) so the loop hands back and waits for\n"
-    "approval -- before you call a write tool. There are no silent writes.\n"
+    "You draft, self-critique against the 9-item checklist, then write DIRECTLY\n"
+    "via `koan_memorize` / `koan_forget`. There is no user approval gate; the\n"
+    "self-critique substep is the quality gate. Writes are intentional and\n"
+    "self-reviewed, not silent.\n"
     "\n"
     "## Tools\n"
     "\n"
@@ -103,9 +103,8 @@ PHASE_ROLE_CONTEXT = (
     "\n"
     "**Writes: koan_memorize / koan_forget ONLY.**\n"
     "Do NOT write or delete files under `.koan/` directly. The write tools\n"
-    "manage sequence-number assignment, timestamps, summary staleness\n"
-    "tracking, and (in the upcoming review-gate feature) human approval.\n"
-    "Bypassing them desyncs your view of memory from koan's index.\n"
+    "manage sequence-number assignment, timestamps, and summary staleness\n"
+    "tracking. Bypassing them desyncs your view of memory from koan's index.\n"
     "\n"
     "## The coding agent's own memory (separate system)\n"
     "\n"
@@ -122,7 +121,8 @@ PHASE_ROLE_CONTEXT = (
     "  `koan_memory_status` returns and what lives at `.koan/memory/`.\n"
     "\n"
     "When a fact appears in both the coding agent's memory and koan\n"
-    "memory, trust the koan version -- it went through curation review.\n"
+    "memory, trust the koan version -- it went through curation (the\n"
+    "self-critique process).\n"
     "\n"
     "## Memory types\n"
     "\n"
@@ -175,7 +175,7 @@ PHASE_ROLE_CONTEXT = (
     "                   Draft the revision; pass `entry_id` to `koan_memorize`.\n"
     "- **NOOP**      -- already adequately captured. Skip.\n"
     "- **DEPRECATE** -- this knowledge makes an existing entry obsolete.\n"
-    "                   Propose removal via `koan_forget`. (The action label\n"
+    "                   Remove via `koan_forget`. (The action label\n"
     "                   is DEPRECATE; the tool is `koan_forget` -- they\n"
     "                   refer to the same operation.)\n"
     "- **COMMENT** -- this knowledge is better expressed as a code comment\n"
@@ -281,7 +281,7 @@ def _goal_block() -> list[str]:
     return [
         "<goal>",
         "By the end of step 2 you will have called `koan_memorize` (and",
-        "possibly `koan_forget`) one or more times to write user-approved",
+        "possibly `koan_forget`) one or more times to write self-critiqued",
         "memory entries. That is the only success criterion for this phase.",
         "Step 1 is preparation; step 2 is where the writes happen.",
         "</goal>",
@@ -307,11 +307,10 @@ def _tools_this_step_block(current_step: int) -> list[str]:
             "and a 9-item draft-quality checklist appear in this step's body",
             "below. Read them BEFORE drafting your first candidate.",
             "",
-            "1. `koan_memory_propose` -- present each batch of proposals to the user.",
-            "2. `koan_memorize`       -- write approved ADD / UPDATE entries.",
-            "3. `koan_forget`         -- delete approved DEPRECATE entries.",
-            "4. `koan_memory_status`  -- call ONCE at the end to verify your writes.",
-            "5. End your turn -- LAST, after the anticipatory check passes.",
+            "1. `koan_memorize`      -- write ADD / UPDATE entries directly.",
+            "2. `koan_forget`        -- delete DEPRECATE entries directly.",
+            "3. `koan_memory_status` -- call ONCE at the end to verify your writes.",
+            "4. End your turn -- LAST, after the anticipatory check passes.",
             "</tools_this_step>",
         ]
     return []
@@ -434,8 +433,8 @@ def _step_2_memorize(ctx: PhaseContext) -> StepGuidance:
         "## Step 2: Memorize",
         "",
         "This is the writing step. Your candidate list from step 1 becomes",
-        "`koan_memorize` and `koan_forget` calls, gated by user approval",
-        "(end your turn with the proposal and wait for the user before writing).",
+        "`koan_memorize` and `koan_forget` calls, written directly after the",
+        "per-draft self-critique passes.",
         "",
         "Read the writing discipline, contrastive examples, and the",
         "draft-quality checklist below BEFORE drafting your first",
@@ -505,7 +504,7 @@ def _step_2_memorize(ctx: PhaseContext) -> StepGuidance:
         "  the unified-artifact-flow initiative\", \"the file-attachment",
         "  initiative\"). State the actual change; the initiative name",
         "  is project-internal scaffolding.",
-        "- Run-anchored phase references (\"during plan-spec for X\",",
+        "- Run-anchored phase references (\"during plan for X\",",
         "  \"during exec-review of M3\", \"during curation phase of the X",
         "  implementation\"). State the fact; the run that produced it",
         "  is not the fact.",
@@ -734,33 +733,18 @@ def _step_2_memorize(ctx: PhaseContext) -> StepGuidance:
         "rewrite, re-run the 8-item checklist on the revised draft.",
         "Loop until all 9 items PASS for all drafts in the batch.",
         "",
-        "You MAY NOT proceed to substep D (Yield) while any draft in",
+        "You MAY NOT proceed to substep D (Write) while any draft in",
         "this batch has an outstanding FAIL.",
         "",
-        "### D. Propose",
+        "### D. Write",
         "",
-        "Call `koan_memory_propose` with the final (all-PASS) proposals as",
-        "a list of dicts, each matching the Proposal wire schema:",
-        "  id, op ('add'|'update'|'deprecate'), type, seq, title, meta, rationale,",
-        "  and op-specific fields: body (for add/deprecate), before+after (for update).",
+        "For each all-PASS draft, write it DIRECTLY:",
+        "- ADD       -> `koan_memorize` (omit `entry_id`)",
+        "- UPDATE    -> `koan_memorize` (pass `entry_id`)",
+        "- DEPRECATE -> `koan_forget` (pass `entry_id`)",
+        "- NOOP / COMMENT -> skip.",
         "",
-        "The tool blocks until the user submits decisions and returns a structured",
-        "JSON payload. Parse the payload's 'decisions' array to drive substep E.",
-        "",
-        "### E. Apply",
-        "",
-        "For each decision in the returned payload, branch on 'decision' and 'feedback':",
-        "- 'approved' + no feedback  -> apply: ADD -> `koan_memorize`, UPDATE -> `koan_memorize`,",
-        "                               DEPRECATE -> `koan_forget`.",
-        "- 'approved' + feedback     -> apply the proposal, incorporating feedback",
-        "                               in the entry body at your discretion.",
-        "- 'rejected' + no feedback  -> drop the proposal; record nothing.",
-        "- 'rejected' + feedback     -> revise the proposal using feedback as direction",
-        "                               and call `koan_memory_propose` again with the",
-        "                               revised proposal (single-item batch is fine).",
-        "- NOOP / COMMENT proposals  -> skip.",
-        "",
-        "### F. Cross off",
+        "### E. Cross off",
         "",
         "Cross items off your candidate list and loop back to substep",
         "A with the next batch. Continue until the list is empty or",
@@ -769,7 +753,7 @@ def _step_2_memorize(ctx: PhaseContext) -> StepGuidance:
         "## Draft-quality checklist (schema for substep B)",
         "",
         "For each draft, verify all 9 items. Any FAIL means the draft",
-        "cannot be yielded -- it must go back through substep C.",
+        "cannot be written -- it must go back through substep C.",
         "",
         "**1. Situated for retrieval.**",
         "The body or title contains specific subsystem names, file paths,",
@@ -808,7 +792,7 @@ def _step_2_memorize(ctx: PhaseContext) -> StepGuidance:
         "of other memory entries by ID (`per entry 13`, `memory entry",
         "101` -- inline the knowledge); past-initiative names used as",
         "load-bearing context (\"during the X initiative\"); run-anchored",
-        "phase references (\"during plan-spec for X\", \"during exec-",
+        "phase references (\"during plan for X\", \"during exec-",
         "review of M3\"); \"as of <date>\" snapshots of current state;",
         "test counts and LOC diffs as anchors (\"725 tests passed\",",
         "\"+72 LOC\").",

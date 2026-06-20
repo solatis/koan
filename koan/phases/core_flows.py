@@ -3,8 +3,8 @@
 #   Step 1 (Analyze)   -- read brief.md, identify flows; no writes
 #   Step 2 (Write)     -- write core-flows.md (frozen at exit)
 #
-# core-flows.md is FROZEN at exit. Every downstream phase (tech-plan-spec,
-# tech-plan-review, milestone-spec, plan-spec, exec-review) reads it as
+# core-flows.md is FROZEN at exit. Every downstream phase (tech-plan,
+# tech-plan-review, milestone, plan, exec-review) reads it as
 # authoritative behavioral spec. The artifact must never be re-written after
 # this phase exits.
 #
@@ -37,7 +37,7 @@ PHASE_ROLE_CONTEXT = (
     "## What this artifact is\n"
     "\n"
     "core-flows.md is a FROZEN artifact. It is read by every downstream phase\n"
-    "(tech-plan-spec, tech-plan-review, milestone-spec, plan-spec, exec-review)\n"
+    "(tech-plan, tech-plan-review, milestone, plan, exec-review)\n"
     "as authoritative behavioral spec, parallel to brief.md. Once you write it,\n"
     "it is frozen; no downstream phase may re-write it.\n"
     "\n"

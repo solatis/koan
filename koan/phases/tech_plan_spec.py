@@ -1,15 +1,17 @@
-# Tech-plan-spec phase -- 2-step workflow.
+# Tech-plan phase -- 2-step workflow.
 #
 #   Step 1 (Analyze)   -- read brief.md, core-flows.md, codebase; no writes
-#   Step 2 (Write)     -- write tech-plan.md with status=In-Progress
+#   Step 2 (Write)     -- write tech-plan.md, reconcile TECH_PLAN_REVIEWER
+#                         findings inline, then advance to milestone
 #
-# tech-plan-spec is the structural counterpart to core-flows: where core-flows
-# describes externally visible behavior, tech-plan-spec describes internal structure.
-# The artifact (tech-plan.md) is disposable: consumed by downstream phases and
-# superseded once milestone outcomes compress its decisions. status=In-Progress
-# at write time because the reviewer phase (tech-plan-review) may rewrite in place.
+# tech-plan is the structural counterpart to core-flows: where core-flows
+# describes externally visible behavior, tech-plan describes internal structure.
+# The artifact (tech-plan.md) is consumed by downstream phases and superseded
+# once milestone outcomes compress its decisions.
 #
-# Auto-advances to tech-plan-review per PhaseBinding.next_phase in the workflow.
+# M6: tech-plan-review is removed. The TECH_PLAN_REVIEWER runs mechanically on
+# koan_artifact_write (M3). The producer reconciles findings inline before
+# advancing to milestone (auto-advance per PhaseBinding.next_phase).
 #
 # Scope: "general" -- reusable by any workflow; initiative workflow binds it.
 
@@ -92,12 +94,11 @@ PHASE_ROLE_CONTEXT = (
     "\n"
     "- MUST read `brief.md` and `core-flows.md` (when present) before writing.\n"
     "- MUST NOT specify per-file or per-function implementation steps -- that is\n"
-    "  the HOW band's job (plan-spec). Describe structure, not implementation steps.\n"
+    "  the HOW band's job (plan). Describe structure, not implementation steps.\n"
     "- MUST express each section's chosen path AND rejected alternatives with\n"
-    "  rationale, so the reviewer phase (tech-plan-review) has material to\n"
+    "  rationale, so the mechanical TECH_PLAN_REVIEWER (M3) has material to\n"
     "  stress-test.\n"
     "- MUST use `koan_artifact_write` for the terminal write.\n"
-    "- The reviewer (tech-plan-review) may rewrite this artifact in place.\n"
 )
 
 
@@ -108,7 +109,8 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
 
     Step 1 (Analyze): read brief.md, core-flows.md, and codebase; decide diagram
     vs suppression-prose per slot -- no writes. Step 2 (Write): emit tech-plan.md
-    via koan_artifact_write.
+    via koan_artifact_write, which triggers the mechanical TECH_PLAN_REVIEWER
+    (blocking). The producer reconciles findings inline, then advances to milestone.
     """
     if step == 1:
         lines: list[str] = []
@@ -247,7 +249,35 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "  brief.md, core-flows.md (if present), or codebase analysis notes.",
                 "- Level-separation: no cross-level mixing within a single diagram.",
                 "- Below-threshold slots: prose only. No diagram, no marker, no placeholder.",
-                "- The reviewer may rewrite this artifact in place.",
+                "",
+                "## Reconcile reviewer findings (inline, after write returns)",
+                "",
+                # M6: reconcile folded into the Write step -- the write triggers the
+                # TECH_PLAN_REVIEWER mechanically and returns its findings as the tool result.
+                "Once `koan_artifact_write` returns, you have the TECH_PLAN_REVIEWER's",
+                "freeform findings. Judge each finding and act:",
+                "",
+                "- **Valid finding**: incorporate it by editing tech-plan.md in place via",
+                "  `koan_artifact_edit`.",
+                "- **Reviewer misconception**: overrule it by editing to add the missing context.",
+                "- **Approach-invalidating finding**: escalate via `koan_ask_question`.",
+                "",
+                "Then append a per-finding disposition to the sidecar:",
+                "",
+                "```",
+                "koan_artifact_edit(",
+                '    filename="tech-plan.review.md",',
+                "    old_string=\"## Plan review (pre-exec)\",",
+                '    new_string="""## Plan review (pre-exec)',
+                "",
+                "### Orchestrator disposition",
+                "",
+                "- Finding 1: [INCORPORATED / OVERRULED / ESCALATED] -- <rationale>",
+                '""",',
+                ")",
+                "```",
+                "",
+                "After reconciling, advance to the next phase.",
             ],
             invoke_after=terminal_invoke(ctx.next_phase, ctx.suggested_phases),
         )
