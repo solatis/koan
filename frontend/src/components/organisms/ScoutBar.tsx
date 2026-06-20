@@ -1,9 +1,13 @@
 /**
- * ScoutBar — navy-framed bottom panel showing running subagents.
+ * ScoutBar -- navy-framed bottom panel showing running sub-agents.
  *
  * Contains a summary line (dot + label + counts) and a white table
  * card with column headers and ScoutRow molecules. Returns null
- * when there are no scouts to display.
+ * when there are no sub-agents to display.
+ *
+ * M6: ScoutEntry now includes an optional role field so ScoutRow can
+ * render a role badge (scout / executor / reviewer) alongside the name.
+ * The summary label reads "Sub-agents" to reflect all non-primary agent types.
  *
  * Used in: workspace layout, below the content+sidebar grid.
  */
@@ -14,6 +18,8 @@ import './ScoutBar.css'
 
 interface ScoutEntry {
   name: string
+  /** Sub-agent role string (scout, executor, reviewer). Used by ScoutRow for the role badge. */
+  role?: string
   model: string
   status: 'running' | 'done' | 'queued' | 'failed'
   tools: number
@@ -43,7 +49,7 @@ export function ScoutBar({ scouts }: ScoutBarProps) {
       {/* Summary line */}
       <div className="sb-summary">
         <StatusDot status="running" />
-        <span className="sb-label">Scouts</span>
+        <span className="sb-label">Sub-agents</span>
         <div className="sb-counts">
           {STATUS_ORDER.map(key => (
             <span key={key} className={`sb-count-group${counts[key] > 0 ? ' sb-count-group--active' : ''}`}>
