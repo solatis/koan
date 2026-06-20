@@ -24,14 +24,6 @@ The run state module (`koan/run_state.py`) reads and writes JSON only.
 bridge the two worlds by writing JSON state (for the driver) and templated
 markdown (for LLMs) in the same operation.
 
-### Filesystem-driven story discovery
-
-Story IDs are discovered by scanning `stories/*/story.md`, not by reading a
-driver-maintained JSON list. The orchestrator (during the ticket-breakdown phase) creates `story.md` files using
-the `write` tool -- it has no reason to know the JSON state format. The driver
-discovers what the LLM created by scanning, then populates the JSON story list
-itself.
-
 ---
 
 ## Run State
@@ -43,8 +35,7 @@ the active workflow type, and the list of story IDs.
 # koan/run_state.py
 {
     "phase": "intake",        # current phase name; valid values depend on the active workflow
-    "workflow": "plan",       # workflow type selected at run start ("plan" | "milestones")
-    "stories": []             # populated by driver after filesystem scan
+    "workflow": "plan"        # workflow type selected at run start ("plan" | "milestones")
 }
 ```
 
@@ -52,10 +43,10 @@ the active workflow type, and the list of story IDs.
 
 | Phase | What happens |
 |-------|--------------|
-| `intake` | Orchestrator reads conversation, scouts codebase, asks clarifying questions. Writes `landscape.md`. |
-| `plan-spec` | Orchestrator reads `landscape.md` and codebase, writes `plan.md`. |
-| `plan-review` | Orchestrator reads `landscape.md` and `plan.md`, evaluates quality, reports findings via chat. |
-| `execute` | Orchestrator composes executor instructions and spawns a single executor subagent. |
+| `intake` | Orchestrator reads conversation, scouts codebase, asks clarifying questions. Writes `brief.md`. |
+| `plan` | Orchestrator reads codebase and `brief.md`, writes `plan.md` (triggers mechanical PLAN_REVIEWER). |
+| `execute` | Orchestrator calls `koan_set_phase("execute", plan_file=...)` to freeze the plan, spawn the executor, and receive the deviation report; runs inline conformance review. |
+| `curation` | Postmortem -- writes memory entries via `koan_memorize`/`koan_forget`. |
 
 Phases advance via `koan_set_phase`; the active workflow switches via
 `koan_set_workflow` (which also lands at the new workflow's initial phase). Any phase in the active workflow's
@@ -66,56 +57,6 @@ guide the orchestrator's default boundary response but do not restrict the user.
 **`scouting` is intentionally absent.** Scouts run inside the
 `koan_request_scouts` tool handler during intake/planning phases,
 not as a top-level phase.
-
----
-
-## Story State
-
-One `state.json` per story in `stories/{story_id}/`.
-
-```python
-{
-    "story_id": "auth-middleware",
-    "status": "pending",
-    "retry_count": 0,
-    "max_retries": 2,
-    "failure_summary": None,   # set by koan_retry_story
-    "skip_reason": None,       # set by koan_skip_story or driver
-    "updated_at": "2026-03-27T..."
-}
-```
-
-### Story status lifecycle
-
-```
-pending --> selected --> planning --> executing --> verifying --> done
-   |            ^                                       |
-   |            +------------- retry <------------------+
-   |                                                    |
-   +---> skipped <--------------------------------------+
-```
-
-| Status      | Set by                                     | Meaning                                   |
-| ----------- | ------------------------------------------ | ----------------------------------------- |
-| `pending`   | Driver (initial)                           | Story exists, not yet started             |
-| `selected`  | Orchestrator (`koan_select_story`)         | Chosen for execution                      |
-| `planning`  | Driver                                     | Planner subagent is running               |
-| `executing` | Driver                                     | Executor subagent is running              |
-| `verifying` | Driver                                     | Post-execution orchestrator is evaluating |
-| `done`      | Orchestrator (`koan_complete_story`)       | Successfully completed                    |
-| `retry`     | Orchestrator (`koan_retry_story`)          | Failed, queued for re-execution           |
-| `skipped`   | Orchestrator (`koan_skip_story`) or Driver | Permanently skipped                       |
-
-### No `escalated` status
-
-Escalation is handled via `koan_ask_question` -- the orchestrator asks the user
-a question through MCP, gets an answer, then decides `retry` or `skip`.
-
-### Retry budget
-
-Each story starts with `max_retries: 2`. When the driver sees `status: "retry"`,
-it increments `retry_count` and re-executes. When `retry_count >= max_retries`,
-the driver sets the story to `skipped`.
 
 ---
 
@@ -147,8 +88,6 @@ os.rename(tmp, file_path)
 This applies to:
 
 - `run-state.json` (driver)
-- `stories/{id}/state.json` (driver + orchestrator tools)
-- `stories/{id}/status.md` (orchestrator tools)
 - `subagents/{label}/task.json` (driver, before spawn)
 - `subagents/{label}/state.json` (audit projection)
 
@@ -158,16 +97,9 @@ This applies to:
 
 ```
 ~/.koan/runs/{run_id}/
-  run-state.json            # Workflow phase + workflow type + story list
-  landscape.md              # Written by orchestrator (intake phase)
-  plan.md                   # Written by orchestrator (plan-spec phase)
-  stories/
-    {story_id}/
-      story.md              # Written by orchestrator (ticket-breakdown phase)
-      state.json            # Story lifecycle state
-      status.md             # Templated status for LLM consumption
-      plan/
-        plan.md             # Written by planner
+  run-state.json            # Workflow phase + workflow type
+  brief.md                  # Written by orchestrator (intake phase)
+  plan.md                   # Written by orchestrator (plan phase)
   subagents/
     orchestrator/
       task.json             # Task manifest (written once at run start)
@@ -196,7 +128,7 @@ Key projection fields common to all roles:
 
 | Field             | Type   | Meaning                                                  |
 | ----------------- | ------ | -------------------------------------------------------- |
-| `phase`           | string | Overall phase name (e.g., "intake", "plan-spec")         |
+| `phase`           | string | Overall phase name (e.g., "intake", "plan")              |
 | `step`            | number | Current step index within the phase                      |
 | `step_name`       | string | Human-readable step label (e.g., "Scout (round 2)")      |
 | `tokens_sent`     | number | Cumulative tokens in                                     |

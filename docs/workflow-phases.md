@@ -58,16 +58,24 @@ exits.
 
 Two patterns govern how phases relate within and across these bands.
 
-The first is producer-validator pairing. Some bands have both a phase that
-writes the artifact and a phase that subjects it to adversarial check
-before the next band starts. Today the pattern exists for milestone-spec
-and milestone-review, plan-spec and plan-review, and execute and
-exec-review. The initiative workflow extends this pattern to tech-plan-spec
-and tech-plan-review at the architectural layer. Note that not every
-band has a paired reviewer: intake's `brief.md` is `Final` at exit without
-a separate review phase, and `core-flows.md` similarly does not have a
-paired reviewer because the artifact is verifiable on inspection by the
-user against the rendered diagrams.
+The first is the mechanical reviewer pattern. For artifact families that
+warrant adversarial check (milestones, plan, tech-plan), `koan_artifact_write`
+triggers a REVIEWER sub-agent mechanically as a blocking side-effect of the
+write call. The reviewer runs in a fresh context against the just-written
+artifact, returns freeform findings, and koan persists them to a `.review.md`
+sidecar. The findings are also returned directly to the producer as the tool
+result, so the producer reads them in the same turn and reconciles inline:
+valid findings are incorporated via `koan_artifact_edit`; reviewer
+misconceptions are overruled by editing in the missing context; approach-
+invalidating findings are escalated via `koan_ask_question`. The producer
+appends a per-finding disposition to the sidecar and then advances to the
+next phase. There are no separate `*-review` phases; review is a synchronous
+side-effect of the artifact write, not a separate orchestrator turn.
+
+Note that not every artifact family has a paired reviewer: `brief.md` and
+`core-flows.md` have no mechanical reviewer. `brief.md` is frozen at intake
+exit; `core-flows.md` is verifiable on inspection by the user against the
+rendered diagrams.
 
 The second pattern is trust forward, falsify backward. Downstream phases
 trust upstream artifacts in their accepted state without re-evaluating
@@ -77,11 +85,7 @@ override upstream content. The trust model is documented in
 `phase-trust.md`.
 
 The artifact lifecycle from `artifacts.md` continues to apply. Artifacts
-are classified as frozen, additive-forward, or disposable. The gate at
-`tech-plan-review` is conventional: the reviewer applies
-rewrite-or-loop-back semantics and yields; the user's phase-switch
-decision (advance to `milestone-spec` or loop back to `tech-plan-spec`)
-is the implicit acceptance moment.
+are classified as frozen, additive-forward, or disposable.
 
 ## Phase taxonomy
 
@@ -146,9 +150,9 @@ authoritative initiative artifact for the rest of the run.
 
 Upstream of intake is either the user's initial request or a frame-phase
 exit. Downstream depends on the workflow preset: in the initiative
-workflow the next phase is `core-flows` (or `tech-plan-spec` when
-core-flows is yield-skipped); in milestones it is `milestone-spec`; in
-plan it is `plan-spec`.
+workflow the next phase is `core-flows` (or `tech-plan` when
+core-flows is yield-skipped); in milestones it is `milestone`; in
+plan it is `plan`.
 
 The dominant tool-call shape is `koan_ask_question` for structured user
 dialogue, `koan_request_scouts` for codebase exploration of unfamiliar
@@ -186,10 +190,10 @@ This phase has no paired review phase. The artifact is verifiable on
 inspection by the user against the rendered diagrams, and the load-bearing
 decisions are about what the system does rather than how it is
 structured. The user yields with the core-flows artifact in hand and
-chooses whether to proceed to `tech-plan-spec`, loop back to `core-flows`
+chooses whether to proceed to `tech-plan`, loop back to `core-flows`
 for revision, or pivot elsewhere.
 
-Upstream of core-flows is intake. Downstream is `tech-plan-spec` when the
+Upstream of core-flows is intake. Downstream is `tech-plan` when the
 user confirms, or `core-flows` (loop-back) when the user redirects. The
 phase yields rather than auto-advancing because user direction is
 required to choose the downstream phase.
@@ -208,15 +212,15 @@ Architectural reasoning is the next phase's job.
 
 The phase is included in the standard initiative path but is yield-skippable.
 When the operational behavior is settled in dialogue and writing it down
-adds nothing, the user can yield from intake directly to `tech-plan-spec`.
+adds nothing, the user can yield from intake directly to `tech-plan`.
 
-### tech-plan-spec (what-system band, producer)
+### tech-plan (what-system band)
 
-The tech-plan-spec phase produces the system architecture artifact. It is
+The tech-plan phase produces the system architecture artifact. It is
 the structural counterpart to core-flows: where core-flows describes
-externally visible behavior, tech-plan-spec describes internal structure.
-The artifact contains three load-bearing sections — Architectural
-Approach, Data Model, and Component Architecture — each rendered with
+externally visible behavior, tech-plan describes internal structure.
+The artifact contains three load-bearing sections -- Architectural
+Approach, Data Model, and Component Architecture -- each rendered with
 appropriate visualization per the slot mapping in
 `visualization-system.md`. Architectural Approach uses CON (a `flowchart`
 container view); Component Architecture uses CMP (`classDiagram` or
@@ -227,88 +231,65 @@ schema definitions, not as ER diagrams.
 
 The visualization requirement is not stylistic. It is the mechanism by
 which the architecture becomes inspectable rather than buried in prose,
-and it is the foundation that makes the human-acceptance gate at
-tech-plan-review meaningful.
+and it is what gives the TECH_PLAN_REVIEWER (triggered on
+`koan_artifact_write`) material to stress-test.
 
 The phase reads `brief.md`, `core-flows.md` when present, and the
 codebase. It writes `tech-plan.md` as a disposable artifact that
 downstream phases consume but do not modify. Each section captures the
-chosen path and the rejected alternatives with rationale, so the
-reviewer phase has something to stress-test.
+chosen path and the rejected alternatives with rationale.
 
 Upstream is either core-flows (in initiative runs that include the
 flows phase) or intake directly (when core-flows is yield-skipped).
-Downstream is tech-plan-review.
+Downstream is `milestone`.
 
 The dominant tool-call shape is `koan_request_scouts` for codebase
 exploration when the architecture must integrate with existing
 structure, `koan_ask_question` for binary architectural questions when
 genuine alternatives exist, `koan_search` and `koan_reflect` to consult
 prior architectural decisions in memory, and `koan_artifact_write` for
-the terminal write of `tech-plan.md`.
+the terminal write of `tech-plan.md` (which triggers the mechanical
+TECH_PLAN_REVIEWER and returns its findings to the producer).
 
-The termination condition is the writing of `tech-plan.md`, after which
-the phase auto-advances to `tech-plan-review`. The contract boundary is
-that tech-plan-spec must not specify implementation steps for individual
+The termination condition is the write of `tech-plan.md`, followed by
+inline reconciliation of the TECH_PLAN_REVIEWER's findings, at which
+point the phase yields with `milestone` suggested. The contract boundary
+is that tech-plan must not specify implementation steps for individual
 files or functions; that is the HOW band's job.
 
-### tech-plan-review (what-system band, validator)
+### milestone, plan, execute (how band)
 
-The tech-plan-review phase is the adversarial reviewer for the
-architecture artifact. It mirrors Traycer's architecture-validation
-discipline: the reviewer extracts the three to seven critical
-architectural decisions that cross boundaries, handle failures, define
-schemas, or break from existing patterns, then stress-tests each against
-simplicity, flexibility, robustness, scaling, codebase fit, and
-consistency with the upstream artifacts. The review additionally checks
-the diagrams themselves for accuracy: do the nodes correspond to
-actually-introduced components, do the edges describe real protocols, do
-the suppression decisions match the threshold rules in
-`visualization-system.md`, does the level separation hold per slot.
-
-Internal findings are corrected directly in `tech-plan.md` via
-`koan_artifact_write` per the rewrite-or-loop-back rule; new-files
-findings are surfaced by ending the turn (terminal-text hand-back) with
-`tech-plan-spec` recommended for loop-back. The phase yields after evaluation; the user's phase-switch
-decision (forward to `milestone-spec` or back to `tech-plan-spec`) is the
-implicit acceptance moment, mirroring plan-review and milestone-review.
-
-Upstream is tech-plan-spec; downstream is `milestone-spec` when the
-architecture is acceptable, or `tech-plan-spec` on loop-back. The phase
-does not auto-advance.
-
-The dominant tool-call shape is `koan_artifact_read` to read
-`tech-plan.md`, `core-flows.md`, and `brief.md`; `koan_request_scouts` to
-verify architectural claims about integration points (scouts are sanctioned
-and encouraged in this phase -- unlike plan-review, mechanical accuracy is
-not the concern; integration-point claims must be verified now, before
-milestone decomposition assumes them); `koan_artifact_write` for internal-
-finding corrections; and a terminal-text hand-back to surface the review
-outcome and next-phase suggestions.
-
-The contract boundary is that tech-plan-review must not introduce
-architectural decisions of its own. It stress-tests and confirms but
-does not author. If a stress-test reveals a missing decision, the
-correct response is to recommend a loop-back to tech-plan-spec, not
-to write the decision in.
-
-### milestone-spec, milestone-review, plan-spec, plan-review, execute, exec-review (how band)
-
-These phases are reused unchanged from the existing milestones workflow
-in the initiative preset. Their responsibilities, contracts, and
-tool-call shapes are documented in `milestones.md` (for milestone-spec
-in particular) and `phase-trust.md` (for the trust and verification
-model). The initiative preset binds them into its workflow definition
-with the same modules, the same per-phase guidance text, and the same
-auto-advance behavior used in the milestones workflow.
+These phases compose the delivery loop of the milestones and initiative
+workflows. Their responsibilities, contracts, and tool-call shapes are
+documented in `milestones.md` (for `milestone` in particular) and
+`phase-trust.md` (for the trust and reconcile model). The initiative
+preset binds them with the same modules, the same per-phase guidance
+text, and the same suggested-phase behavior used in the milestones
+workflow.
 
 The one difference visible to these phases when running inside an
-initiative workflow is that `tech-plan.md` is present in the
-artifact set, and the per-phase guidance for milestone-spec and
-plan-spec should reference it as an authoritative source for the
-architectural decisions that constrain decomposition and per-milestone
-plans. The artifact is read via `koan_artifact_read`; no new tool is
-needed.
+initiative workflow is that `tech-plan.md` is present in the artifact
+set, and the per-phase guidance for `milestone` and `plan` references it
+as an authoritative source for the architectural decisions that
+constrain decomposition and per-milestone plans. The artifact is read
+via `koan_artifact_read`; no new tool is needed.
+
+The `milestone` phase uses CREATE-only semantics. When the user loops
+back to `milestone` after one or more milestones have been executed, a
+discard hook fires on phase entry and deletes non-frozen, non-executed
+artifacts from the run directory, so the producer starts from a clean
+slate for the revised decomposition.
+
+The `plan` phase produces `plan-milestone-N.md` (milestones workflow) or
+`plan.md` (plan workflow). Writing the artifact triggers the mechanical
+PLAN_REVIEWER; the producer reconciles findings inline before advancing.
+
+The `execute` phase is entered via `koan_set_phase("execute", plan_file=X)`.
+This call freezes the named plan, spawns the executor sub-agent, and
+returns a deviation report as the tool result. The orchestrator reads the
+report and determines the next phase: loop back to `plan` for significant
+deviations, or advance to `curation` (plan workflow) / next milestone
+(milestones/initiative workflow).
 
 ### curation (closing band)
 
@@ -327,27 +308,26 @@ leaving the underlying graph open.
 
 Koan ships with three delivery presets and two single-purpose presets:
 
-The plan workflow runs `intake → plan-spec → plan-review → execute →
-exec-review → curation`. Its use case is a focused change touching a
-bounded area where adversarial review of the plan is worth the cost,
-but multi-milestone decomposition and architectural reasoning are not.
-This is the existing `plan` workflow.
+The plan workflow runs `intake -> plan -> execute -> curation`. Its use
+case is a focused change touching a bounded area where multi-milestone
+decomposition and architectural reasoning are not needed. Review of the
+plan is performed inline by the mechanical PLAN_REVIEWER on
+`koan_artifact_write`; there is no separate `plan-review` phase.
 
-The milestones workflow runs `intake → milestone-spec → milestone-review
-→ plan-spec → plan-review → execute → exec-review` with the
-plan-through-exec-review sub-loop repeating once per milestone, and
+The milestones workflow runs `intake -> milestone -> plan -> execute`
+with the plan-through-execute sub-loop repeating once per milestone, and
 `curation` as the terminal phase. Its use case is a multi-milestone
 initiative where the architecture is implicit in the existing codebase.
-This is the existing `milestones` workflow.
+Review of milestones and plans is mechanical and inline.
 
-The initiative workflow runs `intake → core-flows → tech-plan-spec →
-tech-plan-review → milestone-spec → milestone-review → plan-spec →
-plan-review → execute → exec-review` with the same sub-loop and
-curation termination. The `core-flows` phase is yield-skippable. Its
-use case is a multi-milestone initiative where architectural decisions
-cross multiple milestones and warrant a load-bearing artifact, and
-where the operational behavior is itself worth describing as a shared
-artifact. See `initiative.md` for the full contract.
+The initiative workflow runs `intake -> core-flows -> tech-plan ->
+milestone -> plan -> execute` with the same sub-loop and curation
+termination. The `core-flows` phase is yield-skippable. Its use case is
+a multi-milestone initiative where architectural decisions cross multiple
+milestones and warrant a load-bearing artifact, and where the operational
+behavior is itself worth describing as a shared artifact. Review of
+tech-plan, milestones, and plans is mechanical and inline. See
+`initiative.md` for the full contract.
 
 The discovery workflow is a single-phase preset: `frame -> exit`. The
 preset has no other phases. Its use case is open-ended exploration --
@@ -372,49 +352,42 @@ supports.
 
 Discovery re-entry allows any workflow to drop into `frame` from any
 yield boundary by transitioning into the standalone `discovery`
-workflow via `koan_set_workflow`. When a tech-plan-spec run reveals
+workflow via `koan_set_workflow`. When a tech-plan run reveals
 that the user does not actually know what they want, the user can
 yield, switch into discovery, explore, and either return to
-tech-plan-spec with new direction (via another `koan_set_workflow`
+tech-plan with new direction (via another `koan_set_workflow`
 call) or pivot the workflow shape entirely.
 
-Architectural lookback allows the workflow to invoke tech-plan-spec
-or tech-plan-review from a later band when execution surfaces an
-architectural question that was elided. If a milestone's exec-review
-finds that a deviation traces back to an architectural assumption
-that turns out to be wrong, the user can yield from exec-review into
-tech-plan-spec rather than into milestone-spec. The graph permits
-this because the underlying transition rule is any-to-any except
-self-transition; the workflow's `transitions` dict only encodes the
-suggested defaults, not constraints.
+Architectural lookback allows the workflow to invoke tech-plan
+from a later band when execution surfaces an architectural question
+that was elided. If a milestone's execute phase deviation report
+reveals an architectural assumption that turns out to be wrong, the
+user can yield from execute into tech-plan rather than back into
+milestone. The graph permits this because the underlying transition
+rule is any-to-any except self-transition; the workflow's `transitions`
+dict only encodes the suggested defaults, not constraints.
 
 ## Toolset composition implications
 
 New phases need entries in the toolset allowlist tables at
 `koan/tools/tool_policy.py`. The `_ORCHESTRATOR_SCOUT_PHASES` frozenset
-lists `core-flows`, `tech-plan-spec`, `tech-plan-review`, and `frame`
-(the legacy bare `tech-plan` entry was replaced by the spec/review pair).
-The `frame` phase is included in both `_ORCHESTRATOR_SCOUT_PHASES` and
-`_ORCHESTRATOR_BASH_PHASES` to support bug hunting and troubleshooting,
-which require codebase investigation via scouts, bash, and direct file
-reading. `compose_toolset` consults these frozensets when building the
-tool vocabulary for a given (role, phase) pair.
+lists `intake`, `core-flows`, `tech-plan`, `milestone`, `plan`,
+`curation`, and `frame`. `_ORCHESTRATOR_BASH_PHASES` lists `execute` and
+`frame`. The `frame` phase is included in both frozensets to support bug
+hunting and troubleshooting, which require codebase investigation via
+scouts, bash, and direct file reading. `compose_toolset` consults these
+frozensets when building the tool vocabulary for a given (role, phase) pair.
 
-## Producer-and-acceptance summary
+## Producer-and-reviewer summary
 
-The initiative workflow uses the same rewrite-or-loop-back pattern for
-`tech-plan-review` that the existing workflows use for `plan-review` and
-`milestone-review`. No explicit `Approved` gate is enforced. Other
-artifacts follow the patterns already in use: `brief.md` and
-`core-flows.md` are `Final` at their respective phase exits; `milestones.md`
-and `plan-milestone-N.md` follow the existing milestones-workflow gating
-pattern.
+Review is mechanical and inline: `koan_artifact_write` triggers the
+reviewer sub-agent as a blocking side-effect for the reviewed artifact
+families below. No separate `*-review` phases exist.
 
-| Producer         | Artifact              | Reviewer           | Initiative gate                                          |
-| ---------------- | --------------------- | ------------------ | -------------------------------------------------------- |
-| `intake`         | `brief.md`            | (none)             | `Final` at intake exit                                   |
-| `core-flows`     | `core-flows.md`       | (none)             | `Final` at core-flows exit                               |
-| `tech-plan-spec` | `tech-plan.md`        | `tech-plan-review` | `Final` at tech-plan-review exit; user advances manually |
-| `milestone-spec` | `milestones.md`       | `milestone-review` | (existing milestones pattern)                            |
-| `plan-spec`      | `plan-milestone-N.md` | `plan-review`      | (existing milestones pattern)                            |
-| `execute`        | (no artifact)         | `exec-review`      | (verification-driven)                                    |
+| Producer      | Artifact              | Mechanical reviewer   | Reconcile by                  |
+| ------------- | --------------------- | --------------------- | ----------------------------- |
+| `intake`      | `brief.md`            | (none)                | `Final` at intake exit        |
+| `core-flows`  | `core-flows.md`       | (none)                | `Final` at core-flows exit    |
+| `tech-plan`   | `tech-plan.md`        | `TECH_PLAN_REVIEWER`  | Producer edits inline         |
+| `milestone`   | `milestones.md`       | `MILESTONE_REVIEWER`  | Producer edits inline         |
+| `plan`        | `plan-milestone-N.md` | `PLAN_REVIEWER`       | Producer edits inline         |

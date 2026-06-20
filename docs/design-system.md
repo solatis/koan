@@ -8,14 +8,10 @@ The single source of truth for koan's visual design. `src/styles/variables.css` 
 
 ### Background surfaces
 
-| Token              | Hex       | Usage                                                                                 |
-| ------------------ | --------- | ------------------------------------------------------------------------------------- |
-| `--bg-danger`      | `#fce8e8` | Destructive confirmation backgrounds. Red-family tint.                                |
-| `--bg-toggle-off`  | `#d3d1c7` | Toggle track off state. Neutral warm gray, lighter than `--border-input`.             |
-| `--bg-diff-before` | `#fbf6f6` | DiffPane "Current" column background. Quiet red-family tint.                          |
-| `--bg-diff-after`  | `#e6f2ec` | DiffPane "Proposed" column background. Quiet green-family tint.                       |
-| `--diff-hl-add-bg` | `#c6e6d5` | Inline addition highlight background in `DiffPane`. Stronger than `--bg-diff-after`.  |
-| `--diff-hl-del-bg` | `#f2d0d0` | Inline deletion highlight background in `DiffPane`. Stronger than `--bg-diff-before`. |
+| Token             | Hex       | Usage                                                                     |
+| ----------------- | --------- | ------------------------------------------------------------------------- |
+| `--bg-danger`     | `#fce8e8` | Destructive confirmation backgrounds. Red-family tint.                    |
+| `--bg-toggle-off` | `#d3d1c7` | Toggle track off state. Neutral warm gray, lighter than `--border-input`. |
 
 ### Text colors
 
@@ -41,10 +37,9 @@ The single source of truth for koan's visual design. `src/styles/variables.css` 
 ### Warning surface
 
 Warning is a recurring semantic (the New-Run config-incomplete notice, the
-add-connection backend note) and was previously hardcoded in two places
-(`Badge` `default`, `OperationBadge` `update`). These tokens remove the
-duplication. All role/provider colors elsewhere in this addendum map to existing
-core colors, so no other new tokens are introduced.
+add-connection backend note) and was previously hardcoded in `Badge` `default`.
+These tokens remove the duplication. All role/provider colors elsewhere in this
+addendum map to existing core colors, so no other new tokens are introduced.
 
 | Token              | Value     | Use                                              |
 | ------------------ | --------- | ------------------------------------------------ |
@@ -53,7 +48,7 @@ core colors, so no other new tokens are introduced.
 | `--text-warning`   | `#c06030` | Warning text + icon on a warning surface.        |
 
 Migration follow-up (not blocking): `Badge` `default` (`#fdf2ee` / `#c06030`)
-and `OperationBadge` `update` should be repointed at these tokens.
+should be repointed at these tokens.
 
 ### Component gaps
 
@@ -210,27 +205,11 @@ Variant type: `'neutral' | 'success' | 'accent' | 'model' | 'default' | 'error' 
 | `update`    | `#fdf2ee`         | `#c06030`           |
 | `deprecate` | `--bg-danger`     | `--text-danger`     |
 
-Consumers go through the `OperationBadge` alias atom.
-
 ### MemoryTypeBadge
 
 Alias atom over `Badge`. Renders `<Badge variant={type}>` with the type name capitalized as the label: `decision` -> "Decision", `lesson` -> "Lesson", `context` -> "Context", `procedure` -> "Procedure".
 
 Props: `type: 'decision' | 'lesson' | 'context' | 'procedure'`.
-
-### OperationBadge
-
-Alias atom over `Badge`. Renders `<Badge variant={op}>` with a prefix glyph + capitalized operation as the label:
-
-| Op          | Label         |
-| ----------- | ------------- |
-| `add`       | `+ Add`       |
-| `update`    | `~ Update`    |
-| `deprecate` | `- Deprecate` |
-
-The `deprecate` prefix is U+2212 MINUS SIGN. The prefix glyph is part of the label text, not separately styled.
-
-Props: `op: 'add' | 'update' | 'deprecate'`.
 
 ### MemoryTypeIcon
 
@@ -572,8 +551,8 @@ Footer: flex row. Left: hint text in `--type-label` (11px), `--text-hint`. Defau
 
 **`/`-command support:** When the input value starts with `/` and `availableCommands` is provided, the CommandPalette renders above the input. When a `/`-command message is sent, FeedbackInput transforms it before calling `onSend`:
 
-- `/plan-spec write an implementation plan` -> `The user wishes to transition to phase \`plan-spec\` with instruction: write an implementation plan`
-- `/plan-spec` (no instruction) -> `The user wishes to transition to phase \`plan-spec\`.`
+- `/plan write an implementation plan` -> `The user wishes to transition to phase \`plan\` with instruction: write an implementation plan`
+- `/plan` (no instruction) -> `The user wishes to transition to phase \`plan\`.`
 
 Props: `placeholder?: string`, `onSend?: (text: string, attachments?: string[]) => void`, `disabled?: boolean`, `availableCommands?: PhaseCommand[]`, `onPaletteToggle?: (open: boolean) => void`.
 
@@ -855,62 +834,6 @@ MemoryFilterChips uses `<button>` elements with `aria-pressed` rather than a `ro
 
 Props: `value: 'all' | 'decision' | 'lesson' | 'context' | 'procedure'`, `onChange: (value: typeof value) => void`.
 
-#### DiffPane
-
-Two-column side-by-side diff. Left column shows current content (red-tinted); right shows the proposed replacement (green-tinted). Inline changes are marked with `DiffAdd` (addition highlight) and `DiffDel` (deletion highlight), both co-exported from the same file.
-
-Container: `display: grid`, `grid-template-columns: 1fr 1fr`, `gap: 12px`. Border: `0.5px solid var(--border-divider-light)`, `--radius-lg`, `overflow: hidden`.
-
-Each column: `padding: 16px 20px`, `font-size: var(--type-body)` (14px), `line-height: 1.65`.
-
-Before column (left): background `var(--bg-diff-before)`, right border `1px solid var(--border-danger)`, label color `var(--text-danger-body)`.
-
-After column (right): background `var(--bg-diff-after)`, label color `var(--text-completion)`.
-
-Label (first element in each column): `var(--type-label)` (11px), `text-transform: uppercase`, `letter-spacing: 0.8px`, font-weight 500, `margin-bottom: 10px`. Fixed text: "Current" (before), "Proposed" (after).
-
-Prose content: paragraphs `margin: 0 0 10px`, last-child `margin-bottom: 0`. Inline `<code>`: `--font-mono`, 12px, `background: rgba(255,255,255,0.6)`, `padding: 1px 5px`, `border-radius: 3px`.
-
-`DiffAdd`: inline `<span>`, `background: var(--diff-hl-add-bg)`, `padding: 0 2px`, `border-radius: 2px`. Inherits text styling.
-
-`DiffDel`: inline `<span>`, `background: var(--diff-hl-del-bg)`, `padding: 0 2px`, `border-radius: 2px`, `text-decoration: line-through`, `text-decoration-color: #a03030`.
-
-`DiffPane` does not compute the diff -- callers pass pre-marked JSX. The molecule's job is layout and color, not text analysis. Highlighting is scoped to inline `DiffAdd`/`DiffDel` spans rather than entire lines because koan memory entries are prose, not code, and meaningful changes are usually sub-sentence (a clause added, a qualifier tightened). Line-level diff granularity would under-serve the medium. Column backgrounds use dedicated `--bg-diff-before` / `--bg-diff-after` tokens rather than `--bg-danger` / `--bg-completion` because the two palettes serve different scales: the diff columns host paragraphs of prose, while the confirmation/completion backgrounds are sized for small alert surfaces and carry a stronger tint.
-
-Props: `before: ReactNode`, `after: ReactNode`.
-
-#### RationaleBlock
-
-Lavender-background block rendering the orchestrator's justification for a proposed memory mutation.
-
-Container: `padding: 12px 16px`, `--radius-lg`. Background: `var(--bg-thinking)`. Color: `var(--text-body)`. `var(--type-breadcrumb)` (13px), `line-height: 1.6`.
-
-Label (first child, always rendered): text "Rationale" (fixed). `var(--type-label)` (11px), `text-transform: uppercase`, `letter-spacing: 0.8px`, font-weight 500, `color: var(--text-thinking)`, `margin-bottom: 6px`. `display: flex`, `align-items: center`, `gap: 6px`. Prepended with a `::before` pseudo-element: 6x6 circle, `background: var(--text-thinking)`, `--radius-circle`. Meta-commentary dot signaling model authorship.
-
-Body: upright (not italic). Explicitly upright to distinguish from `ThinkingBlock`'s italic body. Inline `<code>`: `--font-mono`, 11px, no special background.
-
-`RationaleBlock` shares `--bg-thinking` with `ThinkingBlock` because both are model meta-commentary, but their body treatment diverges: `ThinkingBlock` renders italic to mark transient reasoning, `RationaleBlock` renders upright to mark a committed statement the user evaluates. The lavender palette unifies "meta-commentary from the model"; the italic/upright axis separates "in-flight thought" from "submitted justification."
-
-Props: `children: ReactNode`.
-
-#### DecisionPill
-
-Small pill rendered in a proposal's `OperationProposalHead` after the user has decided. Two states: `approved`, `rejected`.
-
-Container: `display: inline-flex`, `align-items: center`, `gap: 6px`. Padding: `3px 10px`, `--radius-pill`. `var(--type-label)` (11px), `text-transform: uppercase`, `letter-spacing: 0.8px`, font-weight 500. Border: `0.5px solid`.
-
-First child: `<StatusDot size="sm" />`. `approved` -> `status="done"` (teal), `rejected` -> `status="failed"` (red).
-
-Second child: label text. `approved` -> "Approved", `rejected` -> "Rejected".
-
-Approved: background `var(--bg-completion)`, color `var(--text-completion)`, border-color `var(--border-teal)`.
-
-Rejected: background `var(--bg-danger)`, color `var(--text-danger)`, border-color `var(--border-danger)`.
-
-`DecisionPill` intentionally has only two states. Earlier iterations included a `feedback` third state (for "revise and re-propose"), but the interaction model consolidated: user feedback is handled via the `OverallFeedback` textarea alongside the decision, not via a third decision outcome. A rejection with accompanying feedback text carries the revise-request intent; the pill still just says `Rejected`. The textarea content is where the nuance lives.
-
-Props: `state: 'approved' | 'rejected'`.
-
 #### ActivityRow
 
 Display-only two-column row for the activity timeline on `MemoryOverviewPage`. Not interactive at the row level -- interactivity lives in any inline elements (e.g., `CiteChip`) inside the body.
@@ -948,38 +871,6 @@ Dividers (only when `size="lg"` AND `dividers` is truthy): vertical line between
 `StatStrip` renders dividers as sibling React elements between cells rather than per-cell pseudo-elements, so cell widths and the divider positions stay decoupled. The `dividers` flag is a boolean rather than part of `size` because the divider choice is contextual: overview stats want visual separation to read as discrete metrics; reflect done-meta cells flow as a single tight inline readout and would be harmed by dividers. The two intents can diverge without exploding the size enum.
 
 Props: `cells: { value: string; label: string }[]`, `size?: 'lg' | 'sm'` (default `'lg'`), `dividers?: boolean` (default `false`; silently ignored when `size="sm"`).
-
-#### OperationProposalHead
-
-Composed header block for a proposal. Used at the top of both the curation queue item and the proposal detail pane.
-
-Row 1 -- meta row: `display: flex`, `align-items: center`, `gap: 10px`, `flex-wrap: wrap`. Contains in order: `<OperationBadge op={op} />`, `<MemoryTypeBadge type={type} />`, sequence label (`--font-mono`, `var(--type-tool-type)` 12px, `--text-hint`, `letter-spacing: 0.5px`), and optionally `<DecisionPill state={decision} />` with `margin-left: auto`.
-
-Row 2 -- title: `margin-top: 8px`. `--font-display`, 22px, font-weight 400, `letter-spacing: -0.3px`, `line-height: 1.25`, `--text-primary`. Rendered as `<h2>`.
-
-No outer border, no padding. Caller provides enclosing context.
-
-`OperationProposalHead` composes atoms and one molecule (`DecisionPill`) into a structural header. The `decision` prop is optional rather than a separate component because a proposal header with a decision pill is the same header with one more slot filled -- treating decided and pending as two separate components would double the organism-level surface area and break the shared layout.
-
-Props: `op: 'add' | 'update' | 'deprecate'`, `type: 'decision' | 'lesson' | 'context' | 'procedure'`, `seq: string`, `title: string`, `decision?: 'approved' | 'rejected'`.
-
-#### OverallFeedback
-
-Label + textarea with file attachment support. Promoted from the `ReviewPanel` footer so `ReviewPanel` and the curation detail pane share one implementation. Controlled -- parent owns the value.
-
-Container: `display: flex`, `flex-direction: column`, `gap: 6px`.
-
-Label: `var(--type-label)` (11px), font-weight 500, `text-transform: uppercase`, `letter-spacing: 0.5px`, `--text-muted`. Default text: "Overall feedback (optional)", overridable via `label` prop.
-
-Textarea wrapper: `position: relative`. Contains `TextInput` atom in textarea mode (`as="textarea"`, field variant) with `padding-right: 28px`, and a gutter attach button. Default placeholder: "Summarize your overall feedback on this document, or leave empty to submit only inline comments."
-
-Gutter attach button: same treatment as FeedbackInput (paperclip 13px, `opacity: 0.6`, positioned `right: 12px`, `bottom: 12px` inside the TextInput's border). Drag-and-drop supported on the textarea.
-
-File chips row: rendered below the textarea when files are attached. `display: flex`, `flex-wrap: wrap`, `gap: 4px`, `margin-top: 4px`. Contains `FileChip` atoms.
-
-`OverallFeedback` does not own its state. Both `ReviewPanel` and the curation detail pane need to include this text in submission payloads whose shape is organism-specific, so hoisting the value into the parent is the only honest arrangement. The molecule is pure layout + typography over `TextInput`.
-
-Props: `value: string`, `onChange: (value: string) => void`, `attachments?: UploadedFile[]`, `onAttachmentsChange?: (files: UploadedFile[]) => void`, `label?: string`, `placeholder?: string`, `disabled?: boolean`.
 
 ### Settings Molecules
 
@@ -1338,7 +1229,7 @@ Card container: `--bg-card`, `--radius-2xl` (12px), `0.5px solid --border-card`,
 
 **Footer:** `border-top: 0.5px solid --border-divider-light`, `padding: 16px 24px`.
 
-- Top section: Contains an `OverallFeedback` molecule. See the `OverallFeedback` spec for label text, textarea sizing, and placeholder.
+- Top section: Overall feedback textarea (label + `TextInput` in textarea mode with file-attach gutter button). Label: "Overall feedback (optional)". Placeholder: "Summarize your overall feedback on this document, or leave empty to submit only inline comments."
 - Bottom section (`margin-top: 12px`): `display: flex`, `align-items: center`, `gap: 12px`. Left: hint text (`--type-label` 11px, `--text-hint`) showing "N inline comments will be submitted" or "No comments yet — click + on any block above". Right (pushed via flex spacer): "Close without submitting" (Button secondary `sm`) and "Submit review" (Button primary `sm`).
 
 **Submit payload:** When the user clicks "Submit review", the frontend collects:
@@ -1453,34 +1344,6 @@ Relations are rendered as a separate card below the entry rather than as a sideb
 The sidebar on `MemoryDetailPage` uses no outline decorations. Relations are communicated in the main column via the relations card; piping them into the sidebar too would double-signal and compete with the section's authority.
 
 Props: `entry: { type, seq, title, meta, body: ReactNode, onCopyLink?, onViewRaw? }`, `relations: { outgoing: RelationEntry[], incoming: RelationEntry[] }`, `sidebar: MemorySidebarProps`.
-
-### MemoryCurationPage
-
-Full-page curation takeover. No `MemorySidebar`. Two-column grid: 340px queue (left) + 1fr detail (right). Inverted from other memory pages -- during curation there's no browsing, only deciding. The queue IS the navigation; navigation goes left.
-
-Outer layout: `max-width: 1400px`, `margin: 0 auto`, `padding: 22px 24px 22px`, `display: grid`, `grid-template-columns: 340px 1fr`, `gap: 20px`, `align-items: start`, `height: calc(100vh - var(--header-height))`, `overflow: hidden`.
-
-The curation page is viewport-height bound: the outer document does not scroll. Both columns have their own internal scroll regions. The queue's list section and the detail pane's card body each own their own `overflow: auto`. This is distinct from the other memory pages (overview/detail/reflect), which have document-length scrolling with a sticky right sidebar. The intent is different: browsing pages are document-style; curation is a bounded workspace.
-
-**CurationQueue** (local, left column): sticky (`top: 22px`), flex column, `gap: 14px`. Contains two cards:
-
-Card 1 (queue card): card chrome + `border-top: 3px solid --color-orange`, `overflow: hidden`, `flex: 1`, `min-height: 0`, `display: flex`, `flex-direction: column`. Head section: eyebrow (default "Memory curation - post-mortem"), title ("{n} proposals"), optional subtitle. Tally row: `--bg-card-warm`, `--font-mono` 12px counts ("N approved - N rejected - N pending"). Always shows pending even at zero; hides other counts at zero. List section: `flex: 1`, `min-height: 0`, `overflow: auto` -- scrolls internally when the queue is long. Head and tally stay fixed above the scrollable list. `<QueueItem>` elements, no dividers.
-
-Card 2 (submit card): card chrome. Submit note (pending-aware text) + Cancel (secondary sm) + Submit batch (primary sm, disabled when pending > 0).
-
-**QueueItem** (local): `<button>`, grid `22px 1fr 18px`. `QueueStateIndicator` + body (op-mini badge + seq + 2-line title) + arrow. Active: `--bg-selected` + orange left border + orange arrow. Op-mini badge: 9px uppercase, reuses Badge variant colors at smaller geometry.
-
-**ProposalDetailPane** (local, right column): card chrome. Top row: position "Proposal N of M" right-aligned. `<OperationProposalHead>` with optional `DecisionPill`. Meta line. `<RationaleBlock>`. Op-discriminated body: update -> `<DiffPane>`, add -> teal-bordered prose, deprecate -> red-tinted struck-through prose. `<OverallFeedback label="Your feedback">`. Action row: optional Change Decision (secondary) + Reject (secondary) + Approve (primary).
-
-`MemoryCurationPage` inverts the column layout of the other memory pages. Overview/detail/reflect pages have a focused main column with a browse sidebar on the right; curation has a queue on the left (primary navigation for this session) and a focused detail pane on the right (the current proposal being worked on). The inversion is deliberate: during curation there's no browsing, only deciding. The queue IS the navigation, and navigation goes left.
-
-`QueueItem` uses a local op-mini badge rather than the full `OperationBadge` atom because OperationBadge's 10px uppercase padding is too tall for a 2-line-clamp compact row. Both variants share CSS color tokens -- the op-mini class family reuses the `add`/`update`/`deprecate` Badge variant colors -- so visual drift is minimized even though the geometries differ.
-
-The detail pane renders the content body in one of three shapes depending on the op, enforced via a TypeScript discriminated union. Callers passing `op: 'add'` are forced to provide `addBody` and cannot provide `updateBefore`. The compile-time constraint prevents a class of bugs where a proposal has both update-diff and add-prose data.
-
-The decision model is two-button (Approve + Reject) plus an OverallFeedback textarea. A rejection with empty feedback is a dismissal; a rejection with feedback text is a revision request. The distinction is read downstream from the textarea content rather than from a third button. `DecisionPill` remains two-state (Approved/Rejected) for the same reason.
-
-Props: `eyebrow?: string`, `subtitle?: string | ReactNode`, `proposals: Proposal[]`, `selectedIndex: number`, `onSelectIndex`, `onApprove`, `onReject`, `onChangeDecision`, `onFeedbackChange`, `onCancel`, `onSubmit`.
 
 ### MemoryReflectPage
 
@@ -1628,7 +1491,7 @@ The content stream uses individual molecules (ProseCard, ToolCallRow, YieldPanel
 
 ### `/`-command transformation
 
-FeedbackInput rewrites `/plan-spec ...` into natural language before sending to the backend. The `/` prefix is a UI convention only — the orchestrator receives a clear, structured instruction without requiring backend slash-command parsing.
+FeedbackInput rewrites `/plan ...` into natural language before sending to the backend. The `/` prefix is a UI convention only -- the orchestrator receives a clear, structured instruction without requiring backend slash-command parsing.
 
 ### Internal tool call suppression
 
@@ -1829,35 +1692,19 @@ shape matters.
 (no active session). All three routes are mounted by `MemoryRoutes` which is
 rendered by `App.tsx` when `page === 'memory'`.
 
-### Curation takeover
-
-When `run.activeCurationBatch` is non-null the App renders `CurationTakeover`
-in place of all other run-scoped views, including the content stream,
-completion, artifact review, and elicitation panels. The takeover mounts
-`MemoryCurationPage` and submits decisions to `/api/memory/curation`.
-
-Per-proposal decision and feedback draft lives in the Zustand store slice
-`memoryCurationDraft`. This draft is intentionally lost on page refresh
-(accept-loss decision from intake). The batch data itself is server-backed
-via `run.activeCurationBatch` and survives a refresh.
-
 ### Zustand state shape
 
-| Field                     | Type                                    | Purpose                                                                                 |
-| ------------------------- | --------------------------------------- | --------------------------------------------------------------------------------------- |
-| `memory`                  | `MemoryState`                           | Project-scoped entry summaries and summary text; persists across workflow boundaries    |
-| `reflect`                 | `ReflectRun \| null`                    | Project-scoped reflect session; null when no session is active                          |
-| `run.activeCurationBatch` | `ActiveCurationBatch \| null`           | Non-null while orchestrator is blocked in `koan_memory_propose`                         |
-| `memoryCurationDraft`     | `Record<string, {decision?, feedback}>` | Store-only; seeded by `resetMemoryCurationDraft` on batch mount, cleared on batch clear |
-| `memorySidebar`           | `{search, filter}`                      | Shared search/filter state across all three memory browsing pages                       |
+| Field           | Type                 | Purpose                                                                              |
+| --------------- | -------------------- | ------------------------------------------------------------------------------------ |
+| `memory`        | `MemoryState`        | Project-scoped entry summaries and summary text; persists across workflow boundaries |
+| `reflect`       | `ReflectRun \| null` | Project-scoped reflect session; null when no session is active                       |
+| `memorySidebar` | `{search, filter}`   | Shared search/filter state across all three memory browsing pages                    |
 
 ### SSE events consumed
 
 The following event types are produced by the backend and consumed by the
 frontend SSE fold to update the projection:
 
-- `memory_curation_started` -- batch lands in `run.activeCurationBatch`
-- `memory_curation_cleared` -- batch cleared from `run.activeCurationBatch`
 - `memory_entry_created` -- new entry upserted into `memory.entries`
 - `memory_entry_updated` -- existing entry replaced in `memory.entries`
 - `memory_entry_deleted` -- entry removed from `memory.entries`

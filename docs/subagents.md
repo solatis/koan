@@ -141,16 +141,15 @@ Phase modules:
 ```
 koan/phases/
   intake.py              # guidance provider: intake phase
-  plan_spec.py           # guidance provider: plan-spec phase
-  plan_review.py         # guidance provider: plan-review phase
+  plan_spec.py           # guidance provider: plan phase
   execute.py             # guidance provider: execute phase (general-purpose)
-  brief_writer.py        # guidance provider: brief-generation phase
   core_flows.py          # guidance provider: core-flows phase
-  tech_plan.py           # guidance provider: tech-plan phase
-  ticket_breakdown.py    # guidance provider: ticket-breakdown phase
-  cross_artifact_validation.py  # guidance provider: cross-artifact-validation and implementation-validation
+  tech_plan_spec.py      # guidance provider: tech-plan phase
+  milestone_spec.py      # guidance provider: milestone phase
+  curation.py            # guidance provider: curation phase
+  frame.py               # guidance provider: frame phase
   executor.py            # spawned as separate subagent; implements code changes
-  orchestrator.py        # guidance provider: pre/post execution steps
+  reviewer.py            # spawned as separate subagent; reviews artifacts
   scout.py               # spawned as separate subagent; no step guidance role
   format_step.py         # shared formatting utilities
 ```
@@ -247,6 +246,7 @@ scheduling, subagent spawning) that compete with koan's step-first workflow.
 | ---------------- | ------------------------------------------------------------------------ |
 | **orchestrator** | `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `WebFetch`, `WebSearch` |
 | **executor**     | `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`                          |
+| **reviewer**     | `Read`, `Bash`, `Glob`, `Grep` (read-only; no write/edit/scouts)         |
 | **scout**        | `Read`, `Bash`, `Glob`, `Grep`                                           |
 
 ### Per-role koan tool vocabulary
@@ -254,8 +254,8 @@ scheduling, subagent spawning) that compete with koan's step-first workflow.
 The allowlist tables in `koan/tools/tool_policy.py` define which koan tools
 are composed into each role's toolset. The orchestrator's toolset is
 phase-aware -- tools vary by the current phase (`ROLE_PERMISSIONS` joined with
-the `_ORCHESTRATOR_SCOUT_PHASES`, `_ORCHESTRATOR_BASH_PHASES`, and
-`_ORCHESTRATOR_STORY_TOOLS` frozensets). Executor and scout use static sets:
+the `_ORCHESTRATOR_SCOUT_PHASES` and `_ORCHESTRATOR_BASH_PHASES` frozensets).
+Executor and scout use static sets:
 
 | Role         | koan tools                   | notes                                                      |
 | ------------ | ---------------------------- | ---------------------------------------------------------- |
@@ -273,9 +273,14 @@ constrains intended bash use; vocabulary restriction does not.
 
 ## Executor Subagent
 
-The executor is spawned by the orchestrator via `koan_request_executor`. It
-receives structured inputs via `task.json` and implements code changes in a
-3-step workflow:
+The executor is spawned by the orchestrator via
+`koan_set_phase("execute", plan_file=X)`. This call freezes the named plan
+artifact, writes `task.json` for the executor sub-agent, and blocks until
+the executor exits. The tool result returned to the orchestrator is a
+deviation report summarizing what the executor did and any divergences from
+the plan.
+
+The executor implements code changes in a 3-step workflow:
 
 | Step | Name       | What happens                                                                        |
 | ---- | ---------- | ----------------------------------------------------------------------------------- |
@@ -290,12 +295,23 @@ receives structured inputs via `task.json` and implements code changes in a
 | `artifacts`    | `list[str]` | Paths relative to `run_dir` that the executor must read before coding                                 |
 | `instructions` | `str`       | Free-form context: key decisions, user direction, review findings. Does NOT repeat artifact contents. |
 
-The executor has unrestricted `write`/`edit` access — it must be able to modify
-the actual codebase. It may call `koan_ask_question` if it encounters genuine
-ambiguity that cannot be resolved from the artifacts and instructions.
+The executor has unrestricted `write`/`edit` access -- it must be able to
+modify the actual codebase. It may call `koan_ask_question` if it encounters
+genuine ambiguity that cannot be resolved from the artifacts and instructions.
 
-`koan_request_executor` blocks until the executor process exits. The orchestrator
-receives a success/failure summary and reports it to the user at the execute phase boundary.
+## Reviewer Subagent
+
+The reviewer is spawned mechanically by koan as a blocking side-effect of
+`koan_artifact_write` for artifact families that have a paired reviewer
+(milestones, plan, tech-plan). The reviewer runs in a fresh context, reads
+the just-written artifact and any configured upstream artifacts, and returns
+freeform findings. Koan persists the findings to the `.review.md` sidecar
+and returns them to the producer as the `koan_artifact_write` tool result.
+
+The reviewer has read-only built-in tools (`Read`, `Bash`, `Glob`, `Grep`)
+and no koan write tools. It cannot modify the artifact it reviews.
+`koan_ask_question` is not composed into the reviewer toolset; reviewers
+return their findings as terminal text and exit.
 
 ---
 

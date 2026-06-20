@@ -474,7 +474,7 @@ explicit.
 
 ```python
 class Suggestion(KoanBaseModel):
-    id: str         # machine key — phase name (e.g. "plan-spec") or "done"
+    id: str         # machine key -- phase name (e.g. "plan") or "done"
     label: str      # display text shown in UI pill (e.g. "Write implementation plan")
     command: str = ""   # pre-filled into chat input when pill is clicked
 

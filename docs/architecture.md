@@ -41,10 +41,10 @@ driver) and templated `status.md` (for LLMs). The driver reads JSON and exit
 codes; it never parses markdown.
 
 ```
-Orchestrator calls koan_complete_story(story_id)
-  -> tool code writes state.json + status.md
-  -> driver reads state.json to route next action
-  -> LLM reads status.md if it needs to reference the decision
+Orchestrator calls koan_set_phase("execute")
+  -> tool code writes run-state.json (JSON, for driver)
+  -> driver reads run-state.json to validate and record the transition
+  -> LLM receives the tool result (markdown text) as confirmation
 ```
 
 **Why:** If an LLM writes JSON, schema drift and parse errors become runtime
@@ -250,30 +250,51 @@ A `Workflow` defines the set of phases available for a run, the initial phase,
 and suggested transitions between phases. Two workflows are defined in
 `koan/lib/workflows.py`:
 
-**plan** — intake -> plan-spec -> plan-review -> execute -> exec-review -> curation
+**plan** -- intake -> plan -> execute -> curation
 
-| Phase         | Role                   | Steps                       | Artifact                  |
-| ------------- | ---------------------- | --------------------------- | ------------------------- |
-| `intake`      | Requirement gathering  | 3 (Gather/Deepen/Summarize) | Chat summary only         |
-| `plan-spec`   | Technical planning     | 2 (Analyze/Write)           | `plan.md`                 |
-| `plan-review` | Quality review         | 2 (Read/Evaluate)           | Chat report only          |
-| `execute`     | Implementation handoff | 2 (Compose/Request)         | Code changes via executor |
-| `exec-review` | Execution review       | 2 (Verify/Assess)           | Chat report only          |
-| `curation`    | Postmortem             | 2 (Inventory/Memorize)      | `.koan/memory/` entries   |
+Review of `plan.md` is performed inline by the mechanical PLAN_REVIEWER
+sub-agent spawned by `koan_artifact_write`. The reviewer runs in a fresh
+read-only context, returns freeform findings to the producer, and koan persists
+them to `plan.review.md`. The producer reconciles findings in place
+(INCORPORATED / OVERRULED / ESCALATED) before advancing. There is no separate
+`plan-review` phase.
 
-**milestones** — intake -> milestone-spec -> [milestone-review] -> plan-spec ->
-[plan-review] -> execute -> exec-review -> milestone-spec (loop) -> curation
+Execution is triggered by `koan_set_phase("execute", plan_file="plan.md")`,
+which freezes the plan, spawns the executor (blocking), and returns the deviation
+report. The `execute` phase runs inline conformance review of the executor's
+work, appends notes to `plan.review.md`, and branches: clean -> advance to
+`curation`; non-conforming -> one-shot remediation via a new
+`plan-remediation-K.md` successor (re-triggers PLAN_REVIEWER), then re-execute;
+second failure -> escalate to the user.
 
-| Phase              | Role                    | Steps                       | Artifact                  |
-| ------------------ | ----------------------- | --------------------------- | ------------------------- |
-| `intake`           | Requirement gathering   | 3 (Gather/Deepen/Summarize) | Chat summary only         |
-| `milestone-spec`   | Milestone decomposition | 2 (Analyze/Write)           | `milestones.md`           |
-| `milestone-review` | Milestone review        | 2 (Read/Evaluate)           | Chat report only          |
-| `plan-spec`        | Milestone planning      | 2 (Analyze/Write)           | `plan-milestone-N.md`     |
-| `plan-review`      | Plan quality review     | 2 (Read/Evaluate)           | Chat report only          |
-| `execute`          | Implementation handoff  | 2 (Compose/Request)         | Code changes via executor |
-| `exec-review`      | Execution review        | 2 (Verify/Assess)           | Chat report only          |
-| `curation`         | Postmortem              | 2 (Inventory/Memorize)      | `.koan/memory/` entries   |
+| Phase      | Role                        | Steps                         | Artifact                  |
+| ---------- | --------------------------- | ----------------------------- | ------------------------- |
+| `intake`   | Requirement gathering       | 3 (Gather/Deepen/Summarize)   | `brief.md`                |
+| `plan`     | Technical planning + review | 2 (Analyze/Write+Reconcile)   | `plan.md`, `plan.review.md` |
+| `execute`  | Execution + inline review   | 2 (Verify/Assess+Bookkeeping) | Code changes via executor |
+| `curation` | Postmortem                  | 2 (Inventory/Memorize)        | `.koan/memory/` entries   |
+
+**milestones** -- intake -> milestone -> plan -> execute -> milestone (loop) -> curation
+
+Review of `milestones.md` and each `plan-milestone-N.md` is performed inline by
+the mechanical MILESTONE_REVIEWER and PLAN_REVIEWER sub-agents respectively,
+both spawned by `koan_artifact_write`. Each reviewer runs in a fresh read-only
+context and koan persists findings to the corresponding `.review.md` sidecar.
+The producer reconciles findings before advancing. There are no separate
+`milestone-review` or `plan-review` phases.
+
+After execution, the `execute` phase runs inline conformance review and -- on
+a clean result -- updates `milestones.md` (marks `[done]`, adds `### Outcome`)
+via `koan_artifact_edit`. The loop then returns to `plan` for the next milestone
+or advances to `curation` when all milestones are complete.
+
+| Phase       | Role                              | Steps                         | Artifact                        |
+| ----------- | --------------------------------- | ----------------------------- | ------------------------------- |
+| `intake`    | Requirement gathering             | 3 (Gather/Deepen/Summarize)   | `brief.md`                      |
+| `milestone` | Milestone decomposition + review  | 2 (Analyze/Write+Reconcile)   | `milestones.md`, `.review.md`   |
+| `plan`      | Milestone planning + review       | 2 (Analyze/Write+Reconcile)   | `plan-milestone-N.md`, `.review.md` |
+| `execute`   | Execution + inline review + UPDATE| 2 (Verify/Assess+Bookkeeping) | Code changes; `milestones.md` UPDATE |
+| `curation`  | Postmortem                        | 2 (Inventory/Memorize)        | `.koan/memory/` entries         |
 
 ### Workflow selection
 
@@ -407,7 +428,7 @@ State flows from LLM tool calls to the browser through the projection system.
 ### Concrete example: phase-boundary hand-back
 
 ```
-Agent calls koan_suggest_next({ suggestions: [{id:"plan-spec", label:"Write plan", command:"..."}] })
+Agent calls koan_suggest_next({ suggestions: [{id:"plan", label:"Write plan", command:"..."}] })
   -> suggest_next_core stores suggestions on InteractionState.next_suggestions
   -> (no projection event; suggestions are consumed at the hand-back)
 
@@ -429,7 +450,7 @@ user clicks suggestion pill "Write plan" in the browser
   -> api_chat: yield_future is set -> append to user_message_buffer -> set_result(True)
   -> yield_future resolves
   -> loop resumes; user message becomes the next turn's prompt
-  -> agent responds conversationally, then calls koan_set_phase("plan-spec")
+  -> agent responds conversationally, then calls koan_set_phase("plan")
 ```
 
 ### Snapshot on reconnect

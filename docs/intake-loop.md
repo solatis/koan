@@ -79,14 +79,14 @@ The Summarize step synthesizes findings into a seven-section `brief.md`
 artifact covering: Initiative, Scope (in-scope and out-of-scope), Affected
 subsystems, Decisions, Constraints, Assumptions, and Open questions. It is
 written via `koan_artifact_write(filename="brief.md", status="Final")`.
-Downstream phases (plan-spec, milestone-spec, exec-review, curation) read
+Downstream phases (plan, milestone, execute, curation) read
 `brief.md` as the authoritative initiative context. See
 [phase-trust.md](./phase-trust.md) for the trust model.
 
 The Summarize step exists as a distinct step (rather than being folded into the
 end of Deepen) so the synthesis work is focused and complete before advancing.
 After `brief.md` is written, the phase advances automatically toward the next
-workflow phase (plan-spec or milestone-spec) via the `next_phase` binding
+workflow phase (`plan` or `milestone`) via the `next_phase` binding
 established in M3.
 
 ---

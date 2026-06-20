@@ -1,148 +1,134 @@
 # Phase Trust Model
 
 Design decision document for how phases relate to each other's outputs and
-how review phases apply rewrite-or-loop-back semantics to producer artifacts.
+how the mechanical reviewer pattern applies adversarial checking to producer
+artifacts.
 
 ## Principle
 
-Review phases apply **rewrite-or-loop-back** semantics. For each finding, the
-reviewer classifies it as internal or new-files-needed; internal findings are
-fixed in place by issuing `koan_artifact_write` against the producer's artifact;
-new-files findings surface at the phase-boundary hand-back with the producer
-phase recommended.
+The mechanical reviewer pattern applies **inline reconcile** semantics. For
+each finding returned by the reviewer sub-agent, the producer classifies it
+and acts immediately in the same turn:
 
-All other phases trust the chain. Re-verification outside designated review
-phases is the "intrinsic self-correction" anti-pattern and is explicitly
-rejected in this project.
+- **INCORPORATED**: valid finding -- edit the artifact in place via
+  `koan_artifact_edit`.
+- **OVERRULED**: reviewer misconception -- edit in the missing context so
+  downstream phases are not misled.
+- **ESCALATED**: approach-invalidating finding -- surface via
+  `koan_ask_question` and block until the user directs resolution.
+
+The producer appends a per-finding disposition to the `.review.md` sidecar
+so the finding record is preserved alongside the artifact.
+
+All other phases trust the chain. Re-verification outside the producer's
+own reconcile step is the "intrinsic self-correction" anti-pattern and is
+explicitly rejected in this project.
 
 ## Why the model changed
 
-Before M4, review phases were report-only: findings were reported in chat and
-the artifact was not modified. The producer phase re-ran the entire decomposition
-or plan to incorporate fixes. This caused unnecessary round-trips: most findings
-are internal mistakes the producer should have caught from the files it already
-loaded. Routing every finding through a full producer-phase re-run was wasteful
-for the common case.
+Before M6, review was performed by separate orchestrator phases
+(`plan-review`, `milestone-review`, `tech-plan-review`, `exec-review`).
+Each review phase ran as a distinct workflow step: the producer wrote the
+artifact, yielded to the user, the user advanced to the review phase, and
+the reviewer either rewrote the artifact in place or recommended a loop-back.
 
-The M4 change applies the principle of fixing locally what can be fixed locally.
-The round-trip to the producer phase is reserved for findings that genuinely
-require new information the producer did not have.
+M6 collapses this into the mechanical reviewer sub-agent (M3). The reviewer
+runs as a blocking side-effect of `koan_artifact_write`, returns findings
+directly to the producer, and the producer reconciles in the same turn. This
+eliminates the yield-and-advance ceremony for the common case (internal
+findings correctable without new information) while preserving escalation
+for the rare case where the producer needs the user's direction.
 
 ## The classification rule
 
-For each finding, the reviewer judges: **could the producer have caught this
-given the files the producer already loaded?** The producer's loaded context is:
-- The artifact body it wrote (plan.md, milestones.md, plan-milestone-N.md)
+For each finding, the producer judges: **can this be resolved from the
+material already loaded in this turn?** The producer's loaded context is:
+
+- The artifact body it just wrote (milestones.md, plan-milestone-N.md,
+  tech-plan.md)
 - `brief.md` (the frozen initiative scope, decisions, and constraints)
+- Any codebase files loaded during the Analyze step
 
-If yes -> **internal** -> fix in place via `koan_artifact_write`.
+If yes -> **INCORPORATED** -> edit the artifact in place via `koan_artifact_edit`.
 
-If no (catching this would require loading files the producer did not open) ->
-**new-files-needed** -> surface at the phase-boundary hand-back with the
-producer phase recommended. The producer re-runs with the new files in scope.
+If no (resolving this would require new information the producer does not
+have) -> **ESCALATED** -> `koan_ask_question` blocks until the user decides.
 
-Mixed: fix internal findings in place AND recommend loop-back for the
-new-files findings. The producer sees the partially-rewritten artifact plus
-the outstanding findings.
+If the finding is factually wrong about the artifact or the codebase ->
+**OVERRULED** -> edit the artifact to add the missing context, so the
+sidecar record reflects why the finding was dismissed.
 
 ## Per-phase responsibilities
 
 ### intake (3 steps: Gather, Deepen, Summarize)
 
 - Explores the codebase, asks the user targeted questions, resolves ambiguity.
-- Writes `brief.md` with status="Final" (frozen after intake).
+- Writes `brief.md` (frozen after intake).
 - Downstream phases trust intake's findings as their starting point.
-- Does NOT apply rewrite-or-loop-back (not a review phase).
+- No mechanical reviewer; `brief.md` is final at exit.
 
-### milestone-spec (2 steps: Analyze, Write) -- milestones workflow only
+### milestone (2 steps: Analyze, Write) -- milestones workflow only
 
-- Two modes: **CREATE** (milestones.md does not exist) and **RE-DECOMPOSE**
-  (milestones.md exists and the user explicitly redirected here).
-- CREATE: decomposes the initiative into milestones grounded in code structure.
-- RE-DECOMPOSE: revises `[pending]` / `[in-progress]` milestone sketches when the
-  milestone graph itself needs to change (not routine post-execution bookkeeping).
-- Routine UPDATE work (mark `[done]`, append Outcome, advance next `[pending]`)
-  has moved to exec-review.
-- MUST preserve all `[done]` milestones and their Outcome sections intact in
-  RE-DECOMPOSE mode.
-- MUST NOT mark milestones `[done]` or add Outcome sections -- exec-review owns
-  those transitions.
+- CREATE-only semantics: decomposes the initiative into milestones grounded
+  in code structure.
+- On milestone re-entry (loop-back after one or more milestones have been
+  executed), a discard hook fires on phase entry and deletes non-frozen,
+  non-executed artifacts from the run directory, so the producer starts
+  from a clean slate for the revised decomposition.
+- MUST NOT mark milestones `[done]` or add Outcome sections -- the execute
+  phase's deviation report and the orchestrator's post-execute bookkeeping
+  own those transitions.
+- Writing `milestones.md` triggers the MILESTONE_REVIEWER. Producer
+  reconciles findings inline.
 
-### milestone-review (2 steps: Read, Evaluate) -- milestones workflow only
-
-- The designated adversarial verifier for milestone decomposition.
-- **Applies rewrite-or-loop-back** against `milestones.md`:
-  - Internal findings -> `koan_artifact_write(filename="milestones.md", ...)`
-  - New-files findings -> hand back with `milestone-spec` recommended
-- When rewriting, MUST preserve all `[done]` Outcome sections intact.
-- **Compound-risk framing**: a missed issue here is inherited by every
-  subsequent plan-spec and executor session.
-
-### plan-spec (2 steps: Analyze, Write)
+### plan (2 steps: Analyze, Write)
 
 - Reads codebase files to write precise implementation instructions.
 - In milestones workflow: scoped to the current `[in-progress]` milestone.
   Produces `plan-milestone-N.md`. Reads prior milestone Outcome sections for
-  integration points, patterns, and constraints established by prior milestones.
+  integration points, patterns, and constraints established by prior
+  milestones.
 - In plan workflow: produces `plan.md`.
-- Does NOT apply rewrite-or-loop-back (not a review phase).
+- Writing the plan artifact triggers the PLAN_REVIEWER. Producer reconciles
+  findings inline.
 
-### plan-review (2 steps: Read, Evaluate)
+### execute (1 step: Implement)
 
-- The designated adversarial verifier for implementation plans. Trusts nobody.
-- **Applies rewrite-or-loop-back** against the plan artifact:
-  - Internal findings -> `koan_artifact_write(filename="<plan_artifact>", ...)`
-  - New-files findings -> hand back with `plan-spec` recommended
-- Plan artifact filename: `plan.md` in plan workflow; `plan-milestone-N.md` in
-  milestones workflow.
+- Entered via `koan_set_phase("execute", plan_file=X)` from the orchestrator.
+- This call freezes the named plan, spawns the executor sub-agent, and
+  returns a deviation report as the tool result when the executor exits.
+- The orchestrator reads the deviation report and determines the next phase:
+  - Significant deviations: loop back to `plan` for re-work.
+  - Clean execution or minor deviations: advance toward `curation` or the
+    next milestone.
+  - Milestones workflow: mark the completed milestone `[done]`, append the
+    four-subsection Outcome, advance the next `[pending]` milestone to
+    `[in-progress]`, then yield with the next-phase suggestion.
 
-### exec-review (2 steps: Verify, Assess)
+### tech-plan (2 steps: Analyze, Write) -- initiative workflow only
 
-- The designated verifier for execution results. Trusts nobody -- not the plan,
-  not the executor's self-report.
-- Runs verification commands (build, tests, type checks) to confirm executor claims.
-- **Applies rewrite-or-loop-back** against the plan artifact (same rule as
-  plan-review; clean executions skip this step entirely).
-- **Milestones workflow only -- applies milestones.md UPDATE**:
-  1. Mark the completed milestone `[done]`.
-  2. Append `### Outcome` with four subsections:
-     - **Integration points created** -- new interfaces, extension seams, modules
-       subsequent milestones can depend on.
-     - **Patterns established** -- naming, file placement, error handling, and
-       test conventions this milestone committed to.
-     - **Constraints discovered** -- things harder/different than the sketch
-       anticipated; explicit facts that change what future milestones can assume.
-     - **Deviations from plan** -- what the executor did differently and why.
-  3. Advance the next `[pending]` milestone to `[in-progress]`.
-  4. Adjust remaining milestone sketches if deviations require it.
-  5. Preserve all prior `[done]` Outcome sections intact.
-  Issues `koan_artifact_write(filename="milestones.md", ...)` for the UPDATE.
-  Plan-workflow exec-review skips the UPDATE entirely (no milestones.md).
-
-### execute (2 steps: Compose, Request)
-
-- Composes the executor handoff from the plan artifact and plan-review findings.
-- Trusts the plan (it has been reviewed). Does not re-evaluate.
-- Does NOT apply rewrite-or-loop-back (not a review phase).
+- Reads `brief.md`, `core-flows.md` (when present), and the codebase.
+- Produces `tech-plan.md` with three sections: Architectural Approach,
+  Data Model, Component Architecture.
+- Writing `tech-plan.md` triggers the TECH_PLAN_REVIEWER. Producer
+  reconciles findings inline, then yields with `milestone` suggested.
 
 ## Permission model
 
 The permission model uses **role-level grant + prompt discipline**:
 
-| Layer               | Mechanism                                             |
-|---------------------|-------------------------------------------------------|
-| Role-level grant    | `koan_artifact_write` composed into the `orchestrator`|
-|                     | toolset unconditionally via `compose_toolset`          |
-| Prompt discipline   | Each review phase is instructed to rewrite only       |
-|                     | its own producer's artifact                           |
-| Per-filename scoping| Rejected as over-engineering; no evidence of drift;   |
-|                     | simpler design; maintenance cost without proportionate|
-|                     | benefit                                               |
+| Layer             | Mechanism                                              |
+| ----------------- | ------------------------------------------------------ |
+| Role-level grant  | `koan_artifact_edit` composed into the `orchestrator`  |
+|                   | toolset unconditionally via `compose_toolset`           |
+| Prompt discipline | Each phase is instructed to edit only its own artifact |
+| Reviewer role     | `reviewer` role has no write tools; read-only          |
 
-The orchestrator role covers all review phases (plan-review, milestone-review,
-exec-review). The M1 grant is sufficient. Adding a `write_allowlist` field to
-`PhaseBinding` was considered and rejected; it remains available as a future
-enhancement if per-filename drift becomes observed in practice.
+The reviewer sub-agent is restricted by construction: it receives only
+`Read`, `Bash`, `Glob`, and `Grep` built-in tools and no koan write
+tools. It cannot modify the artifact it reviews; it can only return
+findings. The producer holds the write capability and makes all
+editorial decisions.
 
 ## Data flow: plan workflow
 
@@ -150,21 +136,17 @@ enhancement if per-filename drift becomes observed in practice.
 brief.md (frozen, written by intake)
     |
     v
-plan-spec ----> plan.md
-    |
+plan ----> plan.md
+    |      koan_artifact_write triggers PLAN_REVIEWER (blocking)
+    |      producer reconciles inline, edits plan.md, appends to plan.review.md
     v
-plan-review  -- classifies each finding:
-    |              internal -> koan_artifact_write(plan.md, corrected)
-    |              new-files -> hand back (suggest plan-spec loop-back)
+koan_set_phase("execute", plan_file="plan.md")
+    |      freezes plan.md, spawns executor sub-agent
+    |      returns deviation report when executor exits
     v
-execute ----> koan_request_executor(["brief.md", "plan.md"])
-    |
-    v
-exec-review  -- runs verification commands
-    |          -- classifies each deviation:
-    |              internal -> koan_artifact_write(plan.md, corrected)
-    |              new-files -> hand back (suggest plan-spec)
-    |          -- (no milestones.md UPDATE in plan workflow)
+orchestrator reads deviation report:
+    |  -- significant deviations: hand back (suggest plan loop-back)
+    |  -- clean: hand back (suggest curation)
     v
 curation
 ```
@@ -175,48 +157,41 @@ curation
 brief.md (frozen, written by intake)
     |
     v
-milestone-spec (CREATE) ----> milestones.md
+milestone (CREATE) ----> milestones.md
+    |      koan_artifact_write triggers MILESTONE_REVIEWER (blocking)
+    |      producer reconciles inline, edits milestones.md,
+    |      appends to milestones.review.md; yields with "plan" suggested
+    v
+plan ----> plan-milestone-N.md   (reads prior Outcome sections)
+    |      koan_artifact_write triggers PLAN_REVIEWER (blocking)
+    |      producer reconciles inline; yields with "execute" suggested
+    v
+koan_set_phase("execute", plan_file="plan-milestone-N.md")
+    |      freezes plan, spawns executor sub-agent
+    |      returns deviation report when executor exits
+    v
+orchestrator reads deviation report:
+    |      -- mark completed [done], append four-subsection Outcome
+    |      -- advance next [pending] -> [in-progress]
+    |      -- adjust remaining sketches if deviations require it
     |
-    v
-[milestone-review]  -- classifies each finding:
-    |                   internal -> koan_artifact_write(milestones.md, revised)
-    |                   new-files -> hand back (suggest milestone-spec)
-    v
-plan-spec ----> plan-milestone-N.md   (reads prior Outcome sections)
-    |
-    v
-[plan-review]  -- classifies each finding:
-    |              internal -> koan_artifact_write(plan-milestone-N.md, corrected)
-    |              new-files -> hand back (suggest plan-spec loop-back)
-    v
-execute ----> koan_request_executor(["brief.md", "plan-milestone-N.md", "milestones.md"])
-    |
-    v
-exec-review  -- runs verification commands
-    |          -- rewrite-or-loopback against plan-milestone-N.md
-    |          -- milestones.md UPDATE:
-    |              mark completed [done]
-    |              append four-subsection Outcome
-    |              advance next [pending] -> [in-progress]
-    |              adjust remaining sketches
-    |
-    +---> [if milestones remain] hand back (suggest plan-spec) -> LOOP
+    +---> [if milestones remain] hand back (suggest plan) -> LOOP
     |
     +---> [if all done/skipped] hand back (suggest curation)
     |
-    +---> [if graph needs revision] hand back (suggest milestone-spec RE-DECOMPOSE)
+    +---> [if graph needs revision] hand back (suggest milestone)
+         (discard hook fires on milestone re-entry)
 ```
 
 ## Open questions
 
-1. **Per-filename allowlist scoping** -- if reviewers begin rewriting artifacts
-   outside their designated scope (drift), extending `PhaseBinding` with a
-   `write_allowlist: tuple[str, ...]` field is the natural fix. Not implemented
-   in M4 because drift has not been observed.
+1. **Per-filename allowlist scoping** -- if reviewers begin returning
+   findings about artifacts outside their designated scope (drift), extending
+   `PhaseBinding` with a `reviewer_scope: tuple[str, ...]` field is the
+   natural fix. Not implemented because drift has not been observed.
 
-2. **Plan-workflow exec-review rewrite value** -- after execution, the plan has
-   been followed (or not); rewriting `plan.md` to reflect what the executor
-   should have done does not change the delivered code. The value is forward-
-   looking: if the same plan serves as a template for a future change, the
-   corrected version is more accurate than the original. Accepted as low-cost
-   for potential future benefit.
+2. **ESCALATED finding resolution** -- when a producer escalates via
+   `koan_ask_question`, the user's reply determines whether to loop back to
+   the phase start or accept a modified approach. The current implementation
+   relies on the producer to re-run the write step after the user's direction;
+   no explicit re-run hook is enforced.

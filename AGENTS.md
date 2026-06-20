@@ -35,9 +35,10 @@ Spoke documents:
 - [docs/tools.md](docs/tools.md) -- tool-layer strategy: trusted/untrusted taxonomy, read/grep output format, hash-anchored edit protocol
 - [docs/tool-output-limits.md](docs/tool-output-limits.md) -- tool-result size strategy, untrusted (reject) vs trusted (bound-by-construction) classes
 - [docs/milestones.md](docs/milestones.md) -- milestone soundness criteria, sizing heuristics, grounding requirements
-- [docs/workflow-phases.md](docs/workflow-phases.md) -- phase taxonomy across all workflows, producer-validator pairing
+- [docs/workflow-phases.md](docs/workflow-phases.md) -- phase taxonomy across all workflows, mechanical reviewer and inline execute review
+- [docs/artifacts.md](docs/artifacts.md) -- artifact registry, filename grammar, reviewer lifecycle, sidecar
 
-**Workflow types:** `plan` (intake -> plan-spec -> plan-review -> execute -> exec-review -> curation) . `milestones` (intake -> milestone-spec -> [milestone-review] -> plan-spec -> [plan-review] -> execute -> exec-review -> milestone-spec loop -> curation) . `initiative` (intake -> core-flows -> tech-plan-spec -> tech-plan-review -> milestone-spec -> [milestone-review] -> plan-spec -> [plan-review] -> execute -> exec-review -> milestone-spec loop -> curation) . `discovery` (frame; single-phase exploration)
+**Workflow types:** `plan` (intake -> plan -> execute -> curation) . `milestones` (intake -> milestone -> plan -> execute -> milestone loop -> curation) . `initiative` (intake -> core-flows -> tech-plan -> milestone -> plan -> execute -> milestone loop -> curation) . `discovery` (frame; single-phase exploration)
 
 ---
 
@@ -90,8 +91,12 @@ guidance at the top of the first turn. Step progression is normally linear
 within a phase, but phase modules may override `get_next_step()` to implement
 non-linear flows. See [docs/intake-loop.md](docs/intake-loop.md).
 
-Executor subagents are spawned by the orchestrator via `koan_request_executor`.
-Scout subagents are spawned via `koan_request_scouts`.
+Reviewer subagents are spawned mechanically by koan when `koan_artifact_write`
+is called for a reviewed artifact family (plan, milestones, tech-plan). The
+reviewer runs in a fresh context, returns freeform findings, and koan persists
+them to the `.review.md` sidecar. The executor is spawned via
+`koan_set_phase("execute", plan_file=...)` -- this freezes the named plan and
+returns the deviation report. Scout subagents are spawned via `koan_request_scouts`.
 
 ## 3. Driver Determinism (partially relaxed)
 
@@ -130,29 +135,28 @@ of truth.
 | ------------ | ------------------------------------------------------------------------ |
 | orchestrator | `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `WebFetch`, `WebSearch` |
 | executor     | `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`                          |
+| reviewer     | `Read`, `Bash`, `Glob`, `Grep` (read-only; no write/edit/scouts)         |
 | scout        | `Read`, `Bash`, `Glob`, `Grep`                                           |
 
 **Orchestrator koan tool vocabulary** (composed per phase from `ROLE_PERMISSIONS`):
 
-| Tool                                                                              | Available phases                                                                                                                                                                         |
-| --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `koan_suggest_next`                                                               | All phases (orchestrator only; records hand-back suggestions before the terminal-text turn)                                                                                              |
-| `koan_set_phase`                                                                  | All phases (blocked mid-story during execution); accepts `"done"` as tombstone                                                                                                           |
-| `koan_set_workflow`                                                               | All phases (matches `koan_set_phase`); accepts any registered workflow name; always lands at the new workflow's `initial_phase`                                                          |
-| `koan_ask_question`                                                               | All phases                                                                                                                                                                               |
-| `koan_request_scouts`                                                             | `intake`, `core-flows`, `tech-plan-spec`, `tech-plan-review`, `ticket-breakdown`, `cross-artifact-validation`, `plan-spec`, `plan-review`, `milestone-spec`, `milestone-review`, `frame` |
-| `koan_request_executor`                                                           | `execution`, `execute`                                                                                                                                                                   |
-| `koan_select_story`, `koan_complete_story`, `koan_retry_story`, `koan_skip_story` | `execution` only                                                                                                                                                                         |
-| `bash`                                                                            | `execution`, `implementation-validation`, `exec-review`, `frame`                                                                                                                         |
-| `koan_memorize`                                                                   | All phases                                                                                                                                                                               |
-| `koan_forget`                                                                     | All phases                                                                                                                                                                               |
-| `koan_memory_status`                                                              | All phases                                                                                                                                                                               |
-| `koan_search`                                                                     | All phases                                                                                                                                                                               |
-| `koan_reflect`                                                                    | All phases (orchestrator only)                                                                                                                                                           |
-| `koan_artifact_write`                                                             | All phases (orchestrator only)                                                                                                                                                           |
-| `koan_artifact_edit`                                                              | All phases (orchestrator only)                                                                                                                                                           |
-| `koan_artifact_list`                                                              | All phases (all roles via universal read-tool path)                                                                                                                                      |
-| `koan_artifact_read`                                                              | All phases (all roles via universal read-tool path); run-dir-scoped wrapper over `read`                                                                                                  |
+| Tool                                                                              | Available phases                                                                                                         |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `koan_suggest_next`                                                               | All phases (orchestrator only; records hand-back suggestions before the terminal-text turn)                              |
+| `koan_set_phase`                                                                  | All phases; accepts `"done"` as tombstone; `koan_set_phase("execute", plan_file=X)` freezes X and spawns the executor   |
+| `koan_set_workflow`                                                               | All phases; accepts any registered workflow name; always lands at the new workflow's `initial_phase`                     |
+| `koan_ask_question`                                                               | All phases                                                                                                               |
+| `koan_request_scouts`                                                             | `intake`, `core-flows`, `tech-plan`, `plan`, `milestone`, `curation`, `frame`                                           |
+| `bash`                                                                            | `execute`, `frame`                                                                                                       |
+| `koan_memorize`                                                                   | All phases                                                                                                               |
+| `koan_forget`                                                                     | All phases                                                                                                               |
+| `koan_memory_status`                                                              | All phases                                                                                                               |
+| `koan_search`                                                                     | All phases                                                                                                               |
+| `koan_reflect`                                                                    | All phases (orchestrator only)                                                                                           |
+| `koan_artifact_write`                                                             | All phases (orchestrator only); triggers the mechanical reviewer sub-agent when the artifact family has a reviewer       |
+| `koan_artifact_edit`                                                              | All phases (orchestrator only); freeze-exempt for `.review.md` sidecars                                                 |
+| `koan_artifact_list`                                                              | All phases (all roles via universal read-tool path)                                                                      |
+| `koan_artifact_read`                                                              | All phases (all roles via universal read-tool path); run-dir-scoped wrapper over `read`                                  |
 
 ## 5. Need-to-Know Prompts
 

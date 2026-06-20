@@ -20,7 +20,7 @@ subsequent phases and executor handoffs).
 **Additive-forward** -- rewritten across the run, but outcome sections are
 append-only once written. History stays visible in the file; earlier sections
 are never deleted or overwritten. Example: `milestones.md` (created by
-milestone-spec, updated by exec-review after each milestone completes).
+`milestone`, updated by `execute` after each milestone completes).
 
 **Disposable** -- written once by a producing phase, consumed by one or more
 downstream phases, then superseded. Once the downstream work is done, the file
@@ -32,14 +32,15 @@ is no longer authoritative. Its content is compressed into a downstream artifact
 
 ## Per-artifact lifecycle table
 
-| Artifact              | Lifetime         | Producer phase(s)                                 | Reader phase(s)                                                                                                                                                      |
-| --------------------- | ---------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `brief.md`            | frozen           | `intake`                                          | `milestone-spec`, `milestone-review`, `plan-spec`, `plan-review`, `exec-review`, `curation`; executor (via handoff)                                                  |
-| `core-flows.md`       | frozen           | `core-flows`                                      | `tech-plan-spec`, `tech-plan-review`, `milestone-spec`, `milestone-review`, `plan-spec`, `plan-review`, `exec-review`; executor (via handoff in initiative workflow) |
-| `tech-plan.md`        | disposable       | `tech-plan-spec`                                  | `tech-plan-review`, `milestone-spec`, `milestone-review`, `plan-spec`, `plan-review`, `exec-review`; executor (via handoff in initiative workflow)                   |
-| `milestones.md`       | additive-forward | `milestone-spec` (CREATE), `exec-review` (UPDATE) | all milestone phases; executor (via handoff)                                                                                                                         |
-| `plan.md`             | disposable       | `plan-spec`                                       | `plan-review`, `execute`, `exec-review`                                                                                                                              |
-| `plan-milestone-N.md` | disposable       | `plan-spec`                                       | `plan-review`, `execute`, `exec-review`                                                                                                                              |
+| Artifact              | Lifetime         | Producer phase(s)                             | Reader phase(s)                                                                                              |
+| --------------------- | ---------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `brief.md`            | frozen           | `intake`                                      | `milestone`, `plan`, `execute`, `curation`; executor (via handoff)                                          |
+| `core-flows.md`       | frozen           | `core-flows`                                  | `tech-plan`, `milestone`, `plan`, `execute`; executor (via handoff in initiative workflow)                   |
+| `tech-plan.md`        | disposable       | `tech-plan`                                   | `milestone`, `plan`, `execute`; executor (via handoff in initiative workflow)                                |
+| `milestones.md`       | additive-forward | `milestone` (CREATE), `execute` (UPDATE)      | `milestone`, `plan`, `execute`, `curation`; executor (via handoff)                                          |
+| `plan.md`             | disposable       | `plan`                                        | `execute`; executor (via handoff)                                                                            |
+| `plan-milestone-N.md` | disposable       | `plan`                                        | `execute`; executor (via handoff)                                                                            |
+| `<reviewable>.review.md` | sidecar       | koan (reviewer findings); orchestrator (appends disposition + exec notes) | `execute` (post-exec inline review); orchestrator during remediation |
 
 Note: M2-M6 introduce the producers and readers listed in the table. M1 only
 documents the contract; the tools that enforce it land in later milestones.
@@ -148,9 +149,9 @@ Required sections, in order:
 Structural rules:
 
 - Each section MUST express the chosen path and the rejected alternatives
-  with rationale. The reviewer phase (`tech-plan-review`) needs explicit
+  with rationale. The mechanical TECH_PLAN_REVIEWER sub-agent needs explicit
   alternatives to stress-test against.
-- No per-file or per-function implementation steps. That is `plan-spec`'s
+- No per-file or per-function implementation steps. That is `plan`'s
   job; tech-plan describes structure, not implementation steps.
 - Grounding: every node, actor, and state in any diagram must trace to a
   named concept in `brief.md`, `core-flows.md`, or codebase analysis notes
@@ -192,12 +193,14 @@ Per-milestone content:
 
 Ownership split:
 
-- `milestone-spec` (CREATE mode) writes the initial sketches with `[pending]`
-  status. (RE-DECOMPOSE mode revises pending and in-progress milestones; it
-  must preserve all `[done]` milestones and their Outcome sections intact.)
-- `exec-review` owns the status transition to `[done]` and the Outcome
-  authoring (M4 design). `milestone-spec` does NOT mark milestones `[done]`
-  and does NOT write Outcome sections.
+- `milestone` (CREATE mode) writes the initial sketches with `[pending]`
+  status. Re-decomposition discards the stale `milestones.md` automatically
+  on `milestone` re-entry (discard-hook + fresh CREATE); all `[done]`
+  milestones and their Outcome sections are preserved in the frozen/executed
+  plan history.
+- `execute` owns the status transition to `[done]` and the Outcome authoring
+  (inline conformance review pass). `milestone` does NOT mark milestones
+  `[done]` and does NOT write Outcome sections.
 
 Structural rules:
 

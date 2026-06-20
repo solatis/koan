@@ -63,8 +63,7 @@ on breach, **reject** with a narrowing hint. Never truncate-and-pass.
 
 Tools koan implements end to end, returning a koan-defined schema:
 `koan_search`, `koan_reflect`, `koan_memory_status`, `koan_artifact_list`, and
-the control-ack tools (`koan_set_phase`, `koan_suggest_next`,
-`koan_select_story`, ...).
+the control-ack tools (`koan_set_phase`, `koan_suggest_next`, ...).
 
 `koan_artifact_read/write/edit` are also in this class. They are **trusted,
 run-dir-scoped wrappers** over the built-in `read`/`write`/`edit`: koan authored
@@ -89,7 +88,7 @@ Bounding techniques, by output kind:
 | Field-bounded item | cap unbounded fields + return handle | memory `body` -> first N chars + `entry_id`    |
 | Paginated document | expose `offset`/`limit` like `read`  | `koan_search` snippets; large reads via paging |
 | Generated text     | cap at the producer's `max_tokens`   | `koan_reflect` answer                          |
-| Control ack        | fixed-size status string             | `koan_set_phase`, `koan_complete_story`        |
+| Control ack        | fixed-size status string             | `koan_set_phase`, `koan_suggest_next`          |
 
 ### Web tools -- bound by request (a sub-case of untrusted)
 

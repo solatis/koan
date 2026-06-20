@@ -24,27 +24,27 @@ demand it.
 
 ### Plan workflow
 
-| Phase         | `next_phase`  | Behaviour                                                                         |
-| ------------- | ------------- | --------------------------------------------------------------------------------- |
-| `intake`      | `plan-spec`   | auto-advance                                                                      |
-| `plan-spec`   | `plan-review` | auto-advance                                                                      |
-| `plan-review` | `None`        | hand back (orchestrator picks `plan-spec` for loop-back or `execute` to proceed)  |
-| `execute`     | `exec-review` | auto-advance                                                                      |
-| `exec-review` | `None`        | hand back (orchestrator picks `curation` to proceed or `plan-spec` to loop back)  |
-| `curation`    | `None`        | terminal hand-back -- workflow ends here                                          |
+| Phase      | `next_phase` | Behaviour                                                                           |
+| ---------- | ------------ | ----------------------------------------------------------------------------------- |
+| `intake`   | `plan`       | auto-advance                                                                        |
+| `plan`     | `None`       | hand back -- orchestrator names the plan for execution via `koan_set_phase("execute", plan_file=...)` |
+| `execute`  | `None`       | hand back -- orchestrator picks `curation` (clean) or `plan` (remediation loop)    |
+| `curation` | `None`       | terminal hand-back -- workflow ends here                                            |
+
+Note: `plan` hands back (not auto-advances) because `koan_set_phase("execute",
+plan_file=...)` requires an explicit `plan_file` argument that the producer must
+supply. The producer's terminal step instructs it to call `koan_set_phase` with
+the file it just wrote.
 
 ### Milestones workflow
 
-| Phase              | `next_phase`     | Behaviour                                                                                   |
-| ------------------ | ---------------- | ------------------------------------------------------------------------------------------- |
-| `intake`           | `milestone-spec` | auto-advance                                                                                |
-| `milestone-spec`   | `plan-spec`      | auto-advance (CREATE-mode default; orchestrator may hand back to milestone-review if warranted) |
-| `milestone-review` | `None`           | hand back (orchestrator picks `milestone-spec` for revision or `plan-spec` to proceed)         |
-| `plan-spec`        | `plan-review`    | auto-advance                                                                                    |
-| `plan-review`      | `None`           | hand back (orchestrator picks `plan-spec` for loop-back or `execute` to proceed)                |
-| `execute`          | `exec-review`    | auto-advance                                                                                    |
-| `exec-review`      | `None`           | hand back (orchestrator picks `milestone-spec` loop, `plan-spec`, or `curation`)               |
-| `curation`         | `None`           | terminal hand-back -- workflow ends here                                                        |
+| Phase       | `next_phase` | Behaviour                                                                           |
+| ----------- | ------------ | ----------------------------------------------------------------------------------- |
+| `intake`    | `milestone`  | auto-advance                                                                        |
+| `milestone` | `None`       | hand back -- orchestrator advances to `plan` once reconcile is complete             |
+| `plan`      | `None`       | hand back -- orchestrator names the plan for execution via `koan_set_phase("execute", plan_file=...)` |
+| `execute`   | `None`       | hand back -- orchestrator picks `plan` (next milestone), `milestone` (re-decompose), or `curation` |
+| `curation`  | `None`       | terminal hand-back -- workflow ends here                                            |
 
 ## Step progression history
 
@@ -82,17 +82,18 @@ The orchestrator may hand back to the user instead of calling `koan_set_phase`
 directly (even when `next_phase` is bound) when any of the following apply:
 
 1. An exceptional finding has surfaced that the user must direct (e.g.,
-   exec-review reveals a fundamental flaw requiring a scope change beyond
-   the current plan).
+   inline conformance review reveals a fundamental flaw requiring a scope
+   change beyond the current plan).
 2. The phase outcome does not match any single bound `next_phase` (e.g.,
-   milestone-spec completed all milestones on the first pass and curation
-   is the right target, not plan-spec).
+   milestone completed all milestones on the first pass and curation
+   is the right target, not plan).
 3. The user asked mid-phase to redirect the workflow.
 
 This is intentionally soft -- prompt discipline rather than vocabulary
-enforcement. Review phases (`plan-review`, `milestone-review`, `exec-review`)
-are always `next_phase=None` precisely because their outcome is inherently
-variable; auto-advance would bypass the signal they exist to surface.
+enforcement. All phases are `next_phase=None` in the current model (since M6
+collapsed the `*-review` phases into the mechanical reviewer and inline execute
+review), so every phase boundary is a hand-back where the orchestrator picks the
+next step based on findings and outcome.
 
 ## The `directed_phases` interaction
 

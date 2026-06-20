@@ -28,10 +28,10 @@ conversational facts across sessions.
 
 Koan's memory is fundamentally different:
 
-- **Deliberate, not extracted.** Entries are proposed by the
-  orchestrator agent and approved by the human user during a
-  curation workflow. Every entry is human-reviewed before it enters
-  memory.
+- **Deliberate, not extracted.** Entries are authored by the
+  orchestrator agent during a curation workflow and quality-gated
+  by a self-critique checklist before being written. There is no
+  separate human approval step.
 
 - **Structured, not atomic.** Each entry is a self-contained unit
   carrying the knowledge its type requires — an architectural
@@ -42,9 +42,9 @@ Koan's memory is fundamentally different:
 
 - **The producer and consumer are LLMs.** The primary reader of
   memory entries is the intake agent at the start of the next
-  workflow. The human oversees (reviews proposals, approves entries)
-  but does not browse or query memory directly. Design decisions
-  optimize for LLM consumption, not human browsability.
+  workflow. Curation quality is enforced by the self-critique
+  checklist, not by human approval of individual entries. Design
+  decisions optimize for LLM consumption, not human browsability.
 
 - **Write-infrequent, read-frequent.** Memory is written during
   curation (end of workflow or on-demand review). It is read at
@@ -477,9 +477,8 @@ batches of 3–5 candidates. For each batch:
    - **NOOP**: An existing entry already captures this → skip
    - **DEPRECATE**: This knowledge makes an existing entry obsolete
      → propose deprecation
-3. Draft complete entry proposals for ADD and UPDATE candidates
-4. Present the batch to the user for review
-5. Apply approved changes (via `koan_memorize` and `koan_forget`)
+3. Draft each entry, self-critique it against the 9-item checklist,
+   then write it directly via `koan_memorize` / `koan_forget`
 6. Reassess: is there more to extract? After the obvious, look for
    implications, connections, conventions, edge cases. Continue
    the loop with a new batch if so.
@@ -802,8 +801,8 @@ The design above maps to the following code locations:
   it appears among the run-dir markdown files sorted by mtime.
 - **Rendering**: `render_injection_block()` in
   `koan/memory/retrieval/rag.py` produces a `## Relevant memory`
-  markdown block. Phase modules (intake, plan-spec, plan-review,
-  execute) prepend this block to their step 1 guidance via
+  markdown block. Phase modules (intake, plan, execute)
+  prepend this block to their step 1 guidance via
   `ctx.memory_injection`.
 - **Failure mode**: Retrieval errors (missing `VOYAGE_API_KEY`, empty
   memory, LanceDB errors) are logged at `warning` and the phase

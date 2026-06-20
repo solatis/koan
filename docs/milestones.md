@@ -9,9 +9,10 @@ decompositions from drifting away from codebase reality.
 A milestone is a coherent, independently-deliverable unit of work within a
 broad initiative. It is the unit of planning and execution: each milestone
 gets its own plan (`plan-milestone-N.md`), its own executor session, and its
-own review. The milestones workflow loops through `plan-spec -> [plan-review]
--> execute -> exec-review -> milestone-spec (UPDATE)` for each milestone until
-all are complete.
+own inline review. The milestones workflow loops through `plan -> execute ->
+milestone (UPDATE)` for each milestone until all are complete. Review of each
+plan is performed inline by the mechanical PLAN_REVIEWER sub-agent on
+`koan_artifact_write`; there is no separate `plan-review` phase.
 
 Milestones are NOT tasks, stories, or tickets. They are structural partitions
 of a codebase change initiative, grounded in the actual dependency graph of the
@@ -20,8 +21,8 @@ code being modified.
 ## Soundness criteria
 
 A sound milestone satisfies four properties. Each has an operational test that
-can be applied during milestone-spec (CREATE mode) and verified during
-milestone-review.
+can be applied during milestone (CREATE mode) and verified by the mechanical
+MILESTONE_REVIEWER sub-agent.
 
 ### 1. Independently deliverable (local-constraint property)
 
@@ -44,13 +45,13 @@ the milestones partition the affected subgraph into connected subgraphs, or do
 they slice across strongly-connected components? The latter is a structural
 error.
 
-### 3. Plannable within one plan-spec session
+### 3. Plannable within one plan session
 
-Plan-spec reads files, consults memory, and produces a `plan-milestone-N.md`.
+Plan reads files, consults memory, and produces a `plan-milestone-N.md`.
 Its context budget is bounded by the model's window minus the overhead of all
 prior phases in the conversation.
 
-**Operational test:** can plan-spec read every file the milestone touches (or
+**Operational test:** can plan read every file the milestone touches (or
 at least the interface files) and still have room to write a detailed
 implementation plan? If a milestone touches 40+ files across multiple
 subsystems, this probably fails.
@@ -69,7 +70,7 @@ that exceed this should split.
 The binding constraint on milestone size is the context capacity of downstream
 phases, not developer attention or time estimates. An operational definition:
 
-> A milestone is appropriately sized if (a) plan-spec can read all files
+> A milestone is appropriately sized if (a) plan can read all files
 > relevant to the milestone's scope while still producing a specific
 > implementation plan, and (b) the resulting plan fits in an executor session
 > of roughly 10-30 implementation steps.
@@ -128,18 +129,32 @@ learned from prior milestone executions:
 
 ## The UPDATE cycle
 
-After exec-review completes for a milestone, the orchestrator transitions back
-to milestone-spec in UPDATE mode. The update cycle:
+After the `execute` phase completes a milestone (inline conformance review
+passes), the orchestrator updates `milestones.md` in the same `execute` turn via
+`koan_artifact_edit`. The update:
 
-1. Read `milestones.md` and the exec-review assessment from conversation
-   context.
-2. Mark the completed milestone `[done]` and add an `### Outcome` section
+1. Mark the completed milestone `[done]` and add a `### Outcome` section
    describing what was actually accomplished (not what was planned).
-3. Adjust remaining milestones based on deviations: reorder, add, remove, or
+2. Adjust remaining milestones based on deviations: reorder, add, remove, or
    revise sketches as needed.
-4. Mark the next `[pending]` milestone as `[in-progress]`.
-5. If remaining milestones exist, transition to `plan-spec`.
-6. If all milestones are `[done]` or `[skipped]`, transition to `curation`.
+3. Mark the next `[pending]` milestone as `[in-progress]`.
+4. Transition to `plan` for the next milestone, or to `curation` when all
+   milestones are `[done]` or `[skipped]`.
+
+The `execute` phase owns the `[done]` transition and the Outcome authoring.
+The `milestone` phase does NOT mark milestones `[done]` and does NOT write
+Outcome sections.
+
+## Structural re-decomposition
+
+When the scope of remaining milestones changes significantly (e.g., after
+discovering a dependency that cuts across the current decomposition), the
+orchestrator can re-decompose by re-entering the `milestone` phase. On re-entry,
+koan automatically discards non-executed draft artifacts (draft plans and the
+stale `milestones.md`) while preserving every frozen/executed plan and its
+sidecar as immutable history. The fresh `milestones.md` write fires the
+MILESTONE_REVIEWER. This is a destructive, frictionless operation -- the discard
+is automatic on `milestone` re-entry.
 
 ## Compound-risk framing
 
@@ -147,13 +162,14 @@ Errors at the milestone layer compound across every subsequent phase:
 
 ```
 milestone decomposition error
-  -> wrong scope in plan-spec -> wrong plan
+  -> wrong scope in plan -> wrong plan
     -> wrong execution -> wrong code
-      -> wrong exec-review assessment
+      -> wrong inline review assessment
         -> wrong milestone update
           -> wrong next milestone plan
 ```
 
-This is why milestone-review exists as a designated adversarial phase. See
-[phase-trust.md](./phase-trust.md) for the trust model and verification
+The mechanical MILESTONE_REVIEWER sub-agent (spawned by `koan_artifact_write`)
+provides adversarial checking of the decomposition before any planning begins.
+See [phase-trust.md](./phase-trust.md) for the trust model and verification
 boundaries.
