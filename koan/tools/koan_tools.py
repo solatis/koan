@@ -341,7 +341,7 @@ async def apply_set_phase(deps: ToolDeps, phase: str, plan_file: str | None = No
     on failure), emits execute_entry (freeze), runs the normal phase transition,
     spawns the executor (blocking), emits execute_completion, and returns the
     executor's deviation report. A bare set_phase("execute") with no plan_file
-    is rejected.
+    returns the execute_requires_plan_file envelope.
 
     When phase=="milestone" and milestones.md already exists in the run directory
     (re-entry), fires the discard hook: deletes non-frozen/non-executed artifacts
@@ -349,8 +349,11 @@ async def apply_set_phase(deps: ToolDeps, phase: str, plan_file: str | None = No
     frozen/executed plan + their sidecars. This is the structural re-decomposition
     trigger (brief Decision 16, plan step 7).
 
-    Raises ValueError on invalid transitions so both callers (the in-process
-    PydanticAI tool and any transport wrapper) can handle it uniformly.
+    Agent-correctable validation failures (execute_requires_plan_file,
+    execute-target codes, invalid_transition) are RETURNED as the
+    {"ok": false, "error": {...}} envelope so the model can self-correct without
+    crashing the run.  Infrastructure and internal-config faults (no_run_dir,
+    unknown_phase) still raise -- the agent cannot fix those by changing arguments.
 
     Called by the in-process koan_set_phase PydanticAI tool.
     """
@@ -359,6 +362,9 @@ async def apply_set_phase(deps: ToolDeps, phase: str, plan_file: str | None = No
     from ..lib.workflows import is_valid_transition as wf_is_valid
     from ..logger import get_logger
     from ..phases import PhaseContext
+    # ValidationError is used by all transition-error branches below; imported
+    # here rather than at module level to keep circular-import discipline intact.
+    from .artifact_registry import ValidationError
 
     log = get_logger("koan_tools")
 
@@ -393,12 +399,19 @@ async def apply_set_phase(deps: ToolDeps, phase: str, plan_file: str | None = No
     # is rejected -- every execute entry must carry a concrete plan target.
     if phase == "execute":
         if not plan_file:
-            raise ValueError(
-                "execute_requires_plan_file: koan_set_phase('execute') requires a "
-                "plan_file argument naming the plan artifact to execute "
-                "(e.g. plan_file='plan-milestone-1.md'). Bare transitions to execute "
-                "are not allowed."
-            )
+            # Recoverable: the agent can retry with a plan_file argument.
+            return _permission_error_result(ValidationError(
+                code="execute_requires_plan_file",
+                message=(
+                    "koan_set_phase('execute') requires a plan_file argument naming "
+                    "the plan artifact to execute (e.g. plan_file='plan-milestone-1.md'). "
+                    "Bare transitions to execute are not allowed."
+                ),
+                allowed=(
+                    "Call koan_set_phase('execute', plan_file='plan-milestone-N.md') "
+                    "naming an existing plan artifact."
+                ),
+            ))
 
         from ..artifacts import list_artifacts
         from ..tools import artifact_registry
@@ -418,12 +431,9 @@ async def apply_set_phase(deps: ToolDeps, phase: str, plan_file: str | None = No
             executed_names=executed_names,
         )
         if err is not None:
-            # Validation failed: raise with structured code+message. No side effects
-            # (no freeze, no spawn, no phase transition) have occurred yet.
-            detail = f"{err.code}: {err.message}"
-            if err.suggested_name:
-                detail += f" Suggested name: {err.suggested_name!r}."
-            raise ValueError(detail)
+            # Recoverable: return the envelope so the model self-corrects.  No side
+            # effects (no freeze, no spawn, no phase transition) have occurred yet.
+            return _permission_error_result(err)
 
         # (a) Freeze: emit execute_entry before the normal transition so the
         # projection records the fact before any downstream state change.
@@ -440,10 +450,15 @@ async def apply_set_phase(deps: ToolDeps, phase: str, plan_file: str | None = No
     # Validate transition using workflow membership check.
     if workflow is None or not wf_is_valid(workflow, current, phase):
         phases = list(workflow.available_phases) if workflow else []
-        raise ValueError(
-            f"invalid_transition: '{phase}' is not available from '{current}' "
-            f"in the current workflow. Available phases: {phases}"
-        )
+        # Recoverable: the agent can retry with a phase name from the available list.
+        return _permission_error_result(ValidationError(
+            code="invalid_transition",
+            message=(
+                f"'{phase}' is not available from '{current}' "
+                f"in the current workflow. Available phases: {phases}"
+            ),
+            allowed=f"Choose a phase available from the current one: {phases}.",
+        ))
 
     # Look up new phase module from the workflow's bindings.
     new_module = workflow.get_module(phase) if workflow else None
@@ -566,11 +581,12 @@ async def apply_set_workflow(deps: ToolDeps, workflow: str) -> str:
     phase_started, yield_cleared, agent_step_advanced), and rebuilds
     PhaseContext for the new phase.
 
-    Raises ValueError("unknown_workflow: ...") for unregistered workflow names.
-    Raises ValueError("internal_error: ...") when the initial-phase module is missing.
+    Agent-correctable validation failure (unknown_workflow) is RETURNED as the
+    {"ok": false, "error": {...}} envelope so the model can self-correct without
+    crashing the run.  The internal_error fault (missing initial-phase module --
+    an internal config bug) still raises because the agent cannot fix it.
 
-    Called by both the in-process koan_set_workflow PydanticAI tool and by
-    the refactored MCP handler in koan/web/mcp_endpoint.py.
+    Called by the in-process koan_set_workflow PydanticAI tool.
     """
     import json as _json
     from pathlib import Path
@@ -585,6 +601,8 @@ async def apply_set_workflow(deps: ToolDeps, workflow: str) -> str:
     from ..phases import PhaseContext
     from ..run_state import load_run_state, save_run_state
     from ..subagent import write_task_json
+    # ValidationError is used for the unknown_workflow recoverable return below.
+    from .artifact_registry import ValidationError
 
     log = get_logger("koan_tools")
     agent = deps.agent
@@ -596,10 +614,15 @@ async def apply_set_workflow(deps: ToolDeps, workflow: str) -> str:
     try:
         new_workflow = get_workflow(workflow)
     except ValueError:
-        raise ValueError(
-            f"unknown_workflow: '{workflow}' is not a registered workflow. "
-            f"Available workflows: {list(WORKFLOWS.keys())}"
-        )
+        # Recoverable: the agent can retry with a registered workflow name.
+        return _permission_error_result(ValidationError(
+            code="unknown_workflow",
+            message=(
+                f"'{workflow}' is not a registered workflow. "
+                f"Available workflows: {list(WORKFLOWS.keys())}"
+            ),
+            allowed=f"Pass a registered workflow name: {list(WORKFLOWS.keys())}.",
+        ))
 
     new_initial_phase = new_workflow.initial_phase
     new_module = new_workflow.get_module(new_initial_phase)
@@ -1084,24 +1107,58 @@ async def _spawn_executor(
     return (result.final_response or "", result.exit_code)
 
 
+def _current_step_name(agent: "AgentState") -> str | None:
+    """Resolve the current step's stable name from the agent's phase module.
+
+    Returns STEP_NAMES[agent.step] from the phase module set on the agent, or
+    None when the phase module is absent, has no STEP_NAMES, or the current step
+    integer has no entry.  None causes the per-step gate to be skipped (fail-open)
+    so unresolved step metadata never produces a false rejection.
+    """
+    phase_module = getattr(agent, "phase_module", None)
+    if phase_module is None:
+        return None
+    step_names = getattr(phase_module, "STEP_NAMES", None)
+    if step_names is None:
+        return None
+    return step_names.get(getattr(agent, "step", 0))
+
+
+def _permission_error_result(err: "ValidationError") -> str:
+    """Shape a recoverable registry ValidationError into the uniform tool-result envelope.
+
+    Returns a JSON string {"ok": false, "error": {...}} that is passed directly
+    back to the model as the tool result.  The model reads it, learns when/where
+    the call IS legal (err.allowed), and re-issues.  This path is never raised
+    so a recoverable permission denial cannot crash the run.
+    """
+    import json
+
+    return json.dumps({
+        "ok": False,
+        "error": {
+            "reason": err.code,
+            "message": err.message,
+            "allowed": err.allowed,
+            "suggested_name": err.suggested_name,
+        },
+    })
+
+
 async def artifact_write_core(deps: ToolDeps, filename: str, content: str) -> str:
     """Core logic for koan_artifact_write -- write-once, validate, classify, spawn reviewer.
 
     Validates the filename against the artifact registry (rejects sidecars,
-    wrong-phase writes, and overwrite attempts). Writes the file once via
-    write_tool. Classifies the artifact's reviewer via the registry; when a
+    wrong-phase/wrong-step writes, and overwrite attempts). Writes the file once
+    via write_tool. Classifies the artifact's reviewer via the registry; when a
     reviewer is configured, spawns a blocking reviewer sub-agent (mirroring
     request_executor_core), persists the reviewer's freeform findings to a
     koan-created <stem>.review.md sidecar, and returns the findings string.
     When no reviewer is configured, returns the standard written-OK JSON.
 
-    Raises ValueError with structured code+message when validation fails so
-    the orchestrator can self-correct (e.g. use koan_artifact_edit for an
-    existing draft, or supply the suggested_name for a frozen artifact).
-
-    Raises ValueError("invalid_filename"/"no_run_dir"/"invalid_path"/
-    "name_malformed"/"wrong_phase"/"exists_draft"/"exists_frozen"/
-    "chain_gap"/"write_failed").
+    Recoverable validation failures are RETURNED as {"ok": false, "error": {...}}
+    so the model can self-correct without crashing the run.  Only genuine
+    infrastructure faults raise: no_run_dir, invalid_path, write_failed.
     """
     import json
 
@@ -1118,15 +1175,9 @@ async def artifact_write_core(deps: ToolDeps, filename: str, content: str) -> st
     if not run_dir:
         raise ValueError("no_run_dir: No run directory available")
 
-    # Reject direct .review.md sidecar writes: koan creates and owns them.
-    if artifact_registry.is_review_sidecar(filename):
-        raise ValueError(
-            f"name_malformed: {filename!r} is a review sidecar; "
-            "koan creates and owns .review.md files. "
-            "Write the primary artifact instead."
-        )
-
     # Validate + classify via the artifact registry.
+    # validate_write handles sidecar writes (name_malformed) and all policy checks.
+    # The inline sidecar reject was removed here; it now flows as a recoverable envelope.
     phase = app_state.run.phase or ""
     workflow = app_state.run.workflow
     # requires_discriminator: True when the active workflow fans out to
@@ -1140,6 +1191,8 @@ async def artifact_write_core(deps: ToolDeps, filename: str, content: str) -> st
         a["path"] for a in list_artifacts(run_dir) if "/" not in a["path"]
     )
     frozen_names = _frozen_artifact_names(app_state)
+    # Resolve step name for the per-step gate; None means skip the step check.
+    step_name = _current_step_name(agent)
 
     err = artifact_registry.validate_write(
         filename,
@@ -1147,13 +1200,11 @@ async def artifact_write_core(deps: ToolDeps, filename: str, content: str) -> st
         requires_discriminator=requires_discriminator,
         existing_names=existing_names,
         frozen_names=frozen_names,
+        step_name=step_name,
     )
     if err is not None:
-        # Build an instructive, self-correctable error message for the orchestrator.
-        detail = f"{err.code}: {err.message}"
-        if err.suggested_name:
-            detail += f" Suggested name: {err.suggested_name!r}."
-        raise ValueError(detail)
+        # Recoverable: return the envelope so the model self-corrects.
+        return _permission_error_result(err)
 
     # Write the file once (write-once guarantee -- validation already rejected
     # existing names above).
@@ -1213,14 +1264,15 @@ async def artifact_edit_core(
     """Core logic for koan_artifact_edit -- run-dir-scoped wrapper over edit_tool.
 
     Validates the filename, resolves it inside run_dir, checks for frozen status
-    via the artifact registry (review sidecars are exempt from the frozen check so
-    the orchestrator can append post-execution notes to a frozen plan's sidecar),
-    then delegates to the built-in anchored edit tool and emits artifact_diff.
+    and per-step legality via the artifact registry.  Review sidecars (.review.md)
+    are exempt from both per-step gating and the frozen check so the orchestrator
+    can append post-execution notes to a frozen plan's sidecar.
 
-    Returns {"ok": true, "filename"}.
+    Recoverable validation failures are RETURNED as {"ok": false, "error": {...}}
+    so the model can self-correct without crashing the run.  Only genuine
+    infrastructure faults raise: no_run_dir, invalid_path, edit_failed.
 
-    Raises ValueError("invalid_filename"/"no_run_dir"/"invalid_path"/
-    "not_found"/"frozen"/"edit_failed").
+    Returns {"ok": true, "filename"} on success.
     """
     import json
 
@@ -1245,25 +1297,28 @@ async def artifact_edit_core(
         # Resolve path (validates filename and run-dir containment).
         target = _resolve_artifact_path(deps, filename)
 
-    # Frozen-check via the registry. validate_edit handles both the not_found
-    # case (for non-sidecars) and the frozen case. Sidecars (.review.md) are
-    # always allowed through -- their exemption is the only way to append
-    # post-execution conformance notes to a frozen plan's review record.
+    # Validate via the registry. validate_edit handles not_found, frozen, and
+    # per-step legality. Sidecars (.review.md) are always allowed through
+    # (validate_edit returns None immediately for them) so the orchestrator
+    # can append post-execution conformance notes to a frozen plan's sidecar.
     run_dir = str(target.parent)
     existing_names = frozenset(
         a["path"] for a in list_artifacts(run_dir) if "/" not in a["path"]
     )
     frozen_names = _frozen_artifact_names(deps.app_state)
+    # Resolve phase and step name for the per-step gate.
+    phase = deps.app_state.run.phase or ""
+    step_name = _current_step_name(deps.agent)
     err = artifact_registry.validate_edit(
         filename,
         existing_names=existing_names,
         frozen_names=frozen_names,
+        phase=phase,
+        step_name=step_name,
     )
     if err is not None:
-        detail = f"{err.code}: {err.message}"
-        if err.suggested_name:
-            detail += f" Suggested name: {err.suggested_name!r}."
-        raise ValueError(detail)
+        # Recoverable: return the envelope so the model self-corrects.
+        return _permission_error_result(err)
 
     result = await edit_tool(_DepsCtx(deps), str(target), anchor, text, end_anchor, edit_type)
     if result.startswith("Error"):

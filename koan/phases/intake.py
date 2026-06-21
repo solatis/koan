@@ -54,7 +54,8 @@ PHASE_ROLE_CONTEXT = (
     "\n"
     "Your final output is `brief.md` in the run directory -- a frozen, structured\n"
     "handoff artifact every downstream phase reads as authoritative initiative\n"
-    "context.\n"
+    "context. It is written ONLY in the final step (Summarize), after you have\n"
+    "gathered context and finished the dialogue -- never in an earlier step.\n"
     "\n"
     "## Thinking style\n"
     "\n"
@@ -103,6 +104,8 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
 
         lines.extend([
             "Read the task description, orient yourself in the codebase, and plan your investigation.",
+            "",
+            "Read and analyze before writing. Do NOT write brief.md or any other artifact in this step.",
             "",
             "## 1. Task description",
             "",
@@ -207,6 +210,8 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "This is the primary phase for user dialogue. The understanding you",
                 "build here carries directly into planning and execution. Anything you",
                 "get wrong will silently propagate.",
+                "",
+                "Read and analyze before writing. Do NOT write brief.md in this step.",
                 "",
                 "## 1. Process scout results",
                 "",
