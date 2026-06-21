@@ -47,7 +47,14 @@ class ArtifactRegistryEntry:
     """Policy row for one artifact family.
 
     family:              canonical family key matching ARTIFACT_REGISTRY.
-    origin_phases:       set of phase ids in which a write of this family is legal.
+    create_steps:        frozenset of (phase, step_name) pairs where koan_artifact_write
+                         is legal for this family.  step_name is the stable string key
+                         from the phase module's STEP_NAMES (e.g. "Summarize").
+    edit_steps:          frozenset of (phase, step_name) pairs where koan_artifact_edit
+                         is legal for this family.  May differ from create_steps (e.g.
+                         milestones.md is also editable during execute/Assess).
+    origin_phases:       derived @property -- the set of phases appearing in
+                         create_steps, so phase-level legality has a single source.
     reviewer_prompt:     string tag for the reviewer charter
                          ("PLAN_REVIEWER" | "MILESTONE_REVIEWER" | "TECH_PLAN_REVIEWER")
                          or None for families without a reviewer.
@@ -58,12 +65,24 @@ class ArtifactRegistryEntry:
     """
 
     family: str
-    origin_phases: frozenset[str]
+    # Per-step create/edit sets replace the old origin_phases field.
+    # origin_phases is now a derived property so phase legality has one source.
+    create_steps: frozenset[tuple[str, str]]
+    edit_steps: frozenset[tuple[str, str]]
     reviewer_prompt: str | None
     takes_discriminator: bool
     takes_chain: bool
     on_write: str
     on_edit: str
+
+    @property
+    def origin_phases(self) -> frozenset[str]:
+        """Derive the legal-write phase set from create_steps.
+
+        Computed rather than stored so create_steps is the single source of
+        truth for phase-level legality -- no risk of divergence between the two.
+        """
+        return frozenset(phase for phase, _ in self.create_steps)
 
 
 @dataclass(frozen=True)
@@ -71,15 +90,28 @@ class ValidationError:
     """Structured, recoverable validation failure returned by the validators.
 
     code:           machine key; one of:
-                    name_malformed | wrong_phase | exists_draft | exists_frozen |
-                    chain_gap | not_found | frozen |
-                    execute_not_found | execute_not_plan | already_executed
+                    name_malformed | wrong_phase | out_of_step | exists_draft |
+                    exists_frozen | chain_gap | not_found | frozen |
+                    execute_not_found | execute_not_plan | already_executed |
+                    execute_requires_plan_file | invalid_transition | unknown_workflow.
+                    out_of_step is returned when the artifact family is legal in the
+                    current phase but the tool was called outside the step(s) where
+                    the operation is permitted.
+                    The last three codes are constructed in koan_tools.py for
+                    workflow-transition rejections and share this type so they flow
+                    through the same _permission_error_result envelope.
     message:        human-readable explanation for the orchestrator.
+    allowed:        when/where the call IS legal -- the self-correction hint shown to
+                    the model so it can re-issue at the right time.  Empty string when
+                    no correction hint is applicable.
     suggested_name: nearest legal alternative filename, when derivable.
     """
 
     code: str
     message: str
+    # allowed is after message so existing positional construction still works,
+    # and it has a default so existing keyword construction is unaffected.
+    allowed: str = ""
     suggested_name: str | None = None
 
 
@@ -91,7 +123,8 @@ class ValidationError:
 ARTIFACT_REGISTRY: dict[str, ArtifactRegistryEntry] = {
     "brief": ArtifactRegistryEntry(
         family="brief",
-        origin_phases=frozenset({"intake"}),
+        create_steps=frozenset({("intake", "Summarize")}),
+        edit_steps=frozenset({("intake", "Summarize")}),
         reviewer_prompt=None,
         takes_discriminator=False,
         takes_chain=False,
@@ -100,7 +133,8 @@ ARTIFACT_REGISTRY: dict[str, ArtifactRegistryEntry] = {
     ),
     "core-flows": ArtifactRegistryEntry(
         family="core-flows",
-        origin_phases=frozenset({"core-flows"}),
+        create_steps=frozenset({("core-flows", "Write")}),
+        edit_steps=frozenset({("core-flows", "Write")}),
         reviewer_prompt=None,
         takes_discriminator=False,
         takes_chain=False,
@@ -109,7 +143,8 @@ ARTIFACT_REGISTRY: dict[str, ArtifactRegistryEntry] = {
     ),
     "tech-plan": ArtifactRegistryEntry(
         family="tech-plan",
-        origin_phases=frozenset({"tech-plan"}),
+        create_steps=frozenset({("tech-plan", "Write")}),
+        edit_steps=frozenset({("tech-plan", "Write")}),
         reviewer_prompt="TECH_PLAN_REVIEWER",
         takes_discriminator=False,
         takes_chain=False,
@@ -118,7 +153,10 @@ ARTIFACT_REGISTRY: dict[str, ArtifactRegistryEntry] = {
     ),
     "milestones": ArtifactRegistryEntry(
         family="milestones",
-        origin_phases=frozenset({"milestone"}),
+        create_steps=frozenset({("milestone", "Write")}),
+        # milestones.md is also editable during execute/Assess so the
+        # post-execution conformance update path is legal.
+        edit_steps=frozenset({("milestone", "Write"), ("execute", "Assess")}),
         reviewer_prompt="MILESTONE_REVIEWER",
         takes_discriminator=False,
         takes_chain=False,
@@ -128,9 +166,12 @@ ARTIFACT_REGISTRY: dict[str, ArtifactRegistryEntry] = {
     # One "plan" family covers both plan.md (discriminator=None) and
     # plan-milestone-N.md (discriminator=N). The workflow supplies
     # requires_discriminator to validators to distinguish the two legal forms.
+    # Both Analyze and Write steps are legal for creates/edits: the execute->plan
+    # remediation re-entry write fires at Analyze, so it must not be blocked.
     "plan": ArtifactRegistryEntry(
         family="plan",
-        origin_phases=frozenset({"plan"}),
+        create_steps=frozenset({("plan", "Analyze"), ("plan", "Write")}),
+        edit_steps=frozenset({("plan", "Analyze"), ("plan", "Write")}),
         reviewer_prompt="PLAN_REVIEWER",
         takes_discriminator=True,
         takes_chain=True,
@@ -333,6 +374,7 @@ def validate_write(
     requires_discriminator: bool,
     existing_names: frozenset[str],
     frozen_names: frozenset[str],
+    step_name: str | None = None,
 ) -> ValidationError | None:
     """Validate a proposed artifact write. Returns None on success.
 
@@ -341,6 +383,11 @@ def validate_write(
       wrong_phase       -- family not legal in the current phase, or discriminator
                           form mismatch (bare plan.md when requires_discriminator,
                           or discriminated plan-milestone-N.md when not).
+      out_of_step       -- phase is legal but the tool was called outside the
+                          step(s) where creating this artifact family is permitted.
+                          Only checked when step_name is truthy (fail-open: when
+                          step_name is None/empty the check is skipped so missing
+                          step metadata never causes a false rejection).
       exists_frozen     -- file exists and is frozen; suggested_name = next remediation.
       exists_draft      -- file exists and is an editable draft.
       chain_gap         -- remediation K is not contiguous (K-1 does not exist).
@@ -385,6 +432,21 @@ def validate_write(
             ),
         )
 
+    # Per-step check: fail-open when step_name is unresolved (None/empty) so
+    # missing step metadata never causes a false rejection.
+    if step_name and entry.create_steps and (phase, step_name) not in entry.create_steps:
+        legal = ", ".join(
+            f"{p}/{s}" for p, s in sorted(entry.create_steps)
+        )
+        return ValidationError(
+            code="out_of_step",
+            message=(
+                f"{filename!r} (family {coord.family!r}) may only be created in step(s) "
+                f"{legal!r}; current position is phase={phase!r}, step={step_name!r}."
+            ),
+            allowed=f"Write {filename!r} in one of these (phase, step) positions: {legal}.",
+        )
+
     # For the plan family, validate that the discriminator form matches the workflow.
     if coord.family == "plan":
         if requires_discriminator and coord.discriminator is None and coord.chain_position is None:
@@ -416,6 +478,7 @@ def validate_write(
                 f"{filename!r} is frozen and cannot be overwritten. "
                 "Write a remediation successor instead."
             ),
+            allowed="Write the suggested remediation successor name instead.",
             suggested_name=next_remediation_name(filename),
         )
 
@@ -426,6 +489,7 @@ def validate_write(
                 f"{filename!r} already exists as an editable draft. "
                 "Use koan_artifact_edit to revise it, or write a different name."
             ),
+            allowed="Use koan_artifact_edit to revise it.",
         )
 
     # Validate remediation contiguity: -remediation-K requires -remediation-(K-1)
@@ -453,17 +517,28 @@ def validate_edit(
     *,
     existing_names: frozenset[str],
     frozen_names: frozenset[str],
+    phase: str | None = None,
+    step_name: str | None = None,
 ) -> ValidationError | None:
     """Validate a proposed artifact edit. Returns None on success.
 
-    .review.md sidecars are always editable (the append path, exempt from the
-    frozen check) -- return None immediately for them.
+    .review.md sidecars are always editable (the append path, exempt from
+    per-step gating and the frozen check) -- return None immediately for them.
+    The sidecar exemption is checked FIRST so sidecars never hit the step gate.
 
-    Error codes:
-      not_found  -- file does not exist; suggested_name="write".
-      frozen     -- file is frozen; suggested_name = next remediation name.
+    phase and step_name are optional; when either is falsy the per-step check
+    is skipped (fail-open).  The caller (artifact_edit_core) resolves them from
+    the current run state and the phase module's STEP_NAMES.
+
+    Error codes (in precedence order for non-sidecars):
+      not_found   -- file does not exist; suggested_name="write".
+      frozen      -- file is frozen; suggested_name = next remediation name.
+      out_of_step -- file exists and is not frozen, but the edit is called
+                     outside the step(s) where editing this family is permitted.
+                     Only checked when both phase and step_name are truthy.
     """
-    # Sidecar append path: always allowed regardless of freeze state.
+    # Sidecar append path: always allowed, exempt from per-step and freeze gating.
+    # This exemption must stay first so no subsequent check can gate sidecars.
     if is_review_sidecar(filename):
         return None
 
@@ -481,8 +556,28 @@ def validate_edit(
                 f"{filename!r} is frozen and cannot be edited. "
                 "Write a remediation successor instead."
             ),
+            allowed="Write the suggested remediation successor name instead.",
             suggested_name=next_remediation_name(filename),
         )
+
+    # Per-step edit check: fail-open when phase or step_name is unresolved.
+    if phase and step_name:
+        coord = parse_artifact_filename(filename)
+        if coord is not None:
+            entry = classify(coord.family)
+            if entry is not None and entry.edit_steps and (phase, step_name) not in entry.edit_steps:
+                legal = ", ".join(
+                    f"{p}/{s}" for p, s in sorted(entry.edit_steps)
+                )
+                return ValidationError(
+                    code="out_of_step",
+                    message=(
+                        f"{filename!r} (family {coord.family!r}) may only be edited in "
+                        f"step(s) {legal!r}; current position is phase={phase!r}, "
+                        f"step={step_name!r}."
+                    ),
+                    allowed=f"Edit {filename!r} in one of these (phase, step) positions: {legal}.",
+                )
 
     return None
 
@@ -494,6 +589,9 @@ def validate_execute_target(
     executed_names: frozenset[str],
 ) -> ValidationError | None:
     """Validate a proposed execute-handoff target. Returns None on success.
+
+    Each returned ValidationError carries an `allowed` self-correction hint
+    so the model can re-issue with a legal argument without crashing the run.
 
     Error codes:
       execute_not_found   -- filename not in grammar or does not exist.
@@ -508,6 +606,8 @@ def validate_execute_target(
                 f"{filename!r} was not found in the run directory. "
                 "Provide the exact filename of an existing plan artifact."
             ),
+            # Self-correction: name an artifact that actually exists and is a plan.
+            allowed="Provide the exact filename of an existing plan artifact in the run directory.",
         )
 
     if coord.family != "plan":
@@ -517,6 +617,8 @@ def validate_execute_target(
                 f"{filename!r} is a {coord.family!r} artifact; "
                 "only plan-family artifacts may be named for execution."
             ),
+            # Self-correction: only plan.md / plan-milestone-N.md are legal targets.
+            allowed="Name a plan-family artifact (plan.md or plan-milestone-N.md) for execution.",
         )
 
     if filename in executed_names:
@@ -526,6 +628,8 @@ def validate_execute_target(
                 f"{filename!r} has already been executed. "
                 "Write a remediation successor to retry."
             ),
+            # Self-correction: write the suggested remediation and execute that instead.
+            allowed="Write the suggested remediation successor and execute that instead.",
             suggested_name=next_remediation_name(filename),
         )
 
