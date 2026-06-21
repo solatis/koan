@@ -61,28 +61,58 @@ def _make_deps(tmp_path: Path, phase: str) -> tuple[ToolDeps, AppState]:
 
 @pytest.mark.anyio
 async def test_write_once_rejects_existing_name(tmp_path: Path, monkeypatch) -> None:
-    """Second write of an existing artifact name raises ValueError(exists_draft).
+    """Second write of an existing artifact name returns an exists_draft envelope.
 
-    Write-once is the core M3 guarantee: once an artifact exists, it must be
-    revised via koan_artifact_edit, not overwritten.
+    Write-once is the core M3 guarantee: once an artifact exists it must be
+    revised via koan_artifact_edit, not overwritten.  The failure is returned as
+    a recoverable {"ok": false} envelope rather than raised so the run is not
+    crashed by a model mistake.
     """
     deps, _ = _make_deps(tmp_path, "intake")
 
     # First write succeeds.
     await artifact_write_core(deps, "brief.md", "# Brief\n\nContent.")
 
-    # Second write of the same name is rejected.
-    with pytest.raises(ValueError, match="exists_draft"):
-        await artifact_write_core(deps, "brief.md", "# Brief\n\nRevised.")
+    # Second write of the same name is rejected with a recoverable envelope.
+    result = await artifact_write_core(deps, "brief.md", "# Brief\n\nRevised.")
+    payload = json.loads(result)
+    assert payload["ok"] is False
+    assert payload["error"]["reason"] == "exists_draft"
+
+
+@pytest.mark.anyio
+async def test_double_write_returns_envelope_not_raises(tmp_path: Path) -> None:
+    """Regression: a second artifact_write_core call returns the envelope and does NOT raise.
+
+    This is the literal bug this initiative fixes: the original implementation
+    raised ValueError on the second write, which crashed the agent run.  After
+    the fix, the model receives a structured error and can self-correct.
+    """
+    deps, _ = _make_deps(tmp_path, "intake")
+
+    first = await artifact_write_core(deps, "brief.md", "# Brief\n\nFirst.")
+    assert json.loads(first)["ok"] is True
+
+    second = await artifact_write_core(deps, "brief.md", "# Brief\n\nSecond.")
+    payload = json.loads(second)
+    assert payload["ok"] is False
+    assert payload["error"]["reason"] == "exists_draft"
+    assert "allowed" in payload["error"]
 
 
 @pytest.mark.anyio
 async def test_write_rejects_sidecar_filename(tmp_path: Path) -> None:
-    """Writing a .review.md filename directly is rejected (koan owns sidecars)."""
+    """Writing a .review.md filename directly returns a name_malformed envelope.
+
+    koan owns sidecars; a model attempt to write one returns a recoverable error
+    envelope so the run is not crashed.
+    """
     deps, _ = _make_deps(tmp_path, "tech-plan")
 
-    with pytest.raises(ValueError, match="name_malformed"):
-        await artifact_write_core(deps, "tech-plan.review.md", "# Review\n")
+    result = await artifact_write_core(deps, "tech-plan.review.md", "# Review\n")
+    payload = json.loads(result)
+    assert payload["ok"] is False
+    assert payload["error"]["reason"] == "name_malformed"
 
 
 # -- Tests: reviewed family (tech-plan.md) ------------------------------------
@@ -188,12 +218,15 @@ async def test_unreviewed_artifact_writes_and_creates_no_sidecar(
 
 @pytest.mark.anyio
 async def test_wrong_phase_write_surfaces_wrong_phase_code(tmp_path: Path) -> None:
-    """Writing plan.md outside the plan phase surfaces the wrong_phase error code.
+    """Writing plan.md outside the plan phase returns a wrong_phase envelope.
 
     validate_write checks origin_phases for the family; plan.md is only legal
-    in the "plan" phase.
+    in the "plan" phase.  The failure is returned as a recoverable envelope so
+    the model can self-correct without crashing the run.
     """
     deps, _ = _make_deps(tmp_path, "intake")  # wrong phase for plan.md
 
-    with pytest.raises(ValueError, match="wrong_phase"):
-        await artifact_write_core(deps, "plan.md", "# Plan\n\nContent.")
+    result = await artifact_write_core(deps, "plan.md", "# Plan\n\nContent.")
+    payload = json.loads(result)
+    assert payload["ok"] is False
+    assert payload["error"]["reason"] == "wrong_phase"

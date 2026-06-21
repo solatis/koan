@@ -5,11 +5,12 @@
 #       execute_entry then execute_completion, spawns the executor, returns
 #       the stub's final_response, and leaves ArtifactInfo.frozen/.executed true.
 #   (b) Invalid targets (execute_not_found, execute_not_plan, already_executed)
-#       raise ValueError with the matching error code and NO execute_entry emitted.
-#   (c) Bare set_phase("execute") with no plan_file raises.
-#   (d) artifact_edit_core raises "frozen" when editing a frozen plan artifact,
+#       return the {"ok": false, "error": {...}} envelope with no side effects.
+#   (c) Bare set_phase("execute") with no plan_file returns execute_requires_plan_file envelope.
+#   (d) An invalid phase transition returns the invalid_transition envelope.
+#   (e) artifact_edit_core returns a "frozen" envelope when editing a frozen plan artifact,
 #       but succeeds on that plan's .review.md sidecar.
-#   (e) The fold sets frozen/executed/exec_outcome correctly on both events.
+#   (f) The fold sets frozen/executed/exec_outcome correctly on both events.
 #
 # The subagent spawner is stubbed; no real LLM call is made.
 
@@ -252,15 +253,19 @@ async def test_execute_handoff_non_conforming_outcome(tmp_path: Path, monkeypatc
 
 
 @pytest.mark.anyio
-async def test_execute_not_found_raises_no_side_effects(tmp_path: Path) -> None:
-    """A missing plan_file raises ValueError with 'execute_not_found' and no events."""
+async def test_execute_not_found_returns_envelope_no_side_effects(tmp_path: Path) -> None:
+    """A missing plan_file returns the execute_not_found envelope and emits no events."""
+    import json
+
     deps, app_state = _make_deps(tmp_path)
     # plan.md does not exist in run_dir
 
     event_types_before = [e.event_type for e in app_state.projection_store.events]
 
-    with pytest.raises(ValueError, match="execute_not_found"):
-        await apply_set_phase(deps, "execute", plan_file="plan.md")
+    result = await apply_set_phase(deps, "execute", plan_file="plan.md")
+    payload = json.loads(result)
+    assert payload["ok"] is False
+    assert payload["error"]["reason"] == "execute_not_found"
 
     # No execute_entry event was emitted.
     event_types_after = [e.event_type for e in app_state.projection_store.events]
@@ -271,19 +276,25 @@ async def test_execute_not_found_raises_no_side_effects(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_execute_not_plan_raises(tmp_path: Path) -> None:
-    """Naming a non-plan artifact (milestones.md) raises 'execute_not_plan'."""
+async def test_execute_not_plan_returns_envelope(tmp_path: Path) -> None:
+    """Naming a non-plan artifact (milestones.md) returns the execute_not_plan envelope."""
+    import json
+
     deps, app_state = _make_deps(tmp_path)
     _write_artifact(tmp_path, "milestones.md")
     _push_artifact_created(app_state, "milestones.md", tmp_path)
 
-    with pytest.raises(ValueError, match="execute_not_plan"):
-        await apply_set_phase(deps, "execute", plan_file="milestones.md")
+    result = await apply_set_phase(deps, "execute", plan_file="milestones.md")
+    payload = json.loads(result)
+    assert payload["ok"] is False
+    assert payload["error"]["reason"] == "execute_not_plan"
 
 
 @pytest.mark.anyio
-async def test_already_executed_raises(tmp_path: Path, monkeypatch: Any) -> None:
-    """A plan that has already been executed raises 'already_executed'."""
+async def test_already_executed_returns_envelope(tmp_path: Path, monkeypatch: Any) -> None:
+    """A plan that has already been executed returns the already_executed envelope."""
+    import json
+
     async def ok_spawn(task: dict, app_state: AppState) -> SubagentResult:
         return SubagentResult(exit_code=0, final_response="done")
 
@@ -296,18 +307,40 @@ async def test_already_executed_raises(tmp_path: Path, monkeypatch: Any) -> None
     # First execution succeeds.
     await apply_set_phase(deps, "execute", plan_file="plan.md")
 
-    # Second execution attempt must fail with already_executed.
-    with pytest.raises(ValueError, match="already_executed"):
-        await apply_set_phase(deps, "execute", plan_file="plan.md")
+    # Second execution attempt must return the already_executed envelope, not raise.
+    result = await apply_set_phase(deps, "execute", plan_file="plan.md")
+    payload = json.loads(result)
+    assert payload["ok"] is False
+    assert payload["error"]["reason"] == "already_executed"
 
 
 @pytest.mark.anyio
-async def test_bare_execute_without_plan_file_raises(tmp_path: Path) -> None:
-    """set_phase('execute') with no plan_file raises an instructive error."""
+async def test_bare_execute_without_plan_file_returns_envelope(tmp_path: Path) -> None:
+    """set_phase('execute') with no plan_file returns the execute_requires_plan_file envelope."""
+    import json
+
     deps, _ = _make_deps(tmp_path)
 
-    with pytest.raises(ValueError, match="execute_requires_plan_file"):
-        await apply_set_phase(deps, "execute")
+    result = await apply_set_phase(deps, "execute")
+    payload = json.loads(result)
+    assert payload["ok"] is False
+    assert payload["error"]["reason"] == "execute_requires_plan_file"
+
+
+@pytest.mark.anyio
+async def test_invalid_transition_returns_envelope(tmp_path: Path) -> None:
+    """set_phase with a phase not reachable from the current one returns the invalid_transition envelope."""
+    import json
+
+    deps, _ = _make_deps(tmp_path)
+    # The fixture starts in "plan-review" within PLAN_WORKFLOW.
+    # "intake" is a valid phase but transitions are any-to-any in the workflow;
+    # however we can test with a phase that is genuinely not in the workflow.
+    # Use a phase name that is not in PLAN_WORKFLOW's available_phases.
+    result = await apply_set_phase(deps, "core-flows")
+    payload = json.loads(result)
+    assert payload["ok"] is False
+    assert payload["error"]["reason"] == "invalid_transition"
 
 
 # -- Tests: artifact_edit_core frozen check -----------------------------------
@@ -315,11 +348,15 @@ async def test_bare_execute_without_plan_file_raises(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_edit_frozen_plan_raises(tmp_path: Path, monkeypatch: Any) -> None:
-    """artifact_edit_core raises 'frozen' when the target plan is frozen.
+    """artifact_edit_core returns a frozen envelope when the target plan is frozen.
 
     The plan artifact is frozen by emitting an execute_entry event, which the
-    _frozen_artifact_names helper reads from the projection.
+    _frozen_artifact_names helper reads from the projection.  The failure is
+    returned as a recoverable {"ok": false} envelope rather than raised so the
+    run is not crashed by a model mistake.
     """
+    import json
+
     async def ok_spawn(task: dict, app_state: AppState) -> SubagentResult:
         return SubagentResult(exit_code=0, final_response="done")
 
@@ -332,9 +369,11 @@ async def test_edit_frozen_plan_raises(tmp_path: Path, monkeypatch: Any) -> None
     # Execute the plan to freeze it.
     await apply_set_phase(deps, "execute", plan_file="plan.md")
 
-    # Attempt to edit the frozen artifact must fail.
-    with pytest.raises(ValueError, match="frozen"):
-        await artifact_edit_core(deps, "plan.md", "1\tStep 1", "Step 1: revised.")
+    # Attempt to edit the frozen artifact must return a recoverable envelope.
+    result = await artifact_edit_core(deps, "plan.md", "1\tStep 1", "Step 1: revised.")
+    payload = json.loads(result)
+    assert payload["ok"] is False
+    assert payload["error"]["reason"] == "frozen"
 
 
 @pytest.mark.anyio

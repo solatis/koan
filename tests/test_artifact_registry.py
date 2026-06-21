@@ -496,6 +496,104 @@ def test_validate_write_milestones_wrong_phase():
     assert err.code == "wrong_phase"
 
 
+def test_validate_write_out_of_step_wrong_step():
+    """Writing brief.md in intake phase but wrong step returns out_of_step."""
+    err = validate_write(
+        "brief.md",
+        phase="intake",
+        requires_discriminator=False,
+        existing_names=frozenset(),
+        frozen_names=frozenset(),
+        step_name="Gather",  # legal phase, but brief is created in "Summarize"
+    )
+    assert err is not None
+    assert err.code == "out_of_step"
+    assert err.allowed  # self-correction hint must be non-empty
+
+
+def test_validate_write_out_of_step_correct_step():
+    """Writing brief.md in intake/Summarize (the legal step) returns None."""
+    err = validate_write(
+        "brief.md",
+        phase="intake",
+        requires_discriminator=False,
+        existing_names=frozenset(),
+        frozen_names=frozenset(),
+        step_name="Summarize",
+    )
+    assert err is None
+
+
+def test_validate_write_step_name_none_skips_step_check():
+    """step_name=None skips the per-step check (fail-open back-compat)."""
+    err = validate_write(
+        "brief.md",
+        phase="intake",
+        requires_discriminator=False,
+        existing_names=frozenset(),
+        frozen_names=frozenset(),
+        step_name=None,  # missing step metadata must not cause a false rejection
+    )
+    assert err is None
+
+
+def test_validate_write_step_name_empty_skips_step_check():
+    """step_name='' (empty string) also skips the per-step check (falsy)."""
+    err = validate_write(
+        "brief.md",
+        phase="intake",
+        requires_discriminator=False,
+        existing_names=frozenset(),
+        frozen_names=frozenset(),
+        step_name="",
+    )
+    assert err is None
+
+
+def test_validate_write_out_of_step_allowed_field_populated():
+    """out_of_step error must include a non-empty allowed hint."""
+    err = validate_write(
+        "tech-plan.md",
+        phase="tech-plan",
+        requires_discriminator=False,
+        existing_names=frozenset(),
+        frozen_names=frozenset(),
+        step_name="Analyze",  # tech-plan creates in Write, not Analyze
+    )
+    assert err is not None
+    assert err.code == "out_of_step"
+    assert err.allowed != ""
+    assert "Write" in err.allowed  # hint must name the legal step
+
+
+def test_validate_write_exists_draft_allowed_field():
+    """exists_draft error includes the allowed hint directing to koan_artifact_edit."""
+    err = validate_write(
+        "plan.md",
+        phase="plan",
+        requires_discriminator=False,
+        existing_names=frozenset({"plan.md"}),
+        frozen_names=frozenset(),
+    )
+    assert err is not None
+    assert err.code == "exists_draft"
+    assert err.allowed != ""
+
+
+def test_validate_write_exists_frozen_allowed_field():
+    """exists_frozen error includes the allowed hint directing to use a successor."""
+    err = validate_write(
+        "plan.md",
+        phase="plan",
+        requires_discriminator=False,
+        existing_names=frozenset({"plan.md"}),
+        frozen_names=frozenset({"plan.md"}),
+    )
+    assert err is not None
+    assert err.code == "exists_frozen"
+    assert err.allowed != ""
+
+
 # -- validate_edit ------------------------------------------------------------ #
 
 
@@ -562,6 +660,107 @@ def test_validate_edit_frozen_milestone_plan():
     assert err is not None
     assert err.code == "frozen"
     assert err.suggested_name == "plan-milestone-1-remediation-1.md"
+
+
+def test_validate_edit_frozen_allowed_field():
+    """frozen error includes the allowed hint directing to write a successor."""
+    err = validate_edit(
+        "plan.md",
+        existing_names=frozenset({"plan.md"}),
+        frozen_names=frozenset({"plan.md"}),
+    )
+    assert err is not None
+    assert err.code == "frozen"
+    assert err.allowed != ""
+
+
+def test_validate_edit_out_of_step_wrong_step():
+    """Editing brief.md in intake but wrong step returns out_of_step."""
+    err = validate_edit(
+        "brief.md",
+        existing_names=frozenset({"brief.md"}),
+        frozen_names=frozenset(),
+        phase="intake",
+        step_name="Gather",  # brief is only editable in Summarize
+    )
+    assert err is not None
+    assert err.code == "out_of_step"
+    assert err.allowed != ""
+
+
+def test_validate_edit_out_of_step_legal_step():
+    """Editing brief.md in intake/Summarize (the legal step) returns None."""
+    err = validate_edit(
+        "brief.md",
+        existing_names=frozenset({"brief.md"}),
+        frozen_names=frozenset(),
+        phase="intake",
+        step_name="Summarize",
+    )
+    assert err is None
+
+
+def test_validate_edit_out_of_step_milestones_legal_execute_assess():
+    """Editing milestones.md in execute/Assess is legal per the catalog."""
+    err = validate_edit(
+        "milestones.md",
+        existing_names=frozenset({"milestones.md"}),
+        frozen_names=frozenset(),
+        phase="execute",
+        step_name="Assess",
+    )
+    assert err is None
+
+
+def test_validate_edit_sidecar_exempt_from_step_gate():
+    """Sidecar edits are exempt from per-step gating at any phase/step."""
+    # Phase and step that would otherwise gate a primary artifact.
+    err = validate_edit(
+        "plan.review.md",
+        existing_names=frozenset(),
+        frozen_names=frozenset(),
+        phase="intake",
+        step_name="Gather",
+    )
+    assert err is None
+
+
+def test_validate_edit_step_name_none_skips_step_check():
+    """step_name=None skips the per-step edit check (fail-open back-compat)."""
+    err = validate_edit(
+        "brief.md",
+        existing_names=frozenset({"brief.md"}),
+        frozen_names=frozenset(),
+        phase="execute",
+        step_name=None,  # no step info -- must not cause a false rejection
+    )
+    assert err is None
+
+
+# -- ArtifactRegistryEntry.origin_phases property ----------------------------- #
+
+
+def test_origin_phases_derived_from_create_steps():
+    """origin_phases is a @property derived from create_steps, not a stored field."""
+    from koan.tools.artifact_registry import ArtifactRegistryEntry
+    entry = ArtifactRegistryEntry(
+        family="brief",
+        create_steps=frozenset({("intake", "Summarize")}),
+        edit_steps=frozenset({("intake", "Summarize")}),
+        reviewer_prompt=None,
+        takes_discriminator=False,
+        takes_chain=False,
+        on_write="create_no_review",
+        on_edit="revise_draft",
+    )
+    assert entry.origin_phases == frozenset({"intake"})
+
+
+def test_origin_phases_multi_step_plan():
+    """plan family's origin_phases contains only the phases from create_steps."""
+    entry = classify("plan")
+    assert entry is not None
+    assert entry.origin_phases == frozenset({"plan"})
 
 
 # -- validate_execute_target -------------------------------------------------- #

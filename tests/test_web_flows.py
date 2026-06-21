@@ -1089,16 +1089,21 @@ async def test_artifact_edit_then_read_round_trip(tmp_path):
 
 @pytest.mark.anyio
 async def test_artifact_edit_file_not_found(tmp_path):
-    """koan_artifact_edit raises ValueError with 'not_found:' for a missing file."""
+    """koan_artifact_edit returns a not_found envelope for a missing file.
+
+    Recoverable validation failures are returned as {"ok": false} envelopes
+    rather than raised so the run is not crashed by a model mistake.
+    """
+    import json
     from koan.tools.koan_tools import ToolDeps, artifact_edit_core
 
     app_state, agent = _make_orchestrator_agent(tmp_path, "test-edit-notfound")
     deps = ToolDeps(app_state=app_state, agent=agent)
 
-    # Cores raise ValueError("code: message") instead of ToolError.
-    with pytest.raises(ValueError) as exc_info:
-        await artifact_edit_core(deps, "missing.md", "deadbeef§x", "new")
-    assert "not_found:" in str(exc_info.value)
+    result = await artifact_edit_core(deps, "missing.md", "deadbeef§x", "new")
+    payload = json.loads(result)
+    assert payload["ok"] is False
+    assert payload["error"]["reason"] == "not_found"
 
 
 @pytest.mark.anyio
@@ -1258,8 +1263,9 @@ async def test_koan_set_workflow_swaps_app_state_and_appends_history(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_koan_set_workflow_unknown_workflow_raises(tmp_path):
-    """koan_set_workflow raises ValueError with 'unknown_workflow:' for an unregistered name."""
+async def test_koan_set_workflow_unknown_workflow_returns_envelope(tmp_path):
+    """koan_set_workflow returns the unknown_workflow envelope for an unregistered name."""
+    import json
     import json as _json
     from koan.tools.koan_tools import ToolDeps, apply_set_workflow
 
@@ -1270,10 +1276,11 @@ async def test_koan_set_workflow_unknown_workflow_raises(tmp_path):
 
     deps = ToolDeps(app_state=app_state, agent=agent)
 
-    # Cores raise ValueError("unknown_workflow: ...") instead of ToolError.
-    with pytest.raises(ValueError) as exc_info:
-        await apply_set_workflow(deps, "nonexistent")
-    assert "unknown_workflow:" in str(exc_info.value)
+    # unknown_workflow is now a recoverable envelope, not a raise.
+    result = await apply_set_workflow(deps, "nonexistent")
+    payload = json.loads(result)
+    assert payload["ok"] is False
+    assert payload["error"]["reason"] == "unknown_workflow"
 
 
 @pytest.mark.anyio
