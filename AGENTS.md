@@ -140,23 +140,23 @@ of truth.
 
 **Orchestrator koan tool vocabulary** (composed per phase from `ROLE_PERMISSIONS`):
 
-| Tool                                                                              | Available phases                                                                                                         |
-| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `koan_suggest_next`                                                               | All phases (orchestrator only; records hand-back suggestions before the terminal-text turn)                              |
-| `koan_set_phase`                                                                  | All phases; accepts `"done"` as tombstone; `koan_set_phase("execute", plan_file=X)` freezes X and spawns the executor   |
-| `koan_set_workflow`                                                               | All phases; accepts any registered workflow name; always lands at the new workflow's `initial_phase`                     |
-| `koan_ask_question`                                                               | All phases                                                                                                               |
-| `koan_request_scouts`                                                             | `intake`, `core-flows`, `tech-plan`, `plan`, `milestone`, `curation`, `frame`                                           |
-| `bash`                                                                            | `execute`, `frame`                                                                                                       |
-| `koan_memorize`                                                                   | All phases                                                                                                               |
-| `koan_forget`                                                                     | All phases                                                                                                               |
-| `koan_memory_status`                                                              | All phases                                                                                                               |
-| `koan_search`                                                                     | All phases                                                                                                               |
-| `koan_reflect`                                                                    | All phases (orchestrator only)                                                                                           |
-| `koan_artifact_write`                                                             | All phases (orchestrator only); triggers the mechanical reviewer sub-agent when the artifact family has a reviewer       |
-| `koan_artifact_edit`                                                              | All phases (orchestrator only); freeze-exempt for `.review.md` sidecars                                                 |
-| `koan_artifact_list`                                                              | All phases (all roles via universal read-tool path)                                                                      |
-| `koan_artifact_read`                                                              | All phases (all roles via universal read-tool path); run-dir-scoped wrapper over `read`                                  |
+| Tool                  | Available phases                                                                                                                                         |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `koan_suggest_next`   | All phases (orchestrator only; records hand-back suggestions before the terminal-text turn)                                                              |
+| `koan_set_phase`      | All phases; accepts `"done"` as tombstone; `koan_set_phase("execute", plan_file=X)` freezes X and spawns the executor                                    |
+| `koan_set_workflow`   | All phases; accepts any registered workflow name; always lands at the new workflow's `initial_phase`                                                     |
+| `koan_ask_question`   | All phases                                                                                                                                               |
+| `koan_request_scouts` | `intake`, `core-flows`, `tech-plan`, `plan`, `milestone`, `curation`, `frame`                                                                            |
+| `bash`                | `execute`, `frame`                                                                                                                                       |
+| `koan_memorize`       | All phases                                                                                                                                               |
+| `koan_forget`         | All phases                                                                                                                                               |
+| `koan_memory_status`  | All phases                                                                                                                                               |
+| `koan_search`         | All phases                                                                                                                                               |
+| `koan_reflect`        | All phases (orchestrator only)                                                                                                                           |
+| `koan_artifact_write` | All phases (orchestrator only); triggers the mechanical reviewer sub-agent when the artifact family has a reviewer                                       |
+| `koan_artifact_edit`  | All phases (orchestrator only); `.review.md` sidecars are freeze-exempt and step-gating-exempt; recoverable permission failures are returned, not raised |
+| `koan_artifact_list`  | All phases (all roles via universal read-tool path)                                                                                                      |
+| `koan_artifact_read`  | All phases (all roles via universal read-tool path); run-dir-scoped wrapper over `read`                                                                  |
 
 ## 5. Need-to-Know Prompts
 
