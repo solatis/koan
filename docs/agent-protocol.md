@@ -116,9 +116,9 @@ class AgentError(RuntimeError):
 `AgentError` wraps an `AgentDiagnostic` so callers can inspect structured
 fields without parsing the message string. The bootstrap failure case:
 
-| Condition                                               | `AgentDiagnostic.code` | `stage`     |
-| ------------------------------------------------------- | ---------------------- | ----------- |
-| Agent exits before first turn reaches the `End` node    | `bootstrap_failure`    | `handshake` |
+| Condition                                            | `AgentDiagnostic.code` | `stage`     |
+| ---------------------------------------------------- | ---------------------- | ----------- |
+| Agent exits before first turn reaches the `End` node | `bootstrap_failure`    | `handshake` |
 
 Bootstrap success is detected via `AgentState.first_turn_completed`, set by
 `run_agent_loop` when the first turn reaches the `End` node. A failure raised
@@ -134,11 +134,12 @@ takes `subagent_dir`, `app_state`, and the composed toolsets (koan + builtin).
 (`build_model(provider, model_id, thinking)`), then drives a PydanticAI
 `ReAct` graph with those toolsets for the agent's full lifetime.
 
-The loop (`run_agent_loop`) calls `agent.iter()` once per turn. A turn ends
-when the graph reaches its `End` node (terminal-text turn with no outstanding
-tool calls). The turn-outcome resolver (`resolve_turn_outcome`) then decides
-whether to advance to the next step, re-inject the same step, hand back to the
-user, or terminate.
+The loop (`run_agent_loop`) calls `agent.iter()` once per turn, passing
+`usage_limits=build_usage_limits()` so no turn is bounded by a model-request
+count. A turn ends when the graph reaches its `End` node (terminal-text turn
+with no outstanding tool calls). The turn-outcome resolver
+(`resolve_turn_outcome`) then decides whether to advance to the next step,
+re-inject the same step, hand back to the user, or terminate.
 
 ---
 
@@ -161,16 +162,29 @@ executors are non-primary and do not receive steering messages.
 `build_model(provider, model_id, thinking)` constructs a PydanticAI-compatible
 `Model` object for the requested provider:
 
-| Provider    | PydanticAI backend          | Notes                                          |
-| ----------- | --------------------------- | ---------------------------------------------- |
-| `google`    | `google-gla` / `google-vertex` | Gemini; live-verified                       |
-| `anthropic` | `anthropic`                 | Targeted; live verification is user-gated      |
-| `openai`    | `openai`                    | Targeted; live verification is user-gated      |
-| `bedrock`   | `bedrock`                   | Targeted; thinking/caching are no-ops for now  |
+| Provider    | PydanticAI backend             | Notes                                         |
+| ----------- | ------------------------------ | --------------------------------------------- |
+| `google`    | `google-gla` / `google-vertex` | Gemini; live-verified                         |
+| `anthropic` | `anthropic`                    | Targeted; live verification is user-gated     |
+| `openai`    | `openai`                       | Targeted; live verification is user-gated     |
+| `bedrock`   | `bedrock`                      | Targeted; thinking/caching are no-ops for now |
 
 Provider availability is checked via `ProviderStatus` (env-key presence), not
 by probing a binary. A `Validate` action constructs the model object from the
 present credential -- a local construction check, never a live provider call.
+
+`build_usage_limits() -> UsageLimits` is the shared usage-limits gate used by
+every koan agent invocation: the main loop (`run_agent_loop`), the
+`koan_reflect` synthesis loop, and the mechanical memory `generate` call. It
+returns `UsageLimits(request_limit=None)`, disabling pydantic_ai's default cap
+of 50 model requests per run. That default fails fast with no recovery path
+(`classify_provider_error` treats `UsageLimitExceeded` as "unexpected"), which
+is the anti-pattern koan avoids. All other usage-limit fields
+(`input_tokens_limit`, `output_tokens_limit`, `total_tokens_limit`,
+`tool_calls_limit`) remain at their `None` defaults (disabled). The
+`koan_reflect` loop retains its own independent `max_iterations`
+(`MAX_ITERATIONS = 10`) cap; that is a deliberate reflect-specific guard, not a
+request-count budget.
 
 ---
 
@@ -182,7 +196,8 @@ present credential -- a local construction check, never a live provider call.
 - `koan/agents/events.py` -- `StreamEvent` (8-type vocabulary),
   `KOAN_MCP_TOOLS` (projection fold classifier).
 - `koan/agents/adapter.py` -- `build_model` (provider fan-out, caching,
-  thinking mode mapping).
+  thinking mode mapping); `build_usage_limits` (shared usage-limits policy gate
+  for all agent invocations).
 - `koan/agents/loop.py` -- `run_agent_loop`, `resolve_turn_outcome`,
   `build_phase_suggestions`.
 - `koan/agents/registry.py` -- `AgentRegistry`, `resolve_model_spec`,
