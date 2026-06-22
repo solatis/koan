@@ -455,6 +455,7 @@ async def run_agent_loop(
     )
     from pydantic_ai.usage import RequestUsage
 
+    from .adapter import build_usage_limits
     from .events import StreamEvent
 
     # Bootstrap: run the step-0->1 handshake to build the first turn's prompt.
@@ -475,6 +476,7 @@ async def run_agent_loop(
             turn_prompt,
             message_history=history,
             deps=deps,
+            usage_limits=build_usage_limits(),
         ) as agent_run:
             async for node in agent_run:
 

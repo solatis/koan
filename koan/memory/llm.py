@@ -32,7 +32,7 @@ async def generate(prompt: str, model: "ModelSpec", system: str = "") -> str:
     """
     # Late-binding import so monkeypatching adapter attributes in tests is observed
     # at call time (same pattern used throughout the agent layer).
-    from ..agents.adapter import build_model, build_model_settings
+    from ..agents.adapter import build_model, build_model_settings, build_usage_limits
 
     log.info(
         "generate provider=%s model=%s prompt_len=%d system_len=%d",
@@ -45,7 +45,7 @@ async def generate(prompt: str, model: "ModelSpec", system: str = "") -> str:
         output_type=str,
         **({"system_prompt": system} if system else {}),
     )
-    result = await agent.run(prompt)
+    result = await agent.run(prompt, usage_limits=build_usage_limits())
     text = result.output or ""
     log.info("generate complete response_len=%d", len(text))
     return text

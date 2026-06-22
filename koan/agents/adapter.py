@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from pydantic_ai.usage import UsageLimits
+
 from ..agents.base import AgentDiagnostic, AgentError
 from ..types import CachingPolicy, Connection, ModelSpec, ResolvedCapabilities, ThinkingMode
 
@@ -195,6 +197,21 @@ def build_model_settings(spec: ModelSpec) -> dict:
     Returns a flat dict suitable for pydantic-ai's model_settings parameter.
     """
     return dict(spec.settings)
+
+
+def build_usage_limits() -> UsageLimits:
+    """Return the shared usage-limits policy for all koan agent invocations.
+
+    Sets request_limit=None to disable pydantic_ai's default cap of 50 model
+    requests per agent run. That default fails fast with no recovery path
+    (classify_provider_error treats UsageLimitExceeded as 'unexpected'); removing
+    it lets long-running orchestrator and scout loops complete naturally. All other
+    UsageLimits fields (input_tokens_limit, output_tokens_limit, total_tokens_limit,
+    tool_calls_limit) remain at their None defaults (disabled). This is the single
+    chokepoint for the usage-limits policy -- no call site inlines UsageLimits.
+    Note: koan_reflect retains its own independent max_iterations cap separately.
+    """
+    return UsageLimits(request_limit=None)
 
 
 def build_model(

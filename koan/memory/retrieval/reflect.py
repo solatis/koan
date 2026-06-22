@@ -405,6 +405,7 @@ async def run_reflect_agent(
     if the model does not call "done" within max_iterations model-request turns.
     No partial/best-effort answer is synthesized on overflow.
     """
+    from ...agents.adapter import build_usage_limits
     from ..bindings import require_memory_model
 
     reflect_model = require_memory_model(models.reflect_llm, "reflect_llm")
@@ -426,7 +427,7 @@ async def run_reflect_agent(
     agent = _build_agent(reflect_model)
     model_request_count = 0
 
-    async with agent.iter(user_text, deps=deps) as run:
+    async with agent.iter(user_text, deps=deps, usage_limits=build_usage_limits()) as run:
         async for node in run:
             if Agent.is_model_request_node(node):
                 model_request_count += 1
