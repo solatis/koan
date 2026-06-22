@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from .events import StreamEvent
     from ..state import AgentState, AppState
     from ..tools.koan_tools import ToolDeps
+    from ..types import ModelSpec
 
 
 # -- Pure yolo/directed helpers -----------------------------------------------
@@ -395,6 +396,7 @@ async def run_agent_loop(
     options: AgentOptions,
     app_state: AppState,
     agent_state: AgentState,
+    model_spec: "ModelSpec",
 ) -> AsyncIterator[StreamEvent]:
     """Drive the multi-turn agent loop, yielding StreamEvents for spawn_subagent.
 
@@ -430,6 +432,12 @@ async def run_agent_loop(
     after each turn, then passed as message_history= to the next agent.iter() call.
     The first turn receives None (empty history) so pydantic-ai treats it fresh.
 
+    Cache effectiveness: the loop accumulates input_tokens, cache_read_tokens,
+    and request counts across turns and calls check_cache_effectiveness at each
+    turn boundary. This is the runtime fail-fast for budget-burning cache misses
+    (brief Decision 2): raises AgentError(code="prompt_cache_ineffective") when
+    a caching-capable route shows zero cache reads past the warmup threshold.
+
     Args:
         pai_agent: The pydantic-ai Agent instance (already constructed with
                    toolsets, capabilities, and model settings).
@@ -437,6 +445,8 @@ async def run_agent_loop(
         options: AgentOptions carrying system_prompt and role.
         app_state: Live AppState for interaction state and projection events.
         agent_state: AgentState for history, is_primary, and identity.
+        model_spec: Resolved ModelSpec carrying provider, model, and caching
+                    policy. Used by the cache-effectiveness guard.
 
     Yields StreamEvents using the same 8-type vocabulary as PydanticAIAgent.run().
     """
@@ -456,6 +466,7 @@ async def run_agent_loop(
     from pydantic_ai.usage import RequestUsage
 
     from .adapter import build_usage_limits
+    from .cache_guard import check_cache_effectiveness
     from .events import StreamEvent
 
     # Bootstrap: run the step-0->1 handshake to build the first turn's prompt.
@@ -463,6 +474,12 @@ async def run_agent_loop(
     # PHASE_ROLE_CONTEXT -- replacing the removed boot-directive tool call.
     from ..tools.koan_tools import _step_phase_handshake_core
     turn_prompt: str = await _step_phase_handshake_core(agent_state, app_state)
+
+    # Cumulative cache usage counters -- accumulate across all turns so the
+    # guard can detect "never cached anything across the whole run" failures.
+    cache_input_total: int = 0
+    cache_read_total: int = 0
+    cache_requests_total: int = 0
 
     while True:
         # Pass accumulated history so the model has full conversation context.
@@ -602,6 +619,22 @@ async def run_agent_loop(
 
             # Persist the full conversation so the next turn has complete context.
             agent_state.message_history = list(agent_run.all_messages())
+
+        # Accumulate cache usage and run the effectiveness guard.
+        # run_usage is None only when no End node was reached (edge case); the
+        # is-not-None guard keeps the counters consistent across partial turns.
+        if run_usage is not None:
+            cache_input_total += run_usage.input_tokens
+            cache_read_total += run_usage.cache_read_tokens
+            cache_requests_total += run_usage.requests
+            check_cache_effectiveness(
+                provider=model_spec.provider,
+                model=model_spec.model,
+                caching_mode=model_spec.caching.mode,
+                cumulative_input_tokens=cache_input_total,
+                cumulative_cache_read_tokens=cache_read_total,
+                cumulative_requests=cache_requests_total,
+            )
 
         # Mark first turn completed -- idempotent; the bootstrap-failure signal
         # that replaces the removed first-tool-call handshake.

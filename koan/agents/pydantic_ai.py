@@ -361,7 +361,7 @@ class PydanticAIAgent:
             # the same 8-type StreamEvent vocabulary documented above.
             from .loop import run_agent_loop
             async for ev in run_agent_loop(
-                pai_agent, deps, options, self._app_state, agent_state,
+                pai_agent, deps, options, self._app_state, agent_state, self._model_spec,
             ):
                 yield ev
 
