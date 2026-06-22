@@ -102,22 +102,45 @@ class TestBuildModelRegistry:
 
 class TestSupportsPromptCaching:
     def test_anthropic_returns_true(self) -> None:
-        """Anthropic supports explicit prompt-caching settings."""
+        """Anthropic Claude models support explicit prompt-caching settings."""
         from koan.agents.model_catalog import supports_prompt_caching
         for _provider, model in _all_offered_models():
             if _provider == "anthropic":
                 assert supports_prompt_caching("anthropic", model) is True
 
     def test_non_anthropic_returns_false(self) -> None:
-        """Google, OpenAI, Bedrock, openrouter, and voyage return False."""
+        """Google, OpenAI, openrouter, and voyage return False for any model."""
         from koan.agents.model_catalog import supports_prompt_caching
-        for provider in ("google", "openai", "bedrock", "openrouter", "voyage"):
+        for provider in ("google", "openai", "openrouter", "voyage"):
             assert supports_prompt_caching(provider, "any-model") is False
 
     def test_unknown_provider_returns_false(self) -> None:
         """Unknown provider returns False (graceful fallthrough, brief D5)."""
         from koan.agents.model_catalog import supports_prompt_caching
         assert supports_prompt_caching("unknown-provider", "some-model") is False
+
+    def test_bedrock_claude_returns_true(self) -> None:
+        """Bedrock-hosted Claude models return True (family-scoped, transport-aware)."""
+        from koan.agents.model_catalog import supports_prompt_caching
+        assert supports_prompt_caching("bedrock", "anthropic.claude-opus-4-0") is True
+
+    def test_bedrock_nova_returns_false(self) -> None:
+        """Bedrock-hosted Nova models return False (not in _EXPLICIT_CACHE_FAMILIES)."""
+        from koan.agents.model_catalog import supports_prompt_caching
+        assert supports_prompt_caching("bedrock", "amazon.nova-pro-v1:0") is False
+
+    def test_cache_read_expected(self) -> None:
+        """cache_read_expected covers all four caching-capable routes and excludes the rest."""
+        from koan.agents.model_catalog import cache_read_expected
+        # Explicit-caching routes (koan-managed).
+        assert cache_read_expected("anthropic", "claude-sonnet-4-5") is True
+        assert cache_read_expected("bedrock", "anthropic.claude-opus-4-0") is True
+        # Automatic server-side caching routes.
+        assert cache_read_expected("google", "gemini-3.5-flash") is True
+        assert cache_read_expected("openai", "gpt-4o") is True
+        # Excluded routes.
+        assert cache_read_expected("openrouter", "anthropic/claude-3.5-sonnet") is False
+        assert cache_read_expected("bedrock", "amazon.nova-pro-v1:0") is False
 
 
 # -- Hard-cutover: removed symbols must not exist -----------------------------

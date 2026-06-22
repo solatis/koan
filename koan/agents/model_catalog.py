@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     pass
 
 from ..types import ModelRegistryEntry, ModelTier, ThinkingMode
+from .recognition import parse_model_id
 
 # koan provider id -> genai-prices provider id.
 # "bedrock" maps to "aws" because genai-prices names the Amazon Bedrock provider "aws".
@@ -107,21 +108,57 @@ def build_model_registry() -> list[ModelRegistryEntry]:
     return entries
 
 
-# Providers where koan manages explicit prompt-caching settings (i.e. the provider
-# exposes a cache-control mechanism that koan can turn on/off).  Google and OpenAI
-# cache automatically server-side and need no settings; bedrock/voyage have no
-# portable cache knob.
-_PROMPT_CACHING_PROVIDERS: frozenset[str] = frozenset({"anthropic"})
+# Connection transports for which koan emits explicit cache-control settings.
+# Keyed on transport (not model family) because Bedrock-Claude needs the Bedrock
+# keys, not the Anthropic keys -- the transport selects the mechanism.
+_EXPLICIT_CACHE_TRANSPORTS: frozenset[str] = frozenset({"anthropic", "bedrock"})
+
+# Model families that support explicit prompt caching (Anthropic Claude family),
+# regardless of which transport serves them. Bedrock-Nova is excluded by
+# family-scoping: only Claude models get cache-control settings emitted.
+_EXPLICIT_CACHE_FAMILIES: frozenset[str] = frozenset(
+    {"claude-opus", "claude-sonnet", "claude-haiku"}
+)
+
+# Providers that cache automatically server-side (no koan-emitted settings needed).
+# Policed by the runtime guard because they still report cache_read_tokens.
+_AUTOMATIC_CACHE_PROVIDERS: frozenset[str] = frozenset({"google", "openai"})
 
 
 def supports_prompt_caching(provider: str, model: str) -> bool:
     """Return True when koan manages explicit prompt-caching settings for (provider, model).
 
-    Source is the koan-owned _PROMPT_CACHING_PROVIDERS set.  Google/OpenAI cache
-    automatically server-side (no settings to emit); bedrock/voyage have no
-    portable cache knob.  Returns False for unknown providers (brief D5).
+    Caching capability is keyed on (transport, family) rather than the raw provider
+    string so that Bedrock-hosted Claude models are included while Bedrock-Nova,
+    Google, OpenAI, and OpenRouter are excluded (brief Decision 5).
+
+    Returns True only when:
+      - provider is in _EXPLICIT_CACHE_TRANSPORTS (anthropic or bedrock), AND
+      - the parsed model family is in _EXPLICIT_CACHE_FAMILIES (Claude families).
+
+    parse_model_id strips the Bedrock "anthropic." vendor prefix, so
+    "anthropic.claude-opus-4-0" resolves to family "claude-opus" correctly.
+    Returns False for unknown providers or models not matching a Claude family.
     """
-    return provider in _PROMPT_CACHING_PROVIDERS
+    if provider not in _EXPLICIT_CACHE_TRANSPORTS:
+        return False
+    return parse_model_id(model).family in _EXPLICIT_CACHE_FAMILIES
+
+
+def cache_read_expected(provider: str, model: str) -> bool:
+    """Return True when this route should produce cache_read_tokens at volume.
+
+    This is the runtime guard's scope predicate (brief Decision 2): covers all
+    four first-class caching routes -- koan-managed explicit caching (Anthropic
+    and Bedrock-Claude via supports_prompt_caching) AND provider automatic
+    server-side caching (Google, OpenAI). OpenRouter and Voyage are excluded
+    because they are not cache-expected from koan's perspective. Bedrock-Nova
+    is excluded because supports_prompt_caching returns False for it.
+
+    Used by check_cache_effectiveness to decide whether to apply the fail-fast
+    guard for a given (provider, model) pair.
+    """
+    return supports_prompt_caching(provider, model) or provider in _AUTOMATIC_CACHE_PROVIDERS
 
 
 

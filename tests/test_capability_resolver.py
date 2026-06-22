@@ -123,4 +123,14 @@ class TestResolveCapabilitiesBedrock:
         assert caps.thinking_supported is True
         assert caps.thinking_shape == "budget"
 
+    def test_bedrock_anthropic_prompt_caching_true(self):
+        """Bedrock-hosted Claude models support explicit prompt caching (family-scoped)."""
+        caps = resolve_capabilities("bedrock", "anthropic.claude-opus-4-0")
+        assert caps.supports_prompt_caching is True
+
+    def test_bedrock_nova_prompt_caching_false(self):
+        """Bedrock-hosted Nova models do not support explicit prompt caching."""
+        caps = resolve_capabilities("bedrock", "amazon.nova-pro-v1:0")
+        assert caps.supports_prompt_caching is False
+
 

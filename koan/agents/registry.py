@@ -90,9 +90,11 @@ def build_resolved_model(
         )
 
     # Bake thinking + caching settings once so build_model_settings is trivial.
+    # _caching_settings is transport-dispatched: Anthropic and Bedrock emit
+    # different key families (anthropic_cache* vs bedrock_cache*).
     settings: dict = {}
     settings.update(map_thinking(conn.type, caps, clamped))
-    settings.update(_caching_settings(caching, caps))
+    settings.update(_caching_settings(conn.type, caching, caps))
 
     return ModelSpec(
         provider=conn.type,

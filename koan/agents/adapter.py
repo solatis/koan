@@ -162,29 +162,54 @@ def map_thinking(provider: str, caps: "ResolvedCapabilities", mode: ThinkingMode
     return {}
 
 
-def _caching_settings(caching: "CachingPolicy", caps: "ResolvedCapabilities") -> dict:
-    """Resolve a CachingPolicy into provider-specific cache settings.
+def _caching_settings(
+    provider: str,
+    caching: "CachingPolicy",
+    caps: "ResolvedCapabilities",
+) -> dict:
+    """Resolve a CachingPolicy into transport-specific cache settings.
 
-    Takes caching directly (not the full ModelSpec) because this function is
-    called from build_resolved_model in registry.py at flatten time, before the
-    ModelSpec is constructed. The capability-gating is preserved: only providers
-    with explicit cache-control emit settings (anthropic); others (google/openai)
-    cache automatically server-side and need no settings.
+    Takes provider (the transport type from conn.type) so the function can
+    dispatch to the correct pydantic-ai setting keys. Anthropic and Bedrock use
+    different key families -- there is no single literal key that works across
+    both (brief Decision 6).
 
-    Returns {} when caching is off, or when the model does not support
-    explicit prompt caching.
+    Emits three breakpoints per transport:
+      - Anthropic: anthropic_cache (message prefix), anthropic_cache_instructions,
+        anthropic_cache_tool_definitions.
+      - Bedrock: bedrock_cache_messages (message prefix / last cachePoint),
+        bedrock_cache_instructions, bedrock_cache_tool_definitions.
+
+    Note: anthropic_cache is mutually exclusive with anthropic_cache_messages;
+    anthropic_cache is the correct key for the growing-history prefix breakpoint
+    (per pydantic-ai 2.0.0b6 API).
+
+    Returns {} when caching is off, or when caps.supports_prompt_caching is
+    False (Google/OpenAI cache automatically; Bedrock-Nova is excluded by
+    family-scoping in supports_prompt_caching).
     """
     if caching.mode == "off":
         return {}
     if not caps.supports_prompt_caching:
-        # Provider handles caching automatically (google/openai) or has no
-        # portable cache knob (bedrock/voyage) -- no settings to emit.
+        # Provider handles caching automatically (google/openai) or the model
+        # family does not support explicit cache control (bedrock-nova, voyage).
         return {}
     ttl = caching.ttl  # "5m" | "1h"
-    return {
-        "anthropic_cache_instructions": ttl,
-        "anthropic_cache_tool_definitions": ttl,
-    }
+    if provider == "anthropic":
+        return {
+            "anthropic_cache": ttl,                  # growing message prefix
+            "anthropic_cache_instructions": ttl,     # system prompt
+            "anthropic_cache_tool_definitions": ttl, # tool schemas
+        }
+    if provider == "bedrock":
+        return {
+            "bedrock_cache_messages": ttl,           # last-message cachePoint (prefix)
+            "bedrock_cache_instructions": ttl,       # system prompt
+            "bedrock_cache_tool_definitions": ttl,   # tool schemas
+        }
+    # Defensive fallthrough: supports_prompt_caching guards Anthropic/Bedrock-Claude
+    # only, so this branch should not be reached in practice.
+    return {}
 
 
 def build_model_settings(spec: ModelSpec) -> dict:

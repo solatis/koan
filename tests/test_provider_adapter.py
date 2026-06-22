@@ -114,20 +114,46 @@ def test_caching_off_emits_nothing():
 
 
 def test_caching_anthropic_auto_sets_ttl():
-    """Anthropic auto mode: _caching_settings emits cache_instructions and cache_tool_definitions."""
+    """Anthropic auto mode: _caching_settings emits all three anthropic_cache* keys."""
     caps = _caps(supports_prompt_caching=True)
-    s = adapter._caching_settings(CachingPolicy(mode="auto", ttl="1h"), caps)
+    s = adapter._caching_settings("anthropic", CachingPolicy(mode="auto", ttl="1h"), caps)
+    assert s["anthropic_cache"] == "1h"
     assert s["anthropic_cache_instructions"] == "1h"
     assert s["anthropic_cache_tool_definitions"] == "1h"
 
 
-def test_caching_google_openai_bedrock_noop():
-    """Google/OpenAI/Bedrock do not emit anthropic cache settings (capability-gated)."""
-    for provider in ("google", "openai", "bedrock"):
+def test_caching_bedrock_auto_sets_ttl():
+    """Bedrock auto mode: _caching_settings emits all three bedrock_cache* keys."""
+    caps = _caps(supports_prompt_caching=True)
+    s = adapter._caching_settings("bedrock", CachingPolicy(mode="auto", ttl="5m"), caps)
+    assert s["bedrock_cache_messages"] == "5m"
+    assert s["bedrock_cache_instructions"] == "5m"
+    assert s["bedrock_cache_tool_definitions"] == "5m"
+
+
+def test_caching_off_emits_nothing_per_transport():
+    """CachingPolicy(mode='off') returns {} for both explicit-cache transports."""
+    caps = _caps(supports_prompt_caching=True)
+    for provider in ("anthropic", "bedrock"):
+        s = adapter._caching_settings(provider, CachingPolicy(mode="off"), caps)
+        assert s == {}
+
+
+def test_caching_unsupported_caps_emits_nothing():
+    """caps.supports_prompt_caching=False returns {} regardless of provider."""
+    caps = _caps(supports_prompt_caching=False)
+    s = adapter._caching_settings("anthropic", CachingPolicy(mode="auto"), caps)
+    assert s == {}
+
+
+def test_caching_google_openai_noop():
+    """Google and OpenAI do not emit cache settings (they cache automatically server-side)."""
+    for provider in ("google", "openai"):
         s = adapter.build_model_settings(
             _spec(provider, caching=CachingPolicy(mode="auto"))
         )
         assert not any(k.startswith("anthropic_cache") for k in s)
+        assert not any(k.startswith("bedrock_cache") for k in s)
 
 
 def test_build_model_settings_merges_spec_settings_and_thinking():
