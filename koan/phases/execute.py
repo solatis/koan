@@ -1,27 +1,17 @@
-# Execute phase (orchestrator-side) -- 2-step post-execution inline review flow.
+# Execute phase (orchestrator-side) -- 3-step Run/Verify/Reconcile flow.
 #
-#   Step 1 (Verify)  -- read context artifacts; run bash verification commands
-#   Step 2 (Assess)  -- classify conformance; append sidecar notes; branch on outcome
+#   Step 1 (Run)        -- identify the plan; call koan_request_executor; read the report
+#   Step 2 (Verify)     -- run bash verification commands; authoritative over executor report
+#   Step 3 (Reconcile)  -- classify outcome; record inline ## Execution N section;
+#                          on CONFORMING advance; on NON-CONFORMING re-run or escalate
 #
-# The executor has already run when this phase starts: koan_set_phase("execute",
-# plan_file=...) froze the plan, spawned the executor (blocking), and returned its
-# deviation report as the tool result. The orchestrator enters this phase as the
-# INLINE REVIEWER of the executor's work -- independent of the executor's own
-# exit-based outcome.
-#
-# Conformance is determined by the orchestrator's inline verification (bash checks),
-# not the executor's exit code. A clean-exit run may still be marked non-conforming
-# when verification fails.
-#
-# CLEAN outcome: in milestones/initiative workflows (gated by phase_instructions),
-# apply the milestones.md UPDATE via koan_artifact_edit, then advance. In the plan
-# workflow (no milestones.md), advance to curation directly.
-#
-# NON-CONFORMING outcome: if the executed plan is a BASE plan (no -remediation-K),
-# drive one automated remediation: transition to plan, write
-# <plan-base>-remediation-1.md folding the failure signal, re-execute.
-# If the executed plan is ALREADY a remediation, the automated cap is reached:
-# escalate to the user via koan_ask_question.
+# M5: Execution is now the orchestrator's explicit act. koan_set_phase("execute")
+# is pure routing; koan_request_executor is called from within this phase to launch
+# the executor. Re-execution is the orchestrator's own agency: call koan_request_executor
+# again within Reconcile with an edited plan or free-form fix instructions. There is no
+# .review.md sidecar, no frozen flag -- outcomes are recorded inline in the plan's
+# ## Execution N [CONFORMING | NON-CONFORMING] section.
+# M6: -remediation-K successors are fully removed; re-execution edits the living plan.
 #
 # General-purpose: reusable by any workflow. Scope: "general".
 
@@ -32,46 +22,44 @@ from .format_step import terminal_invoke
 
 ROLE = "orchestrator"
 SCOPE = "general"        # reusable by any workflow
-TOTAL_STEPS = 2
+TOTAL_STEPS = 3
 
 STEP_NAMES: dict[int, str] = {
-    1: "Verify",
-    2: "Assess",
+    1: "Run",
+    2: "Verify",
+    3: "Reconcile",
 }
 
-# The orchestrator IS the reviewer here (no separate exec-review sub-agent in M5).
-# "do NOT call koan_request_executor" is documented because the tool was removed
-# in M4 and the prompt-space habit needs clearing. Similarly, exec-review is
-# bypassed by M5 transitions -- the orchestrator must not try to route there.
+# The orchestrator DRIVES execution from within this phase. It calls
+# koan_request_executor, independently verifies the result, and reconciles.
+# Re-execution is expressed as repeated koan_request_executor calls --
+# get_next_step stays a pure linear query and does not observe conformance.
 PHASE_ROLE_CONTEXT = (
-    "You are in the execute phase acting as the POST-EXECUTION INLINE REVIEWER.\n"
+    "You are in the execute phase acting as the EXECUTION DRIVER AND INLINE REVIEWER.\n"
     "\n"
-    "The executor has already run. When you called koan_set_phase('execute',\n"
-    "plan_file=...), koan froze the plan, spawned the executor (blocking), and\n"
-    "returned its deviation report as the tool result. You are now the independent\n"
-    "reviewer of that work.\n"
+    "You launch the executor, independently verify the result, and reconcile.\n"
+    "Re-execution is your own agency: if verification fails, call koan_request_executor\n"
+    "again (editing the plan in place first or passing free-form fix instructions).\n"
     "\n"
     "## Your responsibilities\n"
     "\n"
-    "1. Verify what was accomplished by running bash checks (build, tests,\n"
+    "1. Launch the executor via koan_request_executor with the appropriate plan.\n"
+    "2. Verify what was accomplished by running bash checks (build, tests,\n"
     "   type-checks) -- your verification is authoritative and may mark a\n"
     "   clean-exit run non-conforming if checks fail.\n"
-    "2. Classify the outcome (conforming / non-conforming) and append conformance\n"
-    "   notes to the plan's .review.md sidecar via koan_artifact_edit.\n"
-    "3. On a clean/conforming result: apply the milestones.md UPDATE (milestones/\n"
+    "3. Classify the outcome (conforming / non-conforming) and record it inline\n"
+    "   in the plan via koan_artifact_edit as '## Execution N [CONFORMING | NON-CONFORMING]'.\n"
+    "4. On a conforming result: apply the milestones.md UPDATE (milestones/\n"
     "   initiative workflows only, gated by phase_instructions) and advance.\n"
-    "4. On a non-conforming result: drive one automated remediation if the\n"
-    "   executed plan is a base plan; escalate to the user via koan_ask_question\n"
-    "   if the executed plan is already a remediation.\n"
+    "5. On a non-conforming result: edit the plan in place or compose free-form\n"
+    "   fix instructions and call koan_request_executor again, then re-verify.\n"
+    "   On repeated failure, escalate to the user via koan_ask_question.\n"
     "\n"
     "## What you must NOT do\n"
     "\n"
-    "- Do NOT call koan_request_executor -- it no longer exists. Execution is\n"
-    "  triggered only by koan_set_phase('execute', plan_file=...).\n"
-    "- Do NOT edit the frozen plan artifact -- it is immutable. Conformance notes\n"
-    "  go to the .review.md sidecar (freeze-exempt); a non-conforming result\n"
-    "  requires a new -remediation-K.md successor written via koan_artifact_write.\n"
-    "- Do NOT advance to exec-review -- this phase absorbs exec-review's role.\n"
+    "- Do NOT write a .review.md sidecar -- there is no such file in this model.\n"
+    "- Do NOT write a new plan file -- edit the living plan in place.\n"
+    "- Do NOT loop back via get_next_step -- re-execution is repeated koan_request_executor.\n"
 )
 
 
@@ -80,26 +68,15 @@ PHASE_ROLE_CONTEXT = (
 def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
     """Return the step guidance for the given step number.
 
-    Step 1 (Verify) instructs the orchestrator to read context artifacts
-    (brief.md, the executed plan, and milestones.md if applicable), then run
-    bash verification commands (build/tests/type-checks) and end with a
-    verification summary.
-
-    Step 2 (Assess) instructs the orchestrator to classify conformance
-    (authoritative: bash results override the executor's exit code), append
-    a '## Execution review (post-exec)' section to the plan's .review.md sidecar
-    via koan_artifact_edit, then branch:
-    - CLEAN: apply milestones.md UPDATE (milestones/initiative only, gated by
-      phase_instructions) and advance.
-    - NON-CONFORMING, base plan: koan_set_phase("plan"), write
-      <plan-base>-remediation-1.md folding the failure signal, re-execute.
-    - NON-CONFORMING, already-remediation: koan_ask_question to escalate
-      (accept-as-is / abort / direct-further-attempts).
+    Step 1 (Run) instructs the orchestrator to identify the plan for this run
+    and launch koan_request_executor. Step 2 (Verify) instructs independent
+    bash verification. Step 3 (Reconcile) instructs outcome classification,
+    inline recording, milestones.md UPDATE, and optional re-execution.
     """
     if step == 1:
         lines: list[str] = []
 
-        # phase_instructions at top per established pattern (exec_review.py, intake.py).
+        # phase_instructions at top per established pattern.
         if ctx.phase_instructions:
             lines.extend(["## Workflow guidance", "", ctx.phase_instructions, ""])
 
@@ -107,22 +84,31 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
             lines.extend([ctx.memory_injection, ""])
 
         lines.extend([
-            "## Read context artifacts",
+            "## Identify the plan for this run",
             "",
-            "Read `brief.md` from the run directory -- it contains the frozen initiative",
-            "scope, decisions, and constraints from intake. Use it to assess whether the",
-            "implementation respects every stated decision and constraint, not just the",
-            "milestone-specific plan.",
+            "In the **plan workflow**: the plan is `plan.md`.",
             "",
-            "Read the executed plan artifact (the filename you passed as plan_file= to",
-            "koan_set_phase -- e.g. plan.md or plan-milestone-N.md). Note what was planned.",
+            "In the **milestones/initiative workflows**: read `milestones.md` from the",
+            "run directory, identify the `[in-progress]` milestone, and use its associated",
+            "`plan-milestone-N.md` artifact.",
             "",
-            "## Read milestone state (milestones workflow only)",
+            "## Launch the executor",
             "",
-            "If the workflow guidance above instructs you to update milestones.md, read",
-            "`milestones.md` from the run directory now. You will need its current state",
-            "to apply the UPDATE in step 2.",
+            "Call `koan_request_executor(plan_file=<that plan>)` to spawn the executor.",
+            "The tool blocks until the executor exits and returns its deviation report.",
             "",
+            "Read and understand the deviation report: what was implemented, what",
+            "deviated from the plan, and what was left incomplete.",
+            "",
+            "End your turn with a one-line note of what ran and the top-level outcome",
+            "from the deviation report.",
+        ])
+        return StepGuidance(title=STEP_NAMES[1], instructions=lines)
+
+    if step == 2:
+        lines = []
+
+        lines.extend([
             "## Run verification commands",
             "",
             "Run bash verification commands to confirm what the executor accomplished:",
@@ -131,29 +117,33 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
             "  Use `grep -q PATTERN file && echo \"FAIL\"` for negative-presence checks.",
             "- Run type checks (e.g. `npx tsc --noEmit`) if applicable.",
             "",
-            "Compare the executor's deviation report (the tool result from the",
-            "koan_set_phase call that entered this phase) against your verification results.",
-            "Your bash checks are authoritative -- a clean executor exit does NOT override",
-            "failing builds or tests.",
+            "Your bash checks are **authoritative** -- a clean executor exit does NOT",
+            "override failing builds or tests.",
             "",
-            "Do NOT write an assessment yet. Verify first.",
+            "Read `brief.md` from the run directory to assess whether the implementation",
+            "respects every stated decision and constraint, not just the milestone-specific plan.",
+            "",
+            "Read the plan artifact (plan.md or plan-milestone-N.md) to note what was planned.",
+            "",
+            "If the workflow guidance above instructs you to update `milestones.md`, read it",
+            "now so you have the current state for the Reconcile step.",
             "",
             "End your turn with a verification summary:",
             "- Which verification commands you ran and their results.",
             "- Which planned goals appear met vs. incomplete based on your checks.",
         ])
-        return StepGuidance(title=STEP_NAMES[1], instructions=lines)
+        return StepGuidance(title=STEP_NAMES[2], instructions=lines)
 
-    if step == 2:
+    if step == 3:
         return StepGuidance(
-            title=STEP_NAMES[2],
+            title=STEP_NAMES[3],
             instructions=[
-                "Classify conformance and record your assessment.",
+                "Classify conformance and reconcile the outcome.",
                 "",
                 "## Outcome classification",
                 "",
-                "Based on your verification results from step 1, classify the outcome:",
-                "- **Conforming (clean)**: verification passed; all goals met; any deviations",
+                "Based on your verification results from step 2, classify the outcome:",
+                "- **Conforming**: verification passed; all goals met; any deviations",
                 "  are minor and acceptable.",
                 "- **Non-conforming**: verification failed (build errors, test failures,",
                 "  type errors) OR significant goals were unmet; deviations are material.",
@@ -161,24 +151,21 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "Your verification is authoritative -- a clean executor exit does NOT",
                 "override failing bash checks.",
                 "",
-                "## Append to the review sidecar",
+                "## Record the outcome inline",
                 "",
-                "Append a `## Execution review (post-exec)` section to the plan's",
-                "`.review.md` sidecar via `koan_artifact_edit`.",
-                "The sidecar filename is the plan stem + `.review.md`",
-                "(e.g. `plan-milestone-1.review.md` for `plan-milestone-1.md`).",
+                "Append an `## Execution N [CONFORMING | NON-CONFORMING]` section to the",
+                "plan artifact via `koan_artifact_edit` (N = the execution attempt number).",
                 "Record in the section:",
                 "1. Outcome classification (conforming / non-conforming).",
                 "2. Verification commands run and their results.",
                 "3. Any deviations from plan (from the executor's report and your checks).",
                 "4. Summary of what was accomplished.",
                 "",
-                "The `.review.md` sidecar is freeze-exempt -- you can append to it even",
-                "though the plan itself is frozen.",
+                "The plan is a living document -- edits are always allowed.",
                 "",
                 "## Branch on outcome",
                 "",
-                "### CLEAN / CONFORMING path",
+                "### CONFORMING path",
                 "",
                 "If the workflow guidance above instructs you to update `milestones.md`,",
                 "apply the milestones.md UPDATE via `koan_artifact_edit`:",
@@ -200,48 +187,29 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "",
                 "Read milestones.md via `koan_artifact_read` to get current content and",
                 "anchors; then issue `koan_artifact_edit(filename=\"milestones.md\", ...)`",
-                "for the UPDATE -- surgical edits preferred, or edit_type=\"replace\" with",
-                "the opening anchor for a full replacement.",
+                "for the UPDATE -- surgical edits preferred.",
                 "",
                 "After the UPDATE (or immediately for the plan workflow where no UPDATE is",
                 "needed), end your turn. The workflow guidance above specifies what to do next.",
                 "",
                 "### NON-CONFORMING path",
                 "",
-                "#### If the executed plan is a BASE plan (no `-remediation-K` in the name):",
+                "Edit the plan in place to address the gaps, or compose free-form fix",
+                "instructions that describe what to fix. Then call `koan_request_executor`",
+                "again to re-run. Re-verify in step 2, then return here.",
                 "",
-                "1. Call `koan_set_phase(\"plan\")` to return to the planning phase.",
-                "2. Write a remediation plan `<plan-base>-remediation-1.md` via",
-                "   `koan_artifact_write`. Fold the failure signal into the new plan:",
-                "   - The executor's deviation report.",
-                "   - Your verification output (commands run + failures).",
-                "   - Any still-unaddressed prior findings from the .review.md sidecar.",
-                "   The remediation plan is the executor's only input -- the failure signal",
-                "   MUST be in the artifact text (brief 5.3 / artifact-as-interface).",
-                "   Writing it fires the PLAN_REVIEWER automatically with the full",
-                "   predecessor chain.",
-                "3. After reviewing the findings, incorporate valid findings via",
-                "   `koan_artifact_edit` on the remediation plan.",
-                "4. Call `koan_set_phase(\"execute\", plan_file=\"<plan-base>-remediation-1.md\")`",
-                "   to re-execute.",
-                "",
-                "#### If the executed plan is ALREADY a remediation (name contains `-remediation-K`):",
-                "",
-                "The automated one-attempt cap is reached. Escalate to the user via",
+                "On repeated non-conforming results, escalate to the user via",
                 "`koan_ask_question` with these options:",
-                "- **accept-as-is**: acknowledge the residual gap; append an",
-                "  `ACCEPTED AS-IS: <gap summary>` entry to the .review.md sidecar via",
-                "  koan_artifact_edit, then advance to the next phase per workflow guidance.",
+                "- **accept-as-is**: acknowledge the residual gap; record an",
+                "  `ACCEPTED AS-IS: <gap summary>` note in the inline `## Execution N`",
+                "  section, then advance to the next phase per workflow guidance.",
                 "- **abort**: end the run.",
-                "- **direct-further-attempts**: write another remediation as the user directs.",
-                "",
-                "The cap is prompt-driven: the registry still allows contiguous remediations",
-                "so the user can direct further attempts after escalation if needed.",
+                "- **direct-further-attempts**: continue as the user directs.",
             ],
-            # terminal_invoke supplies the phase-boundary invoke_after. With next_phase=None
-            # (all workflows set execute.next_phase=None because the review outcome determines
-            # the path), this renders the yield-to-user hand-back with the workflow's suggested
-            # phases. The actual phase-transition calls are in the branch instructions above.
+            # terminal_invoke supplies the phase-boundary invoke_after.
+            # With next_phase=None (all workflows set execute.next_phase=None because
+            # the conformance verdict determines the path), this yields to the user
+            # with the workflow's suggested phases.
             invoke_after=terminal_invoke(ctx.next_phase, ctx.suggested_phases),
         )
 
@@ -251,10 +219,15 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
 # -- Lifecycle -----------------------------------------------------------------
 
 def get_next_step(step: int, ctx: PhaseContext) -> int | None:
-    """Return the next step number, or None when all steps are complete."""
+    """Return the next step number, or None when all steps are complete.
+
+    Stays a pure linear query: Run -> Verify -> Reconcile -> end.
+    Re-execution is NOT expressed here -- the orchestrator calls
+    koan_request_executor again within Reconcile as its own agency.
+    """
     if step < TOTAL_STEPS:
         return step + 1
-    return None  # linear
+    return None
 
 
 def validate_step_completion(step: int, ctx: PhaseContext) -> str | None:
