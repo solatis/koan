@@ -53,10 +53,11 @@ KOAN_MCP_TOOLS: frozenset[str] = frozenset({
     "koan_suggest_next",
     "koan_set_phase",
     "koan_request_scouts",
+    # koan_request_executor re-added in M4 of the living-documents initiative:
+    # the tool is phase-gated to execute and allows free-form executor launches
+    # in addition to (or instead of) a named plan.
+    "koan_request_executor",
     "koan_ask_question",
-    # koan_request_executor removed in M4: execution rides on
-    # koan_set_phase("execute", plan_file=...) which freezes the named plan,
-    # spawns the executor mechanically, and returns the deviation report.
     # Story tools (koan_select/complete/retry/skip_story) removed in M1:
     # the legacy "execution" phase that gated them is deleted.
     "koan_memorize",
