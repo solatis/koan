@@ -1,0 +1,14 @@
+---
+title: A path-scope guard that raised instead of returning crashed the whole orchestrator
+  run; tool guards return a recoverable error
+type: lesson
+created: '2026-06-23T02:23:39Z'
+modified: '2026-06-24T03:42:38Z'
+related:
+- 0026-recoverable-vs-unrecoverable-error-classification.md
+- 0250-inline-review-phase-guidance-emitted.md
+---
+
+In koan's built-in write and edit tools (koan/tools/builtin_tools.py), the path-scope guard that confines planning roles to run_dir raised a ValueError when the orchestrator attempted to write outside run_dir (to a frontend source file). pydantic-ai's agent.iter() did not swallow the exception; it propagated to AgentError('PydanticAIAgent run failed: path-scope violation ...') and terminated the long-lived orchestrator with exit_code=1, taking down the whole run. Every sibling failure in those same write/edit tools (OSError on write, a bad edit anchor) instead RETURNED an 'Error: ...' string the model sees and can recover from. Root cause: a recoverable condition -- a permission/scope denial -- was signalled by raising rather than returning, inconsistent with the rest of the tool layer and with koan's recoverable-error rule (recoverable conditions return a structured error so the model can self-correct; only unrecoverable contract violations fail fast). The fix made the path-scope check return a message string (None when permitted) for all confined planning roles, leaving the executor role's write-anywhere behavior unchanged. The general guidance: a tool-internal guard returns a recoverable error (a structured envelope for the koan-tool cores, an 'Error: ...' string for the built-ins) rather than raising, because a raised exception inside a tool is not reliably swallowed and can propagate to a fatal orchestrator crash.
+
+The same failure mode recurred on 2026-06-24 in a different tool core. `artifact_edit_core` in koan/tools/koan_tools.py escalated engine edit failures with `raise ValueError(f"edit_failed: {result}")` whenever the underlying edit_tool returned an 'Error: ...' string (anchor not found, content drift, or an unknown edit_type). An orchestrator reconciling a review hit it through a guidance bug (edit_type='append') and crashed with AgentError('... edit_failed: Error: unknown edit_type \'append\'') and exit_code=1 -- the koan-tool-core instance of exactly the return-don't-raise rule above, which had been stated but not applied to every core. The fix made artifact_edit_core RETURN the recoverable envelope for engine edit failures, reusing _permission_error_result(ValidationError(code="edit_failed", ...)). Meta-lesson: stating the rule did not retroactively fix existing call sites that still raised on a recoverable condition; the recurrence shows such a rule needs an audit-and-sweep of every tool core, not just the site that first triggered it.
