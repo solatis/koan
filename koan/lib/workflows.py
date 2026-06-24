@@ -295,35 +295,30 @@ PLAN_WORKFLOW = Workflow(
                 " how changes are made in this codebase. Entries about coding patterns,"
                 " module layout rules, and past lessons from similar changes."
             ),
-            # M6: next_phase=None -- the plan step instructions name the plan for
-            # execution via koan_set_phase("execute", plan_file=...) directly, which
-            # freezes it, spawns the executor, and returns the deviation report.
+            # M5: next_phase=None -- the plan step instructions call bare
+            # koan_set_phase("execute"). The execute phase launches koan_request_executor.
             next_phase=None,
         ),
         "execute": PhaseBinding(
             module=execute_phase,
             description="Execute the plan and review conformance inline",
-            # M5: the execute phase is now the inline reviewer. next_phase=None because
-            # the review outcome (clean -> curation; non-conforming -> plan + remediation)
-            # requires the orchestrator to choose rather than auto-advancing.
+            # M5: execute is now Run/Verify/Reconcile. next_phase=None because
+            # the conformance verdict determines the path (conforming -> curation;
+            # non-conforming -> re-run via koan_request_executor or escalate).
             guidance=(
-                "## Inline review context (plan workflow)\n"
+                "## Execute context (plan workflow)\n"
                 "\n"
-                "Execution is complete. The deviation report was returned by the\n"
-                "koan_set_phase('execute', plan_file='plan.md') call that entered\n"
-                "this phase.\n"
-                "\n"
-                "Your task: verify conformance (run bash checks, read brief.md and\n"
-                "plan.md), append conformance notes to plan.review.md via\n"
-                "koan_artifact_edit, then branch.\n"
+                "Your task: call koan_request_executor naming 'plan.md' as the plan.\n"
+                "Verify conformance (run bash checks, read brief.md and plan.md) and\n"
+                "record the outcome inline in the plan.\n"
                 "\n"
                 "## Outcome paths (plan workflow)\n"
                 "\n"
-                "- CLEAN: transition to `curation` to capture lessons. No milestones.md\n"
+                "- CONFORMING: transition to `curation` to capture lessons. No milestones.md\n"
                 "  UPDATE is needed in the plan workflow.\n"
-                "- NON-CONFORMING (base plan): call koan_set_phase('plan'), write\n"
-                "  plan-remediation-1.md folding the failure signal, re-execute.\n"
-                "- NON-CONFORMING (already a remediation): escalate via koan_ask_question.\n"
+                "- NON-CONFORMING: edit the plan in place or pass free-form fix instructions,\n"
+                "  then call koan_request_executor again. On repeated failure, escalate via\n"
+                "  koan_ask_question.\n"
             ),
             retrieval_directive=(
                 "Procedures, conventions, and past lessons related to the subsystems"
@@ -343,11 +338,11 @@ PLAN_WORKFLOW = Workflow(
         ),
     },
     initial_phase="intake",
-    # M6 final transitions (brief 5.4): intake->plan->execute->(curation|plan)->curation.
+    # M5: execute -> curation only (drop "plan"; re-execution is koan_request_executor).
     transitions={
         "intake":   ["plan"],
         "plan":     ["execute"],
-        "execute":  ["curation", "plan"],
+        "execute":  ["curation"],
         "curation": [],
     },
 )
@@ -378,31 +373,27 @@ _MILESTONES_PLAN_SPEC_GUIDANCE = (
 # M6: _MILESTONES_PLAN_REVIEW_GUIDANCE removed -- plan-review collapsed into the
 # mechanical PLAN_REVIEWER spawned by koan_artifact_write.
 
-# M5: rewritten for inline-review + remediation model. The orchestrator is the
-# reviewer after the handoff returns; exec-review is bypassed. milestones.md UPDATE
-# is gated on this guidance string being present (phase_instructions check in
-# execute.py step 2), mirroring the pattern exec_review.py used.
+# M5: rewritten for inline-review model. The orchestrator is the reviewer after
+# the handoff returns; exec-review is bypassed. milestones.md UPDATE is gated on
+# this guidance string being present (phase_instructions check in execute.py).
+# M6: "remediation model" wording dropped; re-execution is repeated koan_request_executor.
 _MILESTONES_EXECUTE_GUIDANCE = (
     "## Milestone execute context\n"
     "\n"
-    "Execution is complete. The deviation report was returned by the\n"
-    "koan_set_phase('execute', plan_file='plan-milestone-N.md') call that\n"
-    "entered this phase.\n"
-    "\n"
-    "Your task: verify conformance (run bash checks, read brief.md,\n"
-    "plan-milestone-N.md, and milestones.md), append conformance notes to\n"
-    "plan-milestone-N.review.md via koan_artifact_edit, then branch.\n"
+    "Your task: call koan_request_executor naming the current milestone's plan\n"
+    "(e.g. 'plan-milestone-N.md'). Verify conformance (run bash checks, read\n"
+    "brief.md, plan-milestone-N.md, and milestones.md), and record the outcome\n"
+    "inline in the plan.\n"
     "\n"
     "## Outcome paths (milestones workflow)\n"
     "\n"
-    "- CLEAN: apply the milestones.md UPDATE (mark milestone [done], append\n"
+    "- CONFORMING: apply the milestones.md UPDATE (mark milestone [done], append\n"
     "  four-subsection Outcome, advance the next [pending] milestone to\n"
     "  [in-progress], preserve all prior [done] Outcomes). Then yield:\n"
-    "  pick `plan` for the next milestone, `curation` if all milestones are\n"
-    "  done, or `milestone` for a manual RE-DECOMPOSE.\n"
-    "- NON-CONFORMING (base plan): call koan_set_phase('plan'), write\n"
-    "  plan-milestone-N-remediation-1.md folding the failure signal, re-execute.\n"
-    "- NON-CONFORMING (already a remediation): escalate via koan_ask_question.\n"
+    "  pick `plan` for the next milestone, or `curation` if all milestones are done.\n"
+    "- NON-CONFORMING: edit the plan in place or pass free-form fix instructions,\n"
+    "  then call koan_request_executor again. On repeated failure, escalate via\n"
+    "  koan_ask_question.\n"
 )
 
 MILESTONES_WORKFLOW = Workflow(
@@ -483,8 +474,8 @@ MILESTONES_WORKFLOW = Workflow(
                 " how changes are made in this codebase. Entries about coding patterns,"
                 " module layout rules, and past lessons from similar changes."
             ),
-            # M6: next_phase=None -- plan step instructions name the plan for execution
-            # via koan_set_phase("execute", plan_file=...) after reconciling findings.
+            # M5: next_phase=None -- plan step instructions call bare
+            # koan_set_phase("execute") after reconciling findings.
             next_phase=None,
         ),
         "execute": PhaseBinding(
@@ -513,7 +504,7 @@ MILESTONES_WORKFLOW = Workflow(
         "intake":     ["milestone"],
         "milestone":  ["plan"],
         "plan":       ["execute"],
-        "execute":    ["plan", "curation", "milestone"],
+        "execute":    ["plan", "curation"],  # milestone phase is one-time (M2)
         "curation":   [],
     },
 )
@@ -648,33 +639,27 @@ _INITIATIVE_PLAN_SPEC_GUIDANCE = (
 # M6: _INITIATIVE_PLAN_REVIEW_GUIDANCE removed -- plan-review collapsed into
 # the mechanical PLAN_REVIEWER spawned by koan_artifact_write.
 
-# M5: rewritten for inline-review + remediation model. The orchestrator is the
-# reviewer after the handoff returns; exec-review is bypassed. milestones.md UPDATE
-# is gated on this guidance string being present (phase_instructions check in
-# execute.py step 2). tech-plan option added to advance paths for architectural
-# lookbacks, mirroring the former exec-review transitions in initiative.
+# M5: rewritten for inline-review model. The orchestrator is the reviewer after
+# the handoff returns; exec-review is bypassed. milestones.md UPDATE is gated on
+# this guidance string being present (phase_instructions check in execute.py).
+# M6: "remediation model" wording dropped; re-execution is repeated koan_request_executor.
 _INITIATIVE_EXECUTE_GUIDANCE = (
-    "## Initiative inline review context\n"
+    "## Initiative execute context\n"
     "\n"
-    "Execution is complete. The deviation report was returned by the\n"
-    "koan_set_phase('execute', plan_file='plan-milestone-N.md') call that\n"
-    "entered this phase.\n"
-    "\n"
-    "Your task: verify conformance (run bash checks, read brief.md, tech-plan.md,\n"
-    "plan-milestone-N.md, and milestones.md), append conformance notes to\n"
-    "plan-milestone-N.review.md via koan_artifact_edit, then branch.\n"
+    "Your task: call koan_request_executor naming the current milestone's plan\n"
+    "(e.g. 'plan-milestone-N.md'). Verify conformance (run bash checks, read\n"
+    "brief.md, tech-plan.md, plan-milestone-N.md, and milestones.md), and\n"
+    "record the outcome inline in the plan.\n"
     "\n"
     "## Outcome paths (initiative workflow)\n"
     "\n"
-    "- CLEAN: apply the milestones.md UPDATE (mark milestone [done], append\n"
+    "- CONFORMING: apply the milestones.md UPDATE (mark milestone [done], append\n"
     "  four-subsection Outcome, advance the next [pending] milestone to\n"
     "  [in-progress], preserve all prior [done] Outcomes). Then yield:\n"
-    "  pick `plan` for the next milestone, `curation` if all milestones are\n"
-    "  done, `milestone` for a manual RE-DECOMPOSE, or `tech-plan` for an\n"
-    "  architectural lookback.\n"
-    "- NON-CONFORMING (base plan): call koan_set_phase('plan'), write\n"
-    "  plan-milestone-N-remediation-1.md folding the failure signal, re-execute.\n"
-    "- NON-CONFORMING (already a remediation): escalate via koan_ask_question.\n"
+    "  pick `plan` for the next milestone, or `curation` if all milestones are done.\n"
+    "- NON-CONFORMING: edit the plan in place or pass free-form fix instructions,\n"
+    "  then call koan_request_executor again. On repeated failure, escalate via\n"
+    "  koan_ask_question.\n"
 )
 
 # M6: _INITIATIVE_EXEC_REVIEW_GUIDANCE removed -- exec-review collapsed into the
@@ -750,8 +735,8 @@ INITIATIVE_WORKFLOW = Workflow(
                 "Implementation decisions, procedures, and conventions that"
                 " constrain how changes are made in this codebase."
             ),
-            # M6: next_phase=None -- PLAN_REVIEWER runs mechanically on write;
-            # producer reconciles inline, then names the plan for execution.
+            # M5: next_phase=None -- PLAN_REVIEWER runs mechanically on write;
+            # producer reconciles inline, then calls bare koan_set_phase("execute").
             next_phase=None,
         ),
         "execute": PhaseBinding(
@@ -774,16 +759,15 @@ INITIATIVE_WORKFLOW = Workflow(
         ),
     },
     initial_phase="intake",
-    # M6 final transitions (brief 5.4): intake->core-flows->tech-plan->milestone->
-    # plan->execute->(loop|curation). tech-plan also reachable from execute for
-    # architectural lookbacks.
+    # M5: execute -> [plan, curation] only (drop "tech-plan"; re-execution via
+    # koan_request_executor makes the architectural-lookback backward edge obsolete).
     transitions={
         "intake":     ["core-flows", "tech-plan"],
         "core-flows": ["tech-plan", "core-flows"],
         "tech-plan":  ["milestone"],
         "milestone":  ["plan"],
         "plan":       ["execute"],
-        "execute":    ["plan", "curation", "milestone", "tech-plan"],
+        "execute":    ["plan", "curation"],  # milestone phase is one-time (M2)
         "curation":   [],
     },
 )
