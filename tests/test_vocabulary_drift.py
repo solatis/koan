@@ -144,8 +144,6 @@ def test_workflow_phase_type_literal_matches_final_set() -> None:
 # ---------------------------------------------------------------------------
 
 _REMOVED_TOOLS = frozenset({
-    # Removed in M4: execution now rides on koan_set_phase("execute", plan_file=...).
-    "koan_request_executor",
     # Removed in M1: legacy "execution" phase that gated these is deleted.
     "koan_select_story",
     "koan_complete_story",

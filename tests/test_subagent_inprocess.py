@@ -92,14 +92,15 @@ async def test_scouts_core_no_findings(tmp_path, monkeypatch):
     assert out == "No findings returned."
 
 
-def test_scout_tool_registered_executor_tool_absent():
-    """koan_request_scouts is registered; koan_request_executor was removed in M4.
+def test_scout_and_executor_tools_registered():
+    """koan_request_scouts and koan_request_executor are both registered in the full toolset.
 
-    Execution now rides on koan_set_phase("execute", plan_file=...) -- no
-    separate executor tool exists.
+    koan_request_executor is phase-gated to execute via compose_toolset; the
+    full toolset (no allowed_names filter) includes it unconditionally so it
+    can be verified at build time.
     """
     names = set(build_koan_toolset().tools.keys())
     assert "koan_request_scouts" in names
-    assert "koan_request_executor" not in names, (
-        "koan_request_executor must not be registered after M4 removal"
+    assert "koan_request_executor" in names, (
+        "koan_request_executor must be registered (re-added in M4 of living-docs initiative)"
     )

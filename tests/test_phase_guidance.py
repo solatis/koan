@@ -156,8 +156,8 @@ def test_plan_workflow_next_phase_defaults():
     from koan.lib.workflows import PLAN_WORKFLOW
     expected = {
         "intake":    "plan",
-        # M6: plan.next_phase=None -- the step instructions call
-        # koan_set_phase("execute", plan_file=...) directly after reconciling findings.
+        # M5: plan.next_phase=None -- the step instructions call bare
+        # koan_set_phase("execute") after reconciling findings.
         "plan":      None,
         "execute":   None,
         "curation":  None,
@@ -178,7 +178,7 @@ def test_milestones_workflow_next_phase_defaults():
         # M6: milestone.next_phase=None -- step instructions advance to plan
         # after reconciling MILESTONE_REVIEWER findings.
         "milestone": None,
-        # M6: plan.next_phase=None -- step instructions name plan for execute.
+        # M5: plan.next_phase=None -- step instructions call bare koan_set_phase("execute").
         "plan":      None,
         "execute":   None,
         "curation":  None,
@@ -284,13 +284,12 @@ def test_plan_spec_last_step_invoke_after_is_terminal_invoke():
 
 
 def test_execute_last_step_invoke_after_is_terminal_invoke():
-    # M5: execute.next_phase is now None (review outcome determines the path);
-    # the last step yields to the user with the workflow's suggested phases.
+    # M5: execute.TOTAL_STEPS=3 (Reconcile); next_phase=None; yields to user.
     from koan.phases import execute
     from koan.phases.format_step import terminal_invoke
-    ctx = _ctx_with_next(None, ["plan", "curation", "milestone"])
+    ctx = _ctx_with_next(None, ["plan", "curation"])
     g = execute.step_guidance(execute.TOTAL_STEPS, ctx)
-    assert g.invoke_after == terminal_invoke(None, ["plan", "curation", "milestone"])
+    assert g.invoke_after == terminal_invoke(None, ["plan", "curation"])
 
 
 def test_curation_last_step_invoke_after_is_terminal_invoke():
@@ -302,11 +301,11 @@ def test_curation_last_step_invoke_after_is_terminal_invoke():
 
 
 # ---------------------------------------------------------------------------
-# M6: milestone_spec is CREATE-only; RE-DECOMPOSE branch removed
+# M2: milestone phase is one-time; discard hook removed; RE-DECOMPOSE gone
 # ---------------------------------------------------------------------------
 
 def test_milestone_spec_step1_create_only():
-    """M6: milestone_spec is CREATE-only; RE-DECOMPOSE mode removed (discard hook replaces it)."""
+    """M2: milestone phase is one-time; milestones.md is always CREATEd (no discard hook)."""
     from koan.phases import milestone_spec
     g = milestone_spec.step_guidance(1, _ctx())
     text = "\n".join(g.instructions)
@@ -317,7 +316,7 @@ def test_milestone_spec_step1_create_only():
 
 
 def test_milestone_spec_phase_binding_no_redecompose():
-    """M6: milestone binding guidance must not instruct RE-DECOMPOSE mode (discard hook replaces it)."""
+    """M2: milestone binding guidance must not instruct RE-DECOMPOSE mode (phase is one-time)."""
     from koan.lib.workflows import MILESTONES_WORKFLOW
     guidance = MILESTONES_WORKFLOW.phases["milestone"].guidance
     # The guidance may mention "no RE-DECOMPOSE" as a negative, but must not
@@ -347,30 +346,30 @@ def test_milestones_workflow_no_exec_review_transition():
 
 
 def test_plan_workflow_transitions_final_shape():
-    """M6: plan workflow transitions match brief 5.4 final shape."""
+    """M5: plan workflow execute -> curation only (dropped 'plan' remediation loop)."""
     from koan.lib.workflows import PLAN_WORKFLOW
     assert PLAN_WORKFLOW.transitions == {
         "intake":   ["plan"],
         "plan":     ["execute"],
-        "execute":  ["curation", "plan"],
+        "execute":  ["curation"],
         "curation": [],
     }
 
 
 def test_milestones_workflow_transitions_final_shape():
-    """M6: milestones workflow transitions match brief 5.4 final shape."""
+    """M2: milestones workflow execute no longer suggests milestone (one-time phase)."""
     from koan.lib.workflows import MILESTONES_WORKFLOW
     assert MILESTONES_WORKFLOW.transitions == {
         "intake":    ["milestone"],
         "milestone": ["plan"],
         "plan":      ["execute"],
-        "execute":   ["plan", "curation", "milestone"],
+        "execute":   ["plan", "curation"],
         "curation":  [],
     }
 
 
 def test_initiative_workflow_transitions_final_shape():
-    """M6: initiative workflow transitions match brief 5.4 final shape."""
+    """M5: initiative workflow execute -> [plan, curation] (dropped tech-plan lookback)."""
     from koan.lib.workflows import INITIATIVE_WORKFLOW
     assert INITIATIVE_WORKFLOW.transitions == {
         "intake":     ["core-flows", "tech-plan"],
@@ -378,7 +377,7 @@ def test_initiative_workflow_transitions_final_shape():
         "tech-plan":  ["milestone"],
         "milestone":  ["plan"],
         "plan":       ["execute"],
-        "execute":    ["plan", "curation", "milestone", "tech-plan"],
+        "execute":    ["plan", "curation"],
         "curation":   [],
     }
 

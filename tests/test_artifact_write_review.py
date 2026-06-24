@@ -3,7 +3,7 @@
 # Covers:
 #   (a) write-once: a second write of an existing name raises exists_draft.
 #   (b) reviewed family: writing tech-plan.md in tech-plan phase spawns a
-#       reviewer and creates tech-plan.review.md containing the findings.
+#       reviewer and returns the findings inline (no sidecar created).
 #   (c) unreviewed family: writing brief.md in intake phase writes the artifact
 #       and creates NO sidecar.
 #   (d) wrong-phase validation: writing plan.md outside the plan phase surfaces
@@ -119,14 +119,13 @@ async def test_write_rejects_sidecar_filename(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_reviewed_artifact_spawns_reviewer_and_creates_sidecar(
+async def test_reviewed_artifact_spawns_reviewer_and_returns_findings(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """Writing tech-plan.md in the tech-plan phase spawns a reviewer and creates sidecar.
+    """Writing tech-plan.md in the tech-plan phase spawns a reviewer and returns findings.
 
-    The reviewer sub-agent's findings are written to tech-plan.review.md by
-    artifact_write_core (koan writes the sidecar, not the reviewer).
-    The findings string is also returned to the caller.
+    The reviewer sub-agent's findings are returned directly to the caller for
+    inline reconciliation. No sidecar file is created.
     """
     canned_findings = "Critical: The architecture is missing a retry layer."
 
@@ -146,12 +145,8 @@ async def test_reviewed_artifact_spawns_reviewer_and_creates_sidecar(
     # Caller receives the freeform findings (not a JSON status object).
     assert result == canned_findings
 
-    # Sidecar exists and contains the findings.
-    sidecar = tmp_path / "tech-plan.review.md"
-    assert sidecar.is_file(), "sidecar file not created"
-    sidecar_text = sidecar.read_text(encoding="utf-8")
-    assert "## Plan review (pre-exec)" in sidecar_text
-    assert canned_findings in sidecar_text
+    # No sidecar created -- findings are returned inline to the orchestrator.
+    assert not (tmp_path / "tech-plan.review.md").exists()
 
 
 @pytest.mark.anyio
@@ -160,7 +155,7 @@ async def test_reviewed_artifact_returns_findings_on_reviewer_failure(
 ) -> None:
     """A failed reviewer run produces a marker string, not a crash.
 
-    The sidecar is still created so the orchestrator can inspect it.
+    No sidecar is created; the failure marker is returned directly.
     """
     async def fail_spawn(task: dict, app_state: AppState) -> SubagentResult:
         return SubagentResult(exit_code=1, error="model timeout")
@@ -173,9 +168,8 @@ async def test_reviewed_artifact_returns_findings_on_reviewer_failure(
     # Result contains the failure marker (not an exception).
     assert "reviewer failed" in result
 
-    # Sidecar is still created.
-    sidecar = tmp_path / "tech-plan.review.md"
-    assert sidecar.is_file()
+    # No sidecar created.
+    assert not (tmp_path / "tech-plan.review.md").exists()
 
 
 # -- Tests: unreviewed family (brief.md) --------------------------------------

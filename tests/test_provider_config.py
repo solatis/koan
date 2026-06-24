@@ -136,6 +136,53 @@ class TestResolveModelSpec:
             reg.resolve_model_spec("orchestrator", config, None)
         assert exc.value.diagnostic.code == "unconfigured"
 
+    def _make_anthropic_claude_config(self) -> KoanConfig:
+        """Build a config wired to an anthropic/claude model so caching is applied."""
+        conn = Connection(id="ant-direct", type="anthropic")
+        # claude-3-5-sonnet is recognized and supports_prompt_caching=True.
+        cm = ConfiguredModel(id="claude-cm", connection_id="ant-direct", model_id="claude-3-5-sonnet")
+        slot = SlotAssignment(configured_model_id="claude-cm", thinking="disabled")
+        preset = Preset(slots={"strong": slot, "standard": slot, "cheap": slot})
+        return KoanConfig(
+            connections=[conn],
+            configured_models=[cm],
+            presets={"$last": preset},
+            active="$last",
+        )
+
+    def test_orchestrator_bakes_long_cache_tier(self):
+        """resolve_model_spec for orchestrator bakes anthropic_cache='1h' (long tier)."""
+        config = self._make_anthropic_claude_config()
+        reg = AgentRegistry()
+        spec = reg.resolve_model_spec("orchestrator", config, None)
+        assert spec.settings.get("anthropic_cache") == "1h"
+
+    def test_scout_bakes_short_cache_tier(self):
+        """resolve_model_spec for scout bakes anthropic_cache='5m' (short tier)."""
+        config = self._make_anthropic_claude_config()
+        reg = AgentRegistry()
+        spec = reg.resolve_model_spec("scout", config, None)
+        assert spec.settings.get("anthropic_cache") == "5m"
+
+    def test_caching_mode_off_suppresses_settings(self):
+        """CachingPolicy(mode='off') suppresses all cache settings regardless of role."""
+        conn = Connection(id="ant-direct", type="anthropic")
+        cm = ConfiguredModel(id="claude-cm", connection_id="ant-direct", model_id="claude-3-5-sonnet")
+        slot = SlotAssignment(
+            configured_model_id="claude-cm",
+            thinking="disabled",
+            caching=CachingPolicy(mode="off"),
+        )
+        preset = Preset(slots={"strong": slot, "standard": slot, "cheap": slot})
+        config = KoanConfig(
+            connections=[conn],
+            configured_models=[cm],
+            presets={"$last": preset},
+            active="$last",
+        )
+        reg = AgentRegistry()
+        spec = reg.resolve_model_spec("orchestrator", config, None)
+        assert not any(k.startswith("anthropic_cache") for k in spec.settings)
 
 
 # compute_builtin_profiles tests removed in M5: function deleted (plan-milestone-5.md).
@@ -165,7 +212,7 @@ class TestConfigRoundTrip:
         slot = SlotAssignment(
             configured_model_id="opus-cm",
             thinking="high",
-            caching=CachingPolicy(mode="auto", ttl="5m"),
+            caching=CachingPolicy(mode="auto"),
         )
         preset = Preset(slots={"strong": slot})
         original = KoanConfig(

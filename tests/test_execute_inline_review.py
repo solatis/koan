@@ -1,16 +1,15 @@
-# Tests for the M5 inline conformance review and remediation rework of the
-# execute phase (koan/phases/execute.py).
+# Tests for the M5 execute phase restructuring (koan/phases/execute.py).
 #
 # Covers:
-#   (a) Step 1 guidance instructs verification + reading brief/plan/milestones.
-#   (b) Step 2 clean-path guidance instructs milestones.md UPDATE with the
-#       four-subsection Outcome structure.
-#   (c) Step 2 non-conforming guidance instructs writing -remediation-1.md for
-#       a base plan and escalating (koan_ask_question) for an already-remediation.
-#   (d) "execute" is in _ORCHESTRATOR_BASH_PHASES; compose_toolset includes bash.
-#   (e) All three workflow transitions["execute"] do NOT contain "exec-review".
-#   (f) STEP_NAMES are Verify/Assess; no exec-review or koan_request_executor
-#       references in execute.py text.
+#   (a) STEP_NAMES are Run/Verify/Reconcile; TOTAL_STEPS is 3.
+#   (b) Step 1 (Run) guidance instructs launching koan_request_executor.
+#   (c) Step 2 (Verify) guidance instructs bash verification + reading brief/plan/milestones.
+#   (d) Step 3 (Reconcile) guidance instructs inline ## Execution N section,
+#       milestones.md UPDATE on conforming path, and koan_request_executor re-run
+#       or escalation on non-conforming path.
+#   (e) "execute" is in _ORCHESTRATOR_BASH_PHASES; compose_toolset includes bash.
+#   (f) Workflow transitions["execute"] do NOT contain "exec-review".
+#   (g) Plan workflow execute -> curation only (no "plan"); initiative execute drops "tech-plan".
 #
 # Tests do not boot a runner or mock anything. They instantiate step_guidance()
 # with minimal PhaseContext instances and assert key strings appear in the output.
@@ -36,87 +35,75 @@ def _ctx_with_next(next_phase, suggested_phases=None):
 
 
 # ---------------------------------------------------------------------------
-# (f) Step names and forbidden references
+# (a) Step names and step count
 # ---------------------------------------------------------------------------
 
-def test_execute_step_names_are_verify_and_assess():
-    """STEP_NAMES must be {1: 'Verify', 2: 'Assess'} after M5."""
+def test_execute_step_names_are_run_verify_reconcile():
+    """STEP_NAMES must be {1: 'Run', 2: 'Verify', 3: 'Reconcile'} after M5."""
     from koan.phases import execute
-    assert execute.STEP_NAMES == {1: "Verify", 2: "Assess"}
+    assert execute.STEP_NAMES == {1: "Run", 2: "Verify", 3: "Reconcile"}
 
 
-def test_execute_total_steps_is_two():
-    """execute.TOTAL_STEPS must still be 2 after M5."""
+def test_execute_total_steps_is_three():
+    """execute.TOTAL_STEPS must be 3 after M5."""
     from koan.phases import execute
-    assert execute.TOTAL_STEPS == 2
+    assert execute.TOTAL_STEPS == 3
 
 
-def test_execute_role_context_no_exec_review():
-    """PHASE_ROLE_CONTEXT must not positively instruct advancing to exec-review.
+def test_execute_role_context_no_positive_sidecar_reference():
+    """PHASE_ROLE_CONTEXT must not positively instruct writing .review.md sidecar.
 
-    A prohibition mention ('do NOT advance to exec-review') is allowed.
+    A prohibition mention ('Do NOT write a .review.md sidecar') is allowed.
     """
     from koan.phases import execute
-    # Any line mentioning exec-review must be in a prohibition context.
-    lines = [l for l in execute.PHASE_ROLE_CONTEXT.splitlines() if "exec-review" in l]
+    lines = [l for l in execute.PHASE_ROLE_CONTEXT.splitlines() if ".review.md" in l]
     for line in lines:
-        assert "NOT" in line or "not" in line or "absorbs" in line, (
-            f"Unexpected positive exec-review reference: {line!r}"
+        assert "NOT" in line or "not" in line or "no" in line.lower(), (
+            f"Unexpected positive .review.md reference: {line!r}"
         )
 
 
-def test_execute_role_context_no_koan_request_executor():
-    """PHASE_ROLE_CONTEXT must not positively instruct calling koan_request_executor.
-
-    It is allowed to appear in a 'do NOT call' prohibition sentence.
-    """
+def test_execute_role_context_mentions_koan_request_executor():
+    """PHASE_ROLE_CONTEXT must mention koan_request_executor as the launch tool."""
     from koan.phases import execute
-    # The prohibition "do NOT call koan_request_executor" may appear; a bare
-    # positive instruction must not.
-    text = execute.PHASE_ROLE_CONTEXT
-    lines = [l for l in text.splitlines() if "koan_request_executor" in l]
-    for line in lines:
-        assert "NOT" in line or "not" in line or "no longer" in line, (
-            f"Unexpected positive koan_request_executor reference: {line!r}"
-        )
+    assert "koan_request_executor" in execute.PHASE_ROLE_CONTEXT
 
 
 def test_execute_role_context_mentions_inline_reviewer():
-    """PHASE_ROLE_CONTEXT must describe the inline reviewer role."""
+    """PHASE_ROLE_CONTEXT must describe the inline reviewer / driver role."""
     from koan.phases import execute
-    assert "INLINE REVIEWER" in execute.PHASE_ROLE_CONTEXT or "inline reviewer" in execute.PHASE_ROLE_CONTEXT.lower()
+    text = execute.PHASE_ROLE_CONTEXT.lower()
+    assert "inline reviewer" in text or "execution driver" in text
 
 
 # ---------------------------------------------------------------------------
-# (a) Step 1 -- Verify
+# (b) Step 1 -- Run
 # ---------------------------------------------------------------------------
 
-def test_execute_step1_title_is_verify():
-    """Step 1 guidance title must be 'Verify'."""
+def test_execute_step1_title_is_run():
+    """Step 1 guidance title must be 'Run'."""
     from koan.phases import execute
     g = execute.step_guidance(1, _ctx())
-    assert g.title == "Verify"
+    assert g.title == "Run"
 
 
-def test_execute_step1_reads_brief_md():
-    """Step 1 guidance must instruct reading brief.md."""
-    from koan.phases import execute
-    g = execute.step_guidance(1, _ctx())
-    text = "\n".join(g.instructions)
-    assert "brief.md" in text
-
-
-def test_execute_step1_reads_executed_plan():
-    """Step 1 guidance must instruct reading the executed plan artifact."""
+def test_execute_step1_instructs_koan_request_executor():
+    """Step 1 guidance must instruct calling koan_request_executor."""
     from koan.phases import execute
     g = execute.step_guidance(1, _ctx())
     text = "\n".join(g.instructions)
-    # Must mention reading the plan; specific filenames vary by workflow.
+    assert "koan_request_executor" in text
+
+
+def test_execute_step1_identifies_plan():
+    """Step 1 guidance must instruct identifying the plan artifact."""
+    from koan.phases import execute
+    g = execute.step_guidance(1, _ctx())
+    text = "\n".join(g.instructions)
     assert "plan" in text.lower()
-    assert "plan_file" in text or "plan artifact" in text.lower()
 
 
-def test_execute_step1_reads_milestones_md():
+def test_execute_step1_mentions_milestones_md():
     """Step 1 guidance must mention milestones.md for the milestones workflow."""
     from koan.phases import execute
     g = execute.step_guidance(1, _ctx())
@@ -124,21 +111,18 @@ def test_execute_step1_reads_milestones_md():
     assert "milestones.md" in text
 
 
-def test_execute_step1_instructs_bash_verification():
-    """Step 1 guidance must instruct running bash verification commands."""
+def test_execute_step1_renders_phase_instructions_at_top():
+    """Step 1 guidance must render phase_instructions before the body."""
     from koan.phases import execute
-    g = execute.step_guidance(1, _ctx())
+    ctx = PhaseContext(
+        run_dir="",
+        subagent_dir="",
+        phase_instructions="## Custom guidance\nSome workflow context.",
+    )
+    g = execute.step_guidance(1, ctx)
     text = "\n".join(g.instructions)
-    assert "verification" in text.lower() or "verify" in text.lower()
-    assert "bash" in text.lower() or "build" in text.lower() or "test" in text.lower()
-
-
-def test_execute_step1_ends_with_verification_summary_instruction():
-    """Step 1 guidance must instruct ending with a verification summary."""
-    from koan.phases import execute
-    g = execute.step_guidance(1, _ctx())
-    text = "\n".join(g.instructions)
-    assert "verification summary" in text.lower() or "End your turn with" in text
+    assert "## Custom guidance" in text
+    assert text.index("## Custom guidance") < text.index("koan_request_executor")
 
 
 def test_execute_step1_no_exec_review_reference():
@@ -149,63 +133,115 @@ def test_execute_step1_no_exec_review_reference():
     assert "exec-review" not in text
 
 
-def test_execute_step1_renders_phase_instructions_at_top():
-    """Step 1 guidance must render phase_instructions before the context artifact reads."""
+def test_execute_step1_no_sidecar_reference():
+    """Step 1 guidance must not reference .review.md sidecar."""
     from koan.phases import execute
-    ctx = PhaseContext(
-        run_dir="",
-        subagent_dir="",
-        phase_instructions="## Custom guidance\nSome workflow context.",
-    )
-    g = execute.step_guidance(1, ctx)
+    g = execute.step_guidance(1, _ctx())
     text = "\n".join(g.instructions)
-    # phase_instructions must appear before "brief.md"
-    assert "## Custom guidance" in text
-    assert text.index("## Custom guidance") < text.index("brief.md")
+    assert ".review.md" not in text
 
 
 # ---------------------------------------------------------------------------
-# (b) Step 2 -- Assess: CLEAN path
+# (c) Step 2 -- Verify
 # ---------------------------------------------------------------------------
 
-def test_execute_step2_title_is_assess():
-    """Step 2 guidance title must be 'Assess'."""
+def test_execute_step2_title_is_verify():
+    """Step 2 guidance title must be 'Verify'."""
     from koan.phases import execute
     g = execute.step_guidance(2, _ctx())
-    assert g.title == "Assess"
+    assert g.title == "Verify"
 
 
-def test_execute_step2_appends_execution_review_section_to_sidecar():
-    """Step 2 guidance must instruct appending '## Execution review (post-exec)' via koan_artifact_edit."""
+def test_execute_step2_reads_brief_md():
+    """Step 2 guidance must instruct reading brief.md."""
     from koan.phases import execute
     g = execute.step_guidance(2, _ctx())
     text = "\n".join(g.instructions)
-    assert "Execution review (post-exec)" in text
+    assert "brief.md" in text
+
+
+def test_execute_step2_instructs_bash_verification():
+    """Step 2 guidance must instruct running bash verification commands."""
+    from koan.phases import execute
+    g = execute.step_guidance(2, _ctx())
+    text = "\n".join(g.instructions)
+    assert "verification" in text.lower() or "verify" in text.lower()
+    assert "bash" in text.lower() or "build" in text.lower() or "test" in text.lower()
+
+
+def test_execute_step2_verification_is_authoritative():
+    """Step 2 guidance must state that bash checks are authoritative."""
+    from koan.phases import execute
+    g = execute.step_guidance(2, _ctx())
+    text = "\n".join(g.instructions)
+    assert "authoritative" in text.lower()
+
+
+def test_execute_step2_ends_with_verification_summary_instruction():
+    """Step 2 guidance must instruct ending with a verification summary."""
+    from koan.phases import execute
+    g = execute.step_guidance(2, _ctx())
+    text = "\n".join(g.instructions)
+    assert "verification summary" in text.lower()
+
+
+def test_execute_step2_reads_plan_artifact():
+    """Step 2 guidance must instruct reading the plan artifact."""
+    from koan.phases import execute
+    g = execute.step_guidance(2, _ctx())
+    text = "\n".join(g.instructions)
+    assert "plan" in text.lower()
+
+
+def test_execute_step2_no_sidecar_reference():
+    """Step 2 guidance must not reference .review.md sidecar."""
+    from koan.phases import execute
+    g = execute.step_guidance(2, _ctx())
+    text = "\n".join(g.instructions)
+    assert ".review.md" not in text
+
+
+# ---------------------------------------------------------------------------
+# (d) Step 3 -- Reconcile
+# ---------------------------------------------------------------------------
+
+def test_execute_step3_title_is_reconcile():
+    """Step 3 guidance title must be 'Reconcile'."""
+    from koan.phases import execute
+    g = execute.step_guidance(3, _ctx())
+    assert g.title == "Reconcile"
+
+
+def test_execute_step3_records_inline_execution_section():
+    """Step 3 guidance must instruct appending ## Execution N inline via koan_artifact_edit."""
+    from koan.phases import execute
+    g = execute.step_guidance(3, _ctx())
+    text = "\n".join(g.instructions)
+    assert "## Execution" in text
     assert "koan_artifact_edit" in text
-    assert ".review.md" in text
 
 
-def test_execute_step2_sidecar_is_freeze_exempt():
-    """Step 2 guidance must note the sidecar is freeze-exempt."""
+def test_execute_step3_no_sidecar_reference():
+    """Step 3 guidance must not reference .review.md sidecar."""
     from koan.phases import execute
-    g = execute.step_guidance(2, _ctx())
+    g = execute.step_guidance(3, _ctx())
     text = "\n".join(g.instructions)
-    assert "freeze-exempt" in text or "freeze exempt" in text
+    assert ".review.md" not in text
 
 
-def test_execute_step2_clean_path_has_milestones_update():
-    """Step 2 guidance must instruct the milestones.md UPDATE on the clean path."""
+def test_execute_step3_conforming_path_has_milestones_update():
+    """Step 3 guidance must instruct the milestones.md UPDATE on the conforming path."""
     from koan.phases import execute
-    g = execute.step_guidance(2, _ctx())
+    g = execute.step_guidance(3, _ctx())
     text = "\n".join(g.instructions)
     assert "milestones.md" in text
     assert "UPDATE" in text or "update" in text.lower()
 
 
-def test_execute_step2_clean_path_has_four_subsection_outcome():
-    """Step 2 guidance must include all four Outcome subsection headings."""
+def test_execute_step3_conforming_path_has_four_subsection_outcome():
+    """Step 3 guidance must include all four Outcome subsection headings."""
     from koan.phases import execute
-    g = execute.step_guidance(2, _ctx())
+    g = execute.step_guidance(3, _ctx())
     text = "\n".join(g.instructions)
     assert "Integration points created" in text
     assert "Patterns established" in text
@@ -213,107 +249,69 @@ def test_execute_step2_clean_path_has_four_subsection_outcome():
     assert "Deviations from plan" in text
 
 
-def test_execute_step2_clean_path_marks_done_and_advances_pending():
-    """Step 2 guidance must instruct marking the milestone [done] and advancing [pending]."""
+def test_execute_step3_conforming_path_marks_done_and_advances_pending():
+    """Step 3 guidance must instruct marking the milestone [done] and advancing [pending]."""
     from koan.phases import execute
-    g = execute.step_guidance(2, _ctx())
+    g = execute.step_guidance(3, _ctx())
     text = "\n".join(g.instructions)
     assert "[done]" in text
     assert "[pending]" in text
     assert "[in-progress]" in text
 
 
-def test_execute_step2_clean_path_preserves_prior_outcomes():
-    """Step 2 guidance must instruct preserving prior [done] Outcome sections."""
+def test_execute_step3_conforming_path_preserves_prior_outcomes():
+    """Step 3 guidance must instruct preserving prior [done] Outcome sections."""
     from koan.phases import execute
-    g = execute.step_guidance(2, _ctx())
+    g = execute.step_guidance(3, _ctx())
     text = "\n".join(g.instructions)
     assert "prior" in text.lower() and "[done]" in text
 
 
-# ---------------------------------------------------------------------------
-# (c) Step 2 -- Assess: NON-CONFORMING path
-# ---------------------------------------------------------------------------
-
-def test_execute_step2_nonconforming_base_plan_instructs_remediation_write():
-    """Step 2 non-conforming guidance must instruct writing -remediation-1.md for a base plan."""
+def test_execute_step3_nonconforming_instructs_re_run():
+    """Step 3 non-conforming path must instruct calling koan_request_executor again."""
     from koan.phases import execute
-    g = execute.step_guidance(2, _ctx())
+    g = execute.step_guidance(3, _ctx())
     text = "\n".join(g.instructions)
-    assert "-remediation-1.md" in text or "remediation-1.md" in text
+    assert "koan_request_executor" in text
 
 
-def test_execute_step2_nonconforming_base_plan_instructs_set_phase_plan():
-    """Step 2 non-conforming guidance must instruct koan_set_phase('plan') to return to planning."""
+def test_execute_step3_escalation_uses_koan_ask_question():
+    """Step 3 must instruct escalation via koan_ask_question on repeated failure."""
     from koan.phases import execute
-    g = execute.step_guidance(2, _ctx())
-    text = "\n".join(g.instructions)
-    assert 'koan_set_phase("plan")' in text or "koan_set_phase('plan')" in text
-
-
-def test_execute_step2_nonconforming_base_plan_folds_failure_signal():
-    """Step 2 guidance must instruct folding the failure signal (deviation report + verification) into the remediation plan."""
-    from koan.phases import execute
-    g = execute.step_guidance(2, _ctx())
-    text = "\n".join(g.instructions)
-    assert "deviation report" in text.lower() or "failure signal" in text.lower()
-    assert "verification" in text.lower()
-
-
-def test_execute_step2_nonconforming_base_plan_fires_plan_reviewer():
-    """Step 2 guidance must note that writing the remediation fires the PLAN_REVIEWER."""
-    from koan.phases import execute
-    g = execute.step_guidance(2, _ctx())
-    text = "\n".join(g.instructions)
-    assert "PLAN_REVIEWER" in text
-
-
-def test_execute_step2_nonconforming_already_remediation_escalates():
-    """Step 2 guidance must instruct escalation via koan_ask_question when already a remediation."""
-    from koan.phases import execute
-    g = execute.step_guidance(2, _ctx())
+    g = execute.step_guidance(3, _ctx())
     text = "\n".join(g.instructions)
     assert "koan_ask_question" in text
-    assert "remediation" in text.lower()
 
 
-def test_execute_step2_nonconforming_escalation_options():
-    """Step 2 escalation must offer accept-as-is, abort, and direct-further-attempts."""
+def test_execute_step3_escalation_options():
+    """Step 3 escalation must offer accept-as-is, abort, and direct-further-attempts."""
     from koan.phases import execute
-    g = execute.step_guidance(2, _ctx())
+    g = execute.step_guidance(3, _ctx())
     text = "\n".join(g.instructions)
     assert "accept-as-is" in text.lower() or "accept as-is" in text.lower()
     assert "abort" in text.lower()
     assert "further-attempts" in text.lower() or "further attempts" in text.lower()
 
 
-def test_execute_step2_accept_as_is_appends_to_sidecar():
-    """Step 2 accept-as-is path must instruct appending ACCEPTED AS-IS to the sidecar."""
-    from koan.phases import execute
-    g = execute.step_guidance(2, _ctx())
-    text = "\n".join(g.instructions)
-    assert "ACCEPTED AS-IS" in text
-
-
-def test_execute_step2_invoke_after_uses_terminal_invoke():
-    """Step 2 invoke_after must use terminal_invoke (matching the phase boundary contract)."""
+def test_execute_step3_invoke_after_uses_terminal_invoke():
+    """Step 3 invoke_after must use terminal_invoke (matching the phase boundary contract)."""
     from koan.phases import execute
     from koan.phases.format_step import terminal_invoke
-    ctx = _ctx_with_next(None, ["plan", "curation", "milestone"])
-    g = execute.step_guidance(2, ctx)
-    assert g.invoke_after == terminal_invoke(None, ["plan", "curation", "milestone"])
+    ctx = _ctx_with_next(None, ["plan", "curation"])
+    g = execute.step_guidance(3, ctx)
+    assert g.invoke_after == terminal_invoke(None, ["plan", "curation"])
 
 
-def test_execute_step2_no_exec_review_reference():
-    """Step 2 guidance must not reference exec-review."""
+def test_execute_step3_no_exec_review_reference():
+    """Step 3 guidance must not reference exec-review."""
     from koan.phases import execute
-    g = execute.step_guidance(2, _ctx())
+    g = execute.step_guidance(3, _ctx())
     text = "\n".join(g.instructions)
     assert "exec-review" not in text
 
 
 # ---------------------------------------------------------------------------
-# (d) Tool policy: bash available in execute phase for orchestrator
+# (e) Tool policy: bash available in execute phase for orchestrator
 # ---------------------------------------------------------------------------
 
 def test_execute_in_orchestrator_bash_phases():
@@ -323,15 +321,23 @@ def test_execute_in_orchestrator_bash_phases():
 
 
 def test_compose_toolset_orchestrator_execute_includes_bash():
-    """compose_toolset for (orchestrator, execute) must include bash."""
+    """compose_toolset for orchestrator must include bash (static role-based toolset)."""
     from koan.tools.tool_policy import build_tool_policy, compose_toolset
     policy = build_tool_policy()
-    tools = compose_toolset(policy, "orchestrator", "execute")
+    tools = compose_toolset(policy, "orchestrator")
     assert "bash" in tools
 
 
+def test_compose_toolset_orchestrator_execute_includes_koan_request_executor():
+    """compose_toolset for orchestrator must include koan_request_executor (static role-based toolset)."""
+    from koan.tools.tool_policy import build_tool_policy, compose_toolset
+    policy = build_tool_policy()
+    tools = compose_toolset(policy, "orchestrator")
+    assert "koan_request_executor" in tools
+
+
 # ---------------------------------------------------------------------------
-# (e) Workflow transitions: exec-review absent from execute transitions
+# (f) Workflow transitions: exec-review absent from execute transitions
 # ---------------------------------------------------------------------------
 
 def test_plan_workflow_execute_transitions_no_exec_review():
@@ -352,29 +358,48 @@ def test_initiative_workflow_execute_transitions_no_exec_review():
     assert "exec-review" not in INITIATIVE_WORKFLOW.transitions["execute"]
 
 
+# ---------------------------------------------------------------------------
+# (g) M5 transition changes
+# ---------------------------------------------------------------------------
+
+def test_plan_workflow_execute_transitions_curation_only():
+    """M5: PLAN_WORKFLOW.transitions['execute'] is ['curation'] only (dropped 'plan')."""
+    from koan.lib.workflows import PLAN_WORKFLOW
+    t = PLAN_WORKFLOW.transitions["execute"]
+    assert t == ["curation"]
+
+
 def test_milestones_workflow_execute_transitions_order():
-    """MILESTONES_WORKFLOW.transitions['execute'] must list plan first, then curation, then milestone."""
+    """MILESTONES_WORKFLOW.transitions['execute'] lists plan first then curation; milestone removed."""
     from koan.lib.workflows import MILESTONES_WORKFLOW
     t = MILESTONES_WORKFLOW.transitions["execute"]
     assert t[0] == "plan"
     assert "curation" in t
-    assert "milestone" in t
+    assert "milestone" not in t
 
 
-def test_initiative_workflow_execute_transitions_includes_tech_plan():
-    """INITIATIVE_WORKFLOW.transitions['execute'] must include tech-plan for architectural lookbacks."""
+def test_initiative_workflow_execute_transitions_no_tech_plan():
+    """M5: INITIATIVE_WORKFLOW.transitions['execute'] must NOT include tech-plan."""
     from koan.lib.workflows import INITIATIVE_WORKFLOW
-    assert "tech-plan" in INITIATIVE_WORKFLOW.transitions["execute"]
+    assert "tech-plan" not in INITIATIVE_WORKFLOW.transitions["execute"]
+
+
+def test_initiative_workflow_execute_transitions_has_plan_and_curation():
+    """INITIATIVE_WORKFLOW.transitions['execute'] must include plan and curation."""
+    from koan.lib.workflows import INITIATIVE_WORKFLOW
+    t = INITIATIVE_WORKFLOW.transitions["execute"]
+    assert "plan" in t
+    assert "curation" in t
 
 
 def test_plan_workflow_execute_transitions_includes_curation():
-    """PLAN_WORKFLOW.transitions['execute'] must include curation (clean path)."""
+    """PLAN_WORKFLOW.transitions['execute'] must include curation (conforming path)."""
     from koan.lib.workflows import PLAN_WORKFLOW
     assert "curation" in PLAN_WORKFLOW.transitions["execute"]
 
 
 # ---------------------------------------------------------------------------
-# Workflow guidance: brief.md still present (guards against regression)
+# Workflow guidance: brief.md still present (regression guard)
 # ---------------------------------------------------------------------------
 
 def test_plan_workflow_execute_guidance_mentions_brief_md():
@@ -422,3 +447,30 @@ def test_plan_workflow_execute_guidance_no_exec_review():
     from koan.lib.workflows import PLAN_WORKFLOW
     guidance = PLAN_WORKFLOW.phases["execute"].guidance
     assert "exec-review" not in guidance
+
+
+def test_execute_guidance_no_set_phase_plan_file_wording():
+    """No execute guidance string should use koan_set_phase with plan_file (M5: pure routing).
+
+    koan_request_executor(plan_file=...) is correct usage and may appear.
+    Only the old koan_set_phase("execute", plan_file=...) pattern is stale.
+    """
+    from koan.lib.workflows import (
+        INITIATIVE_WORKFLOW,
+        MILESTONES_WORKFLOW,
+        PLAN_WORKFLOW,
+        _INITIATIVE_EXECUTE_GUIDANCE,
+        _MILESTONES_EXECUTE_GUIDANCE,
+    )
+    for guidance in [
+        _MILESTONES_EXECUTE_GUIDANCE,
+        _INITIATIVE_EXECUTE_GUIDANCE,
+        PLAN_WORKFLOW.phases["execute"].guidance,
+        MILESTONES_WORKFLOW.phases["execute"].guidance,
+        INITIATIVE_WORKFLOW.phases["execute"].guidance,
+    ]:
+        # The old pattern was: koan_set_phase('execute', plan_file=...) or
+        # koan_set_phase("execute", plan_file=...). That pattern is gone.
+        assert "set_phase" not in guidance or "plan_file" not in guidance, (
+            f"Found koan_set_phase with plan_file in guidance: {guidance[:150]!r}"
+        )

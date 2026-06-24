@@ -6,8 +6,10 @@
 # Coverage:
 # - write/edit create and modify files correctly
 # - edit enforces single-unique-match semantics
-# - _enforce_path_scope rejects planning-role writes outside run_dir
-# - _enforce_path_scope allows executor writes anywhere
+# - _path_scope_violation returns a message for planning-role writes outside run_dir
+# - _path_scope_violation returns None for executor writes anywhere
+# - write/edit return a recoverable "Error: ..." for planning-role out-of-scope writes
+# - bash_tool returns a recoverable "Error: ..." when orchestrator calls it outside bash phases
 # - grep/glob/read produce the metrics dicts the fold expects
 # - bash runs a command with output capture and timeout
 
@@ -24,7 +26,7 @@ from koan.tools.builtin_tools import (
     _MAX_TOOL_OUTPUT_BYTES,
     _MAX_TOOL_OUTPUT_LINES,
     _enforce_output_limits,
-    _enforce_path_scope,
+    _path_scope_violation,
     bash_tool,
     edit_tool,
     glob_tool,
@@ -38,12 +40,23 @@ from koan.tools.line_anchors import ANCHOR_DELIMITER, compute_anchors
 # -- Helpers ----------------------------------------------------------------- #
 
 
-def _make_ctx(role: str = "executor", run_dir: str = "", project_dir: str = "") -> SimpleNamespace:
+def _make_ctx(
+    role: str = "executor",
+    run_dir: str = "",
+    project_dir: str = "",
+    phase: str = "",
+) -> SimpleNamespace:
     """Build a minimal fake RunContext with ToolDeps for tool tests.
 
     Returns a SimpleNamespace that mimics just enough of RunContext[ToolDeps]
     for the built-in tools (ctx.deps.agent.role, ctx.deps.agent.run_dir,
-    ctx.deps.app_state.run.project_dir, etc.).
+    ctx.deps.app_state.run.project_dir, ctx.deps.app_state.run.phase, etc.).
+
+    Args:
+        role: Agent role string (default "executor").
+        run_dir: Agent run directory (default "" -- no scope enforcement).
+        project_dir: Project root directory for context-file injection.
+        phase: Current workflow phase string; required for bash gate tests.
     """
     agent = SimpleNamespace(
         role=role,
@@ -51,7 +64,7 @@ def _make_ctx(role: str = "executor", run_dir: str = "", project_dir: str = "") 
         injected_context_files=set(),
         pending_context_files=[],
     )
-    run_state = SimpleNamespace(project_dir=project_dir)
+    run_state = SimpleNamespace(project_dir=project_dir, phase=phase)
     app_state = SimpleNamespace(run=run_state)
     deps = SimpleNamespace(agent=agent, app_state=app_state)
     return SimpleNamespace(deps=deps)
@@ -179,54 +192,140 @@ async def test_edit_tool_content_mismatch_rejected(tmp_path):
     assert target.read_text() == content
 
 
-# -- _enforce_path_scope ----------------------------------------------------- #
+# -- _path_scope_violation --------------------------------------------------- #
 
 
-def test_enforce_path_scope_planning_inside_run_dir_allowed(tmp_path):
-    """Planning role write inside run_dir is allowed (no exception raised)."""
+def test_path_scope_violation_planning_inside_run_dir_allowed(tmp_path):
+    """Planning role write inside run_dir returns None (permitted)."""
     run_dir = str(tmp_path)
     ctx = _make_ctx(role="orchestrator", run_dir=run_dir)
     target = tmp_path / "plan.md"
-    # Should not raise.
-    _enforce_path_scope(ctx.deps, target)
+    assert _path_scope_violation(ctx.deps, target) is None
 
 
-def test_enforce_path_scope_planning_outside_run_dir_rejected(tmp_path):
-    """Planning role write outside run_dir raises ValueError."""
+def test_path_scope_violation_planning_outside_run_dir_rejected(tmp_path):
+    """Planning role write outside run_dir returns a non-None violation string."""
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     ctx = _make_ctx(role="orchestrator", run_dir=str(run_dir))
     outside = tmp_path / "outside.txt"
-    with pytest.raises(ValueError, match="path-scope violation"):
-        _enforce_path_scope(ctx.deps, outside)
+    result = _path_scope_violation(ctx.deps, outside)
+    assert result is not None
+    assert "path-scope violation" in result
 
 
-def test_enforce_path_scope_executor_outside_run_dir_allowed(tmp_path):
-    """Executor role may write anywhere; no exception raised."""
+def test_path_scope_violation_executor_outside_run_dir_allowed(tmp_path):
+    """Executor role may write anywhere; _path_scope_violation returns None."""
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     ctx = _make_ctx(role="executor", run_dir=str(run_dir))
     outside = tmp_path / "project" / "src" / "file.py"
-    # Should not raise.
-    _enforce_path_scope(ctx.deps, outside)
+    assert _path_scope_violation(ctx.deps, outside) is None
 
 
-def test_enforce_path_scope_scout_outside_run_dir_rejected(tmp_path):
-    """Scout role is a planning role; writes outside run_dir are rejected."""
+def test_path_scope_violation_scout_outside_run_dir_rejected(tmp_path):
+    """Scout role is a planning role; _path_scope_violation returns a non-None string."""
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     ctx = _make_ctx(role="scout", run_dir=str(run_dir))
     outside = tmp_path / "other.md"
-    with pytest.raises(ValueError, match="path-scope violation"):
-        _enforce_path_scope(ctx.deps, outside)
+    result = _path_scope_violation(ctx.deps, outside)
+    assert result is not None
+    assert "path-scope violation" in result
 
 
-def test_enforce_path_scope_empty_run_dir_skips_check(tmp_path):
-    """When run_dir is empty, the path-scope check is skipped (permissive)."""
+def test_path_scope_violation_empty_run_dir_skips_check(tmp_path):
+    """When run_dir is empty, the path-scope check is skipped; returns None."""
     ctx = _make_ctx(role="orchestrator", run_dir="")
     target = tmp_path / "anywhere.txt"
-    # Should not raise even for a planning role.
-    _enforce_path_scope(ctx.deps, target)
+    assert _path_scope_violation(ctx.deps, target) is None
+
+
+@pytest.mark.anyio
+async def test_write_tool_planning_outside_run_dir_returns_error(tmp_path):
+    """write_tool returns a recoverable Error string for a planning role writing outside run_dir.
+
+    The file must not be created; the run must not crash (no exception raised).
+    """
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    outside = tmp_path / "secret.py"
+    ctx = _make_ctx(role="orchestrator", run_dir=str(run_dir))
+    result = await write_tool(ctx, str(outside), "content")
+    assert result.startswith("Error")
+    assert "path-scope violation" in result
+    assert not outside.exists()
+
+
+@pytest.mark.anyio
+async def test_edit_tool_planning_outside_run_dir_returns_error(tmp_path):
+    """edit_tool returns a recoverable Error string for a planning role editing outside run_dir.
+
+    The file is not modified; the run must not crash.
+    """
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    outside = tmp_path / "secret.py"
+    outside.write_text("original\n")
+    from koan.tools.line_anchors import ANCHOR_DELIMITER, compute_anchors
+    content = "original\n"
+    anchors = compute_anchors(content.splitlines())
+    anchor_token = f"{anchors[0]}{ANCHOR_DELIMITER}original"
+    ctx = _make_ctx(role="orchestrator", run_dir=str(run_dir))
+    result = await edit_tool(ctx, str(outside), anchor_token, "replacement")
+    assert result.startswith("Error")
+    assert "path-scope violation" in result
+    assert outside.read_text() == "original\n"
+
+
+@pytest.mark.anyio
+async def test_write_tool_executor_outside_run_dir_succeeds(tmp_path):
+    """write_tool for an executor role succeeds even outside run_dir.
+
+    Executors are not planning roles and may write anywhere.
+    """
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    outside = tmp_path / "project" / "src" / "file.py"
+    ctx = _make_ctx(role="executor", run_dir=str(run_dir))
+    result = await write_tool(ctx, str(outside), "# code\n")
+    assert outside.exists()
+    assert not result.startswith("Error")
+
+
+@pytest.mark.anyio
+async def test_bash_tool_orchestrator_wrong_phase_returns_error(tmp_path):
+    """bash_tool returns a recoverable Error string when orchestrator is in a non-bash phase.
+
+    A plan-phase orchestrator is denied; the command is not executed.
+    """
+    ctx = _make_ctx(role="orchestrator", run_dir=str(tmp_path), phase="plan")
+    result = await bash_tool(ctx, "echo should_not_run")
+    assert result.startswith("Error")
+    assert "bash" in result
+    assert "should_not_run" not in result
+
+
+@pytest.mark.anyio
+async def test_bash_tool_orchestrator_execute_phase_runs(tmp_path):
+    """bash_tool runs normally when orchestrator is in the execute phase.
+
+    execute is in _ORCHESTRATOR_BASH_PHASES, so the gate returns None.
+    """
+    ctx = _make_ctx(role="orchestrator", run_dir=str(tmp_path), phase="execute")
+    result = await bash_tool(ctx, "echo ok_from_execute")
+    assert "ok_from_execute" in result
+
+
+@pytest.mark.anyio
+async def test_bash_tool_executor_runs_regardless_of_phase(tmp_path):
+    """bash_tool runs normally for an executor role regardless of phase.
+
+    Non-orchestrator roles short-circuit the phase gate and always execute.
+    """
+    ctx = _make_ctx(role="executor", run_dir=str(tmp_path), phase="plan")
+    result = await bash_tool(ctx, "echo executor_ok")
+    assert "executor_ok" in result
 
 
 # -- read_tool --------------------------------------------------------------- #

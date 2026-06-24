@@ -1108,7 +1108,9 @@ async def test_artifact_edit_file_not_found(tmp_path):
 
 @pytest.mark.anyio
 async def test_artifact_edit_anchor_not_found(tmp_path):
-    """koan_artifact_edit raises 'edit_failed:' when the anchor is absent from the body."""
+    """koan_artifact_edit returns a recoverable envelope when the anchor is absent from the body."""
+    import json
+
     from koan.tools.koan_tools import ToolDeps, artifact_edit_core
 
     app_state, agent = _make_orchestrator_agent(tmp_path, "test-edit-nomatch")
@@ -1117,15 +1119,18 @@ async def test_artifact_edit_anchor_not_found(tmp_path):
     # Write the file directly -- this test is about anchor resolution, not write path.
     (tmp_path / "doc.md").write_text("hello world\n", encoding="utf-8")
 
-    with pytest.raises(ValueError) as exc_info:
-        await artifact_edit_core(deps, "doc.md", "deadbeef§nonexistent", "x")
-    assert "edit_failed:" in str(exc_info.value)
-    assert "not found" in str(exc_info.value)
+    result = await artifact_edit_core(deps, "doc.md", "deadbeef§nonexistent", "x")
+    payload = json.loads(result)
+    assert payload["ok"] is False
+    assert payload["error"]["reason"] == "edit_failed"
+    assert "not found" in payload["error"]["message"]
 
 
 @pytest.mark.anyio
 async def test_artifact_edit_content_mismatch(tmp_path):
-    """koan_artifact_edit raises 'edit_failed:' on inline-content drift."""
+    """koan_artifact_edit returns a recoverable envelope on inline-content drift."""
+    import json
+
     from koan.tools.koan_tools import ToolDeps, artifact_edit_core
     from koan.tools.line_anchors import ANCHOR_DELIMITER, compute_anchors
 
@@ -1136,15 +1141,18 @@ async def test_artifact_edit_content_mismatch(tmp_path):
     (tmp_path / "doc.md").write_text("real line\n", encoding="utf-8")
     anchor = compute_anchors(["real line"])[0]
 
-    with pytest.raises(ValueError) as exc_info:
-        await artifact_edit_core(deps, "doc.md", f"{anchor}{ANCHOR_DELIMITER}WRONG", "x")
-    assert "edit_failed:" in str(exc_info.value)
-    assert "mismatch" in str(exc_info.value)
+    result = await artifact_edit_core(deps, "doc.md", f"{anchor}{ANCHOR_DELIMITER}WRONG", "x")
+    payload = json.loads(result)
+    assert payload["ok"] is False
+    assert payload["error"]["reason"] == "edit_failed"
+    assert "mismatch" in payload["error"]["message"]
 
 
 @pytest.mark.anyio
 async def test_artifact_edit_invalid_edit_type(tmp_path):
-    """koan_artifact_edit raises 'edit_failed:' for an unknown edit_type."""
+    """koan_artifact_edit returns a recoverable envelope for an unknown edit_type."""
+    import json
+
     from koan.tools.koan_tools import ToolDeps, artifact_edit_core
 
     app_state, agent = _make_orchestrator_agent(tmp_path, "test-edit-badtype")
@@ -1154,9 +1162,33 @@ async def test_artifact_edit_invalid_edit_type(tmp_path):
     (tmp_path / "doc.md").write_text("content\n", encoding="utf-8")
     token = _body_anchor_token("content\n", 0)
 
-    with pytest.raises(ValueError) as exc_info:
-        await artifact_edit_core(deps, "doc.md", token, "new", edit_type="frobnicate")
-    assert "edit_failed:" in str(exc_info.value)
+    result = await artifact_edit_core(deps, "doc.md", token, "new", edit_type="frobnicate")
+    payload = json.loads(result)
+    assert payload["ok"] is False
+    assert payload["error"]["reason"] == "edit_failed"
+
+
+@pytest.mark.anyio
+async def test_artifact_edit_insert_after_appends(tmp_path):
+    """koan_artifact_edit insert_after on the last line appends to end-of-file."""
+    import json
+
+    from koan.tools.koan_tools import ToolDeps, artifact_edit_core
+    from koan.tools.line_anchors import ANCHOR_DELIMITER, compute_anchors
+
+    app_state, agent = _make_orchestrator_agent(tmp_path, "test-edit-append")
+    deps = ToolDeps(app_state=app_state, agent=agent)
+
+    (tmp_path / "doc.md").write_text("line one\nline two\n", encoding="utf-8")
+    token = f"{compute_anchors(['line one', 'line two'])[1]}{ANCHOR_DELIMITER}line two"
+
+    result = await artifact_edit_core(
+        deps, "doc.md", token, "\n## Review\nappended", edit_type="insert_after"
+    )
+    payload = json.loads(result)
+    assert payload["ok"] is True
+    body = (tmp_path / "doc.md").read_text(encoding="utf-8")
+    assert body.endswith("## Review\nappended\n")
 
 
 @pytest.mark.anyio

@@ -113,36 +113,54 @@ def test_caching_off_emits_nothing():
     assert not any(k.startswith("anthropic_cache") for k in s)
 
 
-def test_caching_anthropic_auto_sets_ttl():
-    """Anthropic auto mode: _caching_settings emits all three anthropic_cache* keys."""
+def test_caching_anthropic_long_tier_emits_1h():
+    """Anthropic long cache tier: _caching_settings emits all three anthropic_cache* keys as '1h'."""
     caps = _caps(supports_prompt_caching=True)
-    s = adapter._caching_settings("anthropic", CachingPolicy(mode="auto", ttl="1h"), caps)
+    s = adapter._caching_settings("anthropic", CachingPolicy(mode="auto"), "long", caps)
     assert s["anthropic_cache"] == "1h"
     assert s["anthropic_cache_instructions"] == "1h"
     assert s["anthropic_cache_tool_definitions"] == "1h"
 
 
-def test_caching_bedrock_auto_sets_ttl():
-    """Bedrock auto mode: _caching_settings emits all three bedrock_cache* keys."""
+def test_caching_anthropic_short_tier_emits_5m():
+    """Anthropic short cache tier: _caching_settings emits all three anthropic_cache* keys as '5m'."""
     caps = _caps(supports_prompt_caching=True)
-    s = adapter._caching_settings("bedrock", CachingPolicy(mode="auto", ttl="5m"), caps)
+    s = adapter._caching_settings("anthropic", CachingPolicy(mode="auto"), "short", caps)
+    assert s["anthropic_cache"] == "5m"
+    assert s["anthropic_cache_instructions"] == "5m"
+    assert s["anthropic_cache_tool_definitions"] == "5m"
+
+
+def test_caching_bedrock_short_tier_emits_5m():
+    """Bedrock short cache tier: _caching_settings emits all three bedrock_cache* keys as '5m'."""
+    caps = _caps(supports_prompt_caching=True)
+    s = adapter._caching_settings("bedrock", CachingPolicy(mode="auto"), "short", caps)
     assert s["bedrock_cache_messages"] == "5m"
     assert s["bedrock_cache_instructions"] == "5m"
     assert s["bedrock_cache_tool_definitions"] == "5m"
+
+
+def test_caching_bedrock_long_tier_emits_1h():
+    """Bedrock long cache tier: _caching_settings emits all three bedrock_cache* keys as '1h'."""
+    caps = _caps(supports_prompt_caching=True)
+    s = adapter._caching_settings("bedrock", CachingPolicy(mode="auto"), "long", caps)
+    assert s["bedrock_cache_messages"] == "1h"
+    assert s["bedrock_cache_instructions"] == "1h"
+    assert s["bedrock_cache_tool_definitions"] == "1h"
 
 
 def test_caching_off_emits_nothing_per_transport():
     """CachingPolicy(mode='off') returns {} for both explicit-cache transports."""
     caps = _caps(supports_prompt_caching=True)
     for provider in ("anthropic", "bedrock"):
-        s = adapter._caching_settings(provider, CachingPolicy(mode="off"), caps)
+        s = adapter._caching_settings(provider, CachingPolicy(mode="off"), "long", caps)
         assert s == {}
 
 
 def test_caching_unsupported_caps_emits_nothing():
     """caps.supports_prompt_caching=False returns {} regardless of provider."""
     caps = _caps(supports_prompt_caching=False)
-    s = adapter._caching_settings("anthropic", CachingPolicy(mode="auto"), caps)
+    s = adapter._caching_settings("anthropic", CachingPolicy(mode="auto"), "long", caps)
     assert s == {}
 
 
@@ -335,3 +353,52 @@ def test_map_thinking_openrouter_returns_empty():
     caps = _caps("none", thinking_modes=[])
     assert adapter.map_thinking("openrouter", caps, "medium") == {}
     assert adapter.map_thinking("openrouter", caps, "disabled") == {}
+
+
+# -- Gateway unit tests --------------------------------------------------------
+
+
+def test_cache_tier_for_role_long_roles():
+    """orchestrator, executor, planner, and intake all resolve to the 'long' cache tier."""
+    from koan.types import cache_tier_for_role
+    for role in ("orchestrator", "executor", "planner", "intake"):
+        assert cache_tier_for_role(role) == "long", f"expected long for {role!r}"
+
+
+def test_cache_tier_for_role_short_roles():
+    """reviewer and scout resolve to the 'short' cache tier."""
+    from koan.types import cache_tier_for_role
+    for role in ("reviewer", "scout"):
+        assert cache_tier_for_role(role) == "short", f"expected short for {role!r}"
+
+
+def test_cache_tier_for_role_unknown_defaults_to_long():
+    """Any unmapped role falls back to 'long' (safe default for unknown roles)."""
+    from koan.types import cache_tier_for_role
+    assert cache_tier_for_role("unknown-future-role") == "long"  # type: ignore[arg-type]
+
+
+def test_cache_ttl_for_anthropic():
+    """cache_ttl_for maps anthropic short->'5m' and long->'1h'."""
+    from koan.agents.adapter import cache_ttl_for
+    assert cache_ttl_for("anthropic", "short") == "5m"
+    assert cache_ttl_for("anthropic", "long") == "1h"
+
+
+def test_cache_ttl_for_bedrock():
+    """cache_ttl_for maps bedrock short->'5m' and long->'1h'."""
+    from koan.agents.adapter import cache_ttl_for
+    assert cache_ttl_for("bedrock", "short") == "5m"
+    assert cache_ttl_for("bedrock", "long") == "1h"
+
+
+def test_cache_ttl_for_google_returns_none():
+    """cache_ttl_for returns None for google (no koan-managed explicit cache)."""
+    from koan.agents.adapter import cache_ttl_for
+    assert cache_ttl_for("google", "long") is None
+
+
+def test_cache_ttl_for_openrouter_returns_none():
+    """cache_ttl_for returns None for openrouter (no koan-managed explicit cache)."""
+    from koan.agents.adapter import cache_ttl_for
+    assert cache_ttl_for("openrouter", "short") is None

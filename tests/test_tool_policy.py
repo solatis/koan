@@ -1,7 +1,8 @@
-# Unit tests for ToolPolicy and compose_toolset.
+# Unit tests for ToolPolicy, compose_toolset, and phase_gate_message.
 #
-# Verifies that compose_toolset produces the correct per-(role, phase) tool
-# set for representative cases.
+# Verifies that compose_toolset produces the correct per-role tool set
+# (phase-independent static vocabulary) and that phase_gate_message correctly
+# gates the orchestrator's phase-conditional tools at call time.
 
 from __future__ import annotations
 
@@ -10,8 +11,11 @@ import pytest
 from koan.tools.tool_policy import (
     build_tool_policy,
     compose_toolset,
+    phase_gate_message,
     # _ORCHESTRATOR_STORY_TOOLS removed in M1; story tools deleted.
     _ORCHESTRATOR_SCOUT_PHASES,
+    _ORCHESTRATOR_BASH_PHASES,
+    _ORCHESTRATOR_EXECUTOR_PHASES,
     _UNIVERSAL_MEMORY_TOOLS,
     _UNIVERSAL_READ_TOOLS,
     _NON_BASH_READ_TOOLS,
@@ -33,9 +37,15 @@ def policy():
 
 # -- Helper -------------------------------------------------------------------
 
-def _compose(policy, role, phase):
-    """Thin wrapper so tests read more like assertions than calls."""
-    return compose_toolset(policy, role, phase)
+def _compose(policy, role, phase=None):
+    """Thin wrapper so tests read more like assertions than calls.
+
+    The phase parameter is accepted for call-site readability (test class
+    fixtures set self.PHASE) but is NOT forwarded to compose_toolset --
+    toolset composition is now role-based only, and phase-appropriateness
+    is enforced at call time by phase_gate_message.
+    """
+    return compose_toolset(policy, role)
 
 
 # -- Tests: orchestrator in a planning phase ----------------------------------
@@ -43,7 +53,9 @@ def _compose(policy, role, phase):
 class TestOrchestratorPlanningPhase:
     """Orchestrator in a planning phase (e.g. plan).
 
-    Scouts are allowed; bash is NOT; executor tool is NOT.
+    The static role-based toolset always includes bash, koan_request_scouts,
+    and koan_request_executor; phase-appropriateness is enforced at call time
+    by phase_gate_message rather than by omitting tools from the vocabulary.
     Story tools were removed in M1.
     """
 
@@ -56,23 +68,34 @@ class TestOrchestratorPlanningPhase:
             f"Expected {_ALWAYS_PRESENT!r} to be a subset of {toolset!r}"
         )
 
-    def test_scouts_allowed(self, policy):
-        """koan_request_scouts is allowed in planning phases."""
-        assert self.PHASE in _ORCHESTRATOR_SCOUT_PHASES, (
-            f"{self.PHASE!r} must be in scout phases for this test to be meaningful"
-        )
+    def test_scouts_present(self, policy):
+        """koan_request_scouts is always registered in the static orchestrator toolset.
+
+        Phase-appropriateness is enforced by phase_gate_message at call time;
+        the tool is present in the vocabulary regardless of phase.
+        """
         toolset = _compose(policy, "orchestrator", self.PHASE)
         assert "koan_request_scouts" in toolset
 
-    def test_bash_absent(self, policy):
-        """Bash is phase-gated for orchestrator; not available in plan."""
-        toolset = _compose(policy, "orchestrator", self.PHASE)
-        assert "bash" not in toolset
+    def test_bash_present(self, policy):
+        """Bash is always registered in the orchestrator's static toolset.
 
-    def test_executor_tool_absent(self, policy):
-        """koan_request_executor was removed in M4 and must never appear."""
+        Phase-appropriateness is enforced by phase_gate_message at call time
+        (bash is gated to _ORCHESTRATOR_BASH_PHASES); the tool is present in
+        the registered vocabulary regardless of phase.
+        """
         toolset = _compose(policy, "orchestrator", self.PHASE)
-        assert "koan_request_executor" not in toolset
+        assert "bash" in toolset
+
+    def test_executor_tool_present(self, policy):
+        """koan_request_executor is always registered in the orchestrator's static toolset.
+
+        Phase-appropriateness is enforced by phase_gate_message at call time
+        (gated to _ORCHESTRATOR_EXECUTOR_PHASES); the tool is present in the
+        registered vocabulary regardless of phase.
+        """
+        toolset = _compose(policy, "orchestrator", self.PHASE)
+        assert "koan_request_executor" in toolset
 
     def test_step_machine_tools_present(self, policy):
         """koan_set_phase and koan_suggest_next must always be present for orchestrator.
@@ -134,32 +157,70 @@ class TestM1Removals:
         spec = importlib.util.find_spec("koan.phases.orchestrator")
         assert spec is None, "koan.phases.orchestrator still importable after M1 removal"
 
-    def test_executor_phases_removed_from_policy(self, policy):
-        """executor_phases was removed from ToolPolicy in M4.
+    def test_executor_phases_present_on_policy(self, policy):
+        """executor_phases is present on ToolPolicy (re-added in M4 of living-docs initiative).
 
-        koan_request_executor no longer exists; execution rides on
-        koan_set_phase('execute', plan_file=...). ToolPolicy must not have
-        the executor_phases field.
+        koan_request_executor is phase-gated to execute; executor_phases carries
+        the allowlist that compose_toolset checks.
         """
-        assert not hasattr(policy, "executor_phases"), (
-            "ToolPolicy.executor_phases was not removed in M4"
+        assert hasattr(policy, "executor_phases"), (
+            "ToolPolicy.executor_phases is missing -- re-add it for the phase gate"
         )
+        assert "execute" in policy.executor_phases
 
-    def test_koan_request_executor_not_in_koan_mcp_tools(self):
-        """koan_request_executor must not appear in KOAN_MCP_TOOLS after M4.
+    def test_koan_request_executor_in_koan_mcp_tools(self):
+        """koan_request_executor must appear in KOAN_MCP_TOOLS (re-added in M4 of living-docs initiative).
 
-        Execution now rides on koan_set_phase('execute', plan_file=...).
+        The projection fold uses KOAN_MCP_TOOLS to classify koan tool calls;
+        the tool must be present so executor launches are tracked.
         """
         from koan.agents.events import KOAN_MCP_TOOLS
-        assert "koan_request_executor" not in KOAN_MCP_TOOLS
+        assert "koan_request_executor" in KOAN_MCP_TOOLS
 
-    def test_request_executor_core_not_importable(self):
-        """request_executor_core must not be importable from koan.tools.koan_tools after M4."""
-        import importlib
+    def test_request_executor_core_importable(self):
+        """request_executor_core must be importable from koan.tools.koan_tools (re-added in M4 of living-docs initiative)."""
         import koan.tools.koan_tools as kt
-        assert not hasattr(kt, "request_executor_core"), (
-            "request_executor_core still present in koan.tools.koan_tools after M4 removal"
+        assert hasattr(kt, "request_executor_core"), (
+            "request_executor_core missing from koan.tools.koan_tools"
         )
+
+
+# -- Tests: orchestrator in execute phase -------------------------------------
+
+class TestOrchestratorExecutePhase:
+    """Orchestrator in the execute phase.
+
+    All three phase-conditional tools (koan_request_executor, bash,
+    koan_request_scouts) are always present in the static toolset.
+    Phase-appropriateness for scouts (not allowed in execute) is enforced
+    by phase_gate_message at call time, not by omitting it from the vocabulary.
+    """
+
+    PHASE = "execute"
+
+    def test_executor_tool_present(self, policy):
+        """koan_request_executor is always registered in the static orchestrator toolset."""
+        toolset = _compose(policy, "orchestrator", self.PHASE)
+        assert "koan_request_executor" in toolset
+
+    def test_bash_present(self, policy):
+        """bash is always registered in the orchestrator's static toolset."""
+        toolset = _compose(policy, "orchestrator", self.PHASE)
+        assert "bash" in toolset
+
+    def test_scouts_present(self, policy):
+        """koan_request_scouts is always registered in the static orchestrator toolset.
+
+        Although execute is not a scout phase, the tool is still registered;
+        phase_gate_message returns a denial when it is invoked in execute.
+        """
+        toolset = _compose(policy, "orchestrator", self.PHASE)
+        assert "koan_request_scouts" in toolset
+
+    def test_universals_present(self, policy):
+        """Universal memory and read-only artifact tools always present."""
+        toolset = _compose(policy, "orchestrator", self.PHASE)
+        assert _ALWAYS_PRESENT <= toolset
 
 
 # -- Tests: executor role -----------------------------------------------------
@@ -308,5 +369,92 @@ class TestScoutRole:
         toolset = _compose(policy, "scout", self.PHASE)
         assert "koan_set_phase" not in toolset
         assert "koan_reflect" not in toolset
+
+
+# -- Tests: phase_gate_message ------------------------------------------------
+
+
+class TestPhaseGateMessage:
+    """Tests for phase_gate_message -- call-time phase-appropriateness gate.
+
+    The gate only applies to the orchestrator role; all other roles always
+    get None regardless of tool or phase. Among orchestrator calls, only the
+    three phase-conditional tools (bash, koan_request_scouts,
+    koan_request_executor) can produce a non-None message; all other tool
+    names return None.
+    """
+
+    def test_executor_in_plan_phase_denied(self, policy):
+        """koan_request_executor in plan phase returns a non-None denial message.
+
+        The executor tool is only allowed in _ORCHESTRATOR_EXECUTOR_PHASES (execute).
+        """
+        msg = phase_gate_message(policy, "orchestrator", "plan", "koan_request_executor")
+        assert msg is not None
+        assert "koan_request_executor" in msg
+        assert "plan" in msg
+
+    def test_executor_in_execute_phase_allowed(self, policy):
+        """koan_request_executor in execute phase returns None (allowed)."""
+        assert "execute" in _ORCHESTRATOR_EXECUTOR_PHASES
+        msg = phase_gate_message(policy, "orchestrator", "execute", "koan_request_executor")
+        assert msg is None
+
+    def test_bash_in_plan_phase_denied(self, policy):
+        """bash in plan phase returns a non-None denial message.
+
+        bash is only allowed for orchestrator in _ORCHESTRATOR_BASH_PHASES.
+        """
+        assert "plan" not in _ORCHESTRATOR_BASH_PHASES
+        msg = phase_gate_message(policy, "orchestrator", "plan", "bash")
+        assert msg is not None
+        assert "bash" in msg
+
+    def test_bash_in_execute_phase_allowed(self, policy):
+        """bash in execute phase returns None (allowed)."""
+        assert "execute" in _ORCHESTRATOR_BASH_PHASES
+        msg = phase_gate_message(policy, "orchestrator", "execute", "bash")
+        assert msg is None
+
+    def test_scouts_in_execute_phase_denied(self, policy):
+        """koan_request_scouts in execute phase returns a non-None denial message.
+
+        execute is not in _ORCHESTRATOR_SCOUT_PHASES.
+        """
+        assert "execute" not in _ORCHESTRATOR_SCOUT_PHASES
+        msg = phase_gate_message(policy, "orchestrator", "execute", "koan_request_scouts")
+        assert msg is not None
+        assert "koan_request_scouts" in msg
+
+    def test_scouts_in_plan_phase_allowed(self, policy):
+        """koan_request_scouts in plan phase returns None (allowed).
+
+        plan is in _ORCHESTRATOR_SCOUT_PHASES.
+        """
+        assert "plan" in _ORCHESTRATOR_SCOUT_PHASES
+        msg = phase_gate_message(policy, "orchestrator", "plan", "koan_request_scouts")
+        assert msg is None
+
+    def test_non_orchestrator_role_always_none(self, policy):
+        """Non-orchestrator roles always receive None from phase_gate_message.
+
+        The gate is orchestrator-only; executor/scout/reviewer are unaffected
+        regardless of tool or phase.
+        """
+        for role in ("executor", "scout", "reviewer"):
+            for tool in ("bash", "koan_request_scouts", "koan_request_executor"):
+                msg = phase_gate_message(policy, role, "plan", tool)
+                assert msg is None, (
+                    f"Expected None for role={role!r} tool={tool!r}, got {msg!r}"
+                )
+
+    def test_non_phase_conditional_tool_always_none(self, policy):
+        """A tool not in the gate map (e.g. koan_set_phase) always returns None.
+
+        Only the three phase-conditional tools can be denied; all other tool
+        names short-circuit to None.
+        """
+        msg = phase_gate_message(policy, "orchestrator", "plan", "koan_set_phase")
+        assert msg is None
 
 
