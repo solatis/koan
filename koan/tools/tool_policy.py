@@ -1,15 +1,17 @@
-# Tool policy: allowlist data and per-(role, phase) toolset composition.
+# Tool policy: allowlist data and role-based toolset composition.
 #
 # ToolPolicy carries the allowlist tables (formerly in koan/lib/permissions.py,
 # inlined here in M1 when that module was deleted). compose_toolset reads them
-# once per (role, phase) to build the registered toolset for PydanticAIAgent.run(),
-# replacing call-time permission gating with construction-time vocabulary
-# restriction -- disallowed tools never enter the model's context.
+# once per role to build the registered toolset for PydanticAIAgent.run().
+# Phase-appropriateness for the orchestrator's phase-conditional tools
+# (bash, koan_request_scouts, koan_request_executor) is enforced at call time
+# by phase_gate_message, which returns a recoverable error when invoked in a
+# disallowed phase.
 #
-# Composition is per (role, phase), NOT per step: the tool set stays byte-stable
-# within a phase so it does not invalidate the tool-definition cache at each step
-# boundary. The lone legacy step-level gate (brief-generation step 1) has no
-# active-workflow consumer and is dropped.
+# Composition is per role, NOT per phase: the tool set stays byte-stable across
+# all phases so it does not invalidate the tool-definition cache prefix at each
+# phase boundary. The lone legacy step-level gate (brief-generation step 1) has
+# no active-workflow consumer and is dropped.
 
 from __future__ import annotations
 
@@ -51,10 +53,10 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
         "koan_suggest_next",
         "koan_ask_question",
         "koan_request_scouts",
-        # koan_request_executor removed in M4: execution rides on
-        # koan_set_phase("execute", plan_file=...). The separate executor tool
-        # returned a status JSON; the new path returns the deviation report and
-        # enforces the freeze lifecycle mechanically.
+        # koan_request_executor: always registered in the orchestrator's static
+        # toolset; gated at call time to the execute phase via phase_gate_message
+        # and _ORCHESTRATOR_EXECUTOR_PHASES.
+        "koan_request_executor",
         # Story tools (koan_select/complete/retry/skip_story) removed: the legacy
         # "execution" phase that used them is deleted in M1.
         "koan_memorize",
@@ -125,32 +127,38 @@ _ORCHESTRATOR_BASH_PHASES: frozenset[str] = frozenset({
     "frame",
 })
 
+# koan_request_executor is only useful in execute: need-to-know keeps the
+# cached tool prefix lean in all other phases.
+_ORCHESTRATOR_EXECUTOR_PHASES: frozenset[str] = frozenset({"execute"})
+
 
 @dataclass(frozen=True)
 class ToolPolicy:
     """Retained allowlist data from the deleted check_permission fence.
 
     Pure data structure; no enforcement logic of its own. compose_toolset
-    reads it once per (role, phase) to build the registered toolset,
-    replacing check_permission's call-time gate with registration-time
-    vocabulary restriction.
+    reads it once per role to build the registered toolset. The three
+    phase-conditional orchestrator tools (bash, koan_request_scouts,
+    koan_request_executor) are always registered in the orchestrator's
+    static toolset; phase_gate_message uses the *_phases fields to enforce
+    call-time phase-appropriateness and return a recoverable error when
+    they are invoked outside their allowed phases.
 
     Fields:
-        role_tools: Per-role frozensets of always-available tools (phase-
-            conditional tools excluded -- they are added by compose_toolset).
+        role_tools: Per-role frozensets of registered tools. For the
+            orchestrator this is the full ROLE_PERMISSIONS["orchestrator"]
+            set (including bash, koan_request_scouts, koan_request_executor).
         universal_tools: Tools allowed for every role in every phase
             (koan_memory_status, koan_search, koan_artifact_list,
             koan_artifact_read).
         read_tools: Non-bash file tools always allowed for all roles
             (read, grep, glob, find, ls).
-        bash_phases: Phases where bash is allowed for the orchestrator role.
-            Non-orchestrator roles always have bash.
+        bash_phases: Phases where bash is allowed for the orchestrator role;
+            used by phase_gate_message. Non-orchestrator roles always have bash.
         scout_phases: Phases where koan_request_scouts is allowed for the
-            orchestrator. Maps to _ORCHESTRATOR_SCOUT_PHASES.
-
-    executor_phases removed in M4: koan_request_executor no longer exists.
-    Execution is triggered via koan_set_phase("execute", plan_file=...) which
-    is always available to the orchestrator via the koan_set_phase tool.
+            orchestrator; used by phase_gate_message.
+        executor_phases: Phases where koan_request_executor is allowed for
+            the orchestrator; used by phase_gate_message.
     """
 
     role_tools: dict[str, frozenset[str]]
@@ -158,6 +166,7 @@ class ToolPolicy:
     read_tools: frozenset[str]
     bash_phases: frozenset[str]
     scout_phases: frozenset[str]
+    executor_phases: frozenset[str]
 
 
 def build_tool_policy() -> ToolPolicy:
@@ -166,75 +175,96 @@ def build_tool_policy() -> ToolPolicy:
     The tables are the single source of truth for toolset composition
     (formerly split between this module and the deleted koan/lib/permissions.py).
 
-    The orchestrator's role_tools excludes the two phase-conditional tool sets
-    (bash, koan_request_scouts) so compose_toolset can add them only when the
-    phase permits. koan_request_executor was also phase-gated here but was
-    removed in M4 -- execution now rides on koan_set_phase.
-    Non-orchestrator role_tools are used as-is from ROLE_PERMISSIONS.
+    role_tools is built directly from ROLE_PERMISSIONS for all roles; the
+    orchestrator's entry includes bash, koan_request_scouts, and
+    koan_request_executor because they are always registered in the static
+    toolset. The *_phases fields feed phase_gate_message for call-time
+    phase-appropriateness enforcement rather than controlling registration.
     """
-    # Orchestrator always-available tools: strip the two phase-conditional sets
-    # (bash and koan_request_scouts) so compose_toolset adds them per phase.
-    # koan_request_executor was removed here in M4 (no longer in ROLE_PERMISSIONS).
-    orchestrator_always: frozenset[str] = (
-        ROLE_PERMISSIONS["orchestrator"]
-        - frozenset({"bash", "koan_request_scouts"})
-    )
-
-    role_tools: dict[str, frozenset[str]] = {
-        role: tools
-        for role, tools in ROLE_PERMISSIONS.items()
-        if role != "orchestrator"
-    }
-    role_tools["orchestrator"] = orchestrator_always
-
     return ToolPolicy(
-        role_tools=role_tools,
+        role_tools=dict(ROLE_PERMISSIONS),
         universal_tools=_UNIVERSAL_MEMORY_TOOLS | _UNIVERSAL_READ_TOOLS,
         read_tools=_NON_BASH_READ_TOOLS,
         bash_phases=_ORCHESTRATOR_BASH_PHASES,
         scout_phases=_ORCHESTRATOR_SCOUT_PHASES,
+        executor_phases=_ORCHESTRATOR_EXECUTOR_PHASES,
     )
 
 
-def compose_toolset(policy: ToolPolicy, role: str, phase: str) -> frozenset[str]:
-    """Compute the allowed tool set for a (role, phase) pair.
+def compose_toolset(policy: ToolPolicy, role: str) -> frozenset[str]:
+    """Compute the registered tool set for a role.
 
-    Mirrors check_permission's ALLOW logic per (role, phase) without any
-    step-level gating (the legacy brief-generation step-1 gate targets a phase
-    with no active workflow consumer and is dropped here -- composition is
-    phase-granular so the tool set stays byte-stable within a phase, which is
-    cache-friendly for the tool-definition prefix).
+    Builds a static, phase-independent vocabulary for the role so the
+    tool-definition cache prefix stays byte-stable across all phases for
+    the long-lived orchestrator. Phase-appropriateness for the orchestrator's
+    phase-conditional tools (bash, koan_request_scouts, koan_request_executor)
+    is enforced at call time by phase_gate_message rather than here.
+
+    For non-orchestrator roles, bash is added unconditionally regardless of
+    ROLE_PERMISSIONS (mirrors check_permission's unconditional bash allow).
+    Orchestrator bash is already in ROLE_PERMISSIONS["orchestrator"] and
+    therefore in policy.role_tools["orchestrator"].
 
     Args:
         policy: The ToolPolicy built from module-level allowlist tables.
         role: SubagentRole string ("orchestrator", "executor", "scout", etc.).
-        phase: Current workflow phase string (e.g. "plan", "execute").
 
     Returns:
-        frozenset of tool name strings that are allowed for this (role, phase).
+        frozenset of tool name strings that are registered for this role.
     """
-    # Base: non-bash read tools + universal tools + role-specific always-on tools.
     allowed: frozenset[str] = (
         policy.read_tools
         | policy.universal_tools
         | policy.role_tools.get(role, frozenset())
     )
 
-    if role == "orchestrator":
-        # bash is phase-gated for orchestrator; always allowed for other roles.
-        if phase in policy.bash_phases:
-            allowed |= frozenset({"bash"})
-        # Scouting tools are only available in designated planning phases.
-        if phase in policy.scout_phases:
-            allowed |= frozenset({"koan_request_scouts"})
-        # koan_request_executor branch removed in M4: the tool no longer exists.
-        # koan_set_phase("execute", plan_file=...) is always available via the
-        # orchestrator's role_tools and handles the mechanical execute handoff.
-        # Story-management tools (koan_select/complete/retry/skip_story) removed
-        # in M1: the "execution" phase they gated is no longer in any workflow.
-    else:
-        # Non-orchestrator roles always have bash (regardless of ROLE_PERMISSIONS).
-        # This mirrors check_permission's unconditional bash allow for non-orchestrators.
+    if role != "orchestrator":
+        # Non-orchestrator roles always have bash; orchestrator gets it via
+        # role_tools (already in ROLE_PERMISSIONS["orchestrator"]).
         allowed |= frozenset({"bash"})
 
     return allowed
+
+
+def phase_gate_message(
+    policy: ToolPolicy,
+    role: str,
+    phase: str,
+    tool_name: str,
+) -> str | None:
+    """Return a denial message when tool_name is not allowed in the current phase.
+
+    Only the orchestrator role has phase-conditional tools; all other roles
+    short-circuit to None immediately. For the orchestrator, the three
+    phase-conditional tools (bash, koan_request_scouts, koan_request_executor)
+    are looked up against their respective phase allowlists. Any other tool
+    name is always allowed (returns None).
+
+    Args:
+        policy: The ToolPolicy built from module-level allowlist tables.
+        role: SubagentRole string for the calling agent.
+        phase: Current workflow phase string (e.g. "plan", "execute").
+        tool_name: The name of the tool being invoked.
+
+    Returns:
+        None when the call is permitted; a human-readable denial string when
+        the tool is invoked in a disallowed phase.  The caller should return
+        this message to the model as a recoverable error, never raise.
+    """
+    if role != "orchestrator":
+        return None
+
+    gate_map: dict[str, frozenset[str]] = {
+        "koan_request_executor": policy.executor_phases,
+        "koan_request_scouts": policy.scout_phases,
+        "bash": policy.bash_phases,
+    }
+    allowed_phases = gate_map.get(tool_name)
+    if allowed_phases is None:
+        return None
+    if phase in allowed_phases:
+        return None
+    return (
+        f"The {tool_name!r} tool is not available in the {phase!r} phase."
+        f" It is available only in: {', '.join(sorted(allowed_phases))}."
+    )

@@ -231,12 +231,12 @@ class PydanticAIAgent:
         Raises AgentError on unrecoverable model or tool failures so spawn_subagent
         can emit a structured agent_spawn_failed projection event.
 
-        M3 toolset composition: the registered koan toolset is composed per
-        (role, phase) via compose_toolset(build_tool_policy(), ...), so
-        disallowed tools never enter the model's vocabulary (the permission-fence
-        replacement).  The built-in toolset and deferred koan tools are also
-        subject to composition; deferred tools are allowed by policy but absent
-        from build_koan_toolset until M5/M6.
+        M3 toolset composition: the registered koan toolset is composed per role
+        via compose_toolset(build_tool_policy(), ...), building a static
+        phase-independent vocabulary so the tool-definition cache prefix stays
+        byte-stable across all phases.  Phase-appropriateness for the
+        orchestrator's phase-conditional tools (bash, koan_request_scouts,
+        koan_request_executor) is enforced at call time by phase_gate_message.
 
         M4 context-file injection: the project-directory context file
         (AGENTS.md > CLAUDE.md) is seeded into pending_context_files at loop
@@ -327,13 +327,13 @@ class PydanticAIAgent:
         context_processor = make_context_history_processor(deps)
         capabilities = [ProcessHistory(context_processor)]
 
-        # Compose toolsets per (role, phase) -- M3 fence replacement.
-        # compose_toolset returns the allowed vocabulary; build_koan_toolset
-        # registers only the intersection with implemented tools.  As of M6 the
-        # koan toolset implements all live tools (the subagent-spawn tools landed
-        # in M6, the interaction tools in M5); web_search/web_fetch land in M7.
+        # Compose toolsets per role -- M3 fence replacement, updated for
+        # prompt-cache stability.  Phase-appropriateness for the orchestrator's
+        # phase-conditional tools (bash, koan_request_scouts, koan_request_executor)
+        # is enforced at call time by phase_gate_message rather than here, so the
+        # tool-definition prefix stays byte-stable across all phases.
         policy = build_tool_policy()
-        allowed = compose_toolset(policy, options.role, self._app_state.run.phase)
+        allowed = compose_toolset(policy, options.role)
         koan_toolset = build_koan_toolset(allowed_names=allowed)
         builtin_toolset = build_builtin_toolset()
 
