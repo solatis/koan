@@ -88,8 +88,8 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
     Step 1 (Analyze): read brief.md + codebase; no writes. Step 2 (Write):
     compose and submit the plan via koan_artifact_write, which triggers the
     mechanical PLAN_REVIEWER (blocking). The producer then reconciles each
-    finding inline (edit-in-place or escalate), appends dispositions to the
-    .review.md sidecar, and names the plan for execution via koan_set_phase.
+    finding inline (edit-in-place or escalate), records dispositions in an
+    inline ## Review section, and names the plan for execution via koan_set_phase.
     """
     if step == 1:
         lines: list[str] = []
@@ -214,8 +214,7 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "",
                 "`koan_artifact_write` writes the plan artifact to the run directory"
                 " (write-once). The PLAN_REVIEWER sub-agent runs automatically and"
-                " returns its findings as the tool result. The artifact and its"
-                " `.review.md` sidecar are visible in the sidebar.",
+                " returns its findings as the tool result.",
                 "",
                 "Do NOT use Write or Edit -- those tools are not available in"
                 " this phase.",
@@ -225,6 +224,8 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 # M6: reconcile is folded into the Write step -- the write returns
                 # the reviewer's findings directly. A separate Reconcile step was
                 # rejected to keep the change bounded (plan key decision 1).
+                # M1: findings and dispositions are recorded inline in the plan
+                # artifact, not in a .review.md sidecar.
                 "Once `koan_artifact_write` returns, you have the PLAN_REVIEWER's",
                 "freeform findings. Judge each finding and act:",
                 "",
@@ -236,44 +237,53 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "  before proceeding -- do not silently discard a finding that",
                 "  invalidates the whole approach.",
                 "",
-                "Then append a per-finding disposition record to the plan's `.review.md`",
-                "sidecar via `koan_artifact_edit` (the sidecar is always writable):",
+                "After judging all findings, append a `## Review` section to the END of the"
+                " plan artifact. The edit protocol is anchor-based -- there is no \"append\""
+                " mode -- so append by inserting after the last line:",
+                "",
+                "1. Re-read the artifact with `koan_artifact_read` (your in-place edits above",
+                "   changed it; fetch current anchors).",
+                "2. Take the LAST line in that read (the highest line number) and copy its",
+                "   whole anchor token verbatim -- everything after the line-number tab.",
+                "3. Call `koan_artifact_edit` with `edit_type=\"insert_after\"` and that anchor:",
                 "",
                 "```",
                 "koan_artifact_edit(",
-                '    filename="<plan-stem>.review.md",',
-                "    old_string=\"## Plan review (pre-exec)\",",
-                '    new_string="""## Plan review (pre-exec)',
+                '    filename="<plan-filename>",',
+                '    anchor="<last-line anchor token, copied verbatim from the read>",',
+                "    edit_type=\"insert_after\",",
+                '    text="""',
                 "",
-                "### Orchestrator disposition",
+                "## Review",
                 "",
-                "- Finding 1: [INCORPORATED / OVERRULED / ESCALATED] -- <one line rationale>",
-                "- Finding 2: ...",
+                "### Finding 1 [INCORPORATED | OVERRULED | ESCALATED] -- <one line rationale>",
+                "### Finding 2 ...",
                 '""",',
                 ")",
                 "```",
                 "",
-                "## Name the plan for execution",
+                "A failed edit (e.g. `{\"ok\": false}` from a stale anchor) is recoverable:"
+                " re-read for fresh anchors and retry.",
                 "",
-                # The terminal action names the plan for execution rather than
-                # auto-advancing to a review phase, because execution requires
-                # plan_file and must freeze the plan (plan key decision 2).
-                "After reconciling all findings, name the plan for execution:",
+                "## Transition to execute",
+                "",
+                # M5: koan_set_phase is pure routing -- no plan_file parameter.
+                # The execute phase itself launches the executor via koan_request_executor.
+                "After reconciling all findings, transition to the execute phase:",
                 "",
                 "```",
                 "koan_set_phase(",
                 '    "execute",',
-                '    plan_file="<the plan filename you just wrote>",',
                 ")",
                 "```",
                 "",
-                "This freezes the plan byte-identical, spawns the executor (blocking),",
-                "and returns the deviation report.",
+                "The execute phase will identify the plan you just wrote and launch",
+                "the executor via koan_request_executor.",
             ],
-            # next_phase=None: the plan yields to name the plan for execution.
-            # The step instructions above call koan_set_phase("execute", plan_file=...)
-            # directly, so no terminal_invoke auto-advance is needed. The suggested
-            # phases come from the workflow transitions (["execute"]).
+            # next_phase=None: the plan yields to call koan_set_phase("execute").
+            # M5: the execute phase now drives koan_request_executor itself.
+            # The step instructions above call koan_set_phase("execute") directly;
+            # the suggested phases come from the workflow transitions (["execute"]).
             invoke_after=terminal_invoke(ctx.next_phase, ctx.suggested_phases),
         )
 

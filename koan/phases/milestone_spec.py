@@ -3,12 +3,11 @@
 #   Step 1 (Analyze)  -- analyze scope; no writes
 #   Step 2 (Write)    -- write milestones.md via koan_artifact_write
 #
-# M6: CREATE-only. The discard hook in apply_set_phase deletes milestones.md
-# on every milestone re-entry (when it exists), so this phase always CREATEs --
-# the RE-DECOMPOSE (revise-in-place) branch is removed (brief 9.3: stale
-# milestones.md is discarded and re-created fresh from the codebase, not patched).
-# The MILESTONE_REVIEWER runs mechanically on write (M3); findings are reconciled
-# inline before advancing to plan.
+# M2: The milestone phase is ONE-TIME per initiative. milestones.md is a living
+# document edited in place; the discard hook was removed (M2). This phase always
+# CREATEs milestones.md (it is entered once); routine post-execution edits live
+# in the execute phase. The MILESTONE_REVIEWER runs mechanically on write;
+# findings are reconciled inline before advancing to plan.
 #
 # Scope: "milestones" -- specific to the milestones workflow.
 
@@ -28,9 +27,9 @@ STEP_NAMES: dict[int, str] = {
 
 PHASE_ROLE_CONTEXT = (
     "You are a technical architect managing milestone decomposition for a broad initiative.\n"
-    # M6: RE-DECOMPOSE mode removed. The discard hook in apply_set_phase deletes
-    # milestones.md on every milestone re-entry, so this phase always creates fresh.
-    # Routine post-execution UPDATE work has moved to the execute phase (M5).
+    # M2: milestone phase is one-time. milestones.md is a living document edited
+    # in place; this phase always CREATEs it (entered once per initiative).
+    # Routine post-execution UPDATE work lives in the execute phase.
     "You decompose the initiative into milestones grounded in the codebase's dependency\n"
     "structure. Read the codebase, propose milestones, write milestones.md.\n"
     "\n"
@@ -108,8 +107,9 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
 
     Step 1 (Analyze): read brief.md and codebase module structure; identify
     affected subgraph; propose milestones. Step 2 (Write): write milestones.md
-    via koan_artifact_write (always CREATE -- never RE-DECOMPOSE), which triggers
-    the mechanical MILESTONE_REVIEWER. Reconcile findings inline, then advance to plan.
+    via koan_artifact_write (always CREATE -- the milestone phase is one-time),
+    which triggers the mechanical MILESTONE_REVIEWER. Reconcile findings inline,
+    then advance to plan.
     """
     if step == 1:
         lines: list[str] = []
@@ -187,8 +187,8 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 ")",
                 "```",
                 "",
-                # M6: always CREATE because the discard hook removes milestones.md
-                # on every milestone re-entry, so this phase never sees an existing file.
+                # M2: always CREATE -- the milestone phase is one-time, entered once
+                # per initiative; milestones.md does not exist when this step runs.
                 "Give the **first** milestone `[in-progress]` status; give all subsequent",
                 "milestones `[pending]` status.",
                 "Write a rough sketch (3-6 sentences) describing what each milestone covers.",
@@ -198,6 +198,8 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "",
                 # M6: reconcile folded into the Write step -- the write triggers the
                 # MILESTONE_REVIEWER mechanically and returns its findings as the tool result.
+                # M1: findings and dispositions are recorded inline in milestones.md,
+                # not in a .review.md sidecar.
                 "Once `koan_artifact_write` returns, you have the MILESTONE_REVIEWER's",
                 "freeform findings. Judge each finding and act:",
                 "",
@@ -206,20 +208,32 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "- **Reviewer misconception**: overrule it by editing to add missing context.",
                 "- **Approach-invalidating finding**: escalate via `koan_ask_question`.",
                 "",
-                "Then append a per-finding disposition to the sidecar:",
+                "After judging all findings, append a `## Review` section to the END of"
+                " milestones.md. The edit protocol is anchor-based -- there is no \"append\""
+                " mode -- so append by inserting after the last line:",
+                "",
+                "1. Re-read milestones.md with `koan_artifact_read` (your in-place edits",
+                "   changed it; fetch current anchors).",
+                "2. Take the LAST line in that read (highest line number) and copy its whole",
+                "   anchor token verbatim -- everything after the line-number tab.",
+                "3. Call `koan_artifact_edit` with `edit_type=\"insert_after\"` and that anchor:",
                 "",
                 "```",
                 "koan_artifact_edit(",
-                '    filename="milestones.review.md",',
-                "    old_string=\"## Plan review (pre-exec)\",",
-                '    new_string="""## Plan review (pre-exec)',
+                '    filename="milestones.md",',
+                '    anchor="<last-line anchor token, copied verbatim from the read>",',
+                "    edit_type=\"insert_after\",",
+                '    text="""',
                 "",
-                "### Orchestrator disposition",
+                "## Review",
                 "",
-                "- Finding 1: [INCORPORATED / OVERRULED / ESCALATED] -- <rationale>",
+                "### Finding 1 [INCORPORATED | OVERRULED | ESCALATED] -- <rationale>",
                 '""",',
                 ")",
                 "```",
+                "",
+                "A failed edit (e.g. `{\"ok\": false}` from a stale anchor) is recoverable:"
+                " re-read for fresh anchors and retry.",
                 "",
                 "## Advance to plan",
                 "",
