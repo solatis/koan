@@ -408,8 +408,12 @@ async def api_start_run(r: Request) -> Response:
         if cm and conn:
             try:
                 api_key = frozen_store.resolve(conn.id) if frozen_store and conn.id else None
+                # frozen_models is per-slot/informational; spawn re-resolves per role
+                # via resolve_model_spec (which calls cache_tier_for_role).  Here we
+                # use the global default tier ('long') because slot is not role-specific.
                 frozen_models[slot_name] = build_resolved_model(
-                    conn, cm, slot.thinking, slot.caching, cm.embedding_dim, api_key
+                    conn, cm, slot.thinking, slot.caching, cm.embedding_dim, api_key,
+                    cache_tier="long",
                 )
             except Exception:
                 log.warning("failed to build frozen ModelSpec for slot %r; skipping", slot_name)

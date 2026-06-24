@@ -15,10 +15,12 @@ from typing import TYPE_CHECKING
 from ..logger import get_logger
 from ..types import (
     ROLE_MODEL_TIER,
+    CacheTier,
     CachingPolicy,
     ModelSpec,
     ModelTier,
     ThinkingMode,
+    cache_tier_for_role,
 )
 from .base import AgentDiagnostic, AgentError
 
@@ -62,6 +64,7 @@ def build_resolved_model(
     caching: CachingPolicy,
     embedding_dim: "int | None",
     api_key: "str | None",
+    cache_tier: CacheTier = "long",
 ) -> ModelSpec:
     """Build a fully resolved ModelSpec from a Connection + ConfiguredModel.
 
@@ -70,6 +73,12 @@ def build_resolved_model(
     settings are baked into ModelSpec.settings so no per-spawn capability
     lookup is needed. base_url, region, embedding_dim, and api_key are inlined
     from the Connection, ConfiguredModel, and credential store at flatten time.
+
+    cache_tier is the koan-level cache duration class (default 'long'),
+    selected by the caller from the agent role via cache_tier_for_role or
+    set explicitly for memory LLM operations.  It is resolved here once and
+    baked into settings, preserving the byte-stable cacheable-prefix invariant
+    (the class must not change between turns).
 
     api_key is the credential baked in at flatten time from the caller's
     credential store. It is in-memory only and must never be serialized.
@@ -94,7 +103,7 @@ def build_resolved_model(
     # different key families (anthropic_cache* vs bedrock_cache*).
     settings: dict = {}
     settings.update(map_thinking(conn.type, caps, clamped))
-    settings.update(_caching_settings(conn.type, caching, caps))
+    settings.update(_caching_settings(conn.type, caching, cache_tier, caps))
 
     return ModelSpec(
         provider=conn.type,
@@ -134,6 +143,10 @@ class AgentRegistry:
         AgentError(code='unconfigured') when the active preset, the slot
         assignment, the ConfiguredModel, or the Connection is missing.  No
         default model is ever substituted (brief D12).
+
+        The cache tier is derived from the role via cache_tier_for_role
+        (orthogonal to the model tier from ROLE_MODEL_TIER): orchestrator and
+        executor are 'long'; reviewer and scout are 'short'.
 
         credential_store is used to resolve the api_key baked into the returned
         ModelSpec at flatten time. Pass None for keyless providers or test paths.
@@ -197,7 +210,10 @@ class AgentRegistry:
             if (credential_store and conn.id)
             else None
         )
-        return build_resolved_model(conn, cm, slot.thinking, slot.caching, cm.embedding_dim, api_key)
+        return build_resolved_model(
+            conn, cm, slot.thinking, slot.caching, cm.embedding_dim, api_key,
+            cache_tier=cache_tier_for_role(role),
+        )
 
 
 # compute_builtin_profiles and compute_balanced_profile removed in M5:

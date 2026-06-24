@@ -33,6 +33,11 @@ SubagentRole = Literal[
 
 ModelTier = Literal["strong", "standard", "cheap"]
 
+# Two-level cache duration classification used to select provider TTLs.
+# short = agents that complete quickly (reviewers, scouts);
+# long = agents that may wait between turns (orchestrator, executor).
+CacheTier = Literal["short", "long"]
+
 ALL_MODEL_TIERS: tuple[ModelTier, ...] = ("strong", "standard", "cheap")
 
 StoryStatus = Literal[
@@ -110,10 +115,15 @@ class ProviderModel:
 
 @dataclass
 class CachingPolicy:
-    """Per-provider caching directives resolved by the adapter into request settings."""
+    """Per-provider caching on/off switch resolved by the adapter into request settings.
+
+    Carries only the mode (auto/off) axis -- the orthogonal duration axis
+    (short/long cache tier) is derived from the agent role at flatten time
+    and is no longer user-configurable here.  mode is load-bearing for the
+    cache guard (cache_guard.py) and the adapter (_caching_settings).
+    """
 
     mode: Literal["auto", "off"] = "auto"
-    ttl: Literal["5m", "1h"] = "5m"
 
 
 @dataclass
@@ -196,6 +206,29 @@ ROLE_MODEL_TIER: dict[SubagentRole, ModelTier] = {
 
 # ROLE_EFFORT removed in M4: superseded by the provider adapter's per-provider
 # thinking mapping. Only ROLE_MODEL_TIER (above) remains for tier resolution.
+
+# Single role -> cache-duration policy: short = agents that never trigger a
+# long-running operation (reviews, exploration); long = everything else.
+# intake/planner are not spawned as subagents but are included for total
+# type coverage and are default-aligned (long).
+ROLE_CACHE_TIER: dict[SubagentRole, CacheTier] = {
+    "intake":       "long",
+    "scout":        "short",
+    "orchestrator": "long",
+    "planner":      "long",
+    "executor":     "long",
+    "reviewer":     "short",
+}
+
+
+def cache_tier_for_role(role: SubagentRole) -> CacheTier:
+    """Single gateway: resolve an agent role to its cache tier; defaults to long.
+
+    Returns 'long' for any unmapped role so new roles are safe by default
+    (a long-tier cache write costs more per write but avoids re-encode on
+    the next turn, which is the conservative choice for an unknown role).
+    """
+    return ROLE_CACHE_TIER.get(role, "long")
 
 
 # -- New config entity types (M1: connection / configured-model / preset) -----

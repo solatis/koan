@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pydantic_ai.usage import UsageLimits
 
 from ..agents.base import AgentDiagnostic, AgentError
-from ..types import CachingPolicy, Connection, ModelSpec, ResolvedCapabilities, ThinkingMode
+from ..types import CacheTier, CachingPolicy, Connection, ModelSpec, ResolvedCapabilities, ThinkingMode
 
 
 @dataclass
@@ -162,17 +162,40 @@ def map_thinking(provider: str, caps: "ResolvedCapabilities", mode: ThinkingMode
     return {}
 
 
+# Single per-provider cache-tier -> concrete TTL table (Gateway 2).
+# Keyed on provider (conn.type) so anthropic and bedrock can diverge if
+# AWS Bedrock ever stops honoring the 1h Claude TTL.  This is the single
+# place to change a route's mapping; do not add fallback logic elsewhere.
+_CACHE_TIER_TTL: dict[str, dict[CacheTier, str]] = {
+    "anthropic": {"short": "5m", "long": "1h"},
+    "bedrock":   {"short": "5m", "long": "1h"},
+}
+
+
+def cache_ttl_for(provider: str, cache_tier: CacheTier) -> str | None:
+    """Single per-provider gateway: map a cache tier to the concrete provider TTL.
+
+    Returns None when the provider has no koan-managed explicit cache (e.g.
+    google, openai -- they cache automatically server-side).  The caller
+    should return {} when None is returned.
+    """
+    return _CACHE_TIER_TTL.get(provider, {}).get(cache_tier)
+
+
 def _caching_settings(
     provider: str,
     caching: "CachingPolicy",
+    cache_tier: CacheTier,
     caps: "ResolvedCapabilities",
 ) -> dict:
-    """Resolve a CachingPolicy into transport-specific cache settings.
+    """Resolve a CachingPolicy + cache tier into transport-specific cache settings.
 
-    Takes provider (the transport type from conn.type) so the function can
-    dispatch to the correct pydantic-ai setting keys. Anthropic and Bedrock use
-    different key families -- there is no single literal key that works across
-    both (brief Decision 6).
+    Takes provider (conn.type) and cache_tier (derived from the agent role via
+    cache_tier_for_role) to dispatch the correct pydantic-ai setting keys and
+    concrete TTL.  Anthropic and Bedrock use different key families -- there is
+    no single literal key that works across both (brief Decision 6).  The TTL
+    value comes from cache_ttl_for(provider, cache_tier); providers without an
+    explicit-cache mapping return {}.
 
     Emits three breakpoints per transport:
       - Anthropic: anthropic_cache (message prefix), anthropic_cache_instructions,
@@ -194,7 +217,10 @@ def _caching_settings(
         # Provider handles caching automatically (google/openai) or the model
         # family does not support explicit cache control (bedrock-nova, voyage).
         return {}
-    ttl = caching.ttl  # "5m" | "1h"
+    ttl = cache_ttl_for(provider, cache_tier)
+    if ttl is None:
+        # Provider has no koan-managed explicit cache mapping; skip emission.
+        return {}
     if provider == "anthropic":
         return {
             "anthropic_cache": ttl,                  # growing message prefix

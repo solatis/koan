@@ -128,6 +128,11 @@ def build_memory_models(
     unresolvable bindings -- does NOT raise on missing config so the CLI
     can call this even with no bindings configured.
 
+    Memory LLM bindings (memory_llm, reflect_llm) are resolved at the 'short'
+    cache tier: summarize and reflect operations are bounded and never trigger
+    long-running tool use that would benefit from a 1h cache window.  The
+    embedding binding does not use prompt caching and is unchanged.
+
     The credential_store may be None (degraded boot or keyless provider);
     api_key is None on all specs in that case.
     """
@@ -181,10 +186,13 @@ def build_memory_models(
             )
         else:
             # LLM bindings: build via build_resolved_model so thinking/caching baked.
+            # memory_llm (summarize) and reflect_llm (reflect) never run long tool
+            # loops, so 'short' (5m) is the correct cache tier for both.
             from ..agents.registry import build_resolved_model
             try:
                 specs[kind] = build_resolved_model(
-                    conn, cm, binding.thinking, binding.caching, cm.embedding_dim, api_key
+                    conn, cm, binding.thinking, binding.caching, cm.embedding_dim, api_key,
+                    cache_tier="short",
                 )
             except Exception:
                 specs[kind] = None

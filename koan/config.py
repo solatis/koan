@@ -82,14 +82,14 @@ def _get_write_lock() -> asyncio.Lock:
 def _parse_caching_policy(raw: object) -> CachingPolicy:
     """Parse a CachingPolicy from a config sub-dict.
 
-    Falls back to defaults for any missing or invalid key.
+    Reads only 'mode' (auto/off); any legacy 'ttl' key is silently ignored
+    (backward-compatible: old configs still parse cleanly, and the stale
+    key is dropped the next time the config is serialized).  Falls back to
+    the default CachingPolicy() for any missing or non-dict value.
     """
     if not isinstance(raw, dict):
         return CachingPolicy()
-    return CachingPolicy(
-        mode=raw.get("mode", "auto"),
-        ttl=raw.get("ttl", "5m"),
-    )
+    return CachingPolicy(mode=raw.get("mode", "auto"))
 
 
 def _parse_connections(raw: object) -> list[Connection]:
@@ -326,11 +326,15 @@ async def load_koan_config() -> KoanConfig:
 
 
 def _serialize_slot_assignment(slot: SlotAssignment) -> dict:
-    """Serialize a SlotAssignment to a snake_case dict for YAML output."""
+    """Serialize a SlotAssignment to a snake_case dict for YAML output.
+
+    The 'caching' block carries only 'mode'; cache duration (tier) is
+    code-derived from the agent role and is no longer stored in config.
+    """
     return {
         "configured_model_id": slot.configured_model_id,
         "thinking": slot.thinking,
-        "caching": {"mode": slot.caching.mode, "ttl": slot.caching.ttl},
+        "caching": {"mode": slot.caching.mode},
     }
 
 
@@ -381,7 +385,9 @@ def _config_to_dict(config: "KoanConfig") -> dict:
                 entry: dict = {"configured_model_id": binding.configured_model_id}
                 if binding.thinking != "disabled":
                     entry["thinking"] = binding.thinking
-                entry["caching"] = {"mode": binding.caching.mode, "ttl": binding.caching.ttl}
+                # 'caching' carries only 'mode'; cache duration is code-derived from
+                # the binding kind (memory_llm/reflect_llm always resolve 'short').
+                entry["caching"] = {"mode": binding.caching.mode}
                 mem[binding_name] = entry
         if mem:
             data["memory"] = mem
