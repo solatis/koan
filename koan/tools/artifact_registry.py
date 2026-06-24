@@ -4,9 +4,12 @@
 # filesystem, projection, or run-state reads. Validators accept plain-data
 # state as arguments so the module is unit-testable in isolation. M3 wires
 # validate_write / validate_edit into koan_artifact_write / koan_artifact_edit;
-# M4 wires validate_execute_target into the execute-handoff path.
+# M4 adds validate_executor_request for koan_request_executor.
+# M5: koan_set_phase is pure routing; execution target validation moved to koan_request_executor.
+# M6: removed remediation chain grammar (-remediation-K forms); re-execution edits the
+#     same living plan in place so successor names are never produced.
 #
-# Grammar (all N and K are positive integers [1-9][0-9]* -- zero and
+# Grammar (all N are positive integers [1-9][0-9]* -- zero and
 # leading-zero forms are rejected):
 #
 #   brief.md
@@ -15,9 +18,6 @@
 #   milestones.md
 #   plan.md
 #   plan-milestone-<N>.md
-#   plan-remediation-<K>.md
-#   plan-milestone-<N>-remediation-<K>.md
-#   <reviewable>.review.md           -- koan-owned sidecar; never in registry
 
 from __future__ import annotations
 
@@ -32,14 +32,12 @@ from dataclasses import dataclass, field
 class ArtifactCoordinate:
     """Decoded artifact identity.
 
-    family:          canonical family name ("plan", "milestones", "brief", etc.)
-    discriminator:   milestone N for plan-milestone-N.md; None otherwise.
-    chain_position:  remediation index K for -remediation-K successors; None otherwise.
+    family:         canonical family name ("plan", "milestones", "brief", etc.)
+    discriminator:  milestone N for plan-milestone-N.md; None otherwise.
     """
 
     family: str
     discriminator: int | None
-    chain_position: int | None
 
 
 @dataclass(frozen=True)
@@ -59,7 +57,6 @@ class ArtifactRegistryEntry:
                          ("PLAN_REVIEWER" | "MILESTONE_REVIEWER" | "TECH_PLAN_REVIEWER")
                          or None for families without a reviewer.
     takes_discriminator: whether this family allows/requires a milestone N suffix.
-    takes_chain:         whether -remediation-K successors are legal for this family.
     on_write:            "create_and_review" | "create_no_review"
     on_edit:             "revise_draft" | "bookkeeping"
     """
@@ -71,7 +68,6 @@ class ArtifactRegistryEntry:
     edit_steps: frozenset[tuple[str, str]]
     reviewer_prompt: str | None
     takes_discriminator: bool
-    takes_chain: bool
     on_write: str
     on_edit: str
 
@@ -91,15 +87,23 @@ class ValidationError:
 
     code:           machine key; one of:
                     name_malformed | wrong_phase | out_of_step | exists_draft |
-                    exists_frozen | chain_gap | not_found | frozen |
-                    execute_not_found | execute_not_plan | already_executed |
-                    execute_requires_plan_file | invalid_transition | unknown_workflow.
+                    not_found |
+                    execute_not_found | execute_not_plan |
+                    execute_requires_instructions |
+                    invalid_transition | unknown_workflow |
+                    tool_unavailable_in_phase.
+                    M5: koan_set_phase is pure routing; re-execution is the feature.
+                    M6: remediation chain concept dropped; no successor-gap code.
                     out_of_step is returned when the artifact family is legal in the
                     current phase but the tool was called outside the step(s) where
                     the operation is permitted.
-                    The last three codes are constructed in koan_tools.py for
-                    workflow-transition rejections and share this type so they flow
-                    through the same _permission_error_result envelope.
+                    invalid_transition | unknown_workflow are constructed in
+                    koan_tools.py for workflow-transition rejections and share this
+                    type so they flow through _permission_error_result.
+                    tool_unavailable_in_phase is constructed in
+                    koan_tools._tool_phase_gate_result for call-time phase-gate
+                    denials (bash, koan_request_scouts, koan_request_executor
+                    invoked outside their allowed phases).
     message:        human-readable explanation for the orchestrator.
     allowed:        when/where the call IS legal -- the self-correction hint shown to
                     the model so it can re-issue at the right time.  Empty string when
@@ -117,9 +121,6 @@ class ValidationError:
 
 # -- Registry table ----------------------------------------------------------- #
 
-# The .review.md sidecar is deliberately NOT in this registry: a direct write
-# is koan-rejected, edit is the trusted append path, and the sidecar is never
-# classified as reviewable -- no recursive reviewer spawns.
 ARTIFACT_REGISTRY: dict[str, ArtifactRegistryEntry] = {
     "brief": ArtifactRegistryEntry(
         family="brief",
@@ -127,7 +128,6 @@ ARTIFACT_REGISTRY: dict[str, ArtifactRegistryEntry] = {
         edit_steps=frozenset({("intake", "Summarize")}),
         reviewer_prompt=None,
         takes_discriminator=False,
-        takes_chain=False,
         on_write="create_no_review",
         on_edit="revise_draft",
     ),
@@ -137,7 +137,6 @@ ARTIFACT_REGISTRY: dict[str, ArtifactRegistryEntry] = {
         edit_steps=frozenset({("core-flows", "Write")}),
         reviewer_prompt=None,
         takes_discriminator=False,
-        takes_chain=False,
         on_write="create_no_review",
         on_edit="revise_draft",
     ),
@@ -147,38 +146,41 @@ ARTIFACT_REGISTRY: dict[str, ArtifactRegistryEntry] = {
         edit_steps=frozenset({("tech-plan", "Write")}),
         reviewer_prompt="TECH_PLAN_REVIEWER",
         takes_discriminator=False,
-        takes_chain=False,
         on_write="create_and_review",
         on_edit="revise_draft",
     ),
     "milestones": ArtifactRegistryEntry(
         family="milestones",
         create_steps=frozenset({("milestone", "Write")}),
-        # milestones.md is also editable during execute/Assess so the
-        # post-execution conformance update path is legal.
-        edit_steps=frozenset({("milestone", "Write"), ("execute", "Assess")}),
+        # milestones.md is also editable during execute/Reconcile so the
+        # post-execution conformance update path is legal. M5: renamed Assess->Reconcile.
+        edit_steps=frozenset({("milestone", "Write"), ("execute", "Reconcile")}),
         reviewer_prompt="MILESTONE_REVIEWER",
         takes_discriminator=False,
-        takes_chain=False,
         on_write="create_and_review",
         on_edit="bookkeeping",
     ),
     # One "plan" family covers both plan.md (discriminator=None) and
     # plan-milestone-N.md (discriminator=N). The workflow supplies
     # requires_discriminator to validators to distinguish the two legal forms.
-    # Both Analyze and Write steps are legal for creates/edits: the execute->plan
-    # remediation re-entry write fires at Analyze, so it must not be blocked.
     "plan": ArtifactRegistryEntry(
         family="plan",
         create_steps=frozenset({("plan", "Analyze"), ("plan", "Write")}),
         edit_steps=frozenset({("plan", "Analyze"), ("plan", "Write")}),
         reviewer_prompt="PLAN_REVIEWER",
         takes_discriminator=True,
-        takes_chain=True,
         on_write="create_and_review",
         on_edit="revise_draft",
     ),
 }
+
+# Living-document families: editable from any phase the orchestrator runs in.
+# The per-step EDIT gate is skipped for these families so the orchestrator may
+# revise them ad hoc (reconcile review findings, adjust scope before a re-run).
+# CREATE-step gating is unchanged -- artifacts still originate in the right phase.
+# Only plan and milestones qualify; brief/core-flows/tech-plan remain per-step gated.
+LIVING_DOC_FAMILIES: frozenset[str] = frozenset({"plan", "milestones"})
+
 
 # -- Filename grammar (anchored regexes) -------------------------------------- #
 
@@ -196,16 +198,10 @@ _EXACT: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^plan\.md$"), "plan"),
 ]
 
-# Parametric plan-family patterns (all anchored; N and K are pos-int groups).
-_PLAN_MILESTONE_REMEDIATION = re.compile(
-    rf"^plan-milestone-({_POS_INT})-remediation-({_POS_INT})\.md$"
-)
+# Parametric plan-family patterns (all anchored; N is a pos-int group).
+# M6: remediation grammar patterns removed -- re-execution edits the same living
+# plan in place so -remediation-K successors are never produced.
 _PLAN_MILESTONE = re.compile(rf"^plan-milestone-({_POS_INT})\.md$")
-_PLAN_REMEDIATION = re.compile(rf"^plan-remediation-({_POS_INT})\.md$")
-
-# Sidecar pattern: any filename ending in .review.md.
-_REVIEW_SIDECAR = re.compile(r"^.+\.review\.md$")
-
 
 # -- Grammar parser ----------------------------------------------------------- #
 
@@ -214,62 +210,29 @@ def parse_artifact_filename(filename: str) -> ArtifactCoordinate | None:
     """Decode *filename* into an ArtifactCoordinate, or return None.
 
     Recognizes (in matching order -- exact bases before plan patterns):
-      brief.md              -> (brief, None, None)
-      core-flows.md         -> (core-flows, None, None)
-      tech-plan.md          -> (tech-plan, None, None)
-      milestones.md         -> (milestones, None, None)
-      plan.md               -> (plan, None, None)
-      plan-milestone-N.md   -> (plan, N, None)
-      plan-remediation-K.md -> (plan, None, K)
-      plan-milestone-N-remediation-K.md -> (plan, N, K)
+      brief.md            -> (brief, None)
+      core-flows.md       -> (core-flows, None)
+      tech-plan.md        -> (tech-plan, None)
+      milestones.md       -> (milestones, None)
+      plan.md             -> (plan, None)
+      plan-milestone-N.md -> (plan, N)
 
-    N and K are positive integers ([1-9][0-9]*). Returns None for .review.md
+    N is a positive integer ([1-9][0-9]*). Returns None for .review.md
     sidecars, zero/leading-zero indices, and anything else not matching the grammar.
+    M6: plan-remediation-K.md and plan-milestone-N-remediation-K.md are no longer
+    recognized -- they return None (name_malformed if a write is attempted).
     """
     # Try exact non-parametric bases first.
     for pattern, family in _EXACT:
         if pattern.match(filename):
-            return ArtifactCoordinate(family=family, discriminator=None, chain_position=None)
-
-    # plan-milestone-N-remediation-K.md (must precede the two single-group forms)
-    m = _PLAN_MILESTONE_REMEDIATION.match(filename)
-    if m:
-        return ArtifactCoordinate(
-            family="plan",
-            discriminator=int(m.group(1)),
-            chain_position=int(m.group(2)),
-        )
+            return ArtifactCoordinate(family=family, discriminator=None)
 
     # plan-milestone-N.md
     m = _PLAN_MILESTONE.match(filename)
     if m:
-        return ArtifactCoordinate(family="plan", discriminator=int(m.group(1)), chain_position=None)
-
-    # plan-remediation-K.md
-    m = _PLAN_REMEDIATION.match(filename)
-    if m:
-        return ArtifactCoordinate(family="plan", discriminator=None, chain_position=int(m.group(1)))
+        return ArtifactCoordinate(family="plan", discriminator=int(m.group(1)))
 
     return None
-
-
-# -- Sidecar helpers ---------------------------------------------------------- #
-
-
-def is_review_sidecar(filename: str) -> bool:
-    """Return True iff *filename* is a review sidecar (ends in .review.md)."""
-    return bool(_REVIEW_SIDECAR.match(filename))
-
-
-def sidecar_name_for(filename: str) -> str:
-    """Return the sidecar filename for a reviewable artifact.
-
-    Strips the trailing .md extension and appends .review.md.
-    E.g. plan-milestone-1.md -> plan-milestone-1.review.md.
-    The caller is responsible for passing a reviewable artifact name.
-    """
-    stem = filename[: -len(".md")]
-    return f"{stem}.review.md"
 
 
 # -- Classification helpers --------------------------------------------------- #
@@ -295,75 +258,6 @@ def reviewer_for(filename: str) -> str | None:
     return entry.reviewer_prompt
 
 
-# -- Lineage helpers ---------------------------------------------------------- #
-
-
-def next_remediation_name(filename: str) -> str | None:
-    """Return the next contiguous remediation filename for a plan artifact.
-
-    Given a base plan name, returns -remediation-1.md; given an existing
-    remediation, increments K by one. Returns None for non-plan families.
-
-    Examples:
-      plan.md                              -> plan-remediation-1.md
-      plan-milestone-1.md                  -> plan-milestone-1-remediation-1.md
-      plan-remediation-2.md                -> plan-remediation-3.md
-      plan-milestone-1-remediation-2.md    -> plan-milestone-1-remediation-3.md
-    """
-    coord = parse_artifact_filename(filename)
-    if coord is None or coord.family != "plan":
-        return None
-
-    next_k = (coord.chain_position or 0) + 1
-
-    # Reconstruct the base (family + optional discriminator), then append chain.
-    if coord.discriminator is not None:
-        base = f"plan-milestone-{coord.discriminator}"
-    else:
-        base = "plan"
-
-    return f"{base}-remediation-{next_k}.md"
-
-
-def predecessor_chain(filename: str, all_names: list[str]) -> list[str]:
-    """Return the ordered list of predecessor artifacts present in *all_names*.
-
-    For a remediation at chain position K, returns the base plan and each
-    -remediation-1 ... -remediation-(K-1) that appears in *all_names*, in
-    ascending chain order. Returns an empty list for a base plan (no predecessors)
-    or an unrecognized filename.
-
-    The lookup is purely filename-based -- no filesystem access.
-    """
-    coord = parse_artifact_filename(filename)
-    if coord is None or coord.family != "plan" or coord.chain_position is None:
-        # Base plan has no predecessors; non-plan or unrecognized -> empty.
-        return []
-
-    names_set = set(all_names)
-    chain: list[str] = []
-
-    # Base plan name (chain_position=None).
-    if coord.discriminator is not None:
-        base_name = f"plan-milestone-{coord.discriminator}.md"
-    else:
-        base_name = "plan.md"
-
-    if base_name in names_set:
-        chain.append(base_name)
-
-    # Intermediate remediations 1 .. K-1.
-    for k in range(1, coord.chain_position):
-        if coord.discriminator is not None:
-            pred = f"plan-milestone-{coord.discriminator}-remediation-{k}.md"
-        else:
-            pred = f"plan-remediation-{k}.md"
-        if pred in names_set:
-            chain.append(pred)
-
-    return chain
-
-
 # -- Validators --------------------------------------------------------------- #
 
 
@@ -373,13 +267,12 @@ def validate_write(
     phase: str,
     requires_discriminator: bool,
     existing_names: frozenset[str],
-    frozen_names: frozenset[str],
     step_name: str | None = None,
 ) -> ValidationError | None:
     """Validate a proposed artifact write. Returns None on success.
 
     Error codes (in order of precedence):
-      name_malformed    -- .review.md sidecar write, or filename not in grammar.
+      name_malformed    -- filename not in grammar.
       wrong_phase       -- family not legal in the current phase, or discriminator
                           form mismatch (bare plan.md when requires_discriminator,
                           or discriminated plan-milestone-N.md when not).
@@ -388,20 +281,8 @@ def validate_write(
                           Only checked when step_name is truthy (fail-open: when
                           step_name is None/empty the check is skipped so missing
                           step metadata never causes a false rejection).
-      exists_frozen     -- file exists and is frozen; suggested_name = next remediation.
       exists_draft      -- file exists and is an editable draft.
-      chain_gap         -- remediation K is not contiguous (K-1 does not exist).
     """
-    # Reject direct .review.md writes: sidecars are koan-owned.
-    if is_review_sidecar(filename):
-        return ValidationError(
-            code="name_malformed",
-            message=(
-                f"{filename!r} is a review sidecar; koan creates and owns .review.md files. "
-                "Write the primary artifact instead."
-            ),
-        )
-
     coord = parse_artifact_filename(filename)
     if coord is None:
         return ValidationError(
@@ -409,8 +290,7 @@ def validate_write(
             message=(
                 f"{filename!r} does not match the artifact grammar. "
                 "Expected one of: brief.md, core-flows.md, tech-plan.md, milestones.md, "
-                "plan.md, plan-milestone-N.md, plan-remediation-K.md, "
-                "plan-milestone-N-remediation-K.md (N and K are positive integers)."
+                "plan.md, plan-milestone-N.md (N is a positive integer)."
             ),
         )
 
@@ -449,7 +329,7 @@ def validate_write(
 
     # For the plan family, validate that the discriminator form matches the workflow.
     if coord.family == "plan":
-        if requires_discriminator and coord.discriminator is None and coord.chain_position is None:
+        if requires_discriminator and coord.discriminator is None:
             # Bare plan.md is wrong; this workflow fans out to milestones.
             return ValidationError(
                 code="wrong_phase",
@@ -470,18 +350,6 @@ def validate_write(
                 suggested_name="plan.md",
             )
 
-    # Check existence before chain gap so a frozen-exists error takes priority.
-    if filename in existing_names and filename in frozen_names:
-        return ValidationError(
-            code="exists_frozen",
-            message=(
-                f"{filename!r} is frozen and cannot be overwritten. "
-                "Write a remediation successor instead."
-            ),
-            allowed="Write the suggested remediation successor name instead.",
-            suggested_name=next_remediation_name(filename),
-        )
-
     if filename in existing_names:
         return ValidationError(
             code="exists_draft",
@@ -492,23 +360,6 @@ def validate_write(
             allowed="Use koan_artifact_edit to revise it.",
         )
 
-    # Validate remediation contiguity: -remediation-K requires -remediation-(K-1)
-    # (or the base plan for K=1) to exist.
-    if coord.chain_position is not None and coord.chain_position > 1:
-        if coord.discriminator is not None:
-            prev = f"plan-milestone-{coord.discriminator}-remediation-{coord.chain_position - 1}.md"
-        else:
-            prev = f"plan-remediation-{coord.chain_position - 1}.md"
-        if prev not in existing_names:
-            return ValidationError(
-                code="chain_gap",
-                message=(
-                    f"{filename!r} has chain position {coord.chain_position} but its "
-                    f"predecessor {prev!r} does not exist. Remediations must be contiguous."
-                ),
-                suggested_name=prev,
-            )
-
     return None
 
 
@@ -516,32 +367,26 @@ def validate_edit(
     filename: str,
     *,
     existing_names: frozenset[str],
-    frozen_names: frozenset[str],
     phase: str | None = None,
     step_name: str | None = None,
 ) -> ValidationError | None:
     """Validate a proposed artifact edit. Returns None on success.
 
-    .review.md sidecars are always editable (the append path, exempt from
-    per-step gating and the frozen check) -- return None immediately for them.
-    The sidecar exemption is checked FIRST so sidecars never hit the step gate.
-
     phase and step_name are optional; when either is falsy the per-step check
     is skipped (fail-open).  The caller (artifact_edit_core) resolves them from
     the current run state and the phase module's STEP_NAMES.
 
-    Error codes (in precedence order for non-sidecars):
-      not_found   -- file does not exist; suggested_name="write".
-      frozen      -- file is frozen; suggested_name = next remediation name.
-      out_of_step -- file exists and is not frozen, but the edit is called
-                     outside the step(s) where editing this family is permitted.
-                     Only checked when both phase and step_name are truthy.
-    """
-    # Sidecar append path: always allowed, exempt from per-step and freeze gating.
-    # This exemption must stay first so no subsequent check can gate sidecars.
-    if is_review_sidecar(filename):
-        return None
+    Living-document families (plan, milestones) are exempt from the per-step
+    edit gate: they may be edited from any phase the orchestrator runs in.
+    All other families (brief, core-flows, tech-plan) remain per-step gated.
 
+    Error codes (in precedence order):
+      not_found   -- file does not exist; suggested_name="write".
+      out_of_step -- file exists but the edit is called outside the step(s)
+                     where editing this family is permitted.  Only checked when
+                     both phase and step_name are truthy, and only for
+                     non-living-document families.
+    """
     if filename not in existing_names:
         return ValidationError(
             code="not_found",
@@ -549,21 +394,12 @@ def validate_edit(
             suggested_name="write",
         )
 
-    if filename in frozen_names:
-        return ValidationError(
-            code="frozen",
-            message=(
-                f"{filename!r} is frozen and cannot be edited. "
-                "Write a remediation successor instead."
-            ),
-            allowed="Write the suggested remediation successor name instead.",
-            suggested_name=next_remediation_name(filename),
-        )
-
     # Per-step edit check: fail-open when phase or step_name is unresolved.
+    # Living-document families (plan, milestones) are exempt: they are mutable
+    # working surfaces editable from any phase (M2 relaxation).
     if phase and step_name:
         coord = parse_artifact_filename(filename)
-        if coord is not None:
+        if coord is not None and coord.family not in LIVING_DOC_FAMILIES:
             entry = classify(coord.family)
             if entry is not None and entry.edit_steps and (phase, step_name) not in entry.edit_steps:
                 legal = ", ".join(
@@ -582,55 +418,54 @@ def validate_edit(
     return None
 
 
-def validate_execute_target(
-    filename: str,
+
+def validate_executor_request(
+    plan_file: str | None,
+    instructions: str | None,
     *,
     existing_names: frozenset[str],
-    executed_names: frozenset[str],
 ) -> ValidationError | None:
-    """Validate a proposed execute-handoff target. Returns None on success.
+    """Validate a koan_request_executor call. Returns None on success.
 
-    Each returned ValidationError carries an `allowed` self-correction hint
-    so the model can re-issue with a legal argument without crashing the run.
+    Re-execution is intentionally allowed: the same plan may be run multiple
+    times. M5: there is no re-execution gate here.
 
-    Error codes:
-      execute_not_found   -- filename not in grammar or does not exist.
-      execute_not_plan    -- file exists but is not a plan-family artifact.
-      already_executed    -- plan was already executed; suggested_name = next remediation.
+    Error codes (in order of precedence):
+      execute_requires_instructions -- neither plan_file nor non-blank instructions given.
+      execute_not_found             -- plan_file is not in grammar or not in existing_names.
+      execute_not_plan              -- plan_file exists but is not a plan-family artifact.
     """
-    coord = parse_artifact_filename(filename)
-    if coord is None or filename not in existing_names:
+    # A run with neither a plan nor instructions has nothing to direct the executor.
+    if not plan_file and not (instructions and instructions.strip()):
         return ValidationError(
-            code="execute_not_found",
+            code="execute_requires_instructions",
             message=(
-                f"{filename!r} was not found in the run directory. "
-                "Provide the exact filename of an existing plan artifact."
+                "koan_request_executor requires either a plan_file or free-form "
+                "instructions (or both). A run with neither has nothing to direct "
+                "the executor."
             ),
-            # Self-correction: name an artifact that actually exists and is a plan.
-            allowed="Provide the exact filename of an existing plan artifact in the run directory.",
+            allowed="Provide a plan_file naming an existing plan artifact, or supply free-form instructions.",
         )
 
-    if coord.family != "plan":
-        return ValidationError(
-            code="execute_not_plan",
-            message=(
-                f"{filename!r} is a {coord.family!r} artifact; "
-                "only plan-family artifacts may be named for execution."
-            ),
-            # Self-correction: only plan.md / plan-milestone-N.md are legal targets.
-            allowed="Name a plan-family artifact (plan.md or plan-milestone-N.md) for execution.",
-        )
-
-    if filename in executed_names:
-        return ValidationError(
-            code="already_executed",
-            message=(
-                f"{filename!r} has already been executed. "
-                "Write a remediation successor to retry."
-            ),
-            # Self-correction: write the suggested remediation and execute that instead.
-            allowed="Write the suggested remediation successor and execute that instead.",
-            suggested_name=next_remediation_name(filename),
-        )
+    if plan_file is not None:
+        coord = parse_artifact_filename(plan_file)
+        if coord is None or plan_file not in existing_names:
+            return ValidationError(
+                code="execute_not_found",
+                message=(
+                    f"{plan_file!r} was not found in the run directory. "
+                    "Provide the exact filename of an existing plan artifact."
+                ),
+                allowed="Provide the exact filename of an existing plan artifact in the run directory.",
+            )
+        if coord.family != "plan":
+            return ValidationError(
+                code="execute_not_plan",
+                message=(
+                    f"{plan_file!r} is a {coord.family!r} artifact; "
+                    "only plan-family artifacts may be named for execution."
+                ),
+                allowed="Name a plan-family artifact (plan.md or plan-milestone-N.md) for execution.",
+            )
 
     return None

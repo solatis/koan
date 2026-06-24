@@ -40,11 +40,9 @@ class PhaseContext:
     # Reviewer sub-agent fields -- populated from task.json by _build_phase_ctx.
     # reviewer_target: filename of the artifact being reviewed.
     # reviewer_prompt: charter tag ("PLAN_REVIEWER" etc.) selecting the charter.
-    # reviewer_predecessor_chain: ordered list of predecessor artifact names for
-    #   remediation-context review (empty for first-pass reviews).
+    # M6: reviewer task is "filename -> review it"; no predecessor context field.
     reviewer_target: str | None = None
     reviewer_prompt: str | None = None
-    reviewer_predecessor_chain: list[str] = field(default_factory=list)
     # Pre-rendered markdown block set by _step_phase_handshake. Phase modules
     # prepend this to step 1 guidance. Empty string means no injection (either
     # no directive on the binding or retrieval failed gracefully).

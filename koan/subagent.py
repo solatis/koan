@@ -108,7 +108,6 @@ def _build_phase_ctx(task: dict, subagent_dir: str) -> PhaseContext:
         # _spawn_reviewer in koan/tools/koan_tools.py.
         reviewer_target=task.get("reviewer_target"),
         reviewer_prompt=task.get("reviewer_prompt"),
-        reviewer_predecessor_chain=task.get("reviewer_predecessor_chain", []),
     )
 
 

@@ -85,8 +85,11 @@ EventType = Literal[
     "artifact_created",
     "artifact_modified",
     "artifact_removed",
-    # M4: artifact freeze/execution lifecycle (sourced from execute_entry /
-    # execute_completion; derived state lives in ArtifactInfo.frozen/executed).
+    # M4: artifact execution lifecycle (execute_entry / execute_completion).
+    # M3: execute_entry is a no-op started-marker (frozen field removed).
+    # M5: execute_completion is also a no-op fold; ArtifactInfo carries no
+    # lifecycle fields. Both events are still emitted and logged as the audit
+    # record; their fold cases are kept so they stay recognized.
     "execute_entry",
     "execute_completion",
     # Settings
@@ -702,20 +705,17 @@ class ReflectRun(KoanBaseModel):
 # -- Basic projection types ---------------------------------------------------
 
 class ArtifactInfo(KoanBaseModel):
-    """Per-artifact metadata and lifecycle state.
+    """Per-artifact metadata.
 
     path/size/modified_at are set by artifact_created/artifact_modified events.
-    frozen/executed/exec_outcome are derived exclusively from execute_entry and
-    execute_completion events -- never set directly by a writer.
+    M3: frozen field removed (execute_entry is a no-op started-marker).
+    M5: executed/exec_outcome removed -- execution history lives in the event
+    log and inline in the plan; no lifecycle state is folded here.
     """
 
     path: str
     size: int = 0
     modified_at: int = 0                   # milliseconds since epoch
-    # Lifecycle fields folded from execute_entry / execute_completion (M4).
-    frozen: bool = False                   # True once named for execution (execute_entry)
-    executed: bool = False                 # True after the executor exits (execute_completion)
-    exec_outcome: Literal["", "clean", "non_conforming"] = ""
 
 class CompletionInfo(KoanBaseModel):
     success: bool
@@ -2151,36 +2151,17 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 return projection.model_copy(update={"run": new_run})
 
             case "execute_entry":
-                # Freeze the named plan artifact. No-op when run is None or the
-                # artifact is not yet in the projection (it will be folded on the
-                # next artifact_created/modified event after the write).
-                if projection.run is None:
-                    return projection
-                plan_file = payload.get("plan_file", "")
-                existing = projection.run.artifacts.get(plan_file)
-                if existing is None:
-                    existing = ArtifactInfo(path=plan_file)
-                new_info = existing.model_copy(update={"frozen": True})
-                new_artifacts = dict(projection.run.artifacts)
-                new_artifacts[plan_file] = new_info
-                new_run = projection.run.model_copy(update={"artifacts": new_artifacts})
-                return projection.model_copy(update={"run": new_run})
+                # M3: freeze removed; execute_entry is now a pure no-op
+                # started-marker.  The event is still emitted and appended to the
+                # event log as the audit record of when execution began.
+                return projection
 
             case "execute_completion":
-                # Mark the plan as executed and record the exit-based outcome.
-                # The plan remains frozen; executed=True prevents a repeat execution.
-                if projection.run is None:
-                    return projection
-                plan_file = payload.get("plan_file", "")
-                outcome = payload.get("outcome", "")
-                existing = projection.run.artifacts.get(plan_file)
-                if existing is None:
-                    existing = ArtifactInfo(path=plan_file)
-                new_info = existing.model_copy(update={"executed": True, "exec_outcome": outcome})
-                new_artifacts = dict(projection.run.artifacts)
-                new_artifacts[plan_file] = new_info
-                new_run = projection.run.model_copy(update={"artifacts": new_artifacts})
-                return projection.model_copy(update={"run": new_run})
+                # M5: pure no-op. ArtifactInfo no longer carries executed/exec_outcome.
+                # The case is kept (not deleted) so this event stays recognized and
+                # appended to the event log as the audit record; deleting it would
+                # produce "unknown event_type" noise for every koan_request_executor call.
+                return projection
 
             # ── Settings ──────────────────────────────────────────────────
 

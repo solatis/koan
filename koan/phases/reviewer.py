@@ -251,8 +251,8 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
 
     Args:
         step: Current step number (1 or 2).
-        ctx: PhaseContext carrying reviewer_target, reviewer_prompt, and
-             reviewer_predecessor_chain populated from task.json.
+        ctx: PhaseContext carrying reviewer_target and reviewer_prompt
+             populated from task.json.
     """
     charter = _CHARTER_MAP.get(ctx.reviewer_prompt or "", _GENERIC_CHARTER)
     target = ctx.reviewer_target or "(no target specified)"
@@ -295,22 +295,6 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 "It provides the architectural context the decomposition was based on.",
                 "",
             ])
-
-        # Predecessor chain: when a remediation is being reviewed, read the
-        # chain of prior attempts so the reviewer understands what was tried.
-        chain = ctx.reviewer_predecessor_chain or []
-        if chain:
-            lines.extend([
-                "## Predecessor chain (remediation context)",
-                "",
-                "This is a remediation review. The following artifacts represent",
-                "prior attempts that failed. Read them in order to understand",
-                "what was tried and why it did not work:",
-                "",
-            ])
-            for pred in chain:
-                lines.append(f"- `{pred}`")
-            lines.append("")
 
         lines.extend([
             "## Verify against codebase and project memory",
