@@ -16,8 +16,10 @@
 # Path-scope: write and edit self-validate the resolved path against the
 # calling role and run_dir. Planning roles (intake/orchestrator/planner/scout)
 # are confined to run_dir; the executor role may write anywhere in the project
-# tree. koan/lib/permissions.py was deleted in M1; this path-scope logic lives
-# tool-internally -- a central gate cannot express argument-level constraints.
+# tree. A planning-role write outside run_dir returns a recoverable error string
+# rather than raising, so the LLM can self-correct. koan/lib/permissions.py was
+# deleted in M1; this path-scope logic lives tool-internally -- a central gate
+# cannot express argument-level constraints.
 #
 # Context-file injection: path-bearing tools (read/write/edit/glob/grep)
 # record their resolved paths into deps.agent.pending_context_files via
@@ -67,31 +69,38 @@ def _resolve_path(file_path: str, deps: Any) -> Path:
     return Path.cwd() / file_path
 
 
-def _enforce_path_scope(deps: Any, resolved_path: Path) -> None:
-    """Raise ValueError when a planning role writes outside run_dir.
+def _path_scope_violation(deps: Any, resolved_path: Path) -> str | None:
+    """Return an error message when a planning role writes outside run_dir.
 
     Planning roles (intake/orchestrator/planner/scout) may only write inside
     run_dir; the executor role may write anywhere. When run_dir is empty, the
     check is skipped (permissive degradation -- run_dir is set in all real runs).
+    Never raises; returns None when the write is permitted.
 
     Args:
         deps: ToolDeps carrying AgentState (deps.agent.role, deps.agent.run_dir).
         resolved_path: The absolute Path that would be written.
+
+    Returns:
+        None when the write is permitted; a human-readable violation string
+        when the path is outside run_dir for a confined planning role.
     """
     role = getattr(getattr(deps, "agent", None), "role", "")
     if role not in _PLANNING_ROLES:
-        return
+        return None
     run_dir = getattr(getattr(deps, "agent", None), "run_dir", None)
     if not run_dir:
-        return
+        return None
     resolved = resolved_path.resolve()
     resolved_run = Path(run_dir).resolve()
     try:
         resolved.relative_to(resolved_run)
+        return None
     except ValueError:
-        raise ValueError(
-            f"path-scope violation: role={role!r} may only write inside"
-            f" run_dir={run_dir!r}, got {str(resolved_path)!r}"
+        return (
+            f"path-scope violation: role {role!r} may only write inside"
+            f" run_dir {run_dir!r}; got {str(resolved_path)!r}."
+            " Write to a path inside run_dir instead."
         )
 
 
@@ -185,6 +194,8 @@ async def write_tool(ctx: Any, file_path: str, content: str) -> str:
 
     Enforces path-scope: planning roles (intake/orchestrator/planner/scout)
     may only write inside run_dir; executors may write the full project tree.
+    A planning-role write outside run_dir returns a recoverable "Error: ..."
+    string rather than raising, so the LLM can self-correct.
     After writing, the resolved path is recorded for context-file injection.
 
     Args:
@@ -196,7 +207,9 @@ async def write_tool(ctx: Any, file_path: str, content: str) -> str:
     resolved = _resolve_path(file_path, deps)
 
     if deps is not None:
-        _enforce_path_scope(deps, resolved)
+        violation = _path_scope_violation(deps, resolved)
+        if violation is not None:
+            return f"Error: {violation}"
 
     try:
         resolved.parent.mkdir(parents=True, exist_ok=True)
@@ -222,8 +235,9 @@ async def edit_tool(
 
     The anchor is copied from a `read` -- `{8-hex}{ANCHOR_DELIMITER}{line text}` --
     giving a precise location plus drift verification, instead of exact-string-match.
-    Enforces path-scope for planning roles. After editing, the resolved path is
-    recorded for context-file injection.
+    Enforces path-scope for planning roles; an out-of-run_dir write returns a
+    recoverable "Error: ..." string rather than raising. After editing, the
+    resolved path is recorded for context-file injection.
 
     Args:
         ctx: PydanticAI RunContext with ToolDeps as deps.
@@ -237,7 +251,9 @@ async def edit_tool(
     resolved = _resolve_path(file_path, deps)
 
     if deps is not None:
-        _enforce_path_scope(deps, resolved)
+        violation = _path_scope_violation(deps, resolved)
+        if violation is not None:
+            return f"Error: {violation}"
 
     try:
         existing = resolved.read_text(encoding="utf-8", errors="replace")
@@ -461,12 +477,26 @@ async def bash_tool(
     exempt from context-file injection (no single canonical path argument).
     Results are rejected with an error when they exceed the size ceiling.
 
+    For the orchestrator role, a call-time phase gate is applied: bash is only
+    allowed in the phases listed in _ORCHESTRATOR_BASH_PHASES. A wrong-phase
+    call returns a recoverable "Error: ..." string. Non-orchestrator roles
+    (executor, scout, reviewer) always run bash regardless of phase.
+
     Args:
         ctx: PydanticAI RunContext with ToolDeps as deps.
         command: Shell command to execute.
         timeout: Optional timeout in seconds (default None = no limit).
     """
     deps = getattr(ctx, "deps", None)
+
+    # Call-time phase gate for orchestrator; non-orchestrators short-circuit to None.
+    from .tool_policy import build_tool_policy, phase_gate_message
+    role = getattr(getattr(deps, "agent", None), "role", "") if deps else ""
+    phase = getattr(getattr(getattr(deps, "app_state", None), "run", None), "phase", "") or ""
+    gate_msg = phase_gate_message(build_tool_policy(), role, phase, "bash")
+    if gate_msg is not None:
+        return f"Error: {gate_msg}"
+
     run_dir = getattr(getattr(deps, "agent", None), "run_dir", None) if deps else None
     cwd = run_dir or None
 
