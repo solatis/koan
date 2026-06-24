@@ -145,16 +145,13 @@ The `execute` phase owns the `[done]` transition and the Outcome authoring.
 The `milestone` phase does NOT mark milestones `[done]` and does NOT write
 Outcome sections.
 
-## Structural re-decomposition
+## Scope adjustments
 
-When the scope of remaining milestones changes significantly (e.g., after
-discovering a dependency that cuts across the current decomposition), the
-orchestrator can re-decompose by re-entering the `milestone` phase. On re-entry,
-koan automatically discards non-executed draft artifacts (draft plans and the
-stale `milestones.md`) while preserving every frozen/executed plan and its
-sidecar as immutable history. The fresh `milestones.md` write fires the
-MILESTONE_REVIEWER. This is a destructive, frictionless operation -- the discard
-is automatic on `milestone` re-entry.
+When the scope of remaining milestones changes (e.g., after discovering a
+dependency that cuts across the current decomposition), the orchestrator edits
+`milestones.md` in place via `koan_artifact_edit`. Only future and pending
+milestones are modified; completed milestones and their Outcome sections are
+preserved by convention. There is no re-entry hook and no discard.
 
 ## Compound-risk framing
 

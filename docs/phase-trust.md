@@ -17,8 +17,9 @@ and acts immediately in the same turn:
 - **ESCALATED**: approach-invalidating finding -- surface via
   `koan_ask_question` and block until the user directs resolution.
 
-The producer appends a per-finding disposition to the `.review.md` sidecar
-so the finding record is preserved alongside the artifact.
+The producer records each finding and its disposition inline in the same
+artifact (a `## Review` section), so the review thread is preserved alongside
+the content it concerns.
 
 All other phases trust the chain. Re-verification outside the producer's
 own reconcile step is the "intrinsic self-correction" anti-pattern and is
@@ -56,7 +57,7 @@ have) -> **ESCALATED** -> `koan_ask_question` blocks until the user decides.
 
 If the finding is factually wrong about the artifact or the codebase ->
 **OVERRULED** -> edit the artifact to add the missing context, so the
-sidecar record reflects why the finding was dismissed.
+inline `## Review` record reflects why the finding was dismissed.
 
 ## Per-phase responsibilities
 
@@ -69,17 +70,14 @@ sidecar record reflects why the finding was dismissed.
 
 ### milestone (2 steps: Analyze, Write) -- milestones workflow only
 
-- CREATE-only semantics: decomposes the initiative into milestones grounded
-  in code structure.
-- On milestone re-entry (loop-back after one or more milestones have been
-  executed), a discard hook fires on phase entry and deletes non-frozen,
-  non-executed artifacts from the run directory, so the producer starts
-  from a clean slate for the revised decomposition.
+- One-time phase: decomposes the initiative into milestones grounded in code
+  structure. The milestone phase is entered once; `milestones.md` is edited
+  in place thereafter as understanding evolves.
 - MUST NOT mark milestones `[done]` or add Outcome sections -- the execute
-  phase's deviation report and the orchestrator's post-execute bookkeeping
-  own those transitions.
+  phase's conformance review and inline bookkeeping own those transitions.
 - Writing `milestones.md` triggers the MILESTONE_REVIEWER. Producer
-  reconciles findings inline.
+  reconciles findings inline, recording them in the artifact's `## Review`
+  section.
 
 ### plan (2 steps: Analyze, Write)
 
@@ -92,18 +90,22 @@ sidecar record reflects why the finding was dismissed.
 - Writing the plan artifact triggers the PLAN_REVIEWER. Producer reconciles
   findings inline.
 
-### execute (1 step: Implement)
+### execute (3 steps: Run, Verify, Reconcile)
 
-- Entered via `koan_set_phase("execute", plan_file=X)` from the orchestrator.
-- This call freezes the named plan, spawns the executor sub-agent, and
-  returns a deviation report as the tool result when the executor exits.
-- The orchestrator reads the deviation report and determines the next phase:
-  - Significant deviations: loop back to `plan` for re-work.
-  - Clean execution or minor deviations: advance toward `curation` or the
-    next milestone.
-  - Milestones workflow: mark the completed milestone `[done]`, append the
-    four-subsection Outcome, advance the next `[pending]` milestone to
-    `[in-progress]`, then yield with the next-phase suggestion.
+- Entered via `koan_set_phase("execute")` from the plan phase.
+- The orchestrator calls `koan_request_executor(plan_file?, instructions?)`
+  to spawn the executor sub-agent, which returns a deviation report.
+- The orchestrator runs independent verification (bash checks) -- the result
+  is authoritative over the executor's self-report.
+- The orchestrator classifies the outcome:
+  - Conforming: record the outcome inline in the plan (`## Execution N
+[CONFORMING]`); in the milestones workflow, mark the milestone `[done]`
+    and append the four-subsection Outcome; then yield with the next-phase
+    suggestion.
+  - Non-conforming: edit the plan in place or compose free-form fix
+    instructions, then call `koan_request_executor` again. Re-execution is
+    the orchestrator's agency; there is no fixed remediation count.
+  - Repeated non-conforming: escalate via `koan_ask_question`.
 
 ### tech-plan (2 steps: Analyze, Write) -- initiative workflow only
 
@@ -120,7 +122,7 @@ The permission model uses **role-level grant + prompt discipline**:
 | Layer             | Mechanism                                              |
 | ----------------- | ------------------------------------------------------ |
 | Role-level grant  | `koan_artifact_edit` composed into the `orchestrator`  |
-|                   | toolset unconditionally via `compose_toolset`           |
+|                   | toolset unconditionally via `compose_toolset`          |
 | Prompt discipline | Each phase is instructed to edit only its own artifact |
 | Reviewer role     | `reviewer` role has no write tools; read-only          |
 
@@ -133,20 +135,23 @@ editorial decisions.
 ## Data flow: plan workflow
 
 ```
-brief.md (frozen, written by intake)
+brief.md (write-once, written by intake)
     |
     v
 plan ----> plan.md
     |      koan_artifact_write triggers PLAN_REVIEWER (blocking)
-    |      producer reconciles inline, edits plan.md, appends to plan.review.md
+    |      producer reconciles inline, edits plan.md,
+    |      records review thread in plan.md ## Review section
     v
-koan_set_phase("execute", plan_file="plan.md")
-    |      freezes plan.md, spawns executor sub-agent
-    |      returns deviation report when executor exits
+koan_set_phase("execute")
+    |      pure routing -- no plan frozen, no executor spawned
     v
-orchestrator reads deviation report:
-    |  -- significant deviations: hand back (suggest plan loop-back)
-    |  -- clean: hand back (suggest curation)
+execute phase:
+    |      koan_request_executor(plan_file="plan.md")
+    |      executor runs, returns deviation report
+    |      orchestrator verifies independently (bash checks)
+    |      -- conforming: record ## Execution N inline; hand back (suggest curation)
+    |      -- non-conforming: edit plan / compose instructions, re-run
     v
 curation
 ```
@@ -154,33 +159,30 @@ curation
 ## Data flow: milestones workflow
 
 ```
-brief.md (frozen, written by intake)
+brief.md (write-once, written by intake)
     |
     v
-milestone (CREATE) ----> milestones.md
+milestone (one-time) ----> milestones.md
     |      koan_artifact_write triggers MILESTONE_REVIEWER (blocking)
     |      producer reconciles inline, edits milestones.md,
-    |      appends to milestones.review.md; yields with "plan" suggested
+    |      records review thread in milestones.md ## Review section
+    |      yields with "plan" suggested
     v
 plan ----> plan-milestone-N.md   (reads prior Outcome sections)
     |      koan_artifact_write triggers PLAN_REVIEWER (blocking)
     |      producer reconciles inline; yields with "execute" suggested
     v
-koan_set_phase("execute", plan_file="plan-milestone-N.md")
-    |      freezes plan, spawns executor sub-agent
-    |      returns deviation report when executor exits
-    v
-orchestrator reads deviation report:
-    |      -- mark completed [done], append four-subsection Outcome
-    |      -- advance next [pending] -> [in-progress]
-    |      -- adjust remaining sketches if deviations require it
+execute phase:
+    |      koan_request_executor(plan_file="plan-milestone-N.md")
+    |      executor runs, returns deviation report
+    |      orchestrator verifies independently (bash checks)
+    |      -- conforming: record ## Execution N inline; mark milestone [done],
+    |         append four-subsection Outcome, advance next [pending] -> [in-progress]
+    |      -- non-conforming: edit plan / compose instructions, re-run
     |
     +---> [if milestones remain] hand back (suggest plan) -> LOOP
     |
     +---> [if all done/skipped] hand back (suggest curation)
-    |
-    +---> [if graph needs revision] hand back (suggest milestone)
-         (discard hook fires on milestone re-entry)
 ```
 
 ## Open questions

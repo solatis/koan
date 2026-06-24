@@ -41,7 +41,7 @@ driver) and templated `status.md` (for LLMs). The driver reads JSON and exit
 codes; it never parses markdown.
 
 ```
-Orchestrator calls koan_set_phase("execute")
+Orchestrator calls koan_set_phase("plan")
   -> tool code writes run-state.json (JSON, for driver)
   -> driver reads run-state.json to validate and record the transition
   -> LLM receives the tool result (markdown text) as confirmation
@@ -53,7 +53,7 @@ failures in the deterministic driver. Markdown is forgiving; JSON is not.
 ### 2. Step-first workflow
 
 Every subagent is an asyncio task inside the single backend process. Tools are
-in-process `FunctionToolset`s composed per (role, phase) by
+in-process `FunctionToolset`s composed per role by
 `koan/tools/tool_policy.py:compose_toolset`. There is no subprocess, no CLI
 binary, and no HTTP transport.
 
@@ -133,13 +133,14 @@ user can request any available phase. Invalid phase strings raise `ToolError`.
 
 ### 4. Default-deny permissions
 
-Capability restriction is **construction-time**, not call-time.
-`compose_toolset(policy, role, phase)` in `koan/tools/tool_policy.py` builds
-the allowed tool vocabulary once per (role, phase) before the agent's loop
-starts. Disallowed tools never enter the model's context; the model cannot
-call what it cannot see. The allowlist tables (`ROLE_PERMISSIONS` and the
-universal read/memory sets) live in `tool_policy.py` as the single source of
-truth.
+Capability restriction is two-layered. `compose_toolset(policy, role)` in
+`koan/tools/tool_policy.py` builds vocabulary per **role** (static for the
+long-lived orchestrator, so the prompt-cache prefix is never invalidated by a
+phase change). A call-time `phase_gate_message` enforces phase-appropriateness
+for the orchestrator's phase-conditional tools (`koan_request_executor`,
+`bash`, `koan_request_scouts`), returning a recoverable error when used in a
+disallowed phase. The allowlist tables (`ROLE_PERMISSIONS` and the universal
+read/memory sets) live in `tool_policy.py` as the single source of truth.
 
 Agents should not have access to tools they are never intended to need.
 Restricting the tool vocabulary prevents the model from drifting toward
@@ -254,47 +255,46 @@ and suggested transitions between phases. Two workflows are defined in
 
 Review of `plan.md` is performed inline by the mechanical PLAN_REVIEWER
 sub-agent spawned by `koan_artifact_write`. The reviewer runs in a fresh
-read-only context, returns freeform findings to the producer, and koan persists
-them to `plan.review.md`. The producer reconciles findings in place
-(INCORPORATED / OVERRULED / ESCALATED) before advancing. There is no separate
-`plan-review` phase.
+read-only context, returns freeform findings to the producer, which reconciles
+them (INCORPORATED / OVERRULED / ESCALATED) and records them in the plan's
+`## Review` section. There is no separate `plan-review` phase and no sidecar.
 
-Execution is triggered by `koan_set_phase("execute", plan_file="plan.md")`,
-which freezes the plan, spawns the executor (blocking), and returns the deviation
-report. The `execute` phase runs inline conformance review of the executor's
-work, appends notes to `plan.review.md`, and branches: clean -> advance to
-`curation`; non-conforming -> one-shot remediation via a new
-`plan-remediation-K.md` successor (re-triggers PLAN_REVIEWER), then re-execute;
-second failure -> escalate to the user.
+Execution is launched via `koan_request_executor(plan_file="plan.md")` from
+within the execute phase (entered via `koan_set_phase("execute")`). The execute
+phase runs Run / Verify / Reconcile: launch the executor, run independent bash
+checks, classify the outcome. Conforming results are recorded inline in the
+plan (`## Execution N [CONFORMING]`); non-conforming results lead to in-place
+plan edits and another `koan_request_executor` call. Escalation to the user
+happens when repeated attempts fail.
 
-| Phase      | Role                        | Steps                         | Artifact                  |
-| ---------- | --------------------------- | ----------------------------- | ------------------------- |
-| `intake`   | Requirement gathering       | 3 (Gather/Deepen/Summarize)   | `brief.md`                |
-| `plan`     | Technical planning + review | 2 (Analyze/Write+Reconcile)   | `plan.md`, `plan.review.md` |
-| `execute`  | Execution + inline review   | 2 (Verify/Assess+Bookkeeping) | Code changes via executor |
-| `curation` | Postmortem                  | 2 (Inventory/Memorize)        | `.koan/memory/` entries   |
+| Phase      | Role                        | Steps                       | Artifact                  |
+| ---------- | --------------------------- | --------------------------- | ------------------------- |
+| `intake`   | Requirement gathering       | 3 (Gather/Deepen/Summarize) | `brief.md`                |
+| `plan`     | Technical planning + review | 2 (Analyze/Write+Reconcile) | `plan.md`                 |
+| `execute`  | Execution + verification    | 3 (Run/Verify/Reconcile)    | Code changes via executor |
+| `curation` | Postmortem                  | 2 (Inventory/Memorize)      | `.koan/memory/` entries   |
 
 **milestones** -- intake -> milestone -> plan -> execute -> milestone (loop) -> curation
 
 Review of `milestones.md` and each `plan-milestone-N.md` is performed inline by
 the mechanical MILESTONE_REVIEWER and PLAN_REVIEWER sub-agents respectively,
 both spawned by `koan_artifact_write`. Each reviewer runs in a fresh read-only
-context and koan persists findings to the corresponding `.review.md` sidecar.
-The producer reconciles findings before advancing. There are no separate
-`milestone-review` or `plan-review` phases.
+context and returns findings to the producer, which records them inline in the
+artifact's `## Review` section. There are no separate `milestone-review` or
+`plan-review` phases and no sidecars.
 
 After execution, the `execute` phase runs inline conformance review and -- on
-a clean result -- updates `milestones.md` (marks `[done]`, adds `### Outcome`)
+a conforming result -- updates `milestones.md` (marks `[done]`, adds `### Outcome`)
 via `koan_artifact_edit`. The loop then returns to `plan` for the next milestone
 or advances to `curation` when all milestones are complete.
 
-| Phase       | Role                              | Steps                         | Artifact                        |
-| ----------- | --------------------------------- | ----------------------------- | ------------------------------- |
-| `intake`    | Requirement gathering             | 3 (Gather/Deepen/Summarize)   | `brief.md`                      |
-| `milestone` | Milestone decomposition + review  | 2 (Analyze/Write+Reconcile)   | `milestones.md`, `.review.md`   |
-| `plan`      | Milestone planning + review       | 2 (Analyze/Write+Reconcile)   | `plan-milestone-N.md`, `.review.md` |
-| `execute`   | Execution + inline review + UPDATE| 2 (Verify/Assess+Bookkeeping) | Code changes; `milestones.md` UPDATE |
-| `curation`  | Postmortem                        | 2 (Inventory/Memorize)        | `.koan/memory/` entries         |
+| Phase       | Role                              | Steps                       | Artifact                             |
+| ----------- | --------------------------------- | --------------------------- | ------------------------------------ |
+| `intake`    | Requirement gathering             | 3 (Gather/Deepen/Summarize) | `brief.md`                           |
+| `milestone` | Milestone decomposition + review  | 2 (Analyze/Write+Reconcile) | `milestones.md`                      |
+| `plan`      | Milestone planning + review       | 2 (Analyze/Write+Reconcile) | `plan-milestone-N.md`                |
+| `execute`   | Execution + verification + UPDATE | 3 (Run/Verify/Reconcile)    | Code changes; `milestones.md` UPDATE |
+| `curation`  | Postmortem                        | 2 (Inventory/Memorize)      | `.koan/memory/` entries              |
 
 ### Workflow selection
 
@@ -544,11 +544,11 @@ Neither alone is sufficient.**
 Two enforcement mechanisms are available -- use the appropriate one for the
 constraint:
 
-| Mechanism                        | What it enforces                              | How                                                                   |
-| -------------------------------- | --------------------------------------------- | --------------------------------------------------------------------- |
-| **`compose_toolset`**            | Which tools a role (or phase) can call        | Absent from vocabulary; model cannot call what it cannot see          |
-| **`validate_step_completion()`** | Required pre-conditions before step advancement | Re-inject the same step at the turn boundary; LLM sees an error and must comply |
-| **Tool description**             | Soft guidance on when to call                 | Cannot be enforced; LLM can ignore it                                 |
+| Mechanism                                        | What it enforces                                                         | How                                                                             |
+| ------------------------------------------------ | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------- |
+| **`compose_toolset`** / **`phase_gate_message`** | Which tools a role can call (vocabulary) and when (call-time phase gate) | Absent from vocabulary or rejected at call time with a recoverable error        |
+| **`validate_step_completion()`**                 | Required pre-conditions before step advancement                          | Re-inject the same step at the turn boundary; LLM sees an error and must comply |
+| **Tool description**                             | Soft guidance on when to call                                            | Cannot be enforced; LLM can ignore it                                           |
 
 Any behavioral constraint that matters for correctness needs **both** a prompt
 instruction (so the LLM knows what to do) and a mechanical gate (so

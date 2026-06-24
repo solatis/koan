@@ -17,9 +17,10 @@ model runner. One implementation satisfies the Protocol in production:
 tests.
 
 All tools -- both koan tools and built-in file/bash tools -- are in-process
-`FunctionToolset`s composed per (role, phase) by
-`koan/tools/tool_policy.py:compose_toolset`. There is no subprocess, no CLI
-binary, and no HTTP transport.
+`FunctionToolset`s composed per role by
+`koan/tools/tool_policy.py:compose_toolset` (with a call-time phase gate for
+phase-conditional orchestrator tools). There is no subprocess, no CLI binary,
+and no HTTP transport.
 
 ---
 

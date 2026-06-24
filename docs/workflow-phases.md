@@ -31,9 +31,9 @@ its exit is negotiated with the user when they signal sufficient clarity.
 
 The why band answers the question of intent. It captures what the user is
 trying to accomplish, who is affected by the current state, and what makes
-the initiative worth doing at all. Its artifact is intended to remain
-frozen for the rest of the run because revisiting intent during execution
-destabilizes everything downstream.
+the initiative worth doing at all. Its artifact (`brief.md`) is write-once: created at intake exit and never
+rewritten downstream, because revisiting intent during execution destabilizes
+everything downstream.
 
 The what band answers the question of definition. It splits into two
 sub-bands. The first describes the system's externally visible behavior —
@@ -62,30 +62,30 @@ The first is the mechanical reviewer pattern. For artifact families that
 warrant adversarial check (milestones, plan, tech-plan), `koan_artifact_write`
 triggers a REVIEWER sub-agent mechanically as a blocking side-effect of the
 write call. The reviewer runs in a fresh context against the just-written
-artifact, returns freeform findings, and koan persists them to a `.review.md`
-sidecar. The findings are also returned directly to the producer as the tool
-result, so the producer reads them in the same turn and reconciles inline:
+artifact and returns freeform findings directly to the producer as the tool
+result. The producer reads them in the same turn and reconciles inline:
 valid findings are incorporated via `koan_artifact_edit`; reviewer
 misconceptions are overruled by editing in the missing context; approach-
 invalidating findings are escalated via `koan_ask_question`. The producer
-appends a per-finding disposition to the sidecar and then advances to the
-next phase. There are no separate `*-review` phases; review is a synchronous
-side-effect of the artifact write, not a separate orchestrator turn.
+records each finding and its disposition inline in the artifact's `## Review`
+section. There are no separate `*-review` phases and no `.review.md` sidecar;
+review is a synchronous side-effect of the artifact write, not a separate
+orchestrator turn.
 
 Note that not every artifact family has a paired reviewer: `brief.md` and
 `core-flows.md` have no mechanical reviewer. `brief.md` is frozen at intake
 exit; `core-flows.md` is verifiable on inspection by the user against the
 rendered diagrams.
 
-The second pattern is trust forward, falsify backward. Downstream phases
-trust upstream artifacts in their accepted state without re-evaluating
-them. A downstream phase can request a loop-back when reality reveals an
-upstream artifact to be wrong, but it does not unilaterally rewrite or
-override upstream content. The trust model is documented in
-`phase-trust.md`.
+The second pattern is trust forward. Downstream phases trust upstream
+artifacts in their accepted state without re-evaluating them. If execution
+reveals an upstream artifact to be wrong, the orchestrator can loop back to
+the relevant phase and edit the living document in place -- but it does not
+unilaterally rewrite or override upstream content unilaterally. The trust
+model is documented in `phase-trust.md`.
 
-The artifact lifecycle from `artifacts.md` continues to apply. Artifacts
-are classified as frozen, additive-forward, or disposable.
+The artifact model from `artifacts.md` continues to apply. Artifacts are
+living working surfaces; `brief.md` is the sole write-once artifact.
 
 ## Phase taxonomy
 
@@ -203,7 +203,9 @@ interactions and exit conditions, `koan_artifact_read` for upstream
 artifacts, and `koan_artifact_write` for the terminal `core-flows.md`
 write. Scout dispatch is rarely warranted because the work is about
 externally visible behavior rather than codebase structure; the
-construction-time composed toolset (`compose_toolset`) allows it but prompt discipline should discourage it.
+registered toolset (`compose_toolset`) allows it but a wrong-phase call returns
+a recoverable error from `phase_gate_message`; prompt discipline should also
+discourage it.
 
 The termination condition is the writing of `core-flows.md` followed by
 yield. The contract boundary is that core-flows must not include
@@ -274,22 +276,22 @@ as an authoritative source for the architectural decisions that
 constrain decomposition and per-milestone plans. The artifact is read
 via `koan_artifact_read`; no new tool is needed.
 
-The `milestone` phase uses CREATE-only semantics. When the user loops
-back to `milestone` after one or more milestones have been executed, a
-discard hook fires on phase entry and deletes non-frozen, non-executed
-artifacts from the run directory, so the producer starts from a clean
-slate for the revised decomposition.
+The `milestone` phase is one-time. The orchestrator decomposes the initiative
+into milestones on first entry and edits `milestones.md` in place thereafter;
+there is no re-entry or discard hook.
 
 The `plan` phase produces `plan-milestone-N.md` (milestones workflow) or
 `plan.md` (plan workflow). Writing the artifact triggers the mechanical
 PLAN_REVIEWER; the producer reconciles findings inline before advancing.
 
-The `execute` phase is entered via `koan_set_phase("execute", plan_file=X)`.
-This call freezes the named plan, spawns the executor sub-agent, and
-returns a deviation report as the tool result. The orchestrator reads the
-report and determines the next phase: loop back to `plan` for significant
-deviations, or advance to `curation` (plan workflow) / next milestone
-(milestones/initiative workflow).
+The `execute` phase is entered via `koan_set_phase("execute")` (pure routing).
+Inside the phase the orchestrator calls `koan_request_executor(plan_file?,
+instructions?)` to spawn the executor, which returns a deviation report. The
+orchestrator verifies independently, then classifies the outcome: conforming
+results are recorded inline in the plan (`## Execution N`) and the orchestrator
+advances; non-conforming results lead to in-place plan edits or free-form fix
+instructions and a re-run. Re-execution is the orchestrator's agency -- it may
+call `koan_request_executor` any number of times before escalating.
 
 ### curation (closing band)
 
@@ -312,7 +314,9 @@ The plan workflow runs `intake -> plan -> execute -> curation`. Its use
 case is a focused change touching a bounded area where multi-milestone
 decomposition and architectural reasoning are not needed. Review of the
 plan is performed inline by the mechanical PLAN_REVIEWER on
-`koan_artifact_write`; there is no separate `plan-review` phase.
+`koan_artifact_write`; there is no separate `plan-review` phase. Execution
+is launched explicitly via `koan_request_executor` from within the execute
+phase.
 
 The milestones workflow runs `intake -> milestone -> plan -> execute`
 with the plan-through-execute sub-loop repeating once per milestone, and
@@ -384,10 +388,10 @@ Review is mechanical and inline: `koan_artifact_write` triggers the
 reviewer sub-agent as a blocking side-effect for the reviewed artifact
 families below. No separate `*-review` phases exist.
 
-| Producer      | Artifact              | Mechanical reviewer   | Reconcile by                  |
-| ------------- | --------------------- | --------------------- | ----------------------------- |
-| `intake`      | `brief.md`            | (none)                | `Final` at intake exit        |
-| `core-flows`  | `core-flows.md`       | (none)                | `Final` at core-flows exit    |
-| `tech-plan`   | `tech-plan.md`        | `TECH_PLAN_REVIEWER`  | Producer edits inline         |
-| `milestone`   | `milestones.md`       | `MILESTONE_REVIEWER`  | Producer edits inline         |
-| `plan`        | `plan-milestone-N.md` | `PLAN_REVIEWER`       | Producer edits inline         |
+| Producer     | Artifact                          | Mechanical reviewer  | Reconcile by                                  |
+| ------------ | --------------------------------- | -------------------- | --------------------------------------------- |
+| `intake`     | `brief.md`                        | (none)               | Write-once at intake exit                     |
+| `core-flows` | `core-flows.md`                   | (none)               | Write-once at core-flows exit                 |
+| `tech-plan`  | `tech-plan.md`                    | `TECH_PLAN_REVIEWER` | Producer edits inline; records in `## Review` |
+| `milestone`  | `milestones.md`                   | `MILESTONE_REVIEWER` | Producer edits inline; records in `## Review` |
+| `plan`       | `plan.md` / `plan-milestone-N.md` | `PLAN_REVIEWER`      | Producer edits inline; records in `## Review` |

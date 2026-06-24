@@ -112,13 +112,13 @@ acceptance moment.
 The artifact lifecycle from `artifacts.md` applies. The initiative workflow
 produces the following artifacts.
 
-| Artifact              | Lifetime         | Producer phase  | Mechanical reviewer   | Acceptance                                    |
-| --------------------- | ---------------- | --------------- | --------------------- | --------------------------------------------- |
-| `brief.md`            | frozen           | `intake`        | (none)                | `Final` at intake exit                        |
-| `core-flows.md`       | frozen           | `core-flows`    | (none)                | `Final` at core-flows exit                    |
-| `tech-plan.md`        | disposable       | `tech-plan`     | `TECH_PLAN_REVIEWER`  | Producer reconciles inline; user advances     |
-| `milestones.md`       | additive-forward | `milestone`     | `MILESTONE_REVIEWER`  | Producer reconciles inline; user advances     |
-| `plan-milestone-N.md` | disposable       | `plan`          | `PLAN_REVIEWER`       | Producer reconciles inline; user advances     |
+| Artifact              | Producer phase | Mechanical reviewer  | Acceptance                                |
+| --------------------- | -------------- | -------------------- | ----------------------------------------- |
+| `brief.md`            | `intake`       | (none)               | Write-once at intake exit                 |
+| `core-flows.md`       | `core-flows`   | (none)               | Write-once at core-flows exit             |
+| `tech-plan.md`        | `tech-plan`    | `TECH_PLAN_REVIEWER` | Producer reconciles inline; user advances |
+| `milestones.md`       | `milestone`    | `MILESTONE_REVIEWER` | Producer reconciles inline; user advances |
+| `plan-milestone-N.md` | `plan`         | `PLAN_REVIEWER`      | Producer reconciles inline; user advances |
 
 ## Cross-band trust
 

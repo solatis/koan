@@ -229,11 +229,13 @@ an auto-advance directive (`koan_set_phase`) or a hand-back directive
 
 ## Permissions
 
-Capability restriction is **construction-time**, not call-time.
-`compose_toolset(policy, role, phase)` in `koan/tools/tool_policy.py` builds
-the allowed tool vocabulary once per (role, phase) before the agent's loop
-starts. Disallowed tools never enter the model's context; the model cannot
-call what it cannot see.
+Capability restriction is two-layered. `compose_toolset(policy, role)` in
+`koan/tools/tool_policy.py` builds vocabulary per **role** (static for the
+long-lived orchestrator, so the prompt-cache prefix is never invalidated by a
+phase change). A call-time `phase_gate_message` enforces phase-appropriateness
+for the orchestrator's phase-conditional tools (`koan_request_executor`,
+`bash`, `koan_request_scouts`), returning a recoverable error when used in a
+disallowed phase.
 
 Agents should not have access to tools they are never intended to need. A
 smaller tool vocabulary reduces misbehavior, token waste, and the chance of
@@ -274,11 +276,13 @@ constrains intended bash use; vocabulary restriction does not.
 ## Executor Subagent
 
 The executor is spawned by the orchestrator via
-`koan_set_phase("execute", plan_file=X)`. This call freezes the named plan
-artifact, writes `task.json` for the executor sub-agent, and blocks until
+`koan_request_executor(plan_file?, instructions?)` from within the execute
+phase. The tool writes `task.json` for the executor sub-agent and blocks until
 the executor exits. The tool result returned to the orchestrator is a
 deviation report summarizing what the executor did and any divergences from
-the plan.
+the plan. The same plan may be executed any number of times; there is no
+re-execution gate. Instructions are required when no `plan_file` is given
+(free-form fix runs).
 
 The executor implements code changes in a 3-step workflow:
 
@@ -305,8 +309,10 @@ The reviewer is spawned mechanically by koan as a blocking side-effect of
 `koan_artifact_write` for artifact families that have a paired reviewer
 (milestones, plan, tech-plan). The reviewer runs in a fresh context, reads
 the just-written artifact and any configured upstream artifacts, and returns
-freeform findings. Koan persists the findings to the `.review.md` sidecar
-and returns them to the producer as the `koan_artifact_write` tool result.
+freeform findings to the producer as the `koan_artifact_write` tool result.
+The reviewer task is "name the artifact, review it" -- there is no predecessor
+chain or remediation context. The producer records findings and dispositions
+inline in the artifact's `## Review` section via `koan_artifact_edit`.
 
 The reviewer has read-only built-in tools (`Read`, `Bash`, `Glob`, `Grep`)
 and no koan write tools. It cannot modify the artifact it reviews.

@@ -104,7 +104,7 @@ phases (execute -> executor; an artifact write -> reviewer;
 | Category           | Does                                                | Phases                                 |
 | ------------------ | --------------------------------------------------- | -------------------------------------- |
 | **INTAKE**         | Gather + verify context -> `brief.md`               | intake                                 |
-| **PRODUCTION**     | Author a frozen artifact                            | core-flows, tech-plan, milestone, plan |
+| **PRODUCTION**     | Author a living artifact (reviewed inline on write) | core-flows, tech-plan, milestone, plan |
 | **REVIEW**         | Check an artifact / an execution before trusting it | execute (orch), reviewer (subagent)    |
 | **IMPLEMENTATION** | Write source code                                   | executor                               |
 | **INVESTIGATION**  | Read-only codebase fact-finding                     | scout                                  |
@@ -120,9 +120,10 @@ state:
    reviewed family (plan / milestones / tech-plan) spawns a fresh `reviewer`
    with a per-family charter. It doubts the artifact and returns findings the
    orchestrator reconciles. -> phase `reviewer` ([4.10](#410-reviewer-subagent)).
-2. **Inline post-exec conformance review -- ORCHESTRATOR.** After the executor
-   returns, the orchestrator's own `execute` phase runs bash checks, classifies
-   conformance, and drives remediation. -> phase `execute` ([4.6](#46-execute)).
+2. **Inline post-exec conformance review -- ORCHESTRATOR.** The orchestrator's
+   own `execute` phase launches the executor, runs bash checks, classifies
+   conformance, and records the outcome inline. Re-execution is the orchestrator's
+   agency. -> phase `execute` ([4.6](#46-execute)).
 
 Treat them as two prompt families that happen to share the word "review".
 
@@ -277,7 +278,7 @@ Binding interface: ... | Reads ctx: ... | Bound by: <workflows> | Source: <file>
 
 ### 4.4 milestone -- [ORCHESTRATOR] - PRODUCTION
 
-- **Purpose:** decompose the initiative into ordered, independently-deliverable milestones -> `milestones.md` (CREATE-only; the discard hook deletes any prior copy on entry). The write spawns the `reviewer` subagent (`MILESTONE_REVIEWER`).
+- **Purpose:** decompose the initiative into ordered, independently-deliverable milestones -> `milestones.md` (one-time phase; `milestones.md` is edited in place thereafter). The write spawns the `reviewer` subagent (`MILESTONE_REVIEWER`).
 - **Steps:** `step.milestone.1` Analyze -> `step.milestone.2` Write (write + reconcile).
 - **Lifecycle:** linear; step 2 terminal, hand-back (advance to plan).
 - **Role context:** `role.milestone`.
@@ -288,9 +289,9 @@ Binding interface: ... | Reads ctx: ... | Bound by: <workflows> | Source: <file>
 
 ### 4.5 plan -- [ORCHESTRATOR] - PRODUCTION
 
-- **Purpose:** write a file-level implementation plan -> the plan artifact (`plan.md` / `plan-milestone-N.md` / `*-remediation-K.md`). The write spawns the `reviewer` subagent (`PLAN_REVIEWER`); naming the plan for execution spawns the `executor`.
-- **Steps:** `step.plan.1` Analyze -> `step.plan.2` Write (write + reconcile + name-for-execution).
-- **Lifecycle:** linear; step 2 terminal; its body calls `koan_set_phase("execute", plan_file=...)`.
+- **Purpose:** write a file-level implementation plan -> the plan artifact (`plan.md` / `plan-milestone-N.md`). The write spawns the `reviewer` subagent (`PLAN_REVIEWER`). Execution is launched from within the execute phase.
+- **Steps:** `step.plan.1` Analyze -> `step.plan.2` Write (write + reconcile).
+- **Lifecycle:** linear; step 2 terminal; its body calls `koan_set_phase("execute")` (pure routing).
 - **Role context:** `role.plan`.
 - **Binding interface:** `guidance` (filename + which milestone), `retrieval_directive`, `next_phase=None`.
 - **Reads ctx:** memory_injection, phase_instructions.
@@ -299,12 +300,12 @@ Binding interface: ... | Reads ctx: ... | Bound by: <workflows> | Source: <file>
 
 ### 4.6 execute -- [ORCHESTRATOR] - REVIEW
 
-- **Purpose:** the orchestrator acts as the inline post-exec reviewer. The executor has already run (spawned by the `koan_set_phase("execute", ...)` that entered this phase). Verify conformance, classify, and branch (advance / remediate / escalate). One of two [review surfaces](#23-the-two-review-surfaces-the-easy-thing-to-miss).
-- **Steps:** `step.execute.1` Verify -> `step.execute.2` Assess.
-- **Lifecycle:** linear; step 2 terminal, hand-back; the branch logic lives in the step body.
+- **Purpose:** launch the executor, verify conformance, and reconcile the outcome. One of two [review surfaces](#23-the-two-review-surfaces-the-easy-thing-to-miss).
+- **Steps:** `step.execute.1` Run -> `step.execute.2` Verify -> `step.execute.3` Reconcile.
+- **Lifecycle:** linear; step 3 terminal, hand-back; re-execution is the orchestrator's agency within the phase.
 - **Role context:** `role.execute`.
 - **Binding interface:** `guidance` (outcome paths + whether to UPDATE milestones.md), `retrieval_directive`, `next_phase=None`.
-- **Reads ctx:** memory_injection, phase_instructions, the executor deviation report (tool result).
+- **Reads ctx:** memory_injection, phase_instructions, the executor deviation report (returned by koan_request_executor).
 - **Bound by:** plan, milestones, initiative.
 - **Source:** `koan/phases/execute.py`.
 
@@ -332,21 +333,21 @@ Binding interface: ... | Reads ctx: ... | Bound by: <workflows> | Source: <file>
 
 ### 4.9 executor (subagent) -- [SUBAGENT] - IMPLEMENTATION
 
-- **Purpose:** the only agent that writes source code. Implements a frozen plan.
+- **Purpose:** the only agent that writes source code. Implements the plan it is given (or acts on free-form fix instructions).
 - **Steps:** `step.executor.1` Comprehend -> `step.executor.2` Plan -> `step.executor.3` Implement.
-- **Lifecycle:** linear; final turn returns a structured deviation report (the tool result the orchestrator's `execute` phase reviews).
+- **Lifecycle:** linear; final turn returns a structured deviation report (returned to the orchestrator as the `koan_request_executor` tool result).
 - **Role context:** none (identity is `sys.executor`).
-- **Binding interface:** spawned, not bound. Inputs via task.json: `executor_artifacts`, free-form instructions (-> `phase_instructions`), `run_dir`, optional `retry_context`.
-- **Spawned by:** plan / execute (`koan_set_phase("execute", plan_file=...)`).
+- **Binding interface:** spawned, not bound. Inputs via task.json: `artifacts` (listing), `instructions` (plan directive + any free-form fix context), `run_dir`.
+- **Spawned by:** `koan_request_executor` from within the execute phase.
 - **Source:** `koan/phases/executor.py` + `koan/prompts/executor.py`.
 
 ### 4.10 reviewer (subagent) -- [SUBAGENT] - REVIEW
 
-- **Purpose:** adversarial pre-exec review of a just-written artifact. Fresh context; read-only; returns findings as final text (koan persists them to the `.review.md` sidecar). One of two [review surfaces](#23-the-two-review-surfaces-the-easy-thing-to-miss).
+- **Purpose:** adversarial review of a just-written artifact. Fresh context; read-only; returns findings as final text to the producer. One of two [review surfaces](#23-the-two-review-surfaces-the-easy-thing-to-miss).
 - **Steps:** `step.reviewer.1` Review -> `step.reviewer.2` Report.
 - **Lifecycle:** linear; terminates after step 2.
 - **Role context:** none; the per-family **charter** (`charter.plan` / `charter.milestone` / `charter.tech-plan` / `charter.generic`) is injected at the top of step 1. Identity is `sys.reviewer`.
-- **Binding interface:** spawned. Inputs via task.json: `reviewer_target`, `reviewer_prompt` (charter selector), `reviewer_predecessor_chain`.
+- **Binding interface:** spawned. Inputs via task.json: `reviewer_target`, `reviewer_prompt` (charter selector).
 - **Spawned by:** `koan_artifact_write` on a reviewed family (plan / milestones / tech-plan).
 - **Source:** `koan/phases/reviewer.py` + `koan/prompts/reviewer.py`.
 
@@ -622,8 +623,7 @@ below-threshold slots = prose only, no marker.
 
 {{> blk.reviewer-reconcile(
      artifact = "tech-plan.md",
-     reviewer = "TECH_PLAN_REVIEWER",
-     sidecar  = "tech-plan.review.md" )}}
+     reviewer = "TECH_PLAN_REVIEWER" )}}
 
 After reconciling, advance to the next phase.
 ```
@@ -636,7 +636,7 @@ After reconciling, advance to the next phase.
   - Context in [inferred]: `role.milestone`; `guidance`; `inj.memory`.
   - Artifacts required [inferred]: `brief.md`; (initiative) `tech-plan.md`.
   - Artifacts optional [inferred]: `core-flows.md`; module tree; import graph; memory.
-  - Produces [inferred]: a proposed 3-7 milestone list with scope + sizing. No writes (prior milestones.md discarded on entry).
+  - Produces [inferred]: a proposed 3-7 milestone list with scope + sizing. No writes.
   - Purpose / Success / Failure: TODO(you).
 - **Body**
 
@@ -645,7 +645,7 @@ After reconciling, advance to the next phase.
 
 {{> blk.read-brief(
      when = "before proposing milestones",
-     why  = "It contains the frozen scope, decisions, constraints, and affected subsystems -- authoritative." )}}
+     why  = "It contains the scope, decisions, constraints, and affected subsystems -- authoritative." )}}
 
 {{> blk.no-writes(what="milestones.md")}}
 
@@ -677,12 +677,11 @@ End your turn with the proposed list (sketches + file/module scope).
 ```text
 Write `milestones.md` via `koan_artifact_write`. Give the **first** milestone
 `[in-progress]`, the rest `[pending]`; each a 3-6 sentence sketch; order by
-dependency. (Always CREATE -- the discard hook removed any prior copy on entry.)
+dependency.
 
 {{> blk.reviewer-reconcile(
      artifact = "milestones.md",
-     reviewer = "MILESTONE_REVIEWER",
-     sidecar  = "milestones.review.md" )}}
+     reviewer = "MILESTONE_REVIEWER" )}}
 
 Then advance to plan.
 ```
@@ -730,7 +729,7 @@ ambiguities/risks).
 - **Contract**
   - Context in [inferred]: the step-1 analysis; `role.plan`.
   - Artifacts required [inferred]: the plan filename (from guidance/step 1).
-  - Produces [inferred]: the plan artifact via `koan_artifact_write` -> spawns `PLAN_REVIEWER`; reconcile; `koan_set_phase("execute", plan_file=...)` (freezes plan, spawns executor, returns deviation report).
+  - Produces [inferred]: the plan artifact via `koan_artifact_write` -> spawns `PLAN_REVIEWER`; reconcile findings inline in the plan's `## Review` section; `koan_set_phase("execute")` (pure routing).
   - Purpose / Success / Failure: TODO(you).
 - **Body**
 
@@ -744,24 +743,21 @@ Order steps so dependencies precede dependents. Do NOT use Write/Edit.
 
 {{> blk.reviewer-reconcile(
      artifact = "the plan",
-     reviewer = "PLAN_REVIEWER",
-     sidecar  = "<plan-stem>.review.md" )}}
+     reviewer = "PLAN_REVIEWER" )}}
 
-## Name the plan for execution
-After reconciling, `koan_set_phase("execute", plan_file="<the plan you wrote>")` --
-freezes the plan byte-identical, spawns the executor (blocking), returns the
-deviation report.
+## Advance to execute
+After reconciling, call `koan_set_phase("execute")` -- pure routing to the execute
+phase, where you will launch execution via `koan_request_executor`.
 ```
 
 ### execute
 
-#### step.execute.1 -- Verify
+#### step.execute.1 -- Run
 
 - **Contract**
-  - Context in [inferred]: `role.execute`; `guidance` (outcome paths); `inj.memory`; the executor deviation report (tool result).
-  - Artifacts required [inferred]: `brief.md`; the executed plan; (milestones/initiative) `milestones.md`.
-  - Artifacts optional [inferred]: the `.review.md` sidecar.
-  - Produces [inferred]: bash verification runs + a verification summary. No writes yet.
+  - Context in [inferred]: `role.execute`; `guidance` (outcome paths); `inj.memory`.
+  - Artifacts required [inferred]: `brief.md`; the plan to execute; (milestones/initiative) `milestones.md`.
+  - Produces [inferred]: a `koan_request_executor` call + the returned deviation report. No writes yet.
   - Purpose / Success / Failure: TODO(you).
 - **Body**
 
@@ -769,50 +765,68 @@ deviation report.
 {{> blk.step1-head(heading="## Workflow guidance")}}
 
 {{> blk.read-brief(
-     when = "and the executed plan artifact (the plan_file you passed)",
+     when = "and the plan artifact you will execute",
      why  = "Assess whether the implementation respects every stated decision and constraint, not just the plan." )}}
 
 ## Read milestone state (milestones/initiative only)
 If the workflow guidance says to update milestones.md, read it now -- you need its
-current state for the step-2 UPDATE.
+current state for the Reconcile step.
 
+## Launch the executor
+Call `koan_request_executor(plan_file="<the plan to implement>")`.
+The tool spawns the executor (blocking) and returns the deviation report.
+
+{{> blk.no-writes(what="an assessment yet")}}
+
+End your turn with the deviation report summary.
+```
+
+#### step.execute.2 -- Verify
+
+- **Contract**
+  - Context in [inferred]: the deviation report from step 1; `role.execute`.
+  - Artifacts required [inferred]: `brief.md`; the executed plan.
+  - Produces [inferred]: bash verification runs + a verification summary. No writes yet.
+  - Purpose / Success / Failure: TODO(you).
+- **Body**
+
+```text
 ## Run verification commands
 Build/compile; run tests (use `grep -q PATTERN file && echo "FAIL"` for negative
 checks); type-checks. Compare against the executor's deviation report. Your bash
 checks are authoritative -- a clean executor exit does NOT override failing
 builds/tests.
 
-{{> blk.no-writes(what="an assessment yet")}}
+{{> blk.no-writes(what="a reconciliation yet")}}
 
 End your turn with a verification summary: commands run + results; planned goals
 met vs incomplete.
 ```
 
-#### step.execute.2 -- Assess (terminal; branches)
+#### step.execute.3 -- Reconcile (terminal; branches)
 
 - **Contract**
-  - Context in [inferred]: the step-1 verification; the deviation report; `guidance` (outcome paths).
-  - Artifacts required [inferred]: the plan's `.review.md` sidecar; (CLEAN, milestones/initiative) `milestones.md`.
-  - Produces [inferred]: conformance classification; `## Execution review (post-exec)` appended to the sidecar; then a branch (advance / remediate / escalate).
+  - Context in [inferred]: the step-2 verification; the deviation report; `guidance` (outcome paths).
+  - Artifacts required [inferred]: the plan; (CONFORMING, milestones/initiative) `milestones.md`.
+  - Produces [inferred]: conformance classification; `## Execution N` inline in the plan; then a branch (advance / re-run / escalate).
   - Purpose / Success / Failure: TODO(you).
-- **Body** (unique -- the remediation state machine is execute-specific)
+- **Body** (unique -- re-execution is the orchestrator's agency)
 
 ```text
-Classify conformance (Conforming/clean vs Non-conforming) from step-1 results --
-your verification is authoritative. Append a `## Execution review (post-exec)`
-section to the plan's `.review.md` sidecar (freeze-exempt) via koan_artifact_edit:
-outcome, commands+results, deviations, summary.
+Classify conformance (Conforming vs Non-conforming) from step-2 results --
+your verification is authoritative. Append a `## Execution N [CONFORMING|NON-CONFORMING]`
+section to the plan via `koan_artifact_edit`: outcome, commands+results, deviations, summary.
 
 Branch:
-- **CLEAN** -- if guidance says so, apply the milestones.md UPDATE (mark `[done]`;
+- **CONFORMING** -- if guidance says so, apply the milestones.md UPDATE (mark `[done]`;
   append a four-subsection `### Outcome` -- Integration points / Patterns /
   Constraints discovered / Deviations; advance next `[pending]` to `[in-progress]`;
   preserve prior Outcomes). Then end your turn per guidance.
-- **NON-CONFORMING, base plan** -- `koan_set_phase("plan")`, write
-  `<plan-base>-remediation-1.md` folding the failure signal (deviation report +
-  your verification + unaddressed findings) into the artifact text, re-execute.
-- **NON-CONFORMING, already a remediation** -- the one-attempt cap is reached;
-  escalate via `koan_ask_question` (accept-as-is / abort / direct-further-attempts).
+- **NON-CONFORMING** -- edit the plan in place via `koan_artifact_edit` to address the
+  gap, or compose free-form fix instructions. Then call `koan_request_executor` again
+  (re-execution is repeatable; there is no attempt cap). Return to step 2 (Verify) after.
+- **REPEATED NON-CONFORMING** -- after multiple failed attempts, escalate via
+  `koan_ask_question` (accept-as-is / abort / direct-further-attempts).
 ```
 
 ### curation
@@ -1001,9 +1015,9 @@ planned / Deviations / Unanticipated decisions / Incomplete (state "No deviation
 #### step.reviewer.1 -- Review
 
 - **Contract**
-  - Context in [inferred]: `sys.reviewer` (fresh context); the charter (`charter.*`, by `{{reviewer_prompt}}`); `{{reviewer_target}}`; `{{reviewer_predecessor_chain}}` (remediation).
+  - Context in [inferred]: `sys.reviewer` (fresh context); the charter (`charter.*`, by `{{reviewer_prompt}}`); `{{reviewer_target}}`.
   - Artifacts required [inferred]: the target artifact; `brief.md`; charter-specific upstream (tech-plan/milestones/core-flows, "if present").
-  - Artifacts optional [inferred]: predecessor chain; codebase (Read/Grep/Glob/bash); memory.
+  - Artifacts optional [inferred]: codebase (Read/Grep/Glob/bash); memory.
   - Produces [inferred]: a problem list + verification notes. No writes.
   - Purpose / Success / Failure: TODO(you).
 - **Body**
@@ -1016,14 +1030,9 @@ planned / Deviations / Unanticipated decisions / Incomplete (state "No deviation
 Read `{{reviewer_target}}` via koan_artifact_read.
 
 ## Context artifacts
-Read `brief.md` (frozen scope to evaluate against). Then, by charter:
+Read `brief.md` (write-once scope to evaluate against). Then, by charter:
 TECH_PLAN_REVIEWER -> core-flows.md (if present); PLAN_REVIEWER -> tech-plan.md +
 milestones.md (if present); MILESTONE_REVIEWER -> tech-plan.md (if present).
-
-{{? reviewer_predecessor_chain}}
-## Predecessor chain (remediation context)
-A remediation review. Read each prior failed attempt in order: {{reviewer_predecessor_chain}}.
-{{/reviewer_predecessor_chain}}
 
 ## Verify against codebase + memory
 Read/Grep/Glob/bash to verify non-obvious claims directly -- do not accept at face
@@ -1036,7 +1045,7 @@ so far; what you verified and how; remaining verification.
 
 - **Contract**
   - Context in [inferred]: the step-1 problems; the charter.
-  - Produces [inferred]: severity-classified findings as final text -> persisted to `<stem>.review.md` by koan. No file writes by the reviewer.
+  - Produces [inferred]: severity-classified findings as final text -> returned to the producer as the `koan_artifact_write` tool result. No file writes by the reviewer.
   - Purpose / Success / Failure: TODO(you).
 - **Body** (unique)
 
@@ -1239,14 +1248,14 @@ These were duplicated across step bodies; promotion makes them single-source. Ea
 notes its **canonical** text and any **per-step variance** as a refactor target
 (doc-first means the variance gets reconciled here, once).
 
-**`blk.read-brief(when, why)`** -- read the frozen initiative context. Used by:
+**`blk.read-brief(when, why)`** -- read the initiative context from brief.md. Used by:
 core-flows.1, tech-plan.1, milestone.1, plan.1, execute.1, curation.1.
 
 ```text
 ## Read initiative context
 
-Read `brief.md` from the run directory {{when}}. It contains the frozen
-initiative scope, decisions, and constraints from intake. {{why}}
+Read `brief.md` from the run directory {{when}}. It contains the initiative
+scope, decisions, and constraints from intake. {{why}}
 ```
 
 > Variance to reconcile: tech-plan.1 and execute.1 fold a second artifact into
@@ -1289,7 +1298,7 @@ Read and analyze before writing. Do NOT write {{what}} in this step.
 > Variance: execute.1 phrases it "Do NOT write an assessment yet. Verify first."
 > -- model as `what="an assessment yet"` plus an optional trailing imperative.
 
-**`blk.reviewer-reconcile(artifact, reviewer, sidecar)`** -- reconcile the
+**`blk.reviewer-reconcile(artifact, reviewer)`** -- reconcile the
 mechanical reviewer's findings after `koan_artifact_write`. Used by: tech-plan.2,
 milestone.2, plan.2.
 
@@ -1303,19 +1312,24 @@ Judge each finding and act:
 - **Reviewer misconception**: overrule it by editing to add the missing context.
 - **Approach-invalidating finding**: escalate via `koan_ask_question`.
 
-Then append a per-finding disposition to the sidecar:
+Then record each finding and its disposition inline in {{artifact}}:
 
 ```
 koan_artifact_edit(
-    filename="{{sidecar}}",
-    old_string="## Plan review (pre-exec)",
-    new_string="""## Plan review (pre-exec)
-
-### Orchestrator disposition
-
-- Finding 1: [INCORPORATED / OVERRULED / ESCALATED] -- <rationale>
-""",
+    filename="{{artifact_file}}",
+    # append a ## Review section with one line per finding
 )
+```
+
+Format:
+```markdown
+## Review
+### Finding 1 [INCORPORATED]
+<reviewer finding> -- how it was incorporated
+### Finding 2 [OVERRULED]
+<reviewer finding> -- why dismissed, with the clarifying context
+### Finding 3 [ESCALATED]
+<reviewer finding> -- the user's decision
 ```
 ````
 
@@ -1525,9 +1539,9 @@ The non-obvious WHYs, so a maintainer does not "simplify" a load-bearing choice.
   complete" without ever calling `koan_memorize`. The `<workflow_shape>`/`<goal>`/
   `<tools_this_step>` block re-establishes position at the moment of use.
 
-- **milestone is CREATE-only.** The discard hook deletes `milestones.md` on every
-  re-entry, so the phase always writes fresh from the codebase rather than patching a
-  stale decomposition. There is no RE-DECOMPOSE mode.
+- **milestone is one-time.** The orchestrator decomposes the initiative into milestones
+  on first entry and edits `milestones.md` in place thereafter. There is no re-entry
+  and no discard hook; adjusting future scope means editing the living document.
 
 - **The reviewer runs in a fresh context.** It must not inherit the author's
   assumptions; the whole value is independent doubt. Hence no shared conversation, no
@@ -1582,8 +1596,10 @@ without a doc change is drift -- treat it as a bug.
 
 ### Protected (do not silently restructure)
 
-- `koan/tools/tool_policy.py` -- the per-(role, phase) tool allowlists. Capability
-  is construction-time; the model cannot call what it cannot see.
+- `koan/tools/tool_policy.py` -- the per-role tool allowlists and call-time
+  phase gate (`phase_gate_message`). Vocabulary is role-based and static;
+  phase-conditional orchestrator tools (`bash`, `koan_request_scouts`,
+  `koan_request_executor`) are gated at call time with a recoverable error.
 - `koan/lib/workflows.py` -- the workflow/binding registry (the organism wiring).
 - The assembly recipe (`format_step`, `_step_phase_handshake_core`) -- changing slot
   order changes every prompt at once.

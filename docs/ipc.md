@@ -20,11 +20,11 @@ response, it does so via `asyncio.Future` objects stored in `AppState`.
 Three interactions involve blocking -- the tool core `await`s a future while
 the backend event loop handles other tasks:
 
-| Mechanism               | What blocks                        | Who responds                   |
-| ----------------------- | ---------------------------------- | ------------------------------ |
-| `koan_ask_question`     | User input needed                  | User via web UI                |
-| `koan_request_scouts`   | Scout subagents running            | Loop (after scouts complete)   |
-| Phase-boundary hand-back | Phase complete, awaiting direction | User via `POST /api/chat`      |
+| Mechanism                | What blocks                        | Who responds                 |
+| ------------------------ | ---------------------------------- | ---------------------------- |
+| `koan_ask_question`      | User input needed                  | User via web UI              |
+| `koan_request_scouts`    | Scout subagents running            | Loop (after scouts complete) |
+| Phase-boundary hand-back | Phase complete, awaiting direction | User via `POST /api/chat`    |
 
 User-facing tool calls (`koan_ask_question`) go through the `PendingInteraction`
 queue on `AppState`. The tool core creates an `asyncio.Future`, stores it in
@@ -188,14 +188,26 @@ concatenated output. The tool result notes any missing scouts:
 ## Executor Flow
 
 ```
-koan_request_executor({ artifacts: [...], instructions: "..." })
+koan_request_executor(plan_file?, instructions?)
   -> no PendingInteraction created
-  -> ensures subagent directory, writes task.json with artifacts + instructions
-  -> spawns executor as asyncio task via spawn_subagent()
+  -> validates: instructions required when no plan_file
+  -> builds artifact listing: plan_file (when given) prepended to standing
+     context set (brief.md, tech-plan.md, core-flows.md, milestones.md)
+  -> ensures subagent directory, writes task.json with artifact listing
+     and composed instructions
+  -> emits execute_entry event (audit record)
+  -> spawns executor as asyncio task via spawn_subagent() -- blocks until done
   -> executor runs its step sequence in-process and exits
   -> tool core collects SubagentResult (exit_code, final_response)
-  -> returns success/failure summary as tool result to orchestrator
+  -> emits execute_completion event (outcome: clean | non_conforming)
+  -> returns deviation report as tool result to orchestrator
 ```
+
+The tool is registered in the orchestrator's static toolset but gated at call
+time to the `execute` phase; a call in another phase returns a recoverable
+error from `phase_gate_message`. Re-execution is intentionally allowed -- the
+same plan may be passed multiple times without error; re-run is the
+orchestrator's agency.
 
 The orchestrator reports the result to the user in chat and then ends its turn
 in terminal text to hand back (after calling `koan_suggest_next`).

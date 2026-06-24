@@ -24,27 +24,26 @@ demand it.
 
 ### Plan workflow
 
-| Phase      | `next_phase` | Behaviour                                                                           |
-| ---------- | ------------ | ----------------------------------------------------------------------------------- |
-| `intake`   | `plan`       | auto-advance                                                                        |
-| `plan`     | `None`       | hand back -- orchestrator names the plan for execution via `koan_set_phase("execute", plan_file=...)` |
-| `execute`  | `None`       | hand back -- orchestrator picks `curation` (clean) or `plan` (remediation loop)    |
-| `curation` | `None`       | terminal hand-back -- workflow ends here                                            |
+| Phase      | `next_phase` | Behaviour                                                                                      |
+| ---------- | ------------ | ---------------------------------------------------------------------------------------------- |
+| `intake`   | `plan`       | auto-advance                                                                                   |
+| `plan`     | `None`       | hand back -- orchestrator calls `koan_set_phase("execute")` after reconciling                  |
+| `execute`  | `None`       | hand back -- orchestrator picks `curation` (conforming) or re-runs via `koan_request_executor` |
+| `curation` | `None`       | terminal hand-back -- workflow ends here                                                       |
 
-Note: `plan` hands back (not auto-advances) because `koan_set_phase("execute",
-plan_file=...)` requires an explicit `plan_file` argument that the producer must
-supply. The producer's terminal step instructs it to call `koan_set_phase` with
-the file it just wrote.
+Note: `plan` hands back (not auto-advances) because the orchestrator must yield
+to the user after reconciling reviewer findings before committing to execution.
+The producer's terminal step instructs it to call `koan_set_phase("execute")`.
 
 ### Milestones workflow
 
-| Phase       | `next_phase` | Behaviour                                                                           |
-| ----------- | ------------ | ----------------------------------------------------------------------------------- |
-| `intake`    | `milestone`  | auto-advance                                                                        |
-| `milestone` | `None`       | hand back -- orchestrator advances to `plan` once reconcile is complete             |
-| `plan`      | `None`       | hand back -- orchestrator names the plan for execution via `koan_set_phase("execute", plan_file=...)` |
-| `execute`   | `None`       | hand back -- orchestrator picks `plan` (next milestone), `milestone` (re-decompose), or `curation` |
-| `curation`  | `None`       | terminal hand-back -- workflow ends here                                            |
+| Phase       | `next_phase` | Behaviour                                                                        |
+| ----------- | ------------ | -------------------------------------------------------------------------------- |
+| `intake`    | `milestone`  | auto-advance                                                                     |
+| `milestone` | `None`       | hand back -- orchestrator advances to `plan` once reconcile is complete          |
+| `plan`      | `None`       | hand back -- orchestrator calls `koan_set_phase("execute")` after reconciling    |
+| `execute`   | `None`       | hand back -- orchestrator picks `plan` (next milestone) or `curation` (all done) |
+| `curation`  | `None`       | terminal hand-back -- workflow ends here                                         |
 
 ## Step progression history
 

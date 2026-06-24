@@ -8,42 +8,34 @@ section structure each artifact must contain.
 
 ---
 
-## Lifetime taxonomy
+## Artifact model: living documents
 
-Artifacts fall into three lifetime classes:
+Artifacts are **living working surfaces** -- the orchestrator edits them in
+place throughout their life. The immutable record is the driver-owned,
+append-only event log; the markdown carries the working content, not history.
 
-**Frozen** -- written once, never re-written after the producing phase exits.
-The content is stable for the remainder of the run. Downstream phases read it
-but must not write it. Example: `brief.md` (produced by intake, read by all
-subsequent phases and executor handoffs).
+`brief.md` is the sole write-once artifact: it is created by intake and never
+rewritten downstream. All other artifacts may be edited in place from any phase
+the orchestrator runs in. Review findings and execution outcomes accrete inside
+the artifact by convention (`## Review` and `## Execution N` sections),
+preserving the working record inline.
 
-**Additive-forward** -- rewritten across the run, but outcome sections are
-append-only once written. History stays visible in the file; earlier sections
-are never deleted or overwritten. Example: `milestones.md` (created by
-`milestone`, updated by `execute` after each milestone completes).
-
-**Disposable** -- written once by a producing phase, consumed by one or more
-downstream phases, then superseded. Once the downstream work is done, the file
-is no longer authoritative. Its content is compressed into a downstream artifact
-(e.g., the completed milestone Outcome in `milestones.md`). Examples:
-`plan.md`, `plan-milestone-N.md`.
+The one structural rule that does apply: **first write wins on creation.**
+`koan_artifact_write` to an existing artifact is rejected (`exists_draft`);
+use `koan_artifact_edit` for in-place revisions after the initial write.
 
 ---
 
 ## Per-artifact lifecycle table
 
-| Artifact                 | Lifetime         | Producer phase(s)                                                         | Reader phase(s)                                                                            |
-| ------------------------ | ---------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `brief.md`               | frozen           | `intake`                                                                  | `milestone`, `plan`, `execute`, `curation`; executor (via handoff)                         |
-| `core-flows.md`          | frozen           | `core-flows`                                                              | `tech-plan`, `milestone`, `plan`, `execute`; executor (via handoff in initiative workflow) |
-| `tech-plan.md`           | disposable       | `tech-plan`                                                               | `milestone`, `plan`, `execute`; executor (via handoff in initiative workflow)              |
-| `milestones.md`          | additive-forward | `milestone` (CREATE), `execute` (UPDATE)                                  | `milestone`, `plan`, `execute`, `curation`; executor (via handoff)                         |
-| `plan.md`                | disposable       | `plan`                                                                    | `execute`; executor (via handoff)                                                          |
-| `plan-milestone-N.md`    | disposable       | `plan`                                                                    | `execute`; executor (via handoff)                                                          |
-| `<reviewable>.review.md` | sidecar          | koan (reviewer findings); orchestrator (appends disposition + exec notes) | `execute` (post-exec inline review); orchestrator during remediation                       |
-
-Note: M2-M6 introduce the producers and readers listed in the table. M1 only
-documents the contract; the tools that enforce it land in later milestones.
+| Artifact              | Produced by  | Read by                                                                     |
+| --------------------- | ------------ | --------------------------------------------------------------------------- |
+| `brief.md`            | `intake`     | `milestone`, `plan`, `execute`, `curation`; executor                        |
+| `core-flows.md`       | `core-flows` | `tech-plan`, `milestone`, `plan`, `execute`; executor (initiative workflow) |
+| `tech-plan.md`        | `tech-plan`  | `milestone`, `plan`, `execute`; executor (initiative workflow)              |
+| `milestones.md`       | `milestone`  | `milestone`, `plan`, `execute`, `curation`; executor                        |
+| `plan.md`             | `plan`       | `execute`; executor                                                         |
+| `plan-milestone-N.md` | `plan`       | `execute`; executor                                                         |
 
 The `frame` phase produces no artifact; the discovery workflow's exit is
 negotiated with the user and writes nothing unless the user explicitly
@@ -52,58 +44,44 @@ table.
 
 ---
 
-## Per-step write and freeze contract
+## Per-step create gate
 
-The lifecycle table above maps each artifact to its producing _phase_. This
-section refines that to the _step_ level: the single step in which each artifact
-may be created, the steps in which it may be edited, and the step at which it
-becomes read-only.
+The lifecycle table above maps each artifact to its producing _phase_. Within
+that phase, a per-step create gate is also enforced: `ArtifactRegistryEntry`
+carries `create_steps` (a set of `(phase, step_name)` pairs), and
+`validate_write` consults the current step name, rejecting an out-of-step
+create with the `out_of_step` code. This prevents premature artifact creation
+(a bad early draft would block the legitimate later write with `exists_draft`).
 
-**Why step-level.** The artifact registry (`koan/tools/artifact_registry.py`)
-carries `origin_phases` per family and rejects an out-of-phase write with
-`wrong_phase`; freeze is folded from `execute_entry` events. Within a producing
-phase, a per-step layer is now also enforced: `ArtifactRegistryEntry` carries
-`create_steps` / `edit_steps` (sets of `(phase, step_name)` pairs, with
-`origin_phases` derived from `create_steps`), and `validate_write` /
-`validate_edit` consult the current step name (resolved from the phase module's
-`STEP_NAMES` at the tool-call site), rejecting an out-of-step call with the
-`out_of_step` code. The prompt-level "do not write" guards in intake steps 1-2
-(see [prompt-system.md](./prompt-system.md) `blk.no-writes`) are now advisory --
+The prompt-level "do not write" guards in intake steps 1-2
+(see [prompt-system.md](./prompt-system.md) `blk.no-writes`) are advisory --
 they prevent the mistake up front; the gate is the hard backstop.
 
-Steps are named (`phase.N Name`); phases get restructured but named steps are stable.
+Steps are named (`phase.N Name`); phases may be restructured but named steps
+are stable.
 
-| Artifact                          | Created in              | Editable in                                                                                       | Becomes read-only at                                                   |
-| --------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `brief.md`                        | `intake.3` Summarize    | `intake.3` only (revise before exit)                                                              | intake exit                                                            |
-| `core-flows.md`                   | `core-flows.2` Write    | `core-flows.2`                                                                                    | core-flows exit                                                        |
-| `tech-plan.md`                    | `tech-plan.2` Write     | `tech-plan.2` (reviewer reconcile)                                                                | tech-plan exit (disposable)                                            |
-| `milestones.md`                   | `milestone.2` Write     | `milestone.2` (reviewer reconcile); `execute.2` Assess (CLEAN UPDATE)                             | never -- additive-forward; discarded + recreated on milestone re-entry |
-| `plan.md` / `plan-milestone-N.md` | `plan.2` Write          | `plan.2` (reviewer reconcile)                                                                     | the execute handoff at the end of `plan.2` (`execute_entry` freeze)    |
-| `*-remediation-K.md`              | `plan.2` (see note)     | `plan.2`                                                                                          | the re-execute handoff                                                 |
-| `<stem>.review.md` (sidecar)      | koan, on reviewer write | disposition append in `tech-plan.2` / `milestone.2` / `plan.2`; exec-review append in `execute.2` | never (freeze-exempt)                                                  |
+| Artifact                          | Created in           | Editable in                                                            |
+| --------------------------------- | -------------------- | ---------------------------------------------------------------------- |
+| `brief.md`                        | `intake.3` Summarize | `intake.3` only (revise before exit); write-once after intake exits    |
+| `core-flows.md`                   | `core-flows.2` Write | `core-flows.2` (reviewer reconcile); write-once after core-flows exits |
+| `tech-plan.md`                    | `tech-plan.2` Write  | `tech-plan.2` (reviewer reconcile)                                     |
+| `milestones.md`                   | `milestone.2` Write  | any phase (living-doc family -- edit gate relaxed)                     |
+| `plan.md` / `plan-milestone-N.md` | `plan.2` Write       | any phase (living-doc family -- edit gate relaxed)                     |
 
 ### Notes
 
 - **First write wins (the draft trap).** A created artifact cannot be re-`write`n:
-  a second `koan_artifact_write` to an existing draft is now rejected recoverably --
-  the tool returns `{"ok": false, "error": {"reason": "exists_draft", ...}}` (it no
-  longer raises); the agent self-corrects by using `koan_artifact_edit`. But a
-  premature create is still _destructive_ if it lands -- the legitimate later write
-  would fail and the bad early draft would survive. That is what the per-step gate
-  prevents.
+  a second `koan_artifact_write` to an existing draft is rejected recoverably --
+  the tool returns `{"ok": false, "error": {"reason": "exists_draft", ...}}` (it
+  no longer raises); the agent self-corrects by using `koan_artifact_edit`. A
+  premature create is still _destructive_ if it lands, which is what the per-step
+  gate prevents.
 
-- **Cross-phase edits are legitimate and must be allowed.** `milestones.md` is
-  created in `milestone.2` but edited in `execute.2` (the CLEAN-path UPDATE); the
-  `.review.md` sidecar is appended in four different steps. A per-step `editable`
-  set is therefore a list, not a single step.
-
-- **The remediation flow straddles a phase boundary (resolved).** `execute.2`'s
-  NON-CONFORMING base path calls `koan_set_phase("plan")` and _then_ writes
-  `*-remediation-K.md`. This is now legal: the plan family's `create_steps` /
-  `edit_steps` include both `(plan, Analyze)` and `(plan, Write)`, so the
-  post-transition write (which fires while the re-entered `plan` phase is at its
-  Analyze step) passes the per-step gate.
+- **Living-document families (plan, milestones) are edit-gate-exempt.** Plans and
+  `milestones.md` may be edited from any phase the orchestrator runs in, so that
+  review findings, re-execution adjustments, and milestone bookkeeping can land
+  inline. Create-step gating is unchanged -- these artifacts must still originate
+  in the right phase.
 
 ### Enforcement (implemented)
 
@@ -111,20 +89,18 @@ Steps are named (`phase.N Name`); phases get restructured but named steps are st
 `(phase, step_name)` pairs); `origin_phases` is derived from `create_steps`.
 At each tool-call site, the current step name is resolved from
 `phase_module.STEP_NAMES` and passed to `validate_write(step_name=)` /
-`validate_edit(phase=, step_name=)`. A call arriving in the wrong step is
+`validate_edit(phase=, step_name=)`. A call arriving in the wrong CREATE step is
 rejected with the `out_of_step` code, which carries an `allowed` hint listing
-the legal (phase, step) pairs so the agent can self-correct. The per-step check
-is fail-open when the step name cannot be resolved. Sidecars (`.review.md`) are
-exempt from per-step gating (as well as from freeze). Freeze is unchanged
-(folded from `execute_entry` events).
+the legal (phase, step) pairs so the agent can self-correct. For living-doc
+families, the edit step check is skipped. The per-step check is fail-open when
+the step name cannot be resolved.
 
 Recoverable validation failures -- `out_of_step`, `wrong_phase`, `exists_draft`,
-`exists_frozen`, `chain_gap`, `frozen`, and the transition codes from
-`koan_set_phase` / `koan_set_workflow` / the execute-handoff
-`validate_execute_target` check -- are returned to the agent as the
+and the transition codes from `koan_set_phase` / `koan_set_workflow` / the
+`validate_executor_request` check -- are returned to the agent as the
 `{"ok": false, "error": {"reason": ..., "message": ..., "allowed": ...,
 "suggested_name": ...}}` envelope (never raised). Only genuine infrastructure
-faults (`no_run_dir`, `invalid_path`, `write_failed`, `edit_failed`) raise.
+faults (`no_run_dir`, `invalid_path`, `write_failed`) raise.
 The agent receives the corrective message and retries; the gate never crashes
 the run.
 
@@ -133,12 +109,14 @@ the run.
 Enforcement must be a runtime **rejection** (`out_of_step` error), not removal of
 the tool from the agent's context -- and the reason is prompt caching. Tool
 definitions live in the agent's system-prompt prefix, which is the cached portion
-of every request. The construction-time default-deny composes the toolset once per
-`(role, phase)` (`compose_toolset` in `koan/tools/tool_policy.py`) precisely so the
-tool-definition prefix stays byte-stable across every step within a phase -- the
-cache survives the whole phase. If we instead added or removed tools per step to
-express per-step capability, the prefix would change at every step boundary and
-invalidate the cache each time, paying a full prompt re-process cost on every step.
+of every request. The default-deny composes the toolset once per role (`compose_toolset` in
+`koan/tools/tool_policy.py`) so the tool-definition prefix stays byte-stable
+across every step and phase -- the cache survives the whole run. Phase-
+conditional tools are gated at call time by `phase_gate_message` rather than by
+removing them from the vocabulary. If we instead added or removed tools per step
+to express per-step capability, the prefix would change at every step boundary
+and invalidate the cache each time, paying a full prompt re-process cost on
+every step.
 
 So the tool stays visible for the entire phase; calling it in a step where it is
 not yet legal returns an error the agent can recover from. **Per-step capability is
@@ -289,11 +267,11 @@ Per-milestone content:
 
 Ownership split:
 
-- `milestone` (CREATE mode) writes the initial sketches with `[pending]`
-  status. Re-decomposition discards the stale `milestones.md` automatically
-  on `milestone` re-entry (discard-hook + fresh CREATE); all `[done]`
-  milestones and their Outcome sections are preserved in the frozen/executed
-  plan history.
+- `milestone` writes the initial sketches with `[pending]` status (once, at
+  milestone phase entry). The milestone phase is one-time; `milestones.md`
+  is edited in place thereafter as understanding evolves. Completed milestones
+  are preserved by convention; future scope may be adjusted by editing pending
+  or not-yet-started milestones.
 - `execute` owns the status transition to `[done]` and the Outcome authoring
   (inline conformance review pass). `milestone` does NOT mark milestones
   `[done]` and does NOT write Outcome sections.
@@ -308,8 +286,7 @@ Structural rules:
 
 Source of truth (sketch format): `koan/phases/milestone_spec.py:PHASE_ROLE_CONTEXT`.
 Source of truth (Outcome authoring and status transitions):
-`koan/phases/execute.py` (step 2, Assess -- the inline conformance review;
-`exec_review.py` was removed in the M6 review collapse).
+`koan/phases/execute.py` (Reconcile step -- the inline conformance review).
 
 ### `plan.md` and `plan-milestone-N.md`
 
@@ -372,8 +349,10 @@ write/edit) the `artifact_diff` projection event.
 
 **`koan_artifact_write(filename, content)`** -- full rewrite. Writes the body
 verbatim and returns `{"ok": true, "filename": ...}`. Emits `artifact_diff`.
-Use it to create an artifact or replace it wholesale. Permission failures
-(wrong phase, wrong step, existing draft, frozen) are returned as
+Use it to create an artifact or replace it wholesale. For reviewed artifact
+families (plan, milestones, tech-plan), the mechanical reviewer sub-agent runs
+as a blocking side-effect and its findings are returned inline. Permission
+failures (wrong phase, wrong step, existing draft) are returned as
 `{"ok": false, "error": {"reason": ..., "message": ..., ...}}` so the agent
 can self-correct; only infrastructure faults (`no_run_dir`, `invalid_path`,
 `write_failed`) raise.
@@ -389,12 +368,15 @@ large artifacts in full with no hard reject. Error: `not_found`.
 anchored line edit (see the hash-anchored protocol in [tools.md](./tools.md)).
 `edit_type` is `replace` (default), `insert_before`, or `insert_after`; an
 inclusive range replace uses `end_anchor`; empty `text` deletes. Returns
-`{"ok": true, "filename": ...}`. Permission failures (wrong phase, wrong step,
-frozen) are returned as `{"ok": false, "error": {"reason": ..., "message": ...,
-...}}` so the agent can self-correct. Infrastructure faults raise: `not_found`
-(file missing), `edit_failed` (anchor not found, content drift, or bad
-edit_type). Preferred for targeted in-place fixes; `koan_artifact_write` for
-extensive rewrites.
+`{"ok": true, "filename": ...}`. Permission failures (wrong phase, wrong step)
+are returned as `{"ok": false, "error": {"reason": ..., "message": ...,
+...}}` so the agent can self-correct; living-doc families are step-gating-exempt
+so in-place edits to plans and `milestones.md` always succeed on the permission
+check. `edit_failed` (anchor not found, content drift, or bad edit_type) and `not_found`
+(file missing) are returned as `{"ok": false, "error": {"reason": ...}}` envelopes
+-- recoverable, never raised -- so a mis-copied anchor cannot crash the run. Only
+path-resolution faults (`no_run_dir`, `invalid_path`) raise. Preferred for targeted
+in-place fixes; `koan_artifact_write` for extensive rewrites.
 
 The legacy `koan_artifact_propose` tool was retired in M5 (commit `99a4e29`)
 along with the inline-review frontend surface (M6, commit `1670f06`).

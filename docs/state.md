@@ -41,12 +41,12 @@ the active workflow type, and the list of story IDs.
 
 ### Plan workflow phases
 
-| Phase | What happens |
-|-------|--------------|
-| `intake` | Orchestrator reads conversation, scouts codebase, asks clarifying questions. Writes `brief.md`. |
-| `plan` | Orchestrator reads codebase and `brief.md`, writes `plan.md` (triggers mechanical PLAN_REVIEWER). |
-| `execute` | Orchestrator calls `koan_set_phase("execute", plan_file=...)` to freeze the plan, spawn the executor, and receive the deviation report; runs inline conformance review. |
-| `curation` | Postmortem -- writes memory entries via `koan_memorize`/`koan_forget`. |
+| Phase      | What happens                                                                                                                                                                         |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `intake`   | Orchestrator reads conversation, scouts codebase, asks clarifying questions. Writes `brief.md`.                                                                                      |
+| `plan`     | Orchestrator reads codebase and `brief.md`, writes `plan.md` (triggers mechanical PLAN_REVIEWER).                                                                                    |
+| `execute`  | Orchestrator calls `koan_request_executor(plan_file?, instructions?)` to spawn the executor and receive the deviation report; runs independent verification; records outcome inline. |
+| `curation` | Postmortem -- writes memory entries via `koan_memorize`/`koan_forget`.                                                                                                               |
 
 Phases advance via `koan_set_phase`; the active workflow switches via
 `koan_set_workflow` (which also lands at the new workflow's initial phase). Any phase in the active workflow's
@@ -126,30 +126,30 @@ transitions.
 
 Key projection fields common to all roles:
 
-| Field             | Type   | Meaning                                                  |
-| ----------------- | ------ | -------------------------------------------------------- |
-| `phase`           | string | Overall phase name (e.g., "intake", "plan")              |
-| `step`            | number | Current step index within the phase                      |
-| `step_name`       | string | Human-readable step label (e.g., "Scout (round 2)")      |
-| `tokens_sent`     | number | Cumulative tokens in                                     |
-| `tokens_received` | number | Cumulative tokens out                                    |
+| Field             | Type   | Meaning                                             |
+| ----------------- | ------ | --------------------------------------------------- |
+| `phase`           | string | Overall phase name (e.g., "intake", "plan")         |
+| `step`            | number | Current step index within the phase                 |
+| `step_name`       | string | Human-readable step label (e.g., "Scout (round 2)") |
+| `tokens_sent`     | number | Cumulative tokens in                                |
+| `tokens_received` | number | Cumulative tokens out                               |
 
 Orchestrator state tracked in `AppState` (in-memory, not persisted):
 
-| Field | Type | Purpose |
-|-------|------|---------|
-| `workflow` | `Workflow \| None` | Active workflow; set at run start, drives transition validation and phase guidance |
-| `user_message_buffer` | `list[ChatMessage]` | Buffered user chat messages, drained when the loop resumes from a hand-back |
-| `yield_future` | `asyncio.Future \| None` | Non-None while the loop is parked at a phase-boundary hand-back, waiting for a user message |
-| `workflow_done` | `bool` | Set to `True` by `koan_set_phase("done")`; causes the loop to terminate |
+| Field                 | Type                     | Purpose                                                                                     |
+| --------------------- | ------------------------ | ------------------------------------------------------------------------------------------- |
+| `workflow`            | `Workflow \| None`       | Active workflow; set at run start, drives transition validation and phase guidance          |
+| `user_message_buffer` | `list[ChatMessage]`      | Buffered user chat messages, drained when the loop resumes from a hand-back                 |
+| `yield_future`        | `asyncio.Future \| None` | Non-None while the loop is parked at a phase-boundary hand-back, waiting for a user message |
+| `workflow_done`       | `bool`                   | Set to `True` by `koan_set_phase("done")`; causes the loop to terminate                     |
 
 Per-agent state in `AgentState`:
 
-| Field | Type | Purpose |
-|-------|------|---------|
-| `first_turn_completed` | `bool` | Set by `run_agent_loop` when the first turn reaches the End node; the bootstrap success signal replacing the former first-tool-call handshake |
-| `provider` | `str \| None` | Provider name from `model_spec`; used by the fold to derive cost |
-| `context_window` | `int` | Context window size from `model_spec`; used by the fold to derive context-window percent |
+| Field                  | Type          | Purpose                                                                                                                                       |
+| ---------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `first_turn_completed` | `bool`        | Set by `run_agent_loop` when the first turn reaches the End node; the bootstrap success signal replacing the former first-tool-call handshake |
+| `provider`             | `str \| None` | Provider name from `model_spec`; used by the fold to derive cost                                                                              |
+| `context_window`       | `int`         | Context window size from `model_spec`; used by the fold to derive context-window percent                                                      |
 
 `InteractionState` carries `next_suggestions: list[dict] \| None`, the
 orchestrator-authored hand-back suggestions recorded by `koan_suggest_next`.
