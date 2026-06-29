@@ -88,7 +88,8 @@ def _detect_orchestrator_model() -> str:
     try:
         from koan.agents.registry import AgentRegistry
         from koan.config import load_koan_config
-        config = asyncio.run(load_koan_config())
+        from koan.home import resolve_koan_home
+        config = asyncio.run(load_koan_config(resolve_koan_home(None)))
         registry = AgentRegistry()
         # SubagentRole is a Literal type alias, not an enum; pass the string directly.
         _, model, _ = registry.resolve_agent_config("orchestrator", config)

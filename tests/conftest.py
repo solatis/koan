@@ -1,11 +1,32 @@
 # Test-suite configuration and hooks.
 
 import os
+from pathlib import Path
 
 import pytest
 
 
-def _build_integration_cred_components(tmp_path, monkeypatch):
+@pytest.fixture(autouse=True)
+def koan_home(tmp_path, monkeypatch) -> Path:
+    """Redirect every test away from the developer's real ~/.koan.
+
+    Patches Path.home() to return tmp_path so that both the ServerConfig
+    default_factory (Path.home() / ".koan") and the resolve_koan_home default
+    branch resolve into the temp tree.  This means no test can read or write
+    the real ~/.koan even via a programmatically constructed AppState that
+    never explicitly sets server.koan_home.
+
+    Returns the derived temp home (tmp_path / ".koan"), which tests that call
+    threaded functions (load_koan_config, FileKeyBackend, etc.) should pass
+    as the home argument.
+    """
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    home = Path.home() / ".koan"  # == tmp_path / ".koan"
+    home.mkdir(parents=True, exist_ok=True)
+    return home
+
+
+def _build_integration_cred_components(koan_home: Path):
     """Build KoanConfig + CredentialStore for integration tests.
 
     Shared by real_credential_store and real_memory_models fixtures.
@@ -15,9 +36,6 @@ def _build_integration_cred_components(tmp_path, monkeypatch):
     from koan.config import KoanConfig
     from koan.credentials import CredentialStore, FileKeyBackend
     from koan.types import Connection, ConfiguredModel, MemoryBinding, MemoryBindings
-
-    key_path = tmp_path / "master.key"
-    monkeypatch.setattr("koan.credentials.MASTER_KEY_PATH", key_path)
 
     config = KoanConfig(
         connections=[
@@ -47,7 +65,7 @@ def _build_integration_cred_components(tmp_path, monkeypatch):
             reflect_llm=MemoryBinding(configured_model_id="google-reflect"),
         ),
     )
-    backend = FileKeyBackend()
+    backend = FileKeyBackend(koan_home)
     store = CredentialStore(config, backend)
 
     _INTEGRATION_ENV_KEYS: dict[str, str] = {
@@ -66,8 +84,9 @@ def _build_integration_cred_components(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=False)
-def _real_cred_components(tmp_path, monkeypatch):
-    return _build_integration_cred_components(tmp_path, monkeypatch)
+def _real_cred_components(koan_home):
+    """Build real credential components for integration tests."""
+    return _build_integration_cred_components(koan_home)
 
 
 @pytest.fixture(autouse=False)

@@ -154,17 +154,13 @@ class TestResolveVoyageEmbeddingDim:
 # ---------------------------------------------------------------------------
 
 def _build_store(
-    tmp_path,
-    monkeypatch,
+    koan_home,
     *,
     voyage_key: str | None = "voyage-api-key",
     google_key: str | None = "google-api-key",
     embedding_dim: int | None = None,
 ) -> tuple[KoanConfig, CredentialStore]:
     """Build a KoanConfig + CredentialStore with voyage + google connections."""
-    key_path = tmp_path / "master.key"
-    monkeypatch.setattr("koan.credentials.MASTER_KEY_PATH", key_path)
-
     config = KoanConfig(
         connections=[
             Connection(id="google-1", type="google"),
@@ -186,7 +182,7 @@ def _build_store(
             reflect_llm=MemoryBinding(configured_model_id="google-reflect"),
         ),
     )
-    backend = FileKeyBackend()
+    backend = FileKeyBackend(koan_home)
     store = CredentialStore(config, backend)
     if voyage_key:
         store.set("voyage-1", voyage_key)
@@ -200,9 +196,9 @@ def _build_store(
 # ---------------------------------------------------------------------------
 
 class TestBuildMemoryModels:
-    def test_embedding_returns_voyage_model_spec(self, tmp_path, monkeypatch):
+    def test_embedding_returns_voyage_model_spec(self, koan_home):
         """build_memory_models resolves embedding to a ModelSpec for voyage."""
-        config, store = _build_store(tmp_path, monkeypatch)
+        config, store = _build_store(koan_home)
         models = build_memory_models(config, store)
         assert models.embedding is not None
         assert isinstance(models.embedding, ModelSpec)
@@ -210,23 +206,23 @@ class TestBuildMemoryModels:
         assert models.embedding.model == "voyage-4-large"
         assert models.embedding.api_key == "voyage-api-key"
 
-    def test_embedding_resolves_dim_from_catalog_default(self, tmp_path, monkeypatch):
+    def test_embedding_resolves_dim_from_catalog_default(self, koan_home):
         """embedding binding with no explicit dim resolves to catalog default (1024)."""
-        config, store = _build_store(tmp_path, monkeypatch, embedding_dim=None)
+        config, store = _build_store(koan_home, embedding_dim=None)
         models = build_memory_models(config, store)
         assert models.embedding is not None
         assert models.embedding.embedding_dim == 1024
 
-    def test_embedding_respects_explicit_dim(self, tmp_path, monkeypatch):
+    def test_embedding_respects_explicit_dim(self, koan_home):
         """embedding binding with explicit dim=512 resolves to 512."""
-        config, store = _build_store(tmp_path, monkeypatch, embedding_dim=512)
+        config, store = _build_store(koan_home, embedding_dim=512)
         models = build_memory_models(config, store)
         assert models.embedding is not None
         assert models.embedding.embedding_dim == 512
 
-    def test_memory_llm_returns_google_model_spec(self, tmp_path, monkeypatch):
+    def test_memory_llm_returns_google_model_spec(self, koan_home):
         """build_memory_models resolves memory_llm to a ModelSpec for google."""
-        config, store = _build_store(tmp_path, monkeypatch)
+        config, store = _build_store(koan_home)
         models = build_memory_models(config, store)
         assert models.memory_llm is not None
         assert isinstance(models.memory_llm, ModelSpec)
@@ -234,9 +230,9 @@ class TestBuildMemoryModels:
         assert models.memory_llm.model == "gemini-flash-lite-latest"
         assert models.memory_llm.api_key == "google-api-key"
 
-    def test_reflect_llm_returns_google_model_spec(self, tmp_path, monkeypatch):
+    def test_reflect_llm_returns_google_model_spec(self, koan_home):
         """build_memory_models resolves reflect_llm to a ModelSpec for google."""
-        config, store = _build_store(tmp_path, monkeypatch)
+        config, store = _build_store(koan_home)
         models = build_memory_models(config, store)
         assert models.reflect_llm is not None
         assert isinstance(models.reflect_llm, ModelSpec)
@@ -244,42 +240,36 @@ class TestBuildMemoryModels:
         assert models.reflect_llm.model == "gemini-flash-latest"
         assert models.reflect_llm.api_key == "google-api-key"
 
-    def test_missing_credential_produces_none_api_key(self, tmp_path, monkeypatch):
+    def test_missing_credential_produces_none_api_key(self, koan_home):
         """api_key is None when no credential is stored for a connection."""
-        config, store = _build_store(tmp_path, monkeypatch, voyage_key=None)
+        config, store = _build_store(koan_home, voyage_key=None)
         models = build_memory_models(config, store)
         assert models.embedding is not None
         assert models.embedding.api_key is None
 
-    def test_no_memory_block_returns_empty_bundle(self, tmp_path, monkeypatch):
+    def test_no_memory_block_returns_empty_bundle(self, koan_home):
         """config.memory=None -> all three fields None."""
-        key_path = tmp_path / "master.key"
-        monkeypatch.setattr("koan.credentials.MASTER_KEY_PATH", key_path)
         config = KoanConfig(memory=None)
-        store = CredentialStore(config, FileKeyBackend())
+        store = CredentialStore(config, FileKeyBackend(koan_home))
         models = build_memory_models(config, store)
         assert models.embedding is None
         assert models.memory_llm is None
         assert models.reflect_llm is None
 
-    def test_missing_configured_model_returns_none_field(self, tmp_path, monkeypatch):
+    def test_missing_configured_model_returns_none_field(self, koan_home):
         """Binding pointing to a nonexistent configured_model_id -> None field."""
-        key_path = tmp_path / "master.key"
-        monkeypatch.setattr("koan.credentials.MASTER_KEY_PATH", key_path)
         config = KoanConfig(
             configured_models=[],
             memory=MemoryBindings(
                 embedding=MemoryBinding(configured_model_id="nonexistent"),
             ),
         )
-        store = CredentialStore(config, FileKeyBackend())
+        store = CredentialStore(config, FileKeyBackend(koan_home))
         models = build_memory_models(config, store)
         assert models.embedding is None
 
-    def test_missing_connection_returns_none_field(self, tmp_path, monkeypatch):
+    def test_missing_connection_returns_none_field(self, koan_home):
         """ConfiguredModel with nonexistent connection_id -> None field."""
-        key_path = tmp_path / "master.key"
-        monkeypatch.setattr("koan.credentials.MASTER_KEY_PATH", key_path)
         config = KoanConfig(
             connections=[],
             configured_models=[
@@ -289,13 +279,13 @@ class TestBuildMemoryModels:
                 embedding=MemoryBinding(configured_model_id="embed"),
             ),
         )
-        store = CredentialStore(config, FileKeyBackend())
+        store = CredentialStore(config, FileKeyBackend(koan_home))
         models = build_memory_models(config, store)
         assert models.embedding is None
 
-    def test_none_credential_store_produces_none_api_keys(self, tmp_path, monkeypatch):
+    def test_none_credential_store_produces_none_api_keys(self, koan_home):
         """credential_store=None -> api_key=None on all specs."""
-        config, _ = _build_store(tmp_path, monkeypatch)
+        config, _ = _build_store(koan_home)
         models = build_memory_models(config, None)
         assert models.embedding is not None
         assert models.embedding.api_key is None

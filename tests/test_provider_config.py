@@ -44,10 +44,9 @@ def _make_minimal_config(
     )
 
 
-def _make_credential_store(config: KoanConfig, tmp_path, monkeypatch) -> CredentialStore:
-    """Build a CredentialStore with a tmp master key."""
-    monkeypatch.setattr("koan.credentials.MASTER_KEY_PATH", tmp_path / "master.key")
-    return CredentialStore(config, FileKeyBackend())
+def _make_credential_store(config: KoanConfig, koan_home) -> CredentialStore:
+    """Build a CredentialStore backed by the test's temp koan home."""
+    return CredentialStore(config, FileKeyBackend(koan_home))
 
 
 # -- resolve_model_spec -------------------------------------------------------
@@ -191,10 +190,8 @@ class TestResolveModelSpec:
 
 class TestConfigRoundTrip:
     @pytest.mark.anyio
-    async def test_new_schema_round_trip(self, tmp_path, monkeypatch):
+    async def test_new_schema_round_trip(self, koan_home, monkeypatch):
         """KoanConfig with new schema round-trips through save/load correctly."""
-        config_path = tmp_path / "config.yaml"
-        monkeypatch.setattr("koan.config.CONFIG_PATH", config_path)
         monkeypatch.setattr("koan.config._config_write_lock", None)
 
         conn = Connection(
@@ -223,8 +220,8 @@ class TestConfigRoundTrip:
             scout_concurrency=4,
         )
 
-        await save_koan_config(original)
-        loaded = await load_koan_config()
+        await save_koan_config(original, koan_home)
+        loaded = await load_koan_config(koan_home)
 
         assert loaded.active == "$last"
         assert loaded.scout_concurrency == 4
@@ -250,10 +247,8 @@ class TestConfigRoundTrip:
         assert s.thinking == "high"
 
     @pytest.mark.anyio
-    async def test_memory_bindings_round_trip(self, tmp_path, monkeypatch):
+    async def test_memory_bindings_round_trip(self, koan_home, monkeypatch):
         """MemoryBindings persists and loads correctly."""
-        config_path = tmp_path / "config.yaml"
-        monkeypatch.setattr("koan.config.CONFIG_PATH", config_path)
         monkeypatch.setattr("koan.config._config_write_lock", None)
 
         original = KoanConfig(
@@ -263,8 +258,8 @@ class TestConfigRoundTrip:
                 reflect_llm=MemoryBinding(configured_model_id="gemini-pro-cm"),
             ),
         )
-        await save_koan_config(original)
-        loaded = await load_koan_config()
+        await save_koan_config(original, koan_home)
+        loaded = await load_koan_config(koan_home)
 
         assert loaded.memory is not None
         assert loaded.memory.embedding.configured_model_id == "voyage-cm"
@@ -280,53 +275,45 @@ class TestConfigRoundTrip:
 class TestRetryConfigRoundTrip:
 
     @pytest.mark.anyio
-    async def test_retry_fields_default(self, tmp_path, monkeypatch):
+    async def test_retry_fields_default(self, koan_home, monkeypatch):
         """Default KoanConfig has max_retry_attempts=10, max_retry_wait_seconds=60.0."""
-        config_path = tmp_path / "config.yaml"
-        monkeypatch.setattr("koan.config.CONFIG_PATH", config_path)
         monkeypatch.setattr("koan.config._config_write_lock", None)
 
         # File absent -> defaults used.
-        loaded = await load_koan_config()
+        loaded = await load_koan_config(koan_home)
         assert loaded.max_retry_attempts == 10
         assert loaded.max_retry_wait_seconds == 60.0
 
     @pytest.mark.anyio
-    async def test_retry_fields_round_trip(self, tmp_path, monkeypatch):
+    async def test_retry_fields_round_trip(self, koan_home, monkeypatch):
         """max_retry_attempts and max_retry_wait_seconds persist through save+load."""
-        config_path = tmp_path / "config.yaml"
-        monkeypatch.setattr("koan.config.CONFIG_PATH", config_path)
         monkeypatch.setattr("koan.config._config_write_lock", None)
 
         original = KoanConfig(max_retry_attempts=5, max_retry_wait_seconds=30.0)
-        await save_koan_config(original)
-        loaded = await load_koan_config()
+        await save_koan_config(original, koan_home)
+        loaded = await load_koan_config(koan_home)
 
         assert loaded.max_retry_attempts == 5
         assert loaded.max_retry_wait_seconds == 30.0
 
     @pytest.mark.anyio
-    async def test_retry_attempts_invalid_falls_back_to_default(self, tmp_path, monkeypatch):
+    async def test_retry_attempts_invalid_falls_back_to_default(self, koan_home, monkeypatch):
         """Non-positive or non-integer max_retry_attempts falls back to 10."""
         import yaml
-        config_path = tmp_path / "config.yaml"
-        monkeypatch.setattr("koan.config.CONFIG_PATH", config_path)
         monkeypatch.setattr("koan.config._config_write_lock", None)
 
-        config_path.write_text(yaml.safe_dump({"max_retry_attempts": -1}))
-        loaded = await load_koan_config()
+        (koan_home / "config.yaml").write_text(yaml.safe_dump({"max_retry_attempts": -1}))
+        loaded = await load_koan_config(koan_home)
         assert loaded.max_retry_attempts == 10
 
     @pytest.mark.anyio
-    async def test_retry_wait_invalid_falls_back_to_default(self, tmp_path, monkeypatch):
+    async def test_retry_wait_invalid_falls_back_to_default(self, koan_home, monkeypatch):
         """Non-positive max_retry_wait_seconds falls back to 60.0."""
         import yaml
-        config_path = tmp_path / "config.yaml"
-        monkeypatch.setattr("koan.config.CONFIG_PATH", config_path)
         monkeypatch.setattr("koan.config._config_write_lock", None)
 
-        config_path.write_text(yaml.safe_dump({"max_retry_wait_seconds": 0}))
-        loaded = await load_koan_config()
+        (koan_home / "config.yaml").write_text(yaml.safe_dump({"max_retry_wait_seconds": 0}))
+        loaded = await load_koan_config(koan_home)
         assert loaded.max_retry_wait_seconds == 60.0
 
 
@@ -335,15 +322,14 @@ class TestRetryConfigRoundTrip:
 class TestResolveProviderAuth:
     """Tests for the Connection-based resolve_provider_auth."""
 
-    def _make_store(self, conn: Connection, secret: str, tmp_path, monkeypatch) -> CredentialStore:
+    def _make_store(self, conn: Connection, secret: str, koan_home) -> CredentialStore:
         """Build a store with one connection id's secret stored."""
-        monkeypatch.setattr("koan.credentials.MASTER_KEY_PATH", tmp_path / "master.key")
         config = KoanConfig(connections=[conn])
-        store = CredentialStore(config, FileKeyBackend())
+        store = CredentialStore(config, FileKeyBackend(koan_home))
         store.set(conn.id, secret)
         return store
 
-    def test_resolves_api_key_and_region_from_connection(self, tmp_path, monkeypatch):
+    def test_resolves_api_key_and_region_from_connection(self, koan_home):
         """resolve_provider_auth returns api_key from store and region/base_url from Connection."""
         from koan.agents.adapter import ResolvedProviderAuth, resolve_provider_auth
 
@@ -353,7 +339,7 @@ class TestResolveProviderAuth:
             region="us-east-1",
             base_url="https://ep",
         )
-        store = self._make_store(conn, "tok", tmp_path, monkeypatch)
+        store = self._make_store(conn, "tok", koan_home)
         result = resolve_provider_auth(conn, store)
         assert isinstance(result, ResolvedProviderAuth)
         assert result.api_key == "tok"
@@ -370,12 +356,12 @@ class TestResolveProviderAuth:
         assert result.region is None
         assert result.base_url is None
 
-    def test_connection_with_no_region_or_base_url(self, tmp_path, monkeypatch):
+    def test_connection_with_no_region_or_base_url(self, koan_home):
         """Connection without region/base_url resolves Nones for those fields."""
         from koan.agents.adapter import resolve_provider_auth
 
         conn = Connection(id="openai-direct", type="openai")
-        store = self._make_store(conn, "sk-test", tmp_path, monkeypatch)
+        store = self._make_store(conn, "sk-test", koan_home)
         result = resolve_provider_auth(conn, store)
         assert result.api_key == "sk-test"
         assert result.region is None
@@ -386,21 +372,17 @@ class TestResolveProviderAuth:
 
 class TestCredentialConfigRoundTrip:
     @pytest.mark.anyio
-    async def test_credentials_envelope_round_trips(self, tmp_path, monkeypatch):
+    async def test_credentials_envelope_round_trips(self, koan_home, monkeypatch):
         """A credentials envelope written to config.yaml is loaded back correctly."""
-        config_path = tmp_path / "config.yaml"
-        key_path = tmp_path / "master.key"
-        monkeypatch.setattr("koan.config.CONFIG_PATH", config_path)
         monkeypatch.setattr("koan.config._config_write_lock", None)
-        monkeypatch.setattr("koan.credentials.MASTER_KEY_PATH", key_path)
 
-        backend = FileKeyBackend()
+        backend = FileKeyBackend(koan_home)
         config = KoanConfig()
         store = CredentialStore(config, backend)
         store.set("google-direct", "round-trip-key")
 
-        await save_koan_config(config)
-        loaded = await load_koan_config()
+        await save_koan_config(config, koan_home)
+        loaded = await load_koan_config(koan_home)
 
         store2 = CredentialStore(loaded, backend)
         assert store2.resolve("google-direct") == "round-trip-key"
@@ -412,10 +394,8 @@ class TestCredentialConfigRoundTrip:
 
 class TestEmbeddingDimRoundTrip:
     @pytest.mark.anyio
-    async def test_embedding_dim_persists_and_loads(self, tmp_path, monkeypatch):
+    async def test_embedding_dim_persists_and_loads(self, koan_home, monkeypatch):
         """ConfiguredModel.embedding_dim round-trips through save/load."""
-        config_path = tmp_path / "config.yaml"
-        monkeypatch.setattr("koan.config.CONFIG_PATH", config_path)
         monkeypatch.setattr("koan.config._config_write_lock", None)
 
         original = KoanConfig(
@@ -429,19 +409,17 @@ class TestEmbeddingDimRoundTrip:
                 )
             ],
         )
-        await save_koan_config(original)
-        loaded = await load_koan_config()
+        await save_koan_config(original, koan_home)
+        loaded = await load_koan_config(koan_home)
 
         assert len(loaded.configured_models) == 1
         cm = loaded.configured_models[0]
         assert cm.embedding_dim == 512
 
     @pytest.mark.anyio
-    async def test_embedding_dim_none_omitted_from_yaml(self, tmp_path, monkeypatch):
+    async def test_embedding_dim_none_omitted_from_yaml(self, koan_home, monkeypatch):
         """embedding_dim=None is not written to YAML (omit-when-None convention)."""
         import yaml
-        config_path = tmp_path / "config.yaml"
-        monkeypatch.setattr("koan.config.CONFIG_PATH", config_path)
         monkeypatch.setattr("koan.config._config_write_lock", None)
 
         original = KoanConfig(
@@ -455,8 +433,8 @@ class TestEmbeddingDimRoundTrip:
                 )
             ],
         )
-        await save_koan_config(original)
-        parsed = yaml.safe_load(config_path.read_text())
+        await save_koan_config(original, koan_home)
+        parsed = yaml.safe_load((koan_home / "config.yaml").read_text())
         assert "embedding_dim" not in parsed["configured_models"][0]
 
 

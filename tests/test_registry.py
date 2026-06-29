@@ -91,9 +91,7 @@ class TestResolveModelSpecThinkingClamp:
 # -- save_koan_config write lock -----------------------------------------------
 
 class TestWriteLock:
-    def test_sequential_writes(self, tmp_path, monkeypatch):
-        config_path = tmp_path / "config.yaml"
-        monkeypatch.setattr("koan.config.CONFIG_PATH", config_path)
+    def test_sequential_writes(self, koan_home, monkeypatch):
         # Reset module-level lock so it gets created fresh
         monkeypatch.setattr("koan.config._config_write_lock", None)
 
@@ -102,13 +100,13 @@ class TestWriteLock:
 
         async def run():
             await asyncio.gather(
-                save_koan_config(config1),
-                save_koan_config(config2),
+                save_koan_config(config1, koan_home),
+                save_koan_config(config2, koan_home),
             )
 
         asyncio.run(run())
 
-        result = yaml.safe_load(config_path.read_text("utf-8"))
+        result = yaml.safe_load((koan_home / "config.yaml").read_text("utf-8"))
         # Both writes completed; final value is one of {4, 16}
         assert result["scout_concurrency"] in (4, 16)
         # File is valid JSON (not corrupted by concurrent writes)

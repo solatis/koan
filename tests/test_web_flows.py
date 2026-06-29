@@ -73,9 +73,11 @@ def _make_model_registry() -> list[ModelRegistryEntry]:
 # -- Fixtures -----------------------------------------------------------------
 
 @pytest.fixture
-def app_state():
+def app_state(koan_home):
     st = AppState()
     st.provider_config.config = KoanConfig()
+    # Thread the resolved home so save handlers and _runs_dir use the temp dir.
+    st.server.koan_home = str(koan_home)
     return st
 
 
@@ -502,12 +504,10 @@ def test_api_artifact_comment_commits_attachments(client, app_state, tmp_path):
 # Replaces the removed validate-provider and credential endpoints.
 
 
-def _make_credential_store(config, tmp_path, monkeypatch):
-    """Build an initialized CredentialStore backed by a tmp master key."""
+def _make_credential_store(config, koan_home):
+    """Build an initialized CredentialStore backed by the test's temp koan home."""
     from koan.credentials import CredentialStore, FileKeyBackend
-    key_path = tmp_path / "master.key"
-    monkeypatch.setattr("koan.credentials.MASTER_KEY_PATH", key_path)
-    return CredentialStore(config, FileKeyBackend())
+    return CredentialStore(config, FileKeyBackend(koan_home))
 
 
 # api_settings_provider/delete/test tests removed in M5: endpoints deleted (plan-milestone-5.md).
@@ -539,10 +539,8 @@ def test_settings_provider_negative_presence(client, app_state):
 # Provider test endpoint tests removed in M5: endpoint deleted (plan-milestone-5.md).
 
 
-def test_settings_retry_accepts_valid_payload(client, app_state, tmp_path, monkeypatch):
+def test_settings_retry_accepts_valid_payload(client, app_state, monkeypatch):
     """PUT /api/settings/retry persists valid bounds and emits retry_settings_changed."""
-    config_path = tmp_path / "config.yaml"
-    monkeypatch.setattr("koan.config.CONFIG_PATH", config_path)
     monkeypatch.setattr("koan.config._config_write_lock", None)
 
     resp = client.put("/api/settings/retry", json={"max_retry_attempts": 5, "max_retry_wait_seconds": 30})
@@ -556,10 +554,8 @@ def test_settings_retry_accepts_valid_payload(client, app_state, tmp_path, monke
     )
 
 
-def test_settings_retry_rejects_invalid_attempts(client, app_state, tmp_path, monkeypatch):
+def test_settings_retry_rejects_invalid_attempts(client, app_state, monkeypatch):
     """PUT /api/settings/retry returns 422 when max_retry_attempts is out of range."""
-    config_path = tmp_path / "config.yaml"
-    monkeypatch.setattr("koan.config.CONFIG_PATH", config_path)
     monkeypatch.setattr("koan.config._config_write_lock", None)
 
     resp = client.put("/api/settings/retry", json={"max_retry_attempts": 0, "max_retry_wait_seconds": 30})
@@ -569,10 +565,8 @@ def test_settings_retry_rejects_invalid_attempts(client, app_state, tmp_path, mo
     assert resp.status_code == 422
 
 
-def test_settings_retry_rejects_invalid_wait(client, app_state, tmp_path, monkeypatch):
+def test_settings_retry_rejects_invalid_wait(client, app_state, monkeypatch):
     """PUT /api/settings/retry returns 422 when max_retry_wait_seconds is out of range."""
-    config_path = tmp_path / "config.yaml"
-    monkeypatch.setattr("koan.config.CONFIG_PATH", config_path)
     monkeypatch.setattr("koan.config._config_write_lock", None)
 
     resp = client.put("/api/settings/retry", json={"max_retry_attempts": 5, "max_retry_wait_seconds": 0})
@@ -1215,10 +1209,11 @@ async def test_artifact_edit_emits_diff_events(tmp_path):
 
 # -- api_sessions_list: workflow_history schema --------------------------------
 
-def test_api_sessions_list_returns_workflow_from_history(tmp_path, client):
+def test_api_sessions_list_returns_workflow_from_history(koan_home, client):
     """api_sessions_list derives the workflow field from workflow_history[-1]["name"]."""
-    run_dir = tmp_path / "2099000000-aabbccdd"
-    run_dir.mkdir()
+    # Create the run dir under koan_home/runs/ so _runs_dir(st) finds it.
+    run_dir = koan_home / "runs" / "2099000000-aabbccdd"
+    run_dir.mkdir(parents=True)
     (run_dir / "task.json").write_text(json.dumps({
         "task": "build something",
         "workflow_history": [{"name": "plan", "phase": "intake", "started_at": 0.0}],
@@ -1226,8 +1221,7 @@ def test_api_sessions_list_returns_workflow_from_history(tmp_path, client):
         "project_dir": "/some/project",
     }))
 
-    with patch("koan.web.app.RUNS_DIR", tmp_path):
-        resp = client.get("/api/sessions")
+    resp = client.get("/api/sessions")
 
     assert resp.status_code == 200
     sessions = resp.json()["sessions"]
@@ -1235,10 +1229,10 @@ def test_api_sessions_list_returns_workflow_from_history(tmp_path, client):
     assert sessions[0]["workflow"] == "plan"
 
 
-def test_api_sessions_list_handles_empty_history(tmp_path, client):
+def test_api_sessions_list_handles_empty_history(koan_home, client):
     """api_sessions_list returns workflow='' and does not crash when workflow_history is empty."""
-    run_dir = tmp_path / "2099000001-aabbccdd"
-    run_dir.mkdir()
+    run_dir = koan_home / "runs" / "2099000001-aabbccdd"
+    run_dir.mkdir(parents=True)
     (run_dir / "task.json").write_text(json.dumps({
         "task": "build something",
         "workflow_history": [],
@@ -1246,8 +1240,7 @@ def test_api_sessions_list_handles_empty_history(tmp_path, client):
         "project_dir": "/some/project",
     }))
 
-    with patch("koan.web.app.RUNS_DIR", tmp_path):
-        resp = client.get("/api/sessions")
+    resp = client.get("/api/sessions")
 
     assert resp.status_code == 200
     sessions = resp.json()["sessions"]

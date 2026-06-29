@@ -35,20 +35,25 @@ from koan.web.app import create_app
 # -- Fixtures -----------------------------------------------------------------
 
 @pytest.fixture
-def tmp_key_path(tmp_path, monkeypatch):
-    """Redirect the credential master key to a tmp dir so tests never touch ~/.koan/."""
-    key_path = tmp_path / "master.key"
-    monkeypatch.setattr("koan.credentials.MASTER_KEY_PATH", key_path)
-    return key_path
+def tmp_key_path(koan_home):
+    """Return the master key path in the test's temp home.
+
+    The autouse koan_home fixture already redirects Path.home() so no
+    monkeypatching is needed here; the key lives at koan_home / "master.key".
+    """
+    return koan_home / "master.key"
 
 
 @pytest.fixture
-def config_path(tmp_path, monkeypatch):
-    """Redirect config YAML writes to a tmp dir."""
-    path = tmp_path / "config.yaml"
-    monkeypatch.setattr("koan.config.CONFIG_PATH", path)
+def config_path(koan_home, monkeypatch):
+    """Return the config YAML path in the test's temp home.
+
+    Resets the write lock so async lock state from a prior test does not leak.
+    No CONFIG_PATH setattr needed: the threaded save_koan_config derives the
+    path from AppState.server.koan_home which the app_state fixture sets.
+    """
     monkeypatch.setattr("koan.config._config_write_lock", None)
-    return path
+    return koan_home / "config.yaml"
 
 
 @pytest.fixture
@@ -65,19 +70,22 @@ def cm(conn):
 
 
 @pytest.fixture
-def app_state(tmp_key_path, conn, cm):
+def app_state(koan_home, tmp_key_path, conn, cm):
     """AppState with one connection, one configured model, and a credential store."""
     cfg = KoanConfig(
         connections=[conn],
         configured_models=[cm],
     )
-    backend = FileKeyBackend()
+    backend = FileKeyBackend(koan_home)
     store = CredentialStore(cfg, backend)
     store.set(conn.id, "test-api-key")
 
     st = AppState()
     st.provider_config.config = cfg
     st.provider_config.credential_store = store
+    # Thread the resolved home into server config so save handlers in the web
+    # layer derive the correct config.yaml path via Path(st.server.koan_home).
+    st.server.koan_home = str(koan_home)
     return st
 
 
@@ -276,26 +284,25 @@ def test_model_delete_not_found(client, app_state, config_path):
 # -- Slot assignment ----------------------------------------------------------
 
 @pytest.fixture
-def app_state_with_thinking_model(tmp_key_path):
+def app_state_with_thinking_model(koan_home, tmp_key_path):
     """AppState with a claude-opus-4-0 model that supports thinking modes."""
     conn = Connection(id="anthropic-1", type="anthropic")
     # claude-opus-4-0 supports thinking in the capability table (thinking_modes populated).
     cm = ConfiguredModel(id="cm-opus", connection_id="anthropic-1", model_id="claude-opus-4-0")
     cfg = KoanConfig(connections=[conn], configured_models=[cm])
-    backend = FileKeyBackend()
+    backend = FileKeyBackend(koan_home)
     store = CredentialStore(cfg, backend)
     store.set("anthropic-1", "test-key")
 
     st = AppState()
     st.provider_config.config = cfg
     st.provider_config.credential_store = store
+    st.server.koan_home = str(koan_home)
     return st
 
 
 @pytest.fixture
-def client_with_thinking_model(app_state_with_thinking_model, tmp_path, monkeypatch):
-    path = tmp_path / "config.yaml"
-    monkeypatch.setattr("koan.config.CONFIG_PATH", path)
+def client_with_thinking_model(app_state_with_thinking_model, monkeypatch):
     monkeypatch.setattr("koan.config._config_write_lock", None)
     with patch("koan.driver.driver_main", new_callable=AsyncMock):
         app = create_app(app_state_with_thinking_model)

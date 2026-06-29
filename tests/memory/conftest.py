@@ -14,19 +14,18 @@ import pytest
 
 
 @pytest.fixture
-def memory_config(tmp_path, monkeypatch):
+def memory_config(koan_home):
     """Build a MemoryModels bundle for memory unit tests.
 
     All specs have api_key=None (no real credentials).  Tests that need to
     call VoyageAI or a real LLM must use real_memory_models instead.
+    The koan_home argument comes from the autouse fixture in tests/conftest.py
+    which redirects Path.home() so no real ~/.koan is touched.
     """
     from koan.config import KoanConfig
     from koan.credentials import CredentialStore, FileKeyBackend
     from koan.memory.bindings import build_memory_models
     from koan.types import Connection, ConfiguredModel, MemoryBinding, MemoryBindings
-
-    key_path = tmp_path / "master.key"
-    monkeypatch.setattr("koan.credentials.MASTER_KEY_PATH", key_path)
 
     config = KoanConfig(
         connections=[
@@ -56,7 +55,7 @@ def memory_config(tmp_path, monkeypatch):
             reflect_llm=MemoryBinding(configured_model_id="google-reflect"),
         ),
     )
-    backend = FileKeyBackend()
+    backend = FileKeyBackend(koan_home)
     store = CredentialStore(config, backend)
     # No credentials stored: all specs have api_key=None.
     return build_memory_models(config, store)
