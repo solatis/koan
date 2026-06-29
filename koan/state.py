@@ -223,6 +223,12 @@ class ServerConfig:
     # Non-None when running in directed mode (e.g. from eval harness).
     # Stores the ordered phase sequence; koan_yield steers toward the next entry.
     directed_phases: list[str] | None = None
+    # Resolved koan home directory (parent of config.yaml, master.key, runs/).
+    # Default is the standard ~/.koan derived at construction time from Path.home().
+    # cmd_run always overwrites this with the fully resolved home before any I/O.
+    # Tests redirect it via the autouse Path.home() patch, so no production code
+    # reads KOAN_HOME in this default.
+    koan_home: str = field(default_factory=lambda: str(Path.home() / ".koan"))
 
     def connect_back_url(self, path: str = "") -> str:
         """URL a local client (browser, subagent) uses to reach this server.

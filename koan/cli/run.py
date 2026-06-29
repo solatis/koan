@@ -84,6 +84,8 @@ def _find_free_port(address: str) -> int:
 def cmd_run(args: argparse.Namespace) -> None:
     """Start the koan web server. Expects args from the `koan run` subparser.
 
+    Consumes args.koan_home (resolved and validated in main()) and records it
+    on app_state.server.koan_home before any config or credential I/O.
     Resolves --add-dir paths into absolute strings stored on
     app_state.run.additional_dirs. Each path is validated as an existing
     directory; failures cause the process to exit with a clear message.
@@ -108,8 +110,12 @@ def cmd_run(args: argparse.Namespace) -> None:
             sys.exit(f"koan: --add-dir path does not exist or is not a directory: {raw}")
         resolved_extras.append(str(p))
 
-    config = asyncio.run(load_koan_config())
     app_state = AppState()
+    # Establish the resolved home on the server config before any I/O so the
+    # web layer's _runs_dir() and all save handlers pick it up consistently.
+    app_state.server.koan_home = str(args.koan_home)
+
+    config = asyncio.run(load_koan_config(args.koan_home))
     app_state.provider_config.config = config
 
     # Initialize the credential store BEFORE any provider availability check
@@ -119,9 +125,9 @@ def cmd_run(args: argparse.Namespace) -> None:
     # M1: env-seeding (seed_from_env) is removed (brief D13 -- credentials are
     # fully manual).  Only persist when stale envelopes were pruned at load.
     try:
-        store = CredentialStore(config, get_key_backend())
+        store = CredentialStore(config, get_key_backend(args.koan_home))
         if store.pruned:
-            asyncio.run(save_koan_config(config))
+            asyncio.run(save_koan_config(config, args.koan_home))
             log.info("credentials: persisted config after pruning stale envelopes")
         app_state.provider_config.credential_store = store
         # The module-global active store/config seams were removed; the live
@@ -134,7 +140,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     app_state.server.open_browser = not args.no_open
     app_state.server.initial_prompt = args.prompt
     app_state.server.yolo = args.yolo
-    app_state.server.debug = args.debug
+    app_state.server.debug = getattr(args, "debug", False)
     if args.directed_phases:
         app_state.server.directed_phases = args.directed_phases
     app_state.run.project_dir = str(project_dir)

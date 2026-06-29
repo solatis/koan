@@ -21,11 +21,6 @@ from .config import KoanConfig
 
 log = logging.getLogger("koan.credentials")
 
-# Path to the master key file. Mode 0600 -- readable only by the owner.
-# Deliberately outside the repo (under ~/.koan/) so it is never committed.
-# If lost or regenerated all stored ciphertext becomes unrecoverable.
-MASTER_KEY_PATH = Path.home() / ".koan" / "master.key"
-
 # Fernet scheme tag written into every envelope.
 SCHEME = "fernet"
 
@@ -55,37 +50,45 @@ class KeyBackend(Protocol):
 class FileKeyBackend:
     """File-based master key backend.
 
-    Reads the master key from MASTER_KEY_PATH. If the file is absent,
+    Reads the master key from home/"master.key". If the file is absent,
     generates a new Fernet key, writes it with mode 0600, and returns it.
     The file is never regenerated when it already exists so existing
     ciphertext stays decryptable.
     """
 
+    def __init__(self, home: Path) -> None:
+        """Bind this backend to a resolved koan home directory.
+
+        The master key is stored at home/"master.key".  The home is the same
+        directory used by load_koan_config / save_koan_config and the web layer.
+        """
+        self._key_path = home / "master.key"
+
     def load_key(self) -> bytes:
         """Return the Fernet key from disk, auto-generating it on first use."""
         from cryptography.fernet import Fernet
-        if MASTER_KEY_PATH.exists():
-            return MASTER_KEY_PATH.read_bytes().strip()
-        MASTER_KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        if self._key_path.exists():
+            return self._key_path.read_bytes().strip()
+        self._key_path.parent.mkdir(parents=True, exist_ok=True)
         key = Fernet.generate_key()
         # Write with restrictive permissions: owner-read/write only.
-        fd = os.open(str(MASTER_KEY_PATH), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        fd = os.open(str(self._key_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
             os.write(fd, key)
         finally:
             os.close(fd)
-        log.info("credentials: generated new master key at %s", MASTER_KEY_PATH)
+        log.info("credentials: generated new master key at %s", self._key_path)
         return key
 
 
-def get_key_backend() -> KeyBackend:
-    """Return the active KeyBackend instance.
+def get_key_backend(home: Path) -> KeyBackend:
+    """Return a FileKeyBackend for the resolved koan home directory.
 
     This is the single seam where future backends are selected (e.g. based
     on an env var or config flag). Swap the return value here to change the
     backend without touching the store or any consumer.
     """
-    return FileKeyBackend()
+    return FileKeyBackend(home)
 
 
 # ---------------------------------------------------------------------------

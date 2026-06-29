@@ -6,15 +6,22 @@ from __future__ import annotations
 import argparse
 import sys
 
+from .home import resolve_koan_home, was_home_explicit
 from .logger import setup_logging
 from .memory.types import MEMORY_TYPES
 from .cli.memory import cmd_memory
 from .cli.run import cmd_run
 
 # Shared flags inherited by every subcommand.
+# SUPPRESS on both --debug and --home so a flag given before the subcommand
+# is not clobbered by the subparser's inherited default (argparse parent-parser
+# default-clobbering bug).  An absent attribute falls through to env/default.
 _common = argparse.ArgumentParser(add_help=False)
-_common.add_argument("--debug", action="store_true",
+_common.add_argument("--debug", action="store_true", default=argparse.SUPPRESS,
                      help="Enable debug logging")
+_common.add_argument("--home", default=argparse.SUPPRESS, metavar="PATH",
+                     help="koan state directory (default: ~/.koan; overrides KOAN_HOME). "
+                          "Holds config.yaml, master.key, runs/.")
 
 
 def main() -> None:
@@ -116,8 +123,18 @@ def main() -> None:
         parser.print_help()
         sys.exit(1)
 
+    # Resolve the koan home from --home flag, KOAN_HOME env, or the default.
+    # Precedence: --home > KOAN_HOME > Path.home() / ".koan".
+    # Only an explicitly provided home is checked for existence; the default
+    # ~/.koan is exempt and auto-creates on first write.
+    cli_home = getattr(args, "home", None)
+    home = resolve_koan_home(cli_home)
+    if was_home_explicit(cli_home) and not home.is_dir():
+        sys.exit(f"koan: home path does not exist or is not a directory: {home}")
+    args.koan_home = home
+
     # Configure logging before any subcommand runs.
-    if args.debug:
+    if getattr(args, "debug", False):
         log_level = "DEBUG"
     elif args.subcommand == "run":
         log_level = args.log_level

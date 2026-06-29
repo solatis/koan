@@ -258,12 +258,16 @@ def cmd_reflect(args: argparse.Namespace, models: MemoryModels) -> None:
 
 
 def cmd_memory(args: argparse.Namespace) -> None:
-    # Build the credential store and memory models once at entry so all
-    # sub-commands receive explicit specs rather than relying on a module global.
-    config = asyncio.run(load_koan_config())
-    store = CredentialStore(config, get_key_backend())
+    """Dispatch koan memory subcommands.
+
+    Threads args.koan_home (resolved in main()) into the config loader/saver
+    and key backend.  The memory store remains project-rooted at cwd and is
+    not affected by --home.
+    """
+    config = asyncio.run(load_koan_config(args.koan_home))
+    store = CredentialStore(config, get_key_backend(args.koan_home))
     if store.pruned:
-        asyncio.run(save_koan_config(config))
+        asyncio.run(save_koan_config(config, args.koan_home))
     models = build_memory_models(config, store)
 
     cmd = getattr(args, "memory_command", None)

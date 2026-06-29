@@ -32,7 +32,6 @@ from .types import (
 
 log = logging.getLogger("koan.config")
 
-CONFIG_PATH = Path.home() / ".koan" / "config.yaml"
 
 
 @dataclass
@@ -282,18 +281,20 @@ def _parse_max_retry_wait_seconds(raw: dict) -> float:
 
 # -- Loaders / savers ---------------------------------------------------------
 
-async def load_koan_config() -> KoanConfig:
-    """Load KoanConfig from ~/.koan/config.yaml.
+async def load_koan_config(home: Path) -> KoanConfig:
+    """Load KoanConfig from the given koan home directory.
 
-    Reads the new connections/configured_models/presets/active/memory schema
-    from snake_case YAML.  Returns a default (empty) config on a missing or
-    invalid file.  The credentials field carries opaque Fernet envelopes keyed
-    by connection id; decryption happens in CredentialStore (koan/credentials.py).
+    Derives the config path as home / "config.yaml".  Reads the
+    connections/configured_models/presets/active/memory schema from snake_case
+    YAML.  Returns a default (empty) config on a missing or invalid file.  The
+    credentials field carries opaque Fernet envelopes keyed by connection id;
+    decryption happens in CredentialStore (koan/credentials.py).
     """
+    config_path = home / "config.yaml"
     defaults = KoanConfig()
 
     try:
-        text = CONFIG_PATH.read_text("utf-8")
+        text = config_path.read_text("utf-8")
     except FileNotFoundError:
         return defaults
 
@@ -433,23 +434,26 @@ async def write_run_config(config: "KoanConfig", run_dir: "str | Path") -> None:
     os.replace(str(tmp), str(dest))
 
 
-async def save_koan_config(config: KoanConfig) -> None:
-    """Write KoanConfig to ~/.koan/config.yaml atomically via a tmp-file rename.
+async def save_koan_config(config: KoanConfig, home: Path) -> None:
+    """Write KoanConfig to home/config.yaml atomically via a tmp-file rename.
 
-    Pure fresh dump from the in-memory KoanConfig -- no read-modify-write.
-    Serializes the new schema: connections, credentials (opaque Fernet
-    ciphertext; plaintext secrets are never written), configured_models,
-    memory, scout_concurrency, presets, and active.
+    Derives the config path as home / "config.yaml".  Pure fresh dump from
+    the in-memory KoanConfig -- no read-modify-write.  Serializes the new
+    schema: connections, credentials (opaque Fernet ciphertext; plaintext
+    secrets are never written), configured_models, memory, scout_concurrency,
+    presets, and active.  The temp file lands in the same directory so the
+    rename is within-filesystem (atomic).
     """
     async with _get_write_lock():
-        config_dir = CONFIG_PATH.parent
+        config_dir = home
         config_dir.mkdir(parents=True, exist_ok=True)
 
+        config_path = home / "config.yaml"
         data = _config_to_dict(config)
 
         # width=4096 prevents line-folding of long ciphertext values.
         text = yaml.safe_dump(data, sort_keys=False, default_flow_style=False,
                               allow_unicode=True, width=4096)
-        tmp_path = CONFIG_PATH.with_suffix(".yaml.tmp")
+        tmp_path = config_path.with_suffix(".yaml.tmp")
         tmp_path.write_text(text, "utf-8")
-        tmp_path.rename(CONFIG_PATH)
+        tmp_path.rename(config_path)

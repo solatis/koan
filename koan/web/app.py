@@ -76,13 +76,19 @@ _STATIC_DIR = Path(__file__).parent / "static"
 # without a build step.
 FRONTEND_DIST = Path(__file__).parent / "static" / "app"
 
-RUNS_DIR = Path.home() / ".koan" / "runs"
-
-
 # -- Helpers ------------------------------------------------------------------
 
 def _app_state(r: Request) -> AppState:
     return r.app.state.app_state
+
+
+def _runs_dir(st: AppState) -> Path:
+    """Derive the per-user runs directory from the AppState's resolved koan home.
+
+    Using st.server.koan_home rather than a module global keeps the web layer
+    consistent with --home overrides without reading any environment variable.
+    """
+    return Path(st.server.koan_home) / "runs"
 
 
 def _stale_response(msg: str = "Interaction no longer active") -> JSONResponse:
@@ -329,7 +335,7 @@ async def api_start_run(r: Request) -> Response:
 
     # Build the frozen CredentialStore over the frozen config snapshot.
     from ..credentials import CredentialStore, get_key_backend
-    frozen_store = CredentialStore(frozen_cfg, get_key_backend())
+    frozen_store = CredentialStore(frozen_cfg, get_key_backend(Path(st.server.koan_home)))
 
     # Validate each slot's connection has a credential (against the frozen snapshot).
     cm_by_id = {cm.id: cm for cm in frozen_cfg.configured_models}
@@ -374,7 +380,7 @@ async def api_start_run(r: Request) -> Response:
     if isinstance(scout_concurrency, int) and scout_concurrency > 0:
         cfg.scout_concurrency = scout_concurrency
         from ..config import save_koan_config
-        await save_koan_config(cfg)
+        await save_koan_config(cfg, Path(st.server.koan_home))
         st.projection_store.push_event(
             "default_scout_concurrency_changed",
             build_default_scout_concurrency_changed(scout_concurrency),
@@ -436,7 +442,7 @@ async def api_start_run(r: Request) -> Response:
 
     # Create run directory
     run_id = f"{int(time.time())}-{uuid.uuid4().hex[:8]}"
-    run_dir = Path.home() / ".koan" / "runs" / run_id
+    run_dir = _runs_dir(st) / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     # Redirect per-run file sink to this run's koan.log. Must happen here so
     # all subsequent DEBUG/INFO lines (including those from driver_main and
@@ -1712,7 +1718,7 @@ async def api_settings_scout_concurrency(r: Request) -> Response:
     st = _app_state(r)
     st.provider_config.config.scout_concurrency = value
     from ..config import save_koan_config
-    await save_koan_config(st.provider_config.config)
+    await save_koan_config(st.provider_config.config, Path(st.server.koan_home))
     st.projection_store.push_event("default_scout_concurrency_changed", build_default_scout_concurrency_changed(value))
     return JSONResponse({"ok": True})
 
@@ -1735,7 +1741,7 @@ async def api_settings_retry(r: Request) -> Response:
     st.provider_config.config.max_retry_attempts = int(max_retry_attempts)
     st.provider_config.config.max_retry_wait_seconds = float(max_retry_wait_seconds)
     from ..config import save_koan_config
-    await save_koan_config(st.provider_config.config)
+    await save_koan_config(st.provider_config.config, Path(st.server.koan_home))
     st.projection_store.push_event(
         "retry_settings_changed",
         build_retry_settings_changed(int(max_retry_attempts), float(max_retry_wait_seconds)),
@@ -1880,7 +1886,7 @@ async def api_config_connection_set(r: Request) -> Response:
     if secret and isinstance(secret, str):
         st.provider_config.credential_store.set(conn_id, secret)
 
-    await save_koan_config(cfg)
+    await save_koan_config(cfg, Path(st.server.koan_home))
     _push_connection_events(st)
 
     # Schedule a best-effort background model-list refresh for listing-capable
@@ -1932,7 +1938,7 @@ async def api_config_connection_delete(r: Request) -> Response:
     cfg.connections = [c for c in cfg.connections if c.id != conn_id]
     st.provider_config.credential_store.remove(conn_id)
 
-    await save_koan_config(cfg)
+    await save_koan_config(cfg, Path(st.server.koan_home))
     _push_connection_events(st)
     return JSONResponse({"ok": True})
 
@@ -2034,7 +2040,7 @@ async def api_config_model_set(r: Request) -> Response:
     else:
         cfg.configured_models.append(cm)
 
-    await save_koan_config(cfg)
+    await save_koan_config(cfg, Path(st.server.koan_home))
     st.projection_store.push_event(
         "configured_models_listed",
         build_configured_models_listed([_serialize_configured_model(m) for m in cfg.configured_models]),
@@ -2069,7 +2075,7 @@ async def api_config_model_delete(r: Request) -> Response:
 
     cfg.configured_models = [m for m in cfg.configured_models if m.id != cm_id]
 
-    await save_koan_config(cfg)
+    await save_koan_config(cfg, Path(st.server.koan_home))
     st.projection_store.push_event(
         "configured_models_listed",
         build_configured_models_listed([_serialize_configured_model(m) for m in cfg.configured_models]),
@@ -2152,7 +2158,7 @@ async def api_config_slot_set(r: Request) -> Response:
         thinking=thinking,
     )
 
-    await save_koan_config(cfg)
+    await save_koan_config(cfg, Path(st.server.koan_home))
     st.projection_store.push_event(
         "presets_listed",
         build_presets_listed({name: _serialize_preset(p) for name, p in cfg.presets.items()}),
@@ -2240,7 +2246,7 @@ async def api_config_memory_set(r: Request) -> Response:
 
     setattr(cfg.memory, kind, MemoryBinding(configured_model_id=cm_id, thinking=thinking))
 
-    await save_koan_config(cfg)
+    await save_koan_config(cfg, Path(st.server.koan_home))
     st.projection_store.push_event(
         "memory_bindings_listed",
         build_memory_bindings_listed(_serialize_memory_bindings(cfg.memory)),
@@ -2377,7 +2383,7 @@ async def api_config_model_newest(r: Request) -> Response:
     else:
         cfg.configured_models.append(cm)
 
-    await save_koan_config(cfg)
+    await save_koan_config(cfg, Path(st.server.koan_home))
     st.projection_store.push_event(
         "configured_models_listed",
         build_configured_models_listed([_serialize_configured_model(m) for m in cfg.configured_models]),
@@ -2403,9 +2409,11 @@ async def api_sessions_list(r: Request) -> Response:
     shape is unchanged: the frontend still receives {run_id, task, workflow,
     created_at, project_dir}; only the on-disk source for workflow has changed.
     """
+    st = _app_state(r)
+    runs_dir = _runs_dir(st)
     sessions = []
-    if RUNS_DIR.is_dir():
-        entries = sorted(RUNS_DIR.iterdir(), reverse=True)
+    if runs_dir.is_dir():
+        entries = sorted(runs_dir.iterdir(), reverse=True)
         for run_path in entries:
             if not run_path.is_dir():
                 continue
@@ -2433,13 +2441,14 @@ async def api_sessions_delete(r: Request) -> Response:
             {"error": "invalid", "message": "invalid run_id"},
             status_code=400,
         )
-    run_path = RUNS_DIR / run_id
+    # Bind st before run_path so _runs_dir(st) can derive the correct home.
+    st = _app_state(r)
+    run_path = _runs_dir(st) / run_id
     if not run_path.is_dir():
         return JSONResponse(
             {"error": "not_found", "message": f"session '{run_id}' not found"},
             status_code=404,
         )
-    st = _app_state(r)
     if st.run.run_dir and Path(st.run.run_dir).resolve() == run_path.resolve():
         return JSONResponse(
             {"error": "active_run", "message": "cannot delete the currently active run"},
