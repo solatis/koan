@@ -120,6 +120,13 @@ produces the following artifacts.
 | `milestones.md`       | `milestone`    | `MILESTONE_REVIEWER` | Producer reconciles inline; user advances |
 | `plan-milestone-N.md` | `plan`         | `PLAN_REVIEWER`      | Producer reconciles inline; user advances |
 
+**Handover delivery.** The three immutable artifacts (`brief.md`,
+`core-flows.md`, `tech-plan.md`) are injected into each consuming phase's
+conversation at phase entry -- they are not read on demand. `milestones.md`
+and per-milestone plans are living documents: they surface in the
+read-on-demand listing and are read via `koan_artifact_read` when needed.
+See [artifacts.md -- Handover injection](./artifacts.md#handover-injection).
+
 ## Cross-band trust
 
 The trust model from `phase-trust.md` extends naturally. Each producer phase

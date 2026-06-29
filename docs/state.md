@@ -145,11 +145,22 @@ Orchestrator state tracked in `AppState` (in-memory, not persisted):
 
 Per-agent state in `AgentState`:
 
-| Field                  | Type          | Purpose                                                                                                                                       |
-| ---------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `first_turn_completed` | `bool`        | Set by `run_agent_loop` when the first turn reaches the End node; the bootstrap success signal replacing the former first-tool-call handshake |
-| `provider`             | `str \| None` | Provider name from `model_spec`; used by the fold to derive cost                                                                              |
-| `context_window`       | `int`         | Context window size from `model_spec`; used by the fold to derive context-window percent                                                      |
+| Field                  | Type          | Purpose                                                                                                                                        |
+| ---------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `first_turn_completed` | `bool`        | Set by `run_agent_loop` when the first turn reaches the End node; the bootstrap success signal replacing the former first-tool-call handshake  |
+| `provider`             | `str \| None` | Provider name from `model_spec`; used by the fold to derive cost                                                                               |
+| `context_window`       | `int`         | Context window size from `model_spec`; used by the fold to derive context-window percent                                                       |
+| `injected_artifacts`   | `set`         | Artifact basenames already injected as `<handoff_artifact>` messages; per-agent dedup key that persists for the agent's whole life             |
+| `pending_artifacts`    | `list`        | Artifact basenames queued at phase entry by `_step_phase_handshake_core`; drained by `preseed_pending_artifacts` before the next model request |
+| `message_history`      | `list`        | Driver-owned `ModelMessage` list accumulated across turns; passed as `message_history` to each `agent.iter()` call                             |
+
+`injected_artifacts` / `pending_artifacts` mirror the earlier
+`injected_context_files` / `pending_context_files` pair introduced for
+context-file injection. The drain-read-wrap-append-mark cycle is implemented
+by `preseed_pending_artifacts` in `koan/tools/handoff_artifacts.py`. A
+`FileNotFoundError` at drain time silently skips the artifact (producer phase
+may have been yield-skipped); other `OSError` faults inject a visible error
+placeholder with `error="true"` so gaps are never silently hidden.
 
 `InteractionState` carries `next_suggestions: list[dict] \| None`, the
 orchestrator-authored hand-back suggestions recorded by `koan_suggest_next`.

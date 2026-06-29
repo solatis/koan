@@ -286,18 +286,29 @@ re-execution gate. Instructions are required when no `plan_file` is given
 
 The executor implements code changes in a 3-step workflow:
 
-| Step | Name       | What happens                                                                        |
-| ---- | ---------- | ----------------------------------------------------------------------------------- |
-| 1    | Comprehend | Read all artifacts listed in `task.json`. Understand the plan and codebase context. |
-| 2    | Plan       | Identify the specific file edits needed. Do not write code yet.                     |
-| 3    | Implement  | Apply changes, verify they match the plan, report what was done.                    |
+| Step | Name       | What happens                                                                       |
+| ---- | ---------- | ---------------------------------------------------------------------------------- |
+| 1    | Comprehend | Immutable handovers are injected; living artifacts are listed for on-demand reads. |
+| 2    | Plan       | Identify the specific file edits needed. Do not write code yet.                    |
+| 3    | Implement  | Apply changes, verify they match the plan, report what was done.                   |
 
 `task.json` fields for the executor role:
 
-| Field          | Type        | Purpose                                                                                               |
-| -------------- | ----------- | ----------------------------------------------------------------------------------------------------- |
-| `artifacts`    | `list[str]` | Paths relative to `run_dir` that the executor must read before coding                                 |
-| `instructions` | `str`       | Free-form context: key decisions, user direction, review findings. Does NOT repeat artifact contents. |
+| Field          | Type        | Purpose                                                                                                      |
+| -------------- | ----------- | ------------------------------------------------------------------------------------------------------------ |
+| `artifacts`    | `list[str]` | Paths relative to `run_dir` that the executor consumes (immutable ones are injected; living ones are listed) |
+| `instructions` | `str`       | Free-form context: key decisions, user direction, review findings. Does NOT repeat artifact contents.        |
+
+**Handover injection for the executor.** At spawn, `subagent_candidates(ctx)`
+returns the full `executor_artifacts` list from `task.json`. The bootstrap path
+then runs `select_immutable_handovers` to filter out living-doc families and
+already-injected names, and `preseed_pending_artifacts` wraps each qualifying
+file as a `<handoff_artifact name="...">` user message injected before the
+step-1 prompt. Living documents (the plan file, `milestones.md`) fall through
+the filter and appear instead in the read-on-demand listing produced by
+`build_handover_listing`. Step 1 guidance instructs the executor to read the
+living artifacts directly; immutable handovers are already in context and need
+not be re-read.
 
 The executor has unrestricted `write`/`edit` access -- it must be able to
 modify the actual codebase. It may call `koan_ask_question` if it encounters
@@ -318,6 +329,23 @@ The reviewer has read-only built-in tools (`Read`, `Bash`, `Glob`, `Grep`)
 and no koan write tools. It cannot modify the artifact it reviews.
 `koan_ask_question` is not composed into the reviewer toolset; reviewers
 return their findings as terminal text and exit.
+
+**Handover injection for the reviewer.** At spawn, `subagent_candidates(ctx)`
+returns the reviewer's upstream context set, derived from its charter
+(`reviewer_prompt`):
+
+| Charter              | Injected upstream           | Why                                                        |
+| -------------------- | --------------------------- | ---------------------------------------------------------- |
+| `TECH_PLAN_REVIEWER` | `brief.md`, `core-flows.md` | Tech-plan must respect brief decisions and core flows      |
+| `PLAN_REVIEWER`      | `brief.md`, `tech-plan.md`  | Plan must implement brief requirements within tech-plan    |
+| `MILESTONE_REVIEWER` | `brief.md`, `tech-plan.md`  | Milestones must decompose work within architectural bounds |
+
+`milestones.md` is listed in the `PLAN_REVIEWER` candidate set but is a
+living-doc family -- it passes through `select_immutable_handovers` into the
+read-on-demand listing rather than being injected. The `reviewer_target`
+(the artifact being reviewed) is always excluded from injection: the reviewer
+reads it explicitly via `koan_artifact_read` because it is the focus of the
+review, not a standing handover.
 
 ---
 

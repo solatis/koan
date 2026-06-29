@@ -1722,3 +1722,405 @@ The activity timeline on `MemoryOverviewPage` is derived from entry timestamps
 (`modifiedMs`) and does NOT show deletions. Deleted entries are gone from disk
 and from `memory.entries`; there is no separate backend event log for activity.
 This is intentional per the intake decision -- no new backend event log was added.
+
+---
+
+## Timeline Rail & Phase Transition
+
+Addendum for the phase transition redesign (Direction C: Timeline Rail). Covers
+all new components, tokens, store types, and layout changes.
+
+### Design Rationale
+
+#### Why a timeline rail
+
+Phase transitions reset the orchestrator's context window. Artifacts are the only
+state that crosses phase boundaries. The current single-scroll content stream
+gives users the false impression that the agent retains all previous
+conversation. The timeline rail solves this by:
+
+1. Making phases spatially separate — each phase's content occupies the full
+   content area; old content is not scrolled past.
+2. Showing handoff artifacts explicitly on the timeline, between the phases they
+   connect.
+3. Supporting variable-length workflows (milestones) and skipped phases without
+   layout changes.
+
+#### Phase viewing vs. phase active
+
+"Active" means the orchestrator is currently running in that phase. "Viewing"
+means the user is looking at a phase's historical content. These are independent:
+you can view Intake while Plan Spec is active. The timeline always shows truth
+about what's active (orange dot + glow). The content area shows what's being
+viewed.
+
+#### Milestone grouping
+
+Milestones contain sub-phases (Plan, Execute) that are real context-window
+resets. Visually, milestones are grouped to avoid timeline bloat. Sub-phases use
+smaller dots and indentation. Sub-phase artifacts use smaller badges. The
+milestone header uses a numbered circle instead of a plain dot.
+
+#### Retired components
+
+`PhaseMarker` (molecule) is retired. Phase boundaries are no longer inline
+content events — they are structural, represented by the timeline rail + content
+area replacement. The `BreadcrumbNav` molecule's phase/step display is superseded
+by the timeline rail; the header simplifies.
+
+### Timeline tokens
+
+#### Page-level spacing
+
+| Token                         | Value | Usage                                                                                  |
+| ----------------------------- | ----- | -------------------------------------------------------------------------------------- |
+| `--timeline-width`            | 200px | Timeline rail width for simple workflows.                                              |
+| `--timeline-width-milestones` | 220px | Timeline rail width when milestone groups are present (wider for indented sub-phases). |
+
+No other new tokens required. Timeline-internal colors (connecting lines, text on
+navy) reuse existing `--color-navy`, `--color-teal`, `--color-orange`,
+`--text-on-dark` family, and `--text-on-dark-muted` / `--text-on-dark-subtle`.
+Specific rgba values for connecting lines and future-state elements are hardcoded
+in component CSS with comments, since they are navy-background-specific and not
+reusable elsewhere.
+
+### Timeline atoms
+
+#### TimelineDot
+
+A status dot used on the timeline rail for top-level phase nodes. Four states:
+done, active, future, skipped.
+
+Size: 12px diameter, `border-radius: 50%`, `flex-shrink: 0`. Positioned with
+`position: relative; z-index: 1` to sit above the connecting line.
+
+- **done:** `background: var(--color-teal)`.
+- **active:** `background: var(--color-orange)`, `box-shadow: 0 0 0 4px rgba(212, 119, 90, 0.25)` (orange glow ring).
+- **future:** `background: transparent`, `border: 2px solid rgba(255, 255, 255, 0.15)`.
+- **skipped:** `background: transparent`, `border: 2px solid rgba(255, 255, 255, 0.08)`. A diagonal strike-through via `::after` pseudo-element: `position: absolute`, `left: 1px`, `right: 1px`, `top: 50%`, `height: 1.5px`, `background: rgba(255, 255, 255, 0.2)`, `transform: rotate(-45deg)`.
+
+Props: `status: 'done' | 'active' | 'future' | 'skipped'`.
+
+#### MilestoneNumber
+
+A numbered circle used as the milestone group header node. Three states: done,
+active, future.
+
+Size: 20px diameter, `border-radius: 50%`, `display: flex`, `align-items: center`,
+`justify-content: center`. Font: `var(--font-mono)`, 10px, font-weight 500.
+Positioned with `position: relative; z-index: 1`.
+
+- **done:** `background: var(--color-teal)`, `color: var(--text-on-dark)`.
+- **active:** `background: var(--color-orange)`, `color: var(--text-on-dark)`, `box-shadow: 0 0 0 3px rgba(212, 119, 90, 0.2)`.
+- **future:** `background: transparent`, `border: 2px solid rgba(255, 255, 255, 0.15)`, `color: rgba(255, 255, 255, 0.25)`.
+
+Props: `number: number`, `status: 'done' | 'active' | 'future'`.
+
+### Timeline molecules
+
+#### TimelinePhaseNode
+
+A clickable phase entry in the timeline rail. Renders a TimelineDot, phase name,
+and optional metadata (elapsed time, step info).
+
+Container: `position: relative`, `padding: 0 16px`, `cursor: pointer`. The
+`::before` pseudo-element draws the vertical connecting line: `position: absolute`,
+`left: 27px`, `top: 0`, `bottom: 0`, `width: 2px`,
+`background: rgba(255, 255, 255, 0.08)`. First child: `top: 50%`. Last child:
+`bottom: 50%`.
+
+Inner row: `display: flex`, `align-items: center`, `gap: 10px`,
+`padding: 10px 0`.
+
+Phase name: `font-size: 13px`, `font-weight: 500`. Color by status — active:
+`var(--text-on-dark)`, done: `var(--text-on-dark-muted)`, future:
+`rgba(255, 255, 255, 0.22)`, skipped: `rgba(255, 255, 255, 0.15)` with
+`text-decoration: line-through`, `text-decoration-color: rgba(255, 255, 255, 0.2)`.
+
+Meta line (optional): `font-size: 10px`, `var(--font-mono)`, `color: var(--text-on-dark-subtle)`, `margin-top: 1px`. Shows elapsed time for done phases, "step N/M · StepName" for active phases, "skipped" for skipped phases.
+
+**Viewing state:** When the user is viewing this phase's historical content (but
+it is not the active phase), the container gets
+`background: rgba(255, 255, 255, 0.06)`, `border-radius: var(--radius-md)`,
+`margin: 0 4px`, `padding: 0 12px`. The name color upgrades to
+`var(--text-on-dark)` regardless of status.
+
+Props: `name: string`, `status: 'done' | 'active' | 'future' | 'skipped'`, `meta?: string`, `viewing?: boolean`, `onClick?: () => void`.
+
+Composes: TimelineDot.
+
+#### TimelineHandoff
+
+An artifact badge rendered between top-level phases on the timeline, representing
+the handoff artifact that connects them.
+
+Container: `display: flex`, `align-items: center`, `gap: 5px`,
+`margin: -4px 0 -4px 39px` (aligns with the connecting line, overlapping the
+vertical spacing slightly), `padding: 3px 8px`,
+`background: rgba(90, 154, 138, 0.15)` (teal-derived),
+`border-radius: var(--radius-md)`, `position: relative`, `z-index: 1`.
+
+Artifact name: `var(--font-mono)`, `font-size: 10px`, `color: var(--color-teal)`,
+`font-weight: 500`.
+
+Props: `name: string`, `onClick?: () => void`.
+
+#### TimelineSubPhaseNode
+
+A smaller phase node for sub-phases within a milestone group (Plan, Execute). Uses
+a smaller dot and tighter spacing.
+
+Container: `display: flex`, `align-items: center`, `gap: 8px`, `padding: 4px 0`,
+`position: relative`.
+
+Dot: 7px diameter, `border-radius: 50%`, `position: relative`, `z-index: 1`.
+States — done: `background: var(--color-teal)`, `opacity: 0.7`. Active:
+`background: var(--color-orange)`, `box-shadow: 0 0 0 3px rgba(212, 119, 90, 0.2)`.
+Future: `border: 1.5px solid rgba(255, 255, 255, 0.12)`, `background: transparent`.
+
+Name: `font-size: 11px`. Colors — done: `rgba(240, 232, 216, 0.4)`, active:
+`var(--text-on-dark)`, `font-weight: 500`, future: `rgba(255, 255, 255, 0.18)`.
+
+Props: `name: string`, `status: 'done' | 'active' | 'future'`.
+
+#### TimelineSubArtifact
+
+A smaller artifact badge between sub-phases within a milestone group. Visually
+subordinate to TimelineHandoff.
+
+Container: `display: flex`, `align-items: center`, `gap: 4px`,
+`margin: -2px 0 -2px 7px` (indented less than top-level handoffs),
+`padding: 2px 6px`, `background: rgba(90, 154, 138, 0.1)` (lighter teal than
+TimelineHandoff), `border-radius: 3px`, `position: relative`, `z-index: 1`.
+
+Artifact name: `var(--font-mono)`, `font-size: 9px`,
+`color: rgba(90, 154, 138, 0.8)`, `font-weight: 500`.
+
+Props: `name: string`.
+
+#### TimelinePlaceholder
+
+A three-dot placeholder for variable-count future phases (milestones).
+Communicates "something goes here, count unknown."
+
+Container: same `::before` connecting line as TimelinePhaseNode. Inner:
+`display: flex`, `align-items: center`, `gap: 10px`, `padding: 10px 0`.
+
+Dots column: `display: flex`, `flex-direction: column`, `gap: 4px`,
+`align-items: center`, `width: 12px` (matches TimelineDot width). Three dots:
+each 4px diameter, `background: rgba(255, 255, 255, 0.15)`, `border-radius: 50%`.
+
+Label: `font-size: 11px`, `color: rgba(255, 255, 255, 0.18)`,
+`font-style: italic`, `font-family: var(--font-body)`.
+
+Props: `label: string`.
+
+#### ContextCard
+
+A handoff card rendered at the top of each phase's content, showing which
+artifacts the agent received from the previous phase. Not shown for the first
+phase (Intake has no handoff).
+
+Container: `background: var(--bg-card)`, `border: 1px solid var(--border-card)`,
+`border-left: 3px solid var(--color-teal)`,
+`border-radius: 0 var(--radius-lg) var(--radius-lg) 0`, `padding: 10px 16px`.
+
+Label: `font-size: 11px`, `text-transform: uppercase`, `letter-spacing: 1px`,
+`color: var(--text-muted)`, `font-weight: 500`, `margin-bottom: 4px`. Text:
+"Handoff from {PhaseName}" or "Handoff from {PhaseName} ({SkippedPhase} skipped)"
+when phases were skipped.
+
+File entries: `display: flex`, `gap: 12px`, `flex-wrap: wrap`. Each entry —
+filename: `var(--font-mono)`, `font-size: 12px`, `color: var(--color-orange)`,
+`font-weight: 500`. Optional role label below: `font-size: 11px`,
+`color: var(--text-muted)`, `font-weight: 400`, `font-family: var(--font-body)`.
+
+Props: `fromPhase: string`, `artifacts: { name: string, role?: string }[]`, `skippedPhases?: string[]`.
+
+#### PhaseTitleBar
+
+A title bar rendered at the top of the content area identifying the current phase.
+Different styling for active vs. historical viewing.
+
+Container: `display: flex`, `align-items: center`, `gap: 10px`,
+`padding-bottom: 8px`, `border-bottom: 1px solid var(--border-divider)`,
+`margin-bottom: 4px`.
+
+Dot: 10px diameter, `border-radius: 50%`. Active phase:
+`background: var(--color-orange)`. Completed phase (viewing history):
+`background: var(--color-teal)`.
+
+Title: `font-size: 18px`, `font-weight: 500`, `color: var(--text-primary)`. For
+milestone sub-phases: "Milestone N · SubPhase" format (e.g., "Milestone 2 · Execute").
+
+Subtitle (right-aligned): `font-size: 12px`, `color: var(--text-muted)`,
+`margin-left: auto`, `font-family: var(--font-mono)`. Shows "from {artifact}" for
+active phases, milestone name for milestone sub-phases.
+
+Badge (historical only): `font-size: 10px`, `color: var(--text-muted)`,
+`border: 1px solid var(--border-card)`, `padding: 2px 8px`,
+`border-radius: 3px`, `margin-left: auto`. Text: "completed · {elapsed}".
+
+Props: `name: string`, `status: 'active' | 'completed'`, `subtitle?: string`, `elapsed?: string`.
+
+#### ReturnBanner
+
+A clickable banner shown at the top of the content area when viewing a completed
+phase's history while another phase is active. Provides one-click navigation back
+to the active phase.
+
+Container: `display: flex`, `align-items: center`, `gap: 10px`,
+`padding: 8px 16px`, `background: var(--bg-card)`,
+`border: 1px solid var(--border-card)`, `border-radius: var(--radius-lg)`,
+`cursor: pointer`. Hover: `background: var(--bg-tool-row)`. Transition:
+`background var(--duration-fast) var(--ease-default)`.
+
+Dot: 8px diameter, `background: var(--color-orange)`, `border-radius: 50%`.
+Pulsing animation: `animation: pulse 2s ease-in-out infinite`
+(opacity 1 -> 0.5 -> 1).
+
+Text: `font-size: 13px`, `color: var(--text-muted)`. Phase name within:
+`color: var(--color-orange)`, `font-weight: 500`. Format:
+"Active: {PhaseName} is running".
+
+Arrow: `margin-left: auto`, `color: var(--text-placeholder)`, `font-size: 14px`.
+Text: "->".
+
+Props: `activePhase: string`, `onClick: () => void`.
+
+### Timeline organisms
+
+#### TimelineRail
+
+The full left sidebar showing the phase timeline. Renders all phases, handoffs,
+milestone groups, and placeholders.
+
+Container: `width: var(--timeline-width)` (or
+`var(--timeline-width-milestones)` when milestones are present),
+`flex-shrink: 0`, `background: var(--color-navy)`, `padding: 16px 0`,
+`display: flex`, `flex-direction: column`, `overflow-y: auto`.
+
+Optional section label (e.g., "milestones"): `padding: 4px 16px 6px`,
+`font-size: 9px`, `text-transform: uppercase`, `letter-spacing: 1.5px`,
+`color: rgba(255, 255, 255, 0.2)`.
+
+Optional section separator: `height: 1px`,
+`background: rgba(255, 255, 255, 0.06)`, `margin: 6px 16px`.
+
+**Milestone group container:** `position: relative`, `padding: 0 16px`. Same
+`::before` connecting line as TimelinePhaseNode. Header: MilestoneNumber + title.
+Sub-phases wrapper: `padding-left: 20px`. Inner connecting line for sub-phases:
+`position: absolute`, `left: 22px`, `width: 1px`,
+`background: rgba(255, 255, 255, 0.06)`.
+
+Future milestones show only the numbered header — no sub-phase detail.
+
+**Scrolling:** The rail scrolls independently when milestone count exceeds
+viewport height. Standard `overflow-y: auto` with koan's existing scrollbar
+styling.
+
+**Data model:** The rail renders from the workflow definition (phases list) plus
+run state (phase statuses, produced artifacts, milestone definitions). When
+milestones are not yet defined (early in the workflow), a TimelinePlaceholder
+renders in their position.
+
+Composes: TimelinePhaseNode, TimelineHandoff, TimelineSubPhaseNode,
+TimelineSubArtifact, TimelinePlaceholder, MilestoneNumber.
+
+Props: `phases: PhaseNodeData[]`, `milestones?: MilestoneGroupData[]`, `activePhaseId: string`, `viewingPhaseId: string | null`, `onPhaseClick: (phaseId: string) => void`.
+
+### Modified organisms
+
+#### HeaderBar
+
+The breadcrumb nav (`BreadcrumbNav` molecule) no longer needs to show phase and
+step — the timeline rail handles this. The header simplifies: the breadcrumb area
+shows only the run title (e.g., "--home flag implementation"). The progress
+segments are removed — progress is visible on the timeline.
+
+The right side (model indicator, usage gauge, elapsed, settings gear) is
+unchanged.
+
+#### ContentStream
+
+Phase boundaries are no longer rendered as inline `PhaseMarker` entries. Instead:
+
+1. On phase transition, the content stream clears and shows only the new phase's
+   conversation entries.
+2. `PhaseTitleBar` renders above the Virtuoso list (not inside it) as a fixed
+   header within the content column.
+3. `ContextCard` renders as the first element inside the content column, below
+   PhaseTitleBar, above the Virtuoso list.
+4. `ReturnBanner` renders above PhaseTitleBar when viewing a completed phase.
+5. When viewing a historical phase, the feedback input is hidden and content
+   renders at `opacity: 0.75`. Historical prose cards use
+   `border-left: 3px solid var(--color-teal)` instead of `var(--color-orange)`.
+6. Historical YieldPanels render in a non-interactive "selected" state: the
+   chosen option highlighted with teal accent, other options removed.
+7. Step headers in completed phases use `color: var(--color-teal)` for the step
+   label instead of `color: var(--color-orange)`.
+
+#### Workspace Layout
+
+The workspace layout changes from a two-column (content + artifacts sidebar) to a
+three-column layout:
+
+```
+Flex row (flex: 1, min-height: 0):
++- TimelineRail (flex-shrink: 0, width: var(--timeline-width))
++- workspace-main (flex: 1, min-width: 0)
+|  `- content-column (flex: 1, overflow-y: auto)
+|     +- ReturnBanner (conditional)
+|     +- PhaseTitleBar
+|     +- ContextCard (conditional)
+|     `- Virtuoso list + StreamingLeaf + FeedbackFooter
+`- artifacts-sidebar (existing, unchanged)
+```
+
+### Timeline store changes
+
+#### PhaseNodeData (new type)
+
+```typescript
+interface PhaseNodeData {
+  id: string;
+  name: string;
+  status: "done" | "active" | "future" | "skipped";
+  elapsed?: number; // ms, for completed phases
+  currentStep?: number; // for active phase
+  totalSteps?: number; // for active phase
+  stepName?: string; // for active phase
+  producedArtifacts?: string[]; // artifact filenames produced by this phase
+}
+```
+
+#### MilestoneGroupData (new type)
+
+```typescript
+interface MilestoneGroupData {
+  number: number;
+  title: string;
+  status: "done" | "active" | "future";
+  subPhases: {
+    name: string; // "Plan" | "Execute"
+    status: "done" | "active" | "future";
+    producedArtifact?: string; // e.g., "plan-ms-2.md"
+  }[];
+}
+```
+
+#### KoanState additions
+
+```typescript
+// Add to KoanState:
+viewingPhaseId: string | null // null = viewing active phase
+setViewingPhaseId: (id: string | null) => void
+```
+
+#### Run additions
+
+```typescript
+// Extend Run:
+phaseHistory: PhaseNodeData[] // ordered list of all phases in the workflow
+milestones?: MilestoneGroupData[] // populated after tech-plan phase
+```

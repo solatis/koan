@@ -36,7 +36,7 @@ Spoke documents:
 - [docs/tool-output-limits.md](docs/tool-output-limits.md) -- tool-result size strategy, untrusted (reject) vs trusted (bound-by-construction) classes
 - [docs/milestones.md](docs/milestones.md) -- milestone soundness criteria, sizing heuristics, grounding requirements
 - [docs/workflow-phases.md](docs/workflow-phases.md) -- phase taxonomy across all workflows, mechanical reviewer and inline execute review
-- [docs/artifacts.md](docs/artifacts.md) -- artifact registry, filename grammar, reviewer lifecycle, inline reviews
+- [docs/artifacts.md](docs/artifacts.md) -- artifact registry, filename grammar, reviewer lifecycle, inline reviews, handover injection (immutable artifacts injected at phase entry; living documents listed for on-demand reads)
 
 **Workflow types:** `plan` (intake -> plan -> execute -> curation) . `milestones` (intake -> milestone -> plan -> execute -> milestone loop -> curation) . `initiative` (intake -> core-flows -> tech-plan -> milestone -> plan -> execute -> milestone loop -> curation) . `discovery` (frame; single-phase exploration)
 

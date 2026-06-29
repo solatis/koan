@@ -514,7 +514,7 @@ note, not by editing brief.md.
 
 - **Contract**
   - Context in [inferred]: `role.core-flows`; `guidance`; `inj.memory`; intake dialogue.
-  - Artifacts required [inferred]: `brief.md`.
+  - Artifacts required [inferred]: `brief.md` (injected as `<handoff_artifact>` handover above).
   - Artifacts optional [inferred]: memory.
   - Produces [inferred]: a flow list with per-flow diagram-vs-prose decision. No writes.
   - Purpose / Success / Failure: TODO(you).
@@ -524,7 +524,7 @@ note, not by editing brief.md.
 {{> blk.step1-head(heading="## Workflow guidance")}}
 
 {{> blk.read-brief(
-     when = "first via koan_artifact_read",
+     when = "above as a handover",
      why  = "The flows you describe must correspond to the operational behavior the initiative implies." )}}
 
 {{> blk.consult-memory(
@@ -546,7 +546,7 @@ any operational-behavior ambiguities to resolve.
 
 - **Contract**
   - Context in [inferred]: the step-1 flow analysis; `role.core-flows`.
-  - Artifacts required [inferred]: `brief.md` (already read).
+  - Artifacts required [inferred]: `brief.md` (already injected as handover).
   - Produces [inferred]: `core-flows.md` via `koan_artifact_write` (frozen); `{{> foot.yield}}`.
   - Purpose / Success / Failure: TODO(you).
 - **Body** (unique -- the SEQ-slot rules and write template are core-flows-specific)
@@ -568,8 +568,8 @@ from brief.md + dialogue); FROZEN at exit.
 
 - **Contract**
   - Context in [inferred]: `role.tech-plan`; `guidance`; `inj.memory`.
-  - Artifacts required [inferred]: `brief.md`.
-  - Artifacts optional [inferred]: `core-flows.md` (if present); scouts; memory.
+  - Artifacts required [inferred]: `brief.md` (injected as handover); `core-flows.md` (injected as handover when present -- the core-flows phase is yield-skippable).
+  - Artifacts optional [inferred]: scouts; memory.
   - Produces [inferred]: a 3-section outline + per-slot diagram decisions. No writes.
   - Purpose / Success / Failure: TODO(you).
 - **Body**
@@ -578,8 +578,8 @@ from brief.md + dialogue); FROZEN at exit.
 {{> blk.step1-head(heading="## Workflow guidance")}}
 
 {{> blk.read-brief(
-     when = "and core-flows.md (if present) via koan_artifact_read, before anything else",
-     why  = "core-flows.md is authoritative for the actors and flows that constrain the architecture." )}}
+     when = "above as a handover -- frozen initiative scope, decisions, and constraints",
+     why  = "`core-flows.md` is also provided above as a handover when present; it is authoritative for the actors and flows that constrain the architecture." )}}
 
 {{> blk.consult-memory(
      topic   = "architectural decisions and constraints relevant to the new system's structure",
@@ -605,7 +605,7 @@ architectural questions to resolve before writing.
 
 - **Contract**
   - Context in [inferred]: the step-1 outline; `role.tech-plan`.
-  - Artifacts required [inferred]: `brief.md`.
+  - Artifacts required [inferred]: `brief.md` (already injected as handover).
   - Produces [inferred]: `tech-plan.md` via `koan_artifact_write` -> spawns `TECH_PLAN_REVIEWER`; reconcile; then `koan_set_phase("milestone")`.
   - Purpose / Success / Failure: TODO(you).
 - **Body**
@@ -634,8 +634,8 @@ After reconciling, advance to the next phase.
 
 - **Contract**
   - Context in [inferred]: `role.milestone`; `guidance`; `inj.memory`.
-  - Artifacts required [inferred]: `brief.md`; (initiative) `tech-plan.md`.
-  - Artifacts optional [inferred]: `core-flows.md`; module tree; import graph; memory.
+  - Artifacts required [inferred]: `brief.md` (injected as handover); (initiative) `core-flows.md` and `tech-plan.md` (injected as handovers when present).
+  - Artifacts optional [inferred]: module tree; import graph; memory.
   - Produces [inferred]: a proposed 3-7 milestone list with scope + sizing. No writes.
   - Purpose / Success / Failure: TODO(you).
 - **Body**
@@ -644,8 +644,8 @@ After reconciling, advance to the next phase.
 {{> blk.step1-head(heading="## Workflow guidance")}}
 
 {{> blk.read-brief(
-     when = "before proposing milestones",
-     why  = "It contains the scope, decisions, constraints, and affected subsystems -- authoritative." )}}
+     when = "above as a handover",
+     why  = "It contains the frozen scope, decisions, constraints, and affected subsystems from intake -- authoritative." )}}
 
 {{> blk.no-writes(what="milestones.md")}}
 
@@ -692,8 +692,8 @@ Then advance to plan.
 
 - **Contract**
   - Context in [inferred]: `role.plan`; `guidance` (filename + current milestone); `inj.memory`.
-  - Artifacts required [inferred]: `brief.md`; (milestones/initiative) `milestones.md`; (initiative) `tech-plan.md`.
-  - Artifacts optional [inferred]: `core-flows.md`; codebase files; memory.
+  - Artifacts required [inferred]: `brief.md` (injected as handover); (initiative) `core-flows.md` and `tech-plan.md` (injected as handovers).
+  - Artifacts optional [inferred]: `milestones.md` (available on demand -- listed, not injected; read via `koan_artifact_read`); codebase files; memory.
   - Produces [inferred]: an analysis summary (approach, files, decisions, risks, docstring needs). No writes.
   - Purpose / Success / Failure: TODO(you).
 - **Body**
@@ -702,7 +702,7 @@ Then advance to plan.
 {{> blk.step1-head(heading="## Workflow guidance")}}
 
 {{> blk.read-brief(
-     when = "before consulting memory or reading codebase files",
+     when = "above as a handover",
      why  = "The plan you write must respect every decision and constraint listed there." )}}
 
 {{> blk.consult-memory(
@@ -756,7 +756,7 @@ phase, where you will launch execution via `koan_request_executor`.
 
 - **Contract**
   - Context in [inferred]: `role.execute`; `guidance` (outcome paths); `inj.memory`.
-  - Artifacts required [inferred]: `brief.md`; the plan to execute; (milestones/initiative) `milestones.md`.
+  - Artifacts required [inferred]: `brief.md` (injected as handover); the plan to execute (available on demand -- listed, read via `koan_artifact_read`); (milestones/initiative) `milestones.md` (available on demand -- listed, not injected).
   - Produces [inferred]: a `koan_request_executor` call + the returned deviation report. No writes yet.
   - Purpose / Success / Failure: TODO(you).
 - **Body**
@@ -765,7 +765,7 @@ phase, where you will launch execution via `koan_request_executor`.
 {{> blk.step1-head(heading="## Workflow guidance")}}
 
 {{> blk.read-brief(
-     when = "and the plan artifact you will execute",
+     when = "above as a handover",
      why  = "Assess whether the implementation respects every stated decision and constraint, not just the plan." )}}
 
 ## Read milestone state (milestones/initiative only)
@@ -785,7 +785,7 @@ End your turn with the deviation report summary.
 
 - **Contract**
   - Context in [inferred]: the deviation report from step 1; `role.execute`.
-  - Artifacts required [inferred]: `brief.md`; the executed plan.
+  - Artifacts required [inferred]: `brief.md` (already injected as handover); the executed plan (available on demand -- read via `koan_artifact_read`).
   - Produces [inferred]: bash verification runs + a verification summary. No writes yet.
   - Purpose / Success / Failure: TODO(you).
 - **Body**
@@ -807,7 +807,7 @@ met vs incomplete.
 
 - **Contract**
   - Context in [inferred]: the step-2 verification; the deviation report; `guidance` (outcome paths).
-  - Artifacts required [inferred]: the plan; (CONFORMING, milestones/initiative) `milestones.md`.
+  - Artifacts required [inferred]: the plan (available on demand -- read via `koan_artifact_read` for `koan_artifact_edit` anchors); (CONFORMING, milestones/initiative) `milestones.md` (read on demand via `koan_artifact_read` for current anchors before the UPDATE edit).
   - Produces [inferred]: conformance classification; `## Execution N` inline in the plan; then a branch (advance / re-run / escalate).
   - Purpose / Success / Failure: TODO(you).
 - **Body** (unique -- re-execution is the orchestrator's agency)
@@ -951,7 +951,7 @@ When the user is ready, present three options: promote via `koan_set_workflow`;
 
 - **Contract**
   - Context in [inferred]: `sys.executor` (no role context); `{{EXECUTOR_ARTIFACTS}}`; orchestrator `{{PHASE_INSTRUCTIONS}}`; `{{RUN_DIR}}`; (retry) `{{RETRY_CONTEXT}}`.
-  - Artifacts required [inferred]: the listed plan artifact(s).
+  - Artifacts required [inferred]: immutable handovers (brief.md and upstream architecture, when present) are injected as `<handoff_artifact>` messages above and need not be re-read; the plan and other living documents are listed on demand (available via the artifact listing at the end of the prompt, read via `koan_artifact_read`).
   - Artifacts optional [inferred]: codebase files; `.koan/memory` (read-only).
   - Produces [inferred]: a comprehension summary. No code.
   - Purpose / Success / Failure: TODO(you).
@@ -1016,8 +1016,8 @@ planned / Deviations / Unanticipated decisions / Incomplete (state "No deviation
 
 - **Contract**
   - Context in [inferred]: `sys.reviewer` (fresh context); the charter (`charter.*`, by `{{reviewer_prompt}}`); `{{reviewer_target}}`.
-  - Artifacts required [inferred]: the target artifact; `brief.md`; charter-specific upstream (tech-plan/milestones/core-flows, "if present").
-  - Artifacts optional [inferred]: codebase (Read/Grep/Glob/bash); memory.
+  - Artifacts required [inferred]: the target artifact (always read explicitly via `koan_artifact_read` -- it is the focus of the review, not a standing handover); `brief.md` and charter-specific immutable upstream (injected as `<handoff_artifact>` handovers above -- `core-flows.md` for TECH_PLAN_REVIEWER; `tech-plan.md` for PLAN_REVIEWER and MILESTONE_REVIEWER).
+  - Artifacts optional [inferred]: `milestones.md` (PLAN_REVIEWER only -- living doc, available on demand via the artifact listing); codebase (Read/Grep/Glob/bash); memory.
   - Produces [inferred]: a problem list + verification notes. No writes.
   - Purpose / Success / Failure: TODO(you).
 - **Body**
@@ -1030,9 +1030,13 @@ planned / Deviations / Unanticipated decisions / Incomplete (state "No deviation
 Read `{{reviewer_target}}` via koan_artifact_read.
 
 ## Context artifacts
-Read `brief.md` (write-once scope to evaluate against). Then, by charter:
-TECH_PLAN_REVIEWER -> core-flows.md (if present); PLAN_REVIEWER -> tech-plan.md +
-milestones.md (if present); MILESTONE_REVIEWER -> tech-plan.md (if present).
+The brief and the relevant upstream architecture are provided above as handovers
+(injected as `<handoff_artifact>` messages). They carry the frozen scope, decisions,
+and constraints you evaluate the artifact against. By charter:
+TECH_PLAN_REVIEWER -> `brief.md` + `core-flows.md` (when present); PLAN_REVIEWER ->
+`brief.md` + `tech-plan.md`; MILESTONE_REVIEWER -> `brief.md` + `tech-plan.md` (when
+present). `milestones.md` (PLAN_REVIEWER) is a living document -- it falls into the
+on-demand listing; read via `koan_artifact_read` when relevant.
 
 ## Verify against codebase + memory
 Read/Grep/Glob/bash to verify non-obvious claims directly -- do not accept at face
@@ -1248,20 +1252,29 @@ These were duplicated across step bodies; promotion makes them single-source. Ea
 notes its **canonical** text and any **per-step variance** as a refactor target
 (doc-first means the variance gets reconciled here, once).
 
-**`blk.read-brief(when, why)`** -- read the initiative context from brief.md. Used by:
-core-flows.1, tech-plan.1, milestone.1, plan.1, execute.1, curation.1.
+**`blk.read-brief(when, why)`** -- reference the brief.md handover injected at phase
+entry. Used by: core-flows.1, tech-plan.1, milestone.1, plan.1, execute.1, curation.1.
+
+Since Milestone 2, `brief.md` (and other immutable upstream artifacts) is injected as
+a `<handoff_artifact>` message before the step guidance runs -- no `koan_artifact_read`
+call is needed. The fragment now points the agent at the already-present content. The
+`{{when}}` param carries a short locator phrase ("above as a handover") and optionally
+notes additional injected artifacts (e.g. `core-flows.md` in tech-plan.1). `{{why}}`
+carries the grounding purpose.
 
 ```text
 ## Read initiative context
 
-Read `brief.md` from the run directory {{when}}. It contains the initiative
-scope, decisions, and constraints from intake. {{why}}
+`brief.md` is provided {{when}}. It contains the initiative scope, decisions, and
+constraints from intake. {{why}}
 ```
 
-> Variance to reconcile: tech-plan.1 and execute.1 fold a second artifact into
-> `{{when}}` (core-flows.md / the executed plan); curation.1 makes the whole block
-> conditional ("if `brief.md` exists"). Model the second-artifact case as an
-> optional `also` param rather than overloading `when`.
+> Variance: tech-plan.1 uses `{{why}}` to also describe the `core-flows.md` handover
+> (both are injected together for that phase). curation.1 keeps the block conditional
+> ("If `brief.md` exists, read it") because curation has no required_artifacts declared
+> and brief.md is not injected for that phase. Execute.1 removes the plan artifact from
+> `{{when}}` (it is a living doc, listed on demand, not injected). These variances are
+> acceptable given the phase-specific injection rule.
 
 **`blk.consult-memory(topic, example, closing?)`** -- consult project memory
 before codebase work. Used by: intake.1, core-flows.1, tech-plan.1, plan.1,

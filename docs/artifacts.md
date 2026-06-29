@@ -384,3 +384,85 @@ Artifact-acceptance is no longer surface-gated; the structural pattern in
 current workflows is rewrite-or-loop-back in the producer-validator phase pair,
 with the user's phase-switch decision after the validator's yield serving as
 the implicit acceptance moment.
+
+---
+
+## Handover injection
+
+Immutable artifacts are not read on demand -- they are **injected** at phase
+entry as `<handoff_artifact name="...">` user messages, pre-seeded into the
+agent's `message_history` before the step prompt. This is the enforcement of
+the principle: between phases, the handover IS the file.
+
+### Immutable vs living split
+
+| Category  | Families                     | Delivery                                                                    |
+| --------- | ---------------------------- | --------------------------------------------------------------------------- |
+| Immutable | brief, core-flows, tech-plan | Injected once at the first phase that declares them in `required_artifacts` |
+| Living    | plan, milestones             | Listed in the read-on-demand section; read via `koan_artifact_read`         |
+
+`LIVING_DOC_FAMILIES` in `koan/tools/artifact_registry.py` is the canonical
+list. `select_immutable_handovers` in `koan/tools/handoff_artifacts.py`
+filters any `required_artifacts` tuple against this set before injecting.
+
+### Per-phase required set (initiative workflow)
+
+`PhaseBinding.required_artifacts` in `koan/lib/workflows.py` declares the
+cumulative ordered set of immutable filenames each phase consumes. Declaring
+the full cumulative set (not just the delta) keeps phase-jump correctness
+intact -- the injector deduplicates against `AgentState.injected_artifacts`
+so a file injected in a prior phase is never re-injected.
+
+| Phase        | `required_artifacts`                            |
+| ------------ | ----------------------------------------------- |
+| `core-flows` | `("brief.md",)`                                 |
+| `tech-plan`  | `("brief.md", "core-flows.md")`                 |
+| `milestone`  | `("brief.md", "core-flows.md", "tech-plan.md")` |
+| `plan`       | `("brief.md", "core-flows.md", "tech-plan.md")` |
+| `execute`    | `("brief.md", "core-flows.md", "tech-plan.md")` |
+
+In the lighter `plan` and `milestones` workflows, only `brief.md` is declared
+immutable; `milestones.md` and per-milestone plans are always living.
+
+### Envelope format
+
+`format_handoff_message(name, content, error=False)` wraps content as:
+
+```
+<handoff_artifact name="brief.md">
+...content...
+</handoff_artifact>
+```
+
+The `<handoff_artifact>` envelope is deliberately distinct from
+`<project_instructions>` (context-file injection) and from steering envelopes,
+so the three message kinds are never conflated. When an I/O fault occurs,
+`error="true"` is added to the tag so the agent sees a visible placeholder
+rather than a silently empty slot.
+
+### Read-on-demand listing
+
+`build_handover_listing(run_dir, exclude)` produces the "Artifacts available
+to read on demand" block appended to the step-1 prompt. It lists every
+artifact in the run directory whose filename parses as a valid artifact name
+and is not in `exclude` (already-injected plus pending). Because only
+immutable families are ever injected, the listing always includes every living
+document (`milestones.md`, `plan-milestone-N.md`, `plan.md`).
+
+### Executor and reviewer injection
+
+The same mechanism applies to subagents at spawn:
+
+- **Executor**: `subagent_candidates(ctx)` returns the full `executor_artifacts`
+  list from `task.json`. Immutable files in the list are injected;
+  living files (the plan, `milestones.md`) fall into the listing.
+- **Reviewer**: `subagent_candidates(ctx)` returns `brief.md` plus the
+  charter-specific upstream set (`core-flows.md` for `TECH_PLAN_REVIEWER`;
+  `tech-plan.md` and `milestones.md` for `PLAN_REVIEWER`; `tech-plan.md`
+  for `MILESTONE_REVIEWER`). The `reviewer_target` is always excluded from
+  injection -- the reviewer reads it explicitly via `koan_artifact_read`
+  because it is the focus of the review, not a standing handover.
+- **Scouts**: excluded -- scouts take no handover artifacts.
+
+See [architecture.md -- Handover injection](./architecture.md#5-need-to-know-prompts)
+for the invariants and [subagents.md](./subagents.md) for the spawn path.

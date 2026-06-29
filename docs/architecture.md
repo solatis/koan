@@ -195,6 +195,45 @@ The mechanism is described in [memory-system.md](./memory-system.md);
 the directive for each phase lives on its `PhaseBinding.retrieval_directive`
 in `koan/lib/workflows.py`.
 
+**Handover injection.** At each phase entry, the step-1 handshake also
+pre-seeds the phase's required immutable artifacts into the agent conversation as
+distinct `<handoff_artifact name="...">` user messages, appended to
+`AgentState.message_history` before the turn prompt. The mechanism lives in
+`koan/tools/handoff_artifacts.py`. Key properties:
+
+- **Append-only, cache-stable.** Artifact messages are appended in cumulative
+  order and never reordered or removed. Once injected, an artifact stays in
+  the history for the agent's lifetime -- the stable prefix is a prompt-cache
+  hit on every subsequent request.
+- **Deduplication.** `AgentState.injected_artifacts` (a `set`) tracks which
+  filenames have been injected. `AgentState.pending_artifacts` (a `list`) is
+  queued by `_step_phase_handshake_core` and drained by `preseed_pending_artifacts`
+  before the next model request. These mirror the existing
+  `injected_context_files` / `pending_context_files` pair for context-file
+  injection.
+- **Immutable families only.** `select_immutable_handovers` filters
+  `PhaseBinding.required_artifacts` to exclude living-document families
+  (plan, milestones). Living documents appear instead in the read-on-demand
+  listing built by `build_handover_listing`.
+- **Per-phase declaration.** `PhaseBinding.required_artifacts` in
+  `koan/lib/workflows.py` declares the cumulative ordered set of immutable
+  filenames each phase consumes. The injector deduplicates against
+  `injected_artifacts`, so the delta injected at each phase boundary equals
+  exactly the new upstream output.
+- **Executor and reviewer subagents.** The same injection applies at spawn:
+  `subagent_candidates` resolves the candidate set from the executor's
+  `task.json` `artifacts` list or the reviewer's charter; immutable candidates
+  are injected before the single turn runs. Living inputs (the plan,
+  `milestones.md`) remain in the listing.
+- **Scouts excluded.** Scouts are codebase investigators and take no
+  handover artifacts.
+- **The guiding principle:** between phases, the handover IS the file.
+  Injection makes this structural rather than advisory.
+
+See [artifacts.md -- Handover injection](./artifacts.md#handover-injection)
+for the per-artifact detail and [subagents.md](./subagents.md) for the
+executor/reviewer spawn path.
+
 ### 6. Directory-as-contract
 
 The subagent directory is the **sole interface** between parent and child.

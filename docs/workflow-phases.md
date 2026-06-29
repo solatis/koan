@@ -84,6 +84,15 @@ the relevant phase and edit the living document in place -- but it does not
 unilaterally rewrite or override upstream content unilaterally. The trust
 model is documented in `phase-trust.md`.
 
+A third pattern governs how artifacts physically travel between phases:
+**handover injection**. Each phase's frozen output is injected into the
+consuming phase's conversation as a `<handoff_artifact>` user message at
+phase entry, rather than read on demand. The file IS the handover; injection
+makes this structural. Living documents (plans, `milestones.md`) are not
+injected -- they surface in the read-on-demand listing. The full mechanism is
+described in
+[architecture.md -- Handover injection](./architecture.md#5-need-to-know-prompts).
+
 The artifact model from `artifacts.md` continues to apply. Artifacts are
 living working surfaces; `brief.md` is the sole write-once artifact.
 

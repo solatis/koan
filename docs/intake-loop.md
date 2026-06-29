@@ -99,6 +99,14 @@ phase-boundary hand-back. The orchestrator calls `koan_suggest_next` with the
 suggested next phases and then ends its turn in terminal text. The loop parks
 awaiting the user.
 
+The step-1 handshake (`_step_phase_handshake_core`) also queues the phase's
+required immutable artifacts into `AgentState.pending_artifacts`; these are
+drained by `preseed_pending_artifacts` and injected as `<handoff_artifact>`
+messages before the first model request of the new phase. `brief.md` is the
+only artifact produced by intake, so it is this injection path that delivers
+it to every subsequent phase. See
+[architecture.md -- Handover injection](./architecture.md#5-need-to-know-prompts).
+
 ```python
 def get_next_step(step, ctx):
     if step < TOTAL_STEPS:

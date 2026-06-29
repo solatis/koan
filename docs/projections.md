@@ -140,10 +140,30 @@ making user messages appear inline in the activity feed alongside agent output.
 | `artifact_modified` | `{path, size, modified_at}` | if known   |
 | `artifact_removed`  | `{path}`                    | if known   |
 
-`agent_id` is the primary agent at scan time (approximate — scanning happens at
+`agent_id` is the primary agent at scan time (approximate -- scanning happens at
 phase boundaries, not on individual file writes). `build_artifact_diff()` in
 `koan/events.py` compares old and new artifact sets and emits individual events
 for each difference.
+
+**`ArtifactInfo` and `producedPhaseId`.** Each artifact in `run.artifacts` is
+modeled as `ArtifactInfo(path, size, modified_at, produced_phase_id)`. The
+`produced_phase_id` field is stamped once in the `artifact_created` fold arm
+from `projection.run.phase` at the moment the event arrives, and is preserved
+unchanged across all subsequent `artifact_modified` events -- an artifact's
+producing phase never changes. On the wire the field is camelCase
+(`producedPhaseId`) via the `KoanBaseModel` alias generator.
+
+`derivePhaseNodes` in `frontend/src/store/selectors.ts` reads `producedPhaseId`
+from each `ArtifactInfo` to build a `phase-id -> artifact-name[]` map, which it
+attaches as `producedArtifacts` on each `PhaseNodeData`. The `TimelineHandoff`
+component renders these badge lists -- it reads `producedArtifacts` directly from
+the server-stamped field; the browser does not re-derive which phase produced
+which artifact (single-fold invariant).
+
+`TimelineSubArtifact` (per-milestone plan badges within a milestone group) is
+**not yet wired** -- there is no milestone-group derivation in `derivePhaseNodes`,
+and no milestone-group field exists in the projection. Wiring it is an explicit
+follow-up that would also consume `producedPhaseId`.
 
 ### Settings (9)
 
@@ -343,7 +363,7 @@ field is non-empty, create a completed entry (ThinkingEntry or TextEntry),
 append it to `entries`, reset the field to `""`.
 
 `next_entry_id` is a monotonic counter used by `_assign_entry_ids` to stamp
-each top-level entry with a stable `entry_id`.  `exclude=True` keeps it off the
+each top-level entry with a stable `entry_id`. `exclude=True` keeps it off the
 wire (no `nextEntryId` in JSON Patch or snapshots); the counter is rebuilt
 deterministically by re-folding the event log on restart.
 
@@ -351,8 +371,8 @@ deterministically by re-folding the event log on restart.
 
 Every top-level entry carries a stable `entry_id` (wire: `entryId`) assigned by
 `_assign_entry_ids` at the `_update_agent_conversation` seam from the
-per-`Conversation` `next_entry_id` counter.  The counter is excluded from the
-wire.  Aggregate children (`AggregateReadChild`, `AggregateGrepChild`,
+per-`Conversation` `next_entry_id` counter. The counter is excluded from the
+wire. Aggregate children (`AggregateReadChild`, `AggregateGrepChild`,
 `AggregateLsChild`, `AggregateGlobChild`) inherit `entry_id` via `BaseToolEntry`
 but leave it `""` -- they are keyed by `call_id` instead.
 
