@@ -105,6 +105,7 @@ const LISTING_CAPABLE: ReadonlySet<ProviderType> = new Set<ProviderType>([
   'openai',
   'google',
   'openrouter',
+  'ollama-cloud',
 ])
 
 const NO_MODELS: ModelsForConnection = { models: [] }

@@ -19,4 +19,5 @@
 .atom-provider-badge--google    { background: var(--color-teal); }
 .atom-provider-badge--bedrock   { background: var(--text-subtle); }
 .atom-provider-badge--openrouter { background: #8a7e70; } /* deep warm gray -- deliberate hardcode; --status-queued was too light (read as disabled, poor white-text contrast). Decorative badge color, not a status. */
+.atom-provider-badge--ollama-cloud { background: #3d6b8a; } /* steel blue -- deliberate single-use decorative hardcode (cf. openrouter); user-adjustable. */
 .atom-provider-badge--voyage    { background: var(--color-purple); }

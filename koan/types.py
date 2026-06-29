@@ -236,13 +236,13 @@ def cache_tier_for_role(role: SubagentRole) -> CacheTier:
 
 # ProviderType drives the adapter dialect, the price/capability lookup, and the
 # PydanticAI provider class.  Multiple connections of the same type are allowed.
-ProviderType = Literal["google", "anthropic", "openai", "bedrock", "openrouter", "voyage"]
+ProviderType = Literal["google", "anthropic", "openai", "bedrock", "openrouter", "ollama-cloud", "voyage"]
 
 # RoleSlot mirrors ModelTier; kept as a separate alias so the intent is explicit.
 RoleSlot = Literal["strong", "standard", "cheap"]
 
 ALL_PROVIDER_TYPES: tuple[ProviderType, ...] = (
-    "google", "anthropic", "openai", "bedrock", "openrouter", "voyage"
+    "google", "anthropic", "openai", "bedrock", "openrouter", "ollama-cloud", "voyage"
 )
 
 # Keyless providers authenticate via a configured base_url rather than a stored

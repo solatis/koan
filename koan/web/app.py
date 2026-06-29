@@ -1584,7 +1584,7 @@ async def api_probe(r: Request) -> Response:
 # Connection types that expose a live list-models endpoint.
 # Hoisted here (not inside the eager task) so the save handler and eager task
 # share the same authoritative set without duplicating a literal.
-LISTING_CAPABLE: frozenset[str] = frozenset({"openai", "anthropic", "google", "openrouter"})
+LISTING_CAPABLE: frozenset[str] = frozenset({"openai", "anthropic", "google", "openrouter", "ollama-cloud"})
 
 async def _refresh_one_provider_models(
     st: "AppState",
@@ -1760,7 +1760,7 @@ async def api_settings_retry(r: Request) -> Response:
 #   return JSONResponse({"ok": True}), 422 on validation error.
 # Secrets are never echoed in responses or the projection (brief D3).
 
-_VALID_CONNECTION_TYPES = {"google", "anthropic", "openai", "bedrock", "openrouter", "voyage"}
+_VALID_CONNECTION_TYPES = {"google", "anthropic", "openai", "bedrock", "openrouter", "ollama-cloud", "voyage"}
 _VALID_SLOT_NAMES = {"strong", "standard", "cheap"}
 _VALID_MEMORY_KINDS = {"embedding", "memory_llm", "reflect_llm"}
 

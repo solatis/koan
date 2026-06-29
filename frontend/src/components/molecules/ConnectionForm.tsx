@@ -32,12 +32,13 @@ export type TestState =
   | { kind: 'error'; message: string }
 
 const PROVIDER_LABELS: Record<ProviderType, string> = {
-  anthropic: 'Anthropic',
-  openai: 'OpenAI',
-  google: 'Google',
-  bedrock: 'AWS Bedrock',
-  openrouter: 'OpenRouter',
-  voyage: 'Voyage',
+  anthropic:     'Anthropic',
+  openai:        'OpenAI',
+  google:        'Google',
+  bedrock:       'AWS Bedrock',
+  openrouter:    'OpenRouter',
+  'ollama-cloud': 'Ollama Cloud',
+  voyage:        'Voyage',
 }
 
 const PROVIDER_OPTIONS = (Object.keys(PROVIDER_LABELS) as ProviderType[]).map(
@@ -50,6 +51,7 @@ const LISTING_CAPABLE: ReadonlySet<ProviderType> = new Set<ProviderType>([
   'openai',
   'google',
   'openrouter',
+  'ollama-cloud',
 ])
 
 function HelperLine({ children }: { children: ReactNode }) {
@@ -138,6 +140,10 @@ export function ConnectionForm({
         // Key-only: no endpoint field (the library fixes https://openrouter.ai/api/v1
         // internally; Decision 6). No region field either.
         return apiKeyRow('sk-or-...')
+      case 'ollama-cloud':
+        // Key-only: fixed cloud endpoint (https://ollama.com/v1); no endpoint or
+        // region field (brief D7: cloud-only, not user-configurable).
+        return apiKeyRow('ollama api key')
       case 'voyage':
         return (
           <>

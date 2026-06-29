@@ -1,6 +1,6 @@
 # Provider adapter: the single per-provider dialect seam.
 # Covers all four day-one providers (M7): google, anthropic, openai, bedrock.
-# Built against the installed pydantic-ai 2.0.0b6 API.
+# Built against the installed pydantic-ai 2.0.0 API.
 #
 # Responsibilities:
 #   - provider_available: check credential presence in CredentialStore
@@ -58,13 +58,16 @@ _OPENAI_EFFORT: dict[ThinkingMode, str | None] = {
 
 # koan provider name -> pydantic-ai provider prefix (used to validate known providers).
 # openrouter uses the library's dedicated OpenRouterModel/OpenRouterProvider (key-required,
-# library-fixed endpoint).
+# library-fixed endpoint). ollama-cloud uses OllamaModel/OllamaProvider with the fixed
+# cloud endpoint (OLLAMA_CLOUD_BASE_URL); "ollama" documents the underlying pydantic-ai
+# provider family.
 _PROVIDER_PREFIX: dict[str, str] = {
-    "google":      "google",
-    "anthropic":   "anthropic",
-    "openai":      "openai",
-    "bedrock":     "bedrock",
-    "openrouter":  "openrouter",
+    "google":        "google",
+    "anthropic":     "anthropic",
+    "openai":        "openai",
+    "bedrock":       "bedrock",
+    "openrouter":    "openrouter",
+    "ollama-cloud":  "ollama",
 }
 
 # Providers that require an explicit API key (as opposed to bedrock which
@@ -73,7 +76,12 @@ _PROVIDER_PREFIX: dict[str, str] = {
 # missing_credentials rather than silently falling back to os.environ.
 # This set is documentation/guard-only: build_model uses explicit branches +
 # a fall-through for credential enforcement, not this set directly.
-_KEY_REQUIRING_PROVIDERS = {"google", "anthropic", "openai", "openrouter"}
+_KEY_REQUIRING_PROVIDERS = {"google", "anthropic", "openai", "openrouter", "ollama-cloud"}
+
+# Ollama Cloud's fixed API endpoint. OllamaProvider raises UserError when base_url is
+# absent, so koan owns this constant rather than relying on a library default.
+# Not user-configurable: ollama-cloud is cloud-only; no local/proxy support (brief D7).
+OLLAMA_CLOUD_BASE_URL = "https://ollama.com/v1"
 
 
 def provider_available(provider: str, store: "CredentialStore | None" = None) -> bool:
@@ -287,6 +295,9 @@ def build_model(
     - openrouter: key-requiring; falls through to the key-requiring path below --
       no explicit branch needed. base_url is not threaded (the library fixes
       https://openrouter.ai/api/v1 internally). Model ids are namespaced vendor/model.
+    - ollama-cloud: key-requiring; falls through to the key-requiring path below.
+      Endpoint is fixed to OLLAMA_CLOUD_BASE_URL (https://ollama.com/v1); base_url
+      is not threaded (cloud-only, brief D7). OllamaModel/OllamaProvider is used.
     - keyless providers (KEYLESS_PROVIDER_TYPES): base_url is REQUIRED; raises
       AgentError(code='missing_base_url') when absent. A placeholder api_key is
       injected because the OpenAI SDK requires a non-empty string. Never reads the
@@ -381,11 +392,14 @@ def _build_explicit_model(
 
     api_key is required for bedrock (enforced by build_model's missing_credentials
     gate before this is called).  region and base_url are optional for non-bedrock
-    providers; base_url is not threaded for google (brief scope) or openrouter
-    (the library's OpenRouterProvider fixes the endpoint to https://openrouter.ai/api/v1).
+    providers; base_url is not threaded for google (brief scope), openrouter
+    (the library's OpenRouterProvider fixes the endpoint to https://openrouter.ai/api/v1),
+    or ollama-cloud (endpoint is fixed to OLLAMA_CLOUD_BASE_URL; cloud-only, brief D7).
     For keyless providers (KEYLESS_PROVIDER_TYPES), api_key falls back to the
     placeholder 'keyless-local' -- the OpenAI SDK requires a non-empty string.
     openrouter uses namespaced vendor/model ids (e.g. 'anthropic/claude-3.5-sonnet').
+    ollama-cloud uses OllamaModel/OllamaProvider (OpenAI-protocol) pointed at
+    OLLAMA_CLOUD_BASE_URL; api_key is guaranteed non-None by build_model's gate.
     Explicit construction avoids any implicit os.environ reads.
     """
     if spec.provider == "google":
@@ -426,6 +440,19 @@ def _build_explicit_model(
         return OpenRouterModel(
             spec.model,
             provider=OpenRouterProvider(api_key=api_key),
+        )
+
+    if spec.provider == "ollama-cloud":
+        # Ollama Cloud speaks the OpenAI protocol. base_url is fixed to the cloud
+        # endpoint; the passed base_url is intentionally ignored (brief D7, cloud-only).
+        # OllamaProvider requires an explicit base_url (raises UserError otherwise) --
+        # we supply OLLAMA_CLOUD_BASE_URL rather than relying on a library default.
+        # api_key is guaranteed non-None by build_model's key-requiring fall-through.
+        from pydantic_ai.models.ollama import OllamaModel
+        from pydantic_ai.providers.ollama import OllamaProvider
+        return OllamaModel(
+            spec.model,
+            provider=OllamaProvider(base_url=OLLAMA_CLOUD_BASE_URL, api_key=api_key),
         )
 
     from ..types import KEYLESS_PROVIDER_TYPES

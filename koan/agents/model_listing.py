@@ -5,7 +5,7 @@
 # Results are returned as ProviderModel instances; the caller decides what to do
 # with them (overlay update, Test response, etc.).
 #
-# Listing-capable providers: openai, anthropic, google, openrouter.
+# Listing-capable providers: openai, anthropic, google, openrouter, ollama-cloud.
 # Excluded: bedrock (no list API on the runtime client), voyage (embedding only).
 # Keyless providers (KEYLESS_PROVIDER_TYPES) are also listing-capable when
 # configured; dormant after M3 since KEYLESS_PROVIDER_TYPES is empty.
@@ -186,10 +186,12 @@ async def list_provider_models(
     path). anthropic and google have their own listing paths. openrouter delegates to
     _list_openai_compatible_models with the library-fixed _OPENROUTER_BASE_URL; the
     incoming base_url is ignored (openrouter's endpoint is fixed by the library).
+    ollama-cloud delegates to _list_openai_compatible_models with OLLAMA_CLOUD_BASE_URL;
+    the incoming base_url is intentionally ignored (fixed cloud endpoint, brief D7).
     Keyless providers (KEYLESS_PROVIDER_TYPES) also use _list_openai_compatible_models
     with a configured base_url; dormant after M3 since KEYLESS_PROVIDER_TYPES is empty.
 
-    Listing-capable: openai, anthropic, google, openrouter.
+    Listing-capable: openai, anthropic, google, openrouter, ollama-cloud.
     Not supported: bedrock (no runtime list API), voyage (embedding-only).
     """
     if provider == "openai":
@@ -230,9 +232,20 @@ async def list_provider_models(
             "openrouter", api_key, _OPENROUTER_BASE_URL, timeout
         )
 
+    if provider == "ollama-cloud":
+        # Key-required; endpoint is fixed to the cloud URL (brief D7). The incoming
+        # base_url is intentionally ignored. Reuses the shared OpenAI-compatible
+        # /v1/models listing path (Ollama Cloud exposes a /v1/models endpoint).
+        if not api_key:
+            raise ModelListingError("no api_key provided for ollama-cloud")
+        from .adapter import OLLAMA_CLOUD_BASE_URL
+        return await _list_openai_compatible_models(
+            "ollama-cloud", api_key, OLLAMA_CLOUD_BASE_URL, timeout
+        )
+
     raise ModelListingError(
         f"provider '{provider}' does not support model listing "
-        f"(supported: openai, anthropic, google, openrouter)"
+        f"(supported: openai, anthropic, google, openrouter, ollama-cloud)"
     )
 
 
@@ -247,8 +260,8 @@ async def list_models_for_connection(
     decrypts api_key from the store by connection.id, threads region and base_url
     from the Connection, then dispatches to list_provider_models(connection.type).
 
-    For listing-capable types (openai, anthropic, google, openrouter) this returns
-    the provider's live model list. For non-listing types (bedrock, voyage) or on
+    For listing-capable types (openai, anthropic, google, openrouter, ollama-cloud) this
+    returns the provider's live model list. For non-listing types (bedrock, voyage) or on
     any network/auth failure, ModelListingError is raised -- the caller treats this
     as "listing unavailable; fall back to free-text entry."
 

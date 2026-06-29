@@ -7,10 +7,11 @@ import { devtools } from 'zustand/middleware'
 // M5: Profile interface removed -- profiles/default_profile deleted from the backend Settings projection.
 // M5: ProviderStatus (env-key per-type shape) replaced by ConnectionStatusInfo (per-connection).
 
-// ProviderType mirrors backend Literal["google","anthropic","openai","bedrock","openrouter","voyage"].
-// NOTE: this type is joined to ProviderBadge's ProviderType by an explicit cast in App.tsx;
+// ProviderType mirrors backend Literal["google","anthropic","openai","bedrock","openrouter","ollama-cloud","voyage"].
+// NOTE: this type is joined to ProviderBadge's ProviderType by an explicit cast in
+// components/organisms/modelConfig.ts (c.connectionType as ProviderType);
 // tsc will NOT catch divergence between the two. Both must be kept in sync manually.
-export type ProviderType = 'google' | 'anthropic' | 'openai' | 'bedrock' | 'openrouter' | 'voyage'
+export type ProviderType = 'google' | 'anthropic' | 'openai' | 'bedrock' | 'openrouter' | 'ollama-cloud' | 'voyage'
 
 /**
  * Wire: ConnectionWire (camelCase via to_camel alias).

@@ -16,7 +16,7 @@ import type { ProviderType } from '../atoms/ProviderBadge'
 // ---------------------------------------------------------------------------
 
 // Provider types that expose a live list-models endpoint.
-export const LISTING_CAPABLE_TYPES = new Set(['anthropic', 'openai', 'google', 'openrouter'])
+export const LISTING_CAPABLE_TYPES = new Set(['anthropic', 'openai', 'google', 'openrouter', 'ollama-cloud'])
 
 // Thinking display map -- connected layer only, so presentational components
 // stay store-free.  Maps backend wire tokens to the unified display scale:

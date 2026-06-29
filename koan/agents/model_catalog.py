@@ -177,9 +177,15 @@ def price_for_usage(
     requires reproducible cost computation from the same event data).
 
     Returns the total price as a Decimal (never negative; raises on unresolvable model).
+    Providers without a PROVIDER_ID_MAP entry (e.g. ollama-cloud) raise ValueError,
+    which the projection fold catches -- cost is kept at 0 for those providers.
     """
     import genai_prices
-    genai_provider = PROVIDER_ID_MAP[provider]
+    genai_provider = PROVIDER_ID_MAP.get(provider)
+    if genai_provider is None:
+        # Explicit ValueError over an incidental KeyError: makes the intentional
+        # absence of pricing for some providers (e.g. ollama-cloud) clear to callers.
+        raise ValueError(f"no genai-prices mapping for provider {provider!r}")
     usage = genai_prices.Usage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,

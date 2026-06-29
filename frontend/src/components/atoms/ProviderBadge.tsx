@@ -19,15 +19,17 @@ export type ProviderType =
   | 'google'
   | 'bedrock'
   | 'openrouter'
+  | 'ollama-cloud'
   | 'voyage'
 
 const CODES: Record<ProviderType, string> = {
-  anthropic: 'AN',
-  openai: 'OA',
-  google: 'GO',
-  bedrock: 'BE',
-  openrouter: 'OR',
-  voyage: 'VO',
+  anthropic:     'AN',
+  openai:        'OA',
+  google:        'GO',
+  bedrock:       'BE',
+  openrouter:    'OR',
+  'ollama-cloud': 'OC',
+  voyage:        'VO',
 }
 
 interface ProviderBadgeProps {
