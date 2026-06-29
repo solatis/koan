@@ -1,0 +1,49 @@
+/*
+ * PhaseTitleBar — phase identity header in the light content column.
+ */
+
+.ptb {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-divider);
+  margin-bottom: 4px;
+}
+
+.ptb__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-circle);
+  flex-shrink: 0;
+}
+
+.ptb__dot--active {
+  background: var(--color-orange);
+}
+
+.ptb__dot--completed {
+  background: var(--color-teal);
+}
+
+.ptb__title {
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.ptb__subtitle {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-left: auto;
+  font-family: var(--font-mono);
+}
+
+.ptb__badge {
+  font-size: 10px;
+  color: var(--text-muted);
+  border: 1px solid var(--border-card);
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  margin-left: auto;
+}

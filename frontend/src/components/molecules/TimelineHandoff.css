@@ -1,0 +1,28 @@
+/*
+ * TimelineHandoff — teal-derived artifact pill on the navy rail. The teal-tint
+ * background is navy-background-specific and not a reusable token.
+ */
+
+.tl-handoff {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  /* Negative top/bottom margins overlap the connecting line's vertical run;
+     39px left-margin aligns the pill with the line. */
+  margin: -4px 0 -4px 39px;
+  padding: 3px 8px;
+  background: rgba(90, 154, 138, 0.15); /* teal tint on navy */
+  border-radius: var(--radius-md);
+  position: relative;
+  z-index: 1;
+  /* Hug content so the badge is a pill, not a full-width bar when the rail is
+     a stretch flex column. */
+  width: fit-content;
+}
+
+.tl-handoff__name {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-teal);
+  font-weight: 500;
+}

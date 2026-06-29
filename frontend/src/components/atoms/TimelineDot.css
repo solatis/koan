@@ -1,0 +1,45 @@
+/*
+ * TimelineDot — sits on the navy timeline rail. The rgba values below are
+ * navy-background-specific (glow ring, future/skipped strokes, strike-through)
+ * and are not reusable tokens, per docs/design-system.md.
+ */
+
+.timeline-dot {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 1;
+}
+
+.timeline-dot--done {
+  background: var(--color-teal);
+}
+
+.timeline-dot--active {
+  background: var(--color-orange);
+  box-shadow: 0 0 0 4px rgba(212, 119, 90, 0.25); /* orange glow ring on navy */
+}
+
+.timeline-dot--future {
+  background: transparent;
+  border: 2px solid rgba(255, 255, 255, 0.15); /* future-state stroke on navy */
+}
+
+.timeline-dot--skipped {
+  background: transparent;
+  border: 2px solid rgba(255, 255, 255, 0.08); /* skipped stroke on navy */
+}
+
+.timeline-dot--skipped::after {
+  content: '';
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  top: 50%;
+  height: 1.5px;
+  background: rgba(255, 255, 255, 0.2); /* diagonal strike-through on navy */
+  transform: rotate(-45deg);
+}

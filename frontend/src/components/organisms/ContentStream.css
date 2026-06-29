@@ -47,3 +47,12 @@
 
 /* .cs-feedback-footer-wrap: no opacity rule -- remains fully visible
    when palette is open so the user can type in the feedback input. */
+
+/* Phase header (PhaseTitleBar + ContextCard) at the top of the content column.
+   Scrolls with the content for now; a fixed/sticky treatment is a follow-up. */
+.cs-phase-header {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+}

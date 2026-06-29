@@ -1,0 +1,46 @@
+/*
+ * ContextCard — handoff card in the light content column. Teal left border
+ * marks it as carried-over context (left border = content source).
+ */
+
+.ctx-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-card);
+  border-left: 3px solid var(--color-teal);
+  border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
+  padding: 10px 16px;
+}
+
+.ctx-card__label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+  font-weight: 500;
+  margin-bottom: 4px;
+}
+
+.ctx-card__files {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ctx-card__file {
+  display: flex;
+  flex-direction: column;
+}
+
+.ctx-card__filename {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-orange);
+  font-weight: 500;
+}
+
+.ctx-card__role {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 400;
+  font-family: var(--font-body);
+}

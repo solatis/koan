@@ -39,6 +39,8 @@ import {
   selectSteering,
   selectFeedbackCommands,
   selectCompletionPresent,
+  selectPhase,
+  formatPhaseName,
 } from '../../store/selectors'
 import { entrySearchText, entriesToTranscript } from '../../store/transcript'
 import * as api from '../../api/client'
@@ -58,6 +60,8 @@ import { UserBubble } from '../molecules/UserBubble'
 import { PhaseMarker } from '../molecules/PhaseMarker'
 import { YieldPanel } from '../molecules/YieldPanel'
 import { StepHeader } from '../molecules/StepHeader'
+import { PhaseTitleBar } from '../molecules/PhaseTitleBar'
+import { ContextCard } from '../molecules/ContextCard'
 import { SteeringBar } from '../molecules/SteeringBar'
 import { KoanToolCard } from '../molecules/KoanToolCard'
 import { FindBar } from '../molecules/FindBar'
@@ -571,9 +575,28 @@ function Footer({ context }: { context: FooterContext }) {
  * DOM node into state via a ref callback; mounts Virtuoso only when non-null
  * so Virtuoso is never constructed before its customScrollParent exists.
  */
+// Stable empty reference so the availablePhases subscription does not return a
+// fresh [] on every render (which would loop useSyncExternalStore).
+const EMPTY_PHASES: { id: string; description: string }[] = []
+
 export function ContentStream() {
   const showFeedback = useStore(selectShowFeedback)
   const entries = useStore(selectFocusedEntries)
+
+  // Phase header: current phase title + handoff context card. Derived from the
+  // existing phase + availablePhases state; content switching is not wired yet.
+  const phase = useStore(selectPhase)
+  const availablePhases = useStore(s => s.run?.availablePhases ?? EMPTY_PHASES)
+  const { phaseTitle, isFirstPhase, prevPhaseName } = useMemo(() => {
+    const idx = availablePhases.findIndex(p => p.id === phase)
+    const prev = idx > 0 ? availablePhases[idx - 1] : null
+    return {
+      phaseTitle: phase ? formatPhaseName(phase) : '',
+      // idx <= 0 covers both the first phase and "phase not found" -- no handoff.
+      isFirstPhase: idx <= 0,
+      prevPhaseName: prev ? formatPhaseName(prev.id) : '',
+    }
+  }, [phase, availablePhases])
 
   const [paletteOpen, setPaletteOpen] = useState(false)
 
@@ -674,6 +697,15 @@ export function ContentStream() {
 
   return (
     <div className="content-column" ref={setScrollParent}>
+      {/* Phase header: title bar (always) + handoff context card (when there is
+          a previous phase). Sits at the top of the content column; phase-scoped
+          content switching is a later task. */}
+      {phaseTitle && (
+        <div className="cs-phase-header">
+          <PhaseTitleBar status="active" name={phaseTitle} />
+          {!isFirstPhase && <ContextCard fromPhase={prevPhaseName} artifacts={[]} />}
+        </div>
+      )}
       {/* FindBar sticky anchor: position:sticky keeps the find bar visible as the
           user scrolls. pointer-events:none on the wrapper avoids capturing clicks
           in the left portion; the FindBar element itself re-enables them. */}

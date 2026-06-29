@@ -1,0 +1,53 @@
+/*
+ * TimelineSubPhaseNode — sits on the navy rail, indented under a milestone
+ * group. The rgba values are navy-background-specific and not reusable tokens.
+ */
+
+.tl-subphase {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  position: relative;
+}
+
+.tl-subphase__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-circle);
+  flex-shrink: 0;
+  position: relative;
+  z-index: 1;
+}
+
+.tl-subphase--done .tl-subphase__dot {
+  background: var(--color-teal);
+  opacity: 0.7;
+}
+
+.tl-subphase--active .tl-subphase__dot {
+  background: var(--color-orange);
+  box-shadow: 0 0 0 3px rgba(212, 119, 90, 0.2); /* orange glow on navy */
+}
+
+.tl-subphase--future .tl-subphase__dot {
+  border: 1.5px solid rgba(255, 255, 255, 0.12); /* future-state stroke on navy */
+  background: transparent;
+}
+
+.tl-subphase__name {
+  font-size: 11px;
+}
+
+.tl-subphase--done .tl-subphase__name {
+  color: rgba(240, 232, 216, 0.4); /* done sub-phase text on navy */
+}
+
+.tl-subphase--active .tl-subphase__name {
+  color: var(--text-on-dark);
+  font-weight: 500;
+}
+
+.tl-subphase--future .tl-subphase__name {
+  color: rgba(255, 255, 255, 0.18); /* future sub-phase text on navy */
+}

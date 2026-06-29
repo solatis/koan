@@ -3,7 +3,11 @@ import { createSelector } from 'reselect'
 import { useStore, KoanState, ArtifactInfo, ConversationEntry,
          Conversation, SteeringMessage, Agent, Focus, CompletionInfo,
          MemoryEntrySummary, MemoryType, ReflectRun,
-         Notification, ClientToast } from './index'
+         Notification, ClientToast, Run, StepEntry } from './index'
+// Type-only import (erased at compile time, so no runtime store->component
+// coupling). PhaseNodeData is owned by the TimelineRail component; this
+// derivation maps existing Run state into that shape.
+import type { PhaseNodeData } from '../components/organisms/TimelineRail'
 // ActiveCurationBatch import removed in M7: koan_memory_propose gate retired.
 
 // ---------------------------------------------------------------------------
@@ -263,6 +267,91 @@ export const selectNotifications = (s: KoanState): Notification[] =>
  */
 export const selectToasts = (s: KoanState): ClientToast[] =>
   s.toasts
+
+// ---------------------------------------------------------------------------
+// Timeline rail derivation
+//
+// Maps the existing flat Run phase list into TimelineRail PhaseNodeData[].
+// Milestones are NOT handled yet (flat phase list only). Several fields lack
+// backend support and are left undefined -- see the TODOs below.
+// ---------------------------------------------------------------------------
+
+/** Kebab phase id -> Title Case label, e.g. 'plan-spec' -> 'Plan Spec'. */
+export function formatPhaseName(id: string): string {
+  return id
+    .split('-')
+    .map(w => (w ? w[0].toUpperCase() + w.slice(1) : w))
+    .join(' ')
+}
+
+/** The primary agent's most recent step entry, or null. */
+function lastStepEntry(primary: Agent | null): StepEntry | null {
+  if (!primary) return null
+  const entries = primary.conversation.entries
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i]
+    if (e.type === 'step') return e
+  }
+  return null
+}
+
+/**
+ * Derive timeline phase nodes from the current Run.
+ *
+ * Status: phases before the active phase are 'done', the active phase
+ * (run.phase) is 'active', phases after are 'future'. When run.phase is not in
+ * availablePhases (e.g. a tombstone), no phase is marked active.
+ *
+ * Step info (currentStep/totalSteps/stepName) is attached to the active phase
+ * from the primary agent's last step entry, mirroring useHeaderData.
+ *
+ * producedArtifacts is populated from each artifact's producedPhaseId, which is
+ * stamped server-side by the fold at artifact_created. The browser reads it
+ * directly -- no re-derivation.
+ */
+export function derivePhaseNodes(run: Run): PhaseNodeData[] {
+  const phases = run.availablePhases
+  if (!phases || phases.length === 0) return []
+
+  const currentIndex = phases.findIndex(p => p.id === run.phase)
+  const primary = Object.values(run.agents).find(a => a.isPrimary) ?? null
+  const lastStep = lastStepEntry(primary)
+
+  // Build a phase-id -> artifact-name list from the server-stamped producedPhaseId
+  // on each ArtifactInfo. This is a pure read -- the browser does not re-derive
+  // which phase produced which artifact.
+  const producedByPhase: Record<string, string[]> = {}
+  for (const info of Object.values(run.artifacts)) {
+    if (!info.producedPhaseId) continue
+    const name = info.path.split('/').pop() ?? info.path
+    ;(producedByPhase[info.producedPhaseId] ??= []).push(name)
+  }
+
+  return phases.map((p, i): PhaseNodeData => {
+    const status: PhaseNodeData['status'] =
+      currentIndex === -1 ? 'future'
+      : i < currentIndex ? 'done'
+      : i === currentIndex ? 'active'
+      : 'future'
+
+    const node: PhaseNodeData = { id: p.id, name: formatPhaseName(p.id), status }
+
+    if (status === 'active') {
+      const step = lastStep?.step ?? primary?.step
+      const totalSteps = lastStep?.totalSteps ?? null
+      const stepName = lastStep?.stepName ?? primary?.stepName
+      if (step != null) node.currentStep = step
+      if (totalSteps != null) node.totalSteps = totalSteps
+      if (stepName) node.stepName = stepName
+    }
+
+    // TODO(backend): per-phase elapsed time is not tracked; leave undefined.
+    const produced = producedByPhase[p.id]
+    if (produced && produced.length > 0) node.producedArtifacts = produced.sort()
+
+    return node
+  })
+}
 
 /**
  * The command palette pre-fill draft text (cleared after consumption).

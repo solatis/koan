@@ -1,0 +1,56 @@
+/*
+ * ReturnBanner — "jump back to the active phase" banner in the light content
+ * column. The keyframes are namespaced (rb-pulse) to avoid colliding with the
+ * global pulse-dot animation.
+ */
+
+.rb {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-default);
+}
+
+.rb:hover {
+  background: var(--bg-tool-row);
+}
+
+.rb__dot {
+  width: 8px;
+  height: 8px;
+  background: var(--color-orange);
+  border-radius: var(--radius-circle);
+  flex-shrink: 0;
+  animation: rb-pulse 2s ease-in-out infinite;
+}
+
+@keyframes rb-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.rb__text {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.rb__phase {
+  color: var(--color-orange);
+  font-weight: 500;
+}
+
+.rb__arrow {
+  margin-left: auto;
+  color: var(--text-placeholder);
+  font-size: 14px;
+}

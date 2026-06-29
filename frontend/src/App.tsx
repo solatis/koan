@@ -15,6 +15,7 @@ import { useStore, CompletionInfo } from './store/index'
 ;(window as unknown as { __store: typeof useStore }).__store = useStore
 import { connectSSE } from './sse/connect'
 import { useHeaderData } from './hooks/useHeaderData'
+import { derivePhaseNodes } from './store/selectors'
 import * as api from './api/client'
 
 import { HeaderBar } from './components/organisms/HeaderBar'
@@ -31,6 +32,7 @@ import { ConnectedNewRunForm } from './components/organisms/ConnectedNewRunForm'
 import { Notification } from './components/Notification'
 import { SessionsPage } from './components/organisms/SessionsPage'
 import { MemoryRoutes } from './components/organisms/MemoryRoutes'
+import { TimelineRail } from './components/organisms/TimelineRail'
 // Curation takeover removed in M7: koan_memory_propose gate retired; curation
 // writes memory directly via koan_memorize/koan_forget.
 
@@ -65,6 +67,13 @@ export default function App() {
   const header = useHeaderData()
   const location = useLocation()
   const navigate = useNavigate()
+
+  // Timeline rail: phase nodes derived from the run, plus the viewing-phase
+  // UI state. onPhaseClick only records viewingPhaseId for now -- phase-scoped
+  // content switching is a later task.
+  const viewingPhaseId = useStore(s => s.viewingPhaseId)
+  const setViewingPhaseId = useStore(s => s.setViewingPhaseId)
+  const phaseNodes = useMemo(() => (run ? derivePhaseNodes(run) : []), [run])
 
   // Derive the active nav key from the current URL path so browser back/forward
   // updates the nav highlight without local state.
@@ -143,6 +152,17 @@ export default function App() {
   }, [location.pathname])
   const hasInteraction = focus && focus.type !== 'conversation'
 
+  // Reusable timeline rail for active-run workspaces (3-column layout). Null
+  // when there is no run, so the no-run navigation views are unaffected.
+  const timelineRail = run ? (
+    <TimelineRail
+      phases={phaseNodes}
+      activePhaseId={run.phase}
+      viewingPhaseId={viewingPhaseId}
+      onPhaseClick={setViewingPhaseId}
+    />
+  ) : null
+
   // --- Loading ---
   if (!connected) {
     return (
@@ -183,7 +203,8 @@ export default function App() {
     return (
       <div className="app-root">
         <HeaderBar {...header} onSettingsClick={goToSettings} />
-        <div className="workflow-grid">
+        <div className="workflow-grid workflow-grid--with-rail">
+          {timelineRail}
           <div className="content-column"><ElicitationView /></div>
           <ConnectedSidebar />
         </div>
@@ -199,7 +220,7 @@ export default function App() {
       return (
         <div className="app-root">
           <HeaderBar {...header} onSettingsClick={goToSettings} />
-          <div className="workflow-grid"><CompletionView /><ConnectedSidebar /></div>
+          <div className="workflow-grid workflow-grid--with-rail">{timelineRail}<CompletionView /><ConnectedSidebar /></div>
           <Notification />
         </div>
       )
@@ -223,7 +244,8 @@ export default function App() {
           activeNav=""
           onNavChange={handleNav}
         />
-        <div className="workflow-grid">
+        <div className="workflow-grid workflow-grid--with-rail">
+          {timelineRail}
           <CompletionView onBackToOverview={handleBack} />
           <ConnectedSidebar />
         </div>
@@ -236,7 +258,7 @@ export default function App() {
     return (
       <div className="app-root">
         <HeaderBar {...header} onSettingsClick={goToSettings} />
-        <div className="workflow-grid"><ReviewView /><ConnectedSidebar /></div>
+        <div className="workflow-grid workflow-grid--with-rail">{timelineRail}<ReviewView /><ConnectedSidebar /></div>
         <ConnectedScoutBar />
         <Notification />
       </div>
@@ -246,7 +268,7 @@ export default function App() {
   return (
     <div className="app-root">
       <HeaderBar {...header} onSettingsClick={goToSettings} />
-      <div className="workflow-grid"><ContentStream /><ConnectedSidebar /></div>
+      <div className="workflow-grid workflow-grid--with-rail">{timelineRail}<ContentStream /><ConnectedSidebar /></div>
       <ConnectedScoutBar />
       <Notification />
     </div>

@@ -147,6 +147,8 @@
   --form-page-padding:         40px 24px;
   --settings-nav-width:        152px;
   --settings-max-width:        960px;
+  --timeline-width:            200px;
+  --timeline-width-milestones: 220px;
 
 
   /* ===== Spacing — Component Gaps ===== */

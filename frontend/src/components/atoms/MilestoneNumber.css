@@ -1,0 +1,37 @@
+/*
+ * MilestoneNumber — sits on the navy timeline rail. The rgba values below are
+ * navy-background-specific (glow ring, future-state stroke and numeral) and are
+ * not reusable tokens, per docs/design-system.md.
+ */
+
+.milestone-number {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 1;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.milestone-number--done {
+  background: var(--color-teal);
+  color: var(--text-on-dark);
+}
+
+.milestone-number--active {
+  background: var(--color-orange);
+  color: var(--text-on-dark);
+  box-shadow: 0 0 0 3px rgba(212, 119, 90, 0.2); /* orange glow ring on navy */
+}
+
+.milestone-number--future {
+  background: transparent;
+  border: 2px solid rgba(255, 255, 255, 0.15); /* future-state stroke on navy */
+  color: rgba(255, 255, 255, 0.25); /* future-state numeral on navy */
+}

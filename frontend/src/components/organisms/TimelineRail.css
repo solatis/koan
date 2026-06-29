@@ -1,0 +1,92 @@
+/*
+ * TimelineRail — navy left sidebar. The milestone-group / section scaffolding
+ * lives here (the molecules own the individual nodes). rgba values are
+ * navy-background-specific and not reusable tokens, per docs/design-system.md.
+ */
+
+.tlr {
+  flex-shrink: 0;
+  width: var(--timeline-width);
+  background: var(--color-navy);
+  padding: 16px 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.tlr--milestones {
+  width: var(--timeline-width-milestones);
+}
+
+.tlr__separator {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.06); /* faint divider on navy */
+  margin: 6px 16px;
+}
+
+.tlr__section-label {
+  padding: 4px 16px 6px;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: rgba(255, 255, 255, 0.2); /* muted label on navy */
+}
+
+/* --- Milestone group --- */
+
+.tlr__ms-group {
+  position: relative;
+  padding: 0 16px;
+}
+
+/* Vertical connecting line — same geometry as TimelinePhaseNode's ::before. */
+.tlr__ms-group::before {
+  content: '';
+  position: absolute;
+  left: 27px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(255, 255, 255, 0.08); /* connecting line on navy */
+}
+
+.tlr__ms-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0 2px;
+  position: relative;
+}
+
+.tlr__ms-title {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.tlr__ms-title--done {
+  color: var(--text-on-dark-muted);
+}
+
+.tlr__ms-title--active {
+  color: var(--text-on-dark);
+}
+
+.tlr__ms-title--future {
+  color: rgba(255, 255, 255, 0.22); /* future-state title on navy */
+}
+
+.tlr__sub-phases {
+  padding-left: 20px;
+  position: relative;
+}
+
+/* Inner connecting line for sub-phases. */
+.tlr__sub-phases::before {
+  content: '';
+  position: absolute;
+  left: 22px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.06); /* sub-phase connecting line on navy */
+}

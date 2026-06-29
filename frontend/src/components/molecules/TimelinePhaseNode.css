@@ -1,0 +1,85 @@
+/*
+ * TimelinePhaseNode — sits on the navy timeline rail. The rgba values are
+ * navy-background-specific (connecting line, future/skipped name colors,
+ * viewing highlight) and are not reusable tokens, per docs/design-system.md.
+ */
+
+.tl-phase {
+  position: relative;
+  padding: 0 16px;
+  cursor: pointer;
+}
+
+/* Vertical connecting line — stacked nodes form one continuous line. */
+.tl-phase::before {
+  content: '';
+  position: absolute;
+  left: 27px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(255, 255, 255, 0.08); /* connecting line on navy */
+}
+
+.tl-phase--first::before {
+  top: 50%;
+}
+
+.tl-phase--last::before {
+  bottom: 50%;
+}
+
+.tl-phase__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+}
+
+.tl-phase__text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.tl-phase__name {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.tl-phase--active .tl-phase__name {
+  color: var(--text-on-dark);
+}
+
+.tl-phase--done .tl-phase__name {
+  color: var(--text-on-dark-muted);
+}
+
+.tl-phase--future .tl-phase__name {
+  color: rgba(255, 255, 255, 0.22); /* future-state name on navy */
+}
+
+.tl-phase--skipped .tl-phase__name {
+  color: rgba(255, 255, 255, 0.15); /* skipped name on navy */
+  text-decoration: line-through;
+  text-decoration-color: rgba(255, 255, 255, 0.2);
+}
+
+.tl-phase__meta {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-on-dark-subtle);
+  margin-top: 1px;
+}
+
+/* Viewing state — the phase whose history is being inspected. */
+.tl-phase--viewing {
+  background: rgba(255, 255, 255, 0.06); /* viewing highlight on navy */
+  border-radius: var(--radius-md);
+  margin: 0 4px;
+  padding: 0 12px;
+}
+
+.tl-phase--viewing .tl-phase__name {
+  color: var(--text-on-dark);
+}

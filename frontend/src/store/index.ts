@@ -490,6 +490,10 @@ export interface KoanState {
   // Local UI state: currently open artifact review (path or null)
   reviewingArtifact: string | null
 
+  // Local UI state: which phase the user is viewing in the timeline rail.
+  // Null means viewing the active phase. Not yet wired to content switching.
+  viewingPhaseId: string | null
+
   // Timestamp of the last yield resolution (suggestion clicked / chat submitted).
   // Null until the first yield resolves; all artifacts show as "changed" until then.
   // Updated client-side on send; not persisted or mirrored in SSE projection.
@@ -512,6 +516,7 @@ export interface KoanState {
   setSettingsOpen: (v: boolean) => void
   setChatDraft: (text: string) => void
   setReviewingArtifact: (path: string | null) => void
+  setViewingPhaseId: (id: string | null) => void
 }
 
 export const useStore = create<KoanState>()(
@@ -549,6 +554,7 @@ export const useStore = create<KoanState>()(
       lastCompletion: null,
       chatDraft: '',
       reviewingArtifact: null,
+      viewingPhaseId: null,
       lastTouchpointMs: null,
       // memoryCurationDraft initial value removed in M7: koan_memory_propose retired.
       memorySidebar: { search: '', filter: 'all' },
@@ -582,6 +588,7 @@ export const useStore = create<KoanState>()(
       setLastCompletion: (c) => set({ lastCompletion: c }, false, 'setLastCompletion'),
       setChatDraft: (text) => set({ chatDraft: text }, false, 'setChatDraft'),
       setReviewingArtifact: (path) => set({ reviewingArtifact: path }, false, 'setReviewingArtifact'),
+      setViewingPhaseId: (id) => set({ viewingPhaseId: id }, false, 'setViewingPhaseId'),
       setLastTouchpointMs: (ms) => set({ lastTouchpointMs: ms }, false, 'setLastTouchpointMs'),
     }),
     {

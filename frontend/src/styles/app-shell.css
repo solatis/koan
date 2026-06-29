@@ -19,6 +19,13 @@
   grid-template-columns: minmax(0, 1fr) 260px;
 }
 
+/* Three-column variant for active runs: timeline rail (intrinsic width) +
+   content (flexible) + artifacts sidebar. The rail sets its own width via
+   --timeline-width / --timeline-width-milestones, so the column is `auto`. */
+.workflow-grid--with-rail {
+  grid-template-columns: auto minmax(0, 1fr) 260px;
+}
+
 /* Left column of the workflow grid — scrollable content stream */
 .content-column {
   overflow-y: auto;

@@ -1,0 +1,53 @@
+/*
+ * TimelinePlaceholder — sits on the navy rail in place of not-yet-defined
+ * future phases. Shares the connecting-line pattern with TimelinePhaseNode.
+ * The rgba values are navy-background-specific and not reusable tokens.
+ */
+
+.tl-placeholder {
+  position: relative;
+  padding: 0 16px;
+}
+
+/* Same connecting line as TimelinePhaseNode. */
+.tl-placeholder::before {
+  content: '';
+  position: absolute;
+  left: 27px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(255, 255, 255, 0.08); /* connecting line on navy */
+}
+
+.tl-placeholder__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+}
+
+.tl-placeholder__dots {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: center;
+  width: 12px; /* matches TimelineDot width so it aligns on the rail */
+  flex-shrink: 0;
+  position: relative;
+  z-index: 1;
+}
+
+.tl-placeholder__dot {
+  width: 4px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.15); /* placeholder dots on navy */
+  border-radius: var(--radius-circle);
+}
+
+.tl-placeholder__label {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.18); /* placeholder label on navy */
+  font-style: italic;
+  font-family: var(--font-body);
+}

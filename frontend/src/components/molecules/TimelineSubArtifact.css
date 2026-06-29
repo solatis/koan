@@ -1,0 +1,27 @@
+/*
+ * TimelineSubArtifact — lighter teal pill than TimelineHandoff, on the navy
+ * rail. The teal-tint background and muted teal text are navy-background-
+ * specific and not reusable tokens.
+ */
+
+.tl-subartifact {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  /* Indented less than top-level handoffs; negative margins overlap spacing. */
+  margin: -2px 0 -2px 7px;
+  padding: 2px 6px;
+  background: rgba(90, 154, 138, 0.1); /* lighter teal tint than handoff, on navy */
+  border-radius: var(--radius-sm);
+  position: relative;
+  z-index: 1;
+  /* Hug content so the badge is a pill, not a full-width bar. */
+  width: fit-content;
+}
+
+.tl-subartifact__name {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: rgba(90, 154, 138, 0.8); /* muted teal text on navy */
+  font-weight: 500;
+}
