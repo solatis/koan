@@ -120,8 +120,12 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
             "Your bash checks are **authoritative** -- a clean executor exit does NOT",
             "override failing builds or tests.",
             "",
-            "Read `brief.md` from the run directory to assess whether the implementation",
-            "respects every stated decision and constraint, not just the milestone-specific plan.",
+            # brief.md is injected as a handover -- reference the injected copy
+            # rather than directing a koan_artifact_read call.  The conformance
+            # assessment framing is preserved.
+            "`brief.md` is provided above as a handover -- use it to assess whether",
+            "the implementation respects every stated decision and constraint, not just",
+            "the milestone-specific plan.",
             "",
             "Read the plan artifact (plan.md or plan-milestone-N.md) to note what was planned.",
             "",

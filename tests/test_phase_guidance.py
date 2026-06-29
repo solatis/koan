@@ -6,8 +6,6 @@
 # appear in the joined instruction text. End-to-end behavior (does the LLM
 # follow the prompt) is an evals-harness concern.
 
-import pytest
-
 from koan.phases import PhaseContext
 
 
@@ -121,16 +119,25 @@ def test_curation_step1_reads_brief_md_conditionally():
 # workflow execute guidance
 # ---------------------------------------------------------------------------
 
-def test_plan_workflow_execute_guidance_includes_brief_md():
+def test_plan_workflow_execute_guidance_omits_brief_md_read():
+    """Milestone 2: brief.md is an injected handover -- execute guidance must not direct an explicit read."""
     from koan.lib.workflows import PLAN_WORKFLOW
     guidance = PLAN_WORKFLOW.phases["execute"].guidance
-    assert "brief.md" in guidance
+    # brief.md is now a handover injected before the phase; no read directive needed.
+    assert "brief.md" not in guidance
+    # plan.md is a living document and must still appear in the verify-conformance sentence.
+    assert "plan.md" in guidance
 
 
-def test_milestones_workflow_execute_guidance_includes_brief_md():
+def test_milestones_workflow_execute_guidance_omits_brief_md_read():
+    """Milestone 2: brief.md is an injected handover -- execute guidance must not direct an explicit read."""
     from koan.lib.workflows import MILESTONES_WORKFLOW
     guidance = MILESTONES_WORKFLOW.phases["execute"].guidance
-    assert "brief.md" in guidance
+    # brief.md is now a handover injected before the phase; no read directive needed.
+    assert "brief.md" not in guidance
+    # Living-document reads (plan and milestones) must still be present.
+    assert "plan-milestone-N.md" in guidance
+    assert "milestones.md" in guidance
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +241,6 @@ def test_terminal_invoke_no_suggestions_no_hint_clause():
 
 
 def test_format_phase_complete_removed():
-    import importlib
     import koan.phases.format_step as mod
     # format_phase_complete must not exist on the module after M3
     assert not hasattr(mod, "format_phase_complete"), (
@@ -529,13 +535,13 @@ def test_frame_get_next_step_returns_none():
 # core_flows
 # ---------------------------------------------------------------------------
 
-def test_core_flows_step1_reads_brief_md():
-    """Core-flows step 1 must instruct reading brief.md via koan_artifact_read."""
+def test_core_flows_step1_references_brief_md_handover():
+    """Core-flows step 1 must reference brief.md as a handover (not a koan_artifact_read directive)."""
     from koan.phases import core_flows
     g = core_flows.step_guidance(1, _ctx())
     text = "\n".join(g.instructions)
     assert "brief.md" in text
-    assert "koan_artifact_read" in text or "Read initiative context" in text
+    assert "Read initiative context" in text
 
 
 def test_core_flows_step2_writes_core_flows_md():
@@ -696,11 +702,16 @@ def test_discovery_workflow_transitions_frame_only():
     assert DISCOVERY_WORKFLOW.transitions == {"frame": []}
 
 
-def test_initiative_execute_guidance_includes_tech_plan_md():
-    """INITIATIVE_WORKFLOW execute binding guidance must reference tech-plan.md for executor handoff."""
+def test_initiative_execute_guidance_omits_immutable_reads():
+    """Milestone 2: brief.md and tech-plan.md are injected handovers -- execute guidance must not direct explicit reads."""
     from koan.lib.workflows import INITIATIVE_WORKFLOW
     guidance = INITIATIVE_WORKFLOW.phases["execute"].guidance
-    assert "tech-plan.md" in guidance
+    # Both are now handovers injected before the phase; no read directives needed.
+    assert "brief.md" not in guidance
+    assert "tech-plan.md" not in guidance
+    # Living-document reads (plan and milestones) must still be present.
+    assert "plan-milestone-N.md" in guidance
+    assert "milestones.md" in guidance
 
 
 def test_workflows_dict_includes_initiative_and_discovery():

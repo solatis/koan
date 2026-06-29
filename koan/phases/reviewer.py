@@ -268,33 +268,24 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
             f"Read `{target}` from the run directory via `koan_artifact_read`.",
             "This is the artifact you are reviewing.",
             "",
-            "## Context artifacts to read",
+            "## Context",
             "",
-            "Read `brief.md` -- it carries the frozen initiative scope, decisions,",
-            "and constraints you evaluate the artifact against.",
-            "",
+            # brief.md and the charter-specific upstream (core-flows.md, tech-plan.md)
+            # are injected as <handoff_artifact> messages above; no explicit read needed.
+            "The brief and the relevant upstream architecture are provided above as",
+            "handovers. They carry the frozen scope, decisions, and constraints you",
+            "evaluate the artifact against.",
         ]
 
-        # Upstream artifacts differ by charter type.
-        if ctx.reviewer_prompt == "TECH_PLAN_REVIEWER":
+        # milestones.md is a living document; it falls into the listing rather
+        # than being injected, so note its availability for PLAN_REVIEWER.
+        if ctx.reviewer_prompt == "PLAN_REVIEWER":
             lines.extend([
-                "Read `core-flows.md` if present (via `koan_artifact_read`).",
-                "It constrains the architecture's actor set and integration seams.",
-                "",
+                "`milestones.md`, when relevant, is available in the listing for",
+                "on-demand reading.",
             ])
-        elif ctx.reviewer_prompt == "PLAN_REVIEWER":
-            lines.extend([
-                "Read `tech-plan.md` and `milestones.md` if present (via"
-                " `koan_artifact_read`). They provide the architectural and",
-                "milestone context the plan was written against.",
-                "",
-            ])
-        elif ctx.reviewer_prompt == "MILESTONE_REVIEWER":
-            lines.extend([
-                "Read `tech-plan.md` if present (via `koan_artifact_read`).",
-                "It provides the architectural context the decomposition was based on.",
-                "",
-            ])
+
+        lines.append("")
 
         lines.extend([
             "## Verify against codebase and project memory",

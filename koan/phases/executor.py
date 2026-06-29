@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from . import PhaseContext, StepGuidance
+from ..tools.handoff_artifacts import living_artifacts
 
 ROLE = "executor"
 SCOPE = "general"        # reusable by any workflow
@@ -38,8 +39,15 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
             "",
         ]
 
-        if ctx.executor_artifacts:
-            for artifact in ctx.executor_artifacts:
+        # List only living documents (plans, milestones); immutable ones
+        # (brief, core-flows, tech-plan) are injected as handovers above.
+        living = living_artifacts(ctx.executor_artifacts)
+        if living:
+            lines.append("The brief and architecture handovers are provided above and need not")
+            lines.append("be re-read; other run-directory artifacts are listed at the end of")
+            lines.append("this prompt.")
+            lines.append("")
+            for artifact in living:
                 lines.append(f"- `{ctx.run_dir}/{artifact}`")
         else:
             lines.append("(No specific artifacts listed -- read all relevant files in the run directory.)")

@@ -46,6 +46,11 @@ class PhaseBinding:
     Each workflow maps phase name strings to PhaseBinding values.
     The binding carries the module reference and the guidance
     injection, keeping them co-located so dispatch cannot desync.
+
+    required_artifacts lists the immutable artifact filenames this phase
+    consumes, injected once at phase entry.  Living-document families
+    (plan, milestones) are never listed here -- they surface only in the
+    read-on-demand listing.
     """
     module: Any          # phase module (e.g. intake, curation)
     description: str = ""
@@ -61,6 +66,13 @@ class PhaseBinding:
     # orchestrator may hand back to the user instead when findings warrant.
     # Same module can have different next_phase across workflows.
     next_phase: str | None = None
+    # Immutable artifact filenames this phase consumes, in stable cumulative
+    # order.  Only non-LIVING_DOC_FAMILIES filenames belong here.  Declaring
+    # the full cumulative set (not just the per-phase delta) keeps phase-jumps
+    # correct -- the injector dedups against injected_artifacts, so a file
+    # already injected is never re-injected.  Living documents (plan,
+    # milestones) are never listed here; they appear in the listing instead.
+    required_artifacts: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -298,6 +310,7 @@ PLAN_WORKFLOW = Workflow(
             # M5: next_phase=None -- the plan step instructions call bare
             # koan_set_phase("execute"). The execute phase launches koan_request_executor.
             next_phase=None,
+            required_artifacts=("brief.md",),
         ),
         "execute": PhaseBinding(
             module=execute_phase,
@@ -309,7 +322,9 @@ PLAN_WORKFLOW = Workflow(
                 "## Execute context (plan workflow)\n"
                 "\n"
                 "Your task: call koan_request_executor naming 'plan.md' as the plan.\n"
-                "Verify conformance (run bash checks, read brief.md and plan.md) and\n"
+                # brief.md is an injected handover -- drop it from the explicit
+                # verify-conformance read list; keep the living-document plan read.
+                "Verify conformance (run bash checks, read plan.md) and\n"
                 "record the outcome inline in the plan.\n"
                 "\n"
                 "## Outcome paths (plan workflow)\n"
@@ -326,6 +341,7 @@ PLAN_WORKFLOW = Workflow(
                 " handling, file placement, and other coding-time constraints."
             ),
             next_phase=None,
+            required_artifacts=("brief.md",),
         ),
         "curation": PhaseBinding(
             module=curation,
@@ -382,7 +398,9 @@ _MILESTONES_EXECUTE_GUIDANCE = (
     "\n"
     "Your task: call koan_request_executor naming the current milestone's plan\n"
     "(e.g. 'plan-milestone-N.md'). Verify conformance (run bash checks, read\n"
-    "brief.md, plan-milestone-N.md, and milestones.md), and record the outcome\n"
+    # brief.md is an injected handover -- drop it from the explicit verify-
+    # conformance read list; keep living-document reads.
+    "plan-milestone-N.md, and milestones.md), and record the outcome\n"
     "inline in the plan.\n"
     "\n"
     "## Outcome paths (milestones workflow)\n"
@@ -464,6 +482,7 @@ MILESTONES_WORKFLOW = Workflow(
             # M6: next_phase=None -- the step instructions advance to plan after
             # reconciling reviewer findings. No auto-advance to milestone-review.
             next_phase=None,
+            required_artifacts=("brief.md",),
         ),
         "plan": PhaseBinding(
             module=plan_spec,
@@ -477,6 +496,7 @@ MILESTONES_WORKFLOW = Workflow(
             # M5: next_phase=None -- plan step instructions call bare
             # koan_set_phase("execute") after reconciling findings.
             next_phase=None,
+            required_artifacts=("brief.md",),
         ),
         "execute": PhaseBinding(
             module=execute_phase,
@@ -489,6 +509,7 @@ MILESTONES_WORKFLOW = Workflow(
             ),
             # M5/M6: next_phase=None -- review outcome determines path.
             next_phase=None,
+            required_artifacts=("brief.md",),
         ),
         "curation": PhaseBinding(
             module=curation,
@@ -584,8 +605,11 @@ _INITIATIVE_TECH_PLAN_SPEC_GUIDANCE = (
     "tech-plan.md as authoritative for the architectural decisions that constrain\n"
     "the decomposition and sequencing of milestones.\n"
     "\n"
-    "Read `core-flows.md` if present (via `koan_artifact_read`). It is frozen and\n"
-    "authoritative for the actors and operational flows the architecture must support.\n"
+    # core-flows.md is injected as a handover (when present) -- drop the
+    # koan_artifact_read directive; keep the authoritative framing.
+    "`core-flows.md` is provided above as a handover when present. It is frozen\n"
+    "and authoritative for the actors and operational flows the architecture must\n"
+    "support.\n"
     "\n"
     "Produce all three required sections: Architectural Approach, Data Model, and\n"
     "Component Architecture.\n"
@@ -597,12 +621,13 @@ _INITIATIVE_TECH_PLAN_SPEC_GUIDANCE = (
 _INITIATIVE_MILESTONE_SPEC_GUIDANCE = (
     "## Initiative milestone context\n"
     "\n"
-    "Read `tech-plan.md` first via `koan_artifact_read` before reading codebase\n"
-    "files. It contains the architectural decisions that constrain how work is\n"
-    "decomposed and sequenced.\n"
+    # Both artifacts are injected as handovers -- drop koan_artifact_read
+    # directives; reframe as handovers provided above.
+    "`tech-plan.md` is provided above as a handover. It contains the architectural\n"
+    "decisions that constrain how work is decomposed and sequenced.\n"
     "\n"
-    "Also read `core-flows.md` (if present) via `koan_artifact_read`. The\n"
-    "milestones must collectively realize every operational flow described there.\n"
+    "`core-flows.md` is provided above as a handover when present. The milestones\n"
+    "must collectively realize every operational flow described there.\n"
     "\n"
     # M6: always CREATE -- the discard hook removes any previous milestones.md
     # on milestone re-entry. RE-DECOMPOSE mode is removed (brief 9.3).
@@ -623,12 +648,13 @@ _INITIATIVE_PLAN_SPEC_GUIDANCE = (
     "- The current milestone is the one marked `[in-progress]`.\n"
     "- Write `plan-milestone-N.md` for that milestone.\n"
     "\n"
-    "Before reading codebase files, read two upstream architectural artifacts:\n"
+    # tech-plan.md and core-flows.md are injected as handovers -- drop the
+    # koan_artifact_read directives; reframe as handovers provided above.
+    "`tech-plan.md` is provided above as a handover: the architectural decisions\n"
+    "that constrain how this milestone is implemented.\n"
     "\n"
-    "1. `tech-plan.md` (via `koan_artifact_read`): the architectural decisions\n"
-    "   that constrain how this milestone is implemented.\n"
-    "2. `core-flows.md` (via `koan_artifact_read`, if present): the operational\n"
-    "   flows this milestone must support or preserve.\n"
+    "`core-flows.md` is provided above as a handover when present: the operational\n"
+    "flows this milestone must support or preserve.\n"
     "\n"
     "## Cross-milestone learning\n"
     "\n"
@@ -648,7 +674,9 @@ _INITIATIVE_EXECUTE_GUIDANCE = (
     "\n"
     "Your task: call koan_request_executor naming the current milestone's plan\n"
     "(e.g. 'plan-milestone-N.md'). Verify conformance (run bash checks, read\n"
-    "brief.md, tech-plan.md, plan-milestone-N.md, and milestones.md), and\n"
+    # brief.md and tech-plan.md are injected handovers -- drop them from the
+    # explicit verify-conformance read list; keep living-document reads.
+    "plan-milestone-N.md, and milestones.md), and\n"
     "record the outcome inline in the plan.\n"
     "\n"
     "## Outcome paths (initiative workflow)\n"
@@ -699,6 +727,7 @@ INITIATIVE_WORKFLOW = Workflow(
                 "Past decisions and lessons about the system's operational behavior."
             ),
             next_phase=None,
+            required_artifacts=("brief.md",),
         ),
         "tech-plan": PhaseBinding(
             module=tech_plan_spec,
@@ -714,6 +743,7 @@ INITIATIVE_WORKFLOW = Workflow(
             # M6: next_phase=milestone -- TECH_PLAN_REVIEWER runs mechanically
             # on write; producer reconciles inline, then advances to milestone.
             next_phase="milestone",
+            required_artifacts=("brief.md", "core-flows.md"),
         ),
         "milestone": PhaseBinding(
             module=milestone_spec,
@@ -726,6 +756,7 @@ INITIATIVE_WORKFLOW = Workflow(
             # M6: next_phase=None -- MILESTONE_REVIEWER runs mechanically on write;
             # producer reconciles inline, then advances to plan (step instructions).
             next_phase=None,
+            required_artifacts=("brief.md", "core-flows.md", "tech-plan.md"),
         ),
         "plan": PhaseBinding(
             module=plan_spec,
@@ -738,6 +769,7 @@ INITIATIVE_WORKFLOW = Workflow(
             # M5: next_phase=None -- PLAN_REVIEWER runs mechanically on write;
             # producer reconciles inline, then calls bare koan_set_phase("execute").
             next_phase=None,
+            required_artifacts=("brief.md", "core-flows.md", "tech-plan.md"),
         ),
         "execute": PhaseBinding(
             module=execute_phase,
@@ -749,6 +781,7 @@ INITIATIVE_WORKFLOW = Workflow(
             ),
             # M5/M6: next_phase=None -- review outcome determines path.
             next_phase=None,
+            required_artifacts=("brief.md", "core-flows.md", "tech-plan.md"),
         ),
         "curation": PhaseBinding(
             module=curation,

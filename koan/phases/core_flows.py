@@ -1,6 +1,6 @@
 # Core-flows phase -- 2-step workflow.
 #
-#   Step 1 (Analyze)   -- read brief.md, identify flows; no writes
+#   Step 1 (Analyze)   -- analyze injected brief handover, identify flows; no writes
 #   Step 2 (Write)     -- write core-flows.md (frozen at exit)
 #
 # core-flows.md is FROZEN at exit. Every downstream phase (tech-plan,
@@ -85,8 +85,9 @@ PHASE_ROLE_CONTEXT = (
 def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
     """Build the StepGuidance for the given step.
 
-    Step 1 (Analyze): read brief.md, identify flows, decide diagram vs prose per
-    flow -- no writes. Step 2 (Write): emit core-flows.md via koan_artifact_write.
+    Step 1 (Analyze): identify flows from the injected brief handover, decide
+    diagram vs prose per flow -- no writes. Step 2 (Write): emit core-flows.md
+    via koan_artifact_write.
     """
     if step == 1:
         lines: list[str] = []
@@ -99,10 +100,13 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
         lines.extend([
             "## Read initiative context",
             "",
-            "Read `brief.md` from the run directory first via `koan_artifact_read`.",
-            "It contains the frozen initiative scope, decisions, and constraints from",
-            "intake. The flows you describe in core-flows.md must correspond to the",
-            "operational behavior the initiative implies.",
+            # brief.md is injected as a handover before this step runs -- no read
+            # directive is needed.  Keeping the section heading so the agent knows
+            # where to anchor its context-review reasoning.
+            "`brief.md` is provided above as a handover. It contains the frozen",
+            "initiative scope, decisions, and constraints from intake. The flows you",
+            "describe in core-flows.md must correspond to the operational behavior",
+            "the initiative implies.",
             "",
             "Read and analyze before writing. Do NOT write any files in this step.",
             "",

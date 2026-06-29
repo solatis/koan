@@ -482,6 +482,12 @@ async def run_agent_loop(
     cache_requests_total: int = 0
 
     while True:
+        # Pre-seed any queued handover artifacts into message_history before
+        # building the history slice.  A no-op when pending_artifacts is empty.
+        # Function-local import consistent with the loop's existing import pattern.
+        from ..tools.handoff_artifacts import preseed_pending_artifacts
+        preseed_pending_artifacts(agent_state, app_state)
+
         # Pass accumulated history so the model has full conversation context.
         # On the first turn, message_history is empty (treated as no history).
         history = agent_state.message_history if agent_state.message_history else None

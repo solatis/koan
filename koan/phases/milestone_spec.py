@@ -105,11 +105,11 @@ PHASE_ROLE_CONTEXT = (
 def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
     """Build step guidance for the given step number.
 
-    Step 1 (Analyze): read brief.md and codebase module structure; identify
-    affected subgraph; propose milestones. Step 2 (Write): write milestones.md
-    via koan_artifact_write (always CREATE -- the milestone phase is one-time),
-    which triggers the mechanical MILESTONE_REVIEWER. Reconcile findings inline,
-    then advance to plan.
+    Step 1 (Analyze): analyze the injected brief handover and codebase module
+    structure; identify affected subgraph; propose milestones. Step 2 (Write):
+    write milestones.md via koan_artifact_write (always CREATE -- the milestone
+    phase is one-time), which triggers the mechanical MILESTONE_REVIEWER.
+    Reconcile findings inline, then advance to plan.
     """
     if step == 1:
         lines: list[str] = []
@@ -118,16 +118,16 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
             lines.extend(["## Workflow guidance", "", ctx.phase_instructions, ""])
         if ctx.memory_injection:
             lines.extend([ctx.memory_injection, ""])
-        # brief.md directive comes first so the orchestrator reads initiative context
-        # before proposing milestones (plan decision 4).
+        # brief.md is injected as a handover -- reframed to reference the injected
+        # copy rather than directing a koan_artifact_read call.
         lines.extend([
             "## Read initiative context",
             "",
-            "Read `brief.md` from the run directory before proposing milestones.",
-            "It contains the frozen initiative scope, decisions, constraints,",
-            "and affected subsystems from intake -- treat it as authoritative.",
+            "`brief.md` is provided above as a handover. It contains the frozen",
+            "initiative scope, decisions, constraints, and affected subsystems from",
+            "intake -- treat it as authoritative.",
             "",
-            "Read and analyze before writing. Do NOT write milestones.md in this step.",
+            "Analyze before writing. Do NOT write milestones.md in this step.",
             "",
             "## Understand the initiative scope",
             "",

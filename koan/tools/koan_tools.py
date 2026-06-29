@@ -220,6 +220,34 @@ async def _step_phase_handshake_core(agent: AgentState, app_state: AppState) -> 
 
     result = format_step(guidance)
 
+    # Queue immutable handovers for pre-seeding and append the read-on-demand
+    # listing to the step prompt.  Serves the orchestrator, executor, and reviewer;
+    # scouts are explicitly excluded (they take no artifacts and receive neither
+    # injection nor a listing).
+    if agent.role != "scout":
+        from .handoff_artifacts import (
+            build_handover_listing,
+            select_immutable_handovers,
+            subagent_candidates,
+        )
+        # Orchestrator candidates come from PhaseBinding.required_artifacts;
+        # subagent (executor/reviewer) candidates are resolved from PhaseContext
+        # fields already populated at spawn -- no task.json schema change needed.
+        if agent.is_primary:
+            workflow = app_state.run.workflow
+            binding = workflow.get_binding(app_state.run.phase) if workflow else None
+            candidates = binding.required_artifacts if binding else ()
+        else:
+            candidates = subagent_candidates(ctx)
+        pending = select_immutable_handovers(candidates, agent.injected_artifacts)
+        agent.pending_artifacts = list(pending)
+        run_dir = (ctx.run_dir if ctx else "") or agent.run_dir or app_state.run.run_dir or ""
+        # Exclude both already-injected and pending (about to be injected) from
+        # the listing so the agent is not offered what it already has in-context.
+        listing = build_handover_listing(run_dir, set(agent.injected_artifacts) | set(pending))
+        if listing:
+            result = f"{result}\n\n{listing}"
+
     if app_state.server.debug:
         app_state.projection_store.push_event(
             "debug_step_guidance",

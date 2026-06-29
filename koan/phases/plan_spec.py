@@ -85,11 +85,12 @@ PHASE_ROLE_CONTEXT = (
 def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
     """Build step guidance for the given step number.
 
-    Step 1 (Analyze): read brief.md + codebase; no writes. Step 2 (Write):
-    compose and submit the plan via koan_artifact_write, which triggers the
-    mechanical PLAN_REVIEWER (blocking). The producer then reconciles each
-    finding inline (edit-in-place or escalate), records dispositions in an
-    inline ## Review section, and names the plan for execution via koan_set_phase.
+    Step 1 (Analyze): analyze the injected brief handover plus codebase; no
+    writes. Step 2 (Write): compose and submit the plan via koan_artifact_write,
+    which triggers the mechanical PLAN_REVIEWER (blocking). The producer then
+    reconciles each finding inline (edit-in-place or escalate), records
+    dispositions in an inline ## Review section, and names the plan for execution
+    via koan_set_phase.
     """
     if step == 1:
         lines: list[str] = []
@@ -98,15 +99,15 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
             lines.extend(["## Workflow guidance", "", ctx.phase_instructions, ""])
         if ctx.memory_injection:
             lines.extend([ctx.memory_injection, ""])
-        # brief.md read precedes memory consultation so plan decisions are grounded
-        # in the frozen initiative scope before any memory lookups shape the approach.
+        # brief.md is injected as a handover -- reframed to reference the injected
+        # copy.  The grounding purpose (plan decisions must respect the frozen scope)
+        # is preserved; only the koan_artifact_read directive is removed.
         lines.extend([
             "## Read initiative context",
             "",
-            "Read `brief.md` from the run directory before consulting memory or reading",
-            "codebase files. It contains the frozen initiative scope, decisions, and",
-            "constraints from intake. The plan you write must respect every decision and",
-            "constraint listed there.",
+            "`brief.md` is provided above as a handover. It contains the frozen",
+            "initiative scope, decisions, and constraints from intake. The plan you",
+            "write must respect every decision and constraint listed there.",
             "",
             "## Consult project memory",
             "",

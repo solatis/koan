@@ -1,6 +1,6 @@
 # Tech-plan phase -- 2-step workflow.
 #
-#   Step 1 (Analyze)   -- read brief.md, core-flows.md, codebase; no writes
+#   Step 1 (Analyze)   -- analyze injected handovers, investigate codebase; no writes
 #   Step 2 (Write)     -- write tech-plan.md, reconcile TECH_PLAN_REVIEWER
 #                         findings inline, then advance to milestone
 #
@@ -92,7 +92,10 @@ PHASE_ROLE_CONTEXT = (
     "\n"
     "## Strict rules\n"
     "\n"
-    "- MUST read `brief.md` and `core-flows.md` (when present) before writing.\n"
+    # Reframed from "MUST read" to "MUST use" -- both artifacts are injected as
+    # handovers before this phase runs; directing the agent to use them (not re-read
+    # them) keeps the injected prefix as the canonical copy.
+    "- MUST use the provided `brief.md` and `core-flows.md` (when present) handovers before writing.\n"
     "- MUST NOT specify per-file or per-function implementation steps -- that is\n"
     "  the HOW band's job (plan). Describe structure, not implementation steps.\n"
     "- MUST express each section's chosen path AND rejected alternatives with\n"
@@ -107,10 +110,11 @@ PHASE_ROLE_CONTEXT = (
 def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
     """Build the StepGuidance for the given step.
 
-    Step 1 (Analyze): read brief.md, core-flows.md, and codebase; decide diagram
-    vs suppression-prose per slot -- no writes. Step 2 (Write): emit tech-plan.md
-    via koan_artifact_write, which triggers the mechanical TECH_PLAN_REVIEWER
-    (blocking). The producer reconciles findings inline, then advances to milestone.
+    Step 1 (Analyze): analyze the injected brief and core-flows handovers plus
+    codebase investigation; decide diagram vs suppression-prose per slot -- no
+    writes. Step 2 (Write): emit tech-plan.md via koan_artifact_write, which
+    triggers the mechanical TECH_PLAN_REVIEWER (blocking). The producer reconciles
+    findings inline, then advances to milestone.
     """
     if step == 1:
         lines: list[str] = []
@@ -123,12 +127,14 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
         lines.extend([
             "## Read initiative context",
             "",
-            "Read the following artifacts via `koan_artifact_read` before doing anything else:",
+            # Both artifacts are injected as handovers -- no koan_artifact_read call
+            # is needed.  Reframed to direct the agent to USE the injected content.
+            "`brief.md` is provided above as a handover -- frozen initiative scope,",
+            "decisions, and constraints.",
             "",
-            "1. `brief.md` -- frozen initiative scope, decisions, and constraints.",
-            "2. `core-flows.md` -- frozen operational-behavior artifact (read if present;",
-            "   the core-flows phase is yield-skippable, so it may not exist). When present,",
-            "   it is authoritative for the actors and flows that constrain the architecture.",
+            "`core-flows.md` is provided above as a handover when present (the core-flows",
+            "phase is yield-skippable, so it may not exist). When present, it is",
+            "authoritative for the actors and flows that constrain the architecture.",
             "",
             "Read and analyze before writing. Do NOT write any files in this step.",
             "",
@@ -268,7 +274,10 @@ def step_guidance(step: int, ctx: PhaseContext) -> StepGuidance:
                 " tech-plan.md. The edit protocol is anchor-based -- there is no \"append\""
                 " mode -- so append by inserting after the last line:",
                 "",
-                "1. Re-read tech-plan.md with `koan_artifact_read` (your in-place edits",
+                # Use generic "the artifact" to avoid a koan_artifact_read directive
+                # that names tech-plan.md -- the artifact was just written by this phase
+                # so the agent knows which file to re-read from context.
+                "1. Re-read the artifact with `koan_artifact_read` (your in-place edits",
                 "   changed it; fetch current anchors).",
                 "2. Take the LAST line in that read (highest line number) and copy its whole",
                 "   anchor token verbatim -- everything after the line-number tab.",

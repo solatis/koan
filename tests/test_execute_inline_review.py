@@ -14,8 +14,6 @@
 # Tests do not boot a runner or mock anything. They instantiate step_guidance()
 # with minimal PhaseContext instances and assert key strings appear in the output.
 
-import pytest
-
 from koan.phases import PhaseContext
 
 
@@ -56,7 +54,7 @@ def test_execute_role_context_no_positive_sidecar_reference():
     A prohibition mention ('Do NOT write a .review.md sidecar') is allowed.
     """
     from koan.phases import execute
-    lines = [l for l in execute.PHASE_ROLE_CONTEXT.splitlines() if ".review.md" in l]
+    lines = [ln for ln in execute.PHASE_ROLE_CONTEXT.splitlines() if ".review.md" in ln]
     for line in lines:
         assert "NOT" in line or "not" in line or "no" in line.lower(), (
             f"Unexpected positive .review.md reference: {line!r}"
@@ -399,28 +397,39 @@ def test_plan_workflow_execute_transitions_includes_curation():
 
 
 # ---------------------------------------------------------------------------
-# Workflow guidance: brief.md still present (regression guard)
+# Workflow guidance: brief.md is a handover -- no longer in execute guidance (Milestone 2)
 # ---------------------------------------------------------------------------
 
-def test_plan_workflow_execute_guidance_mentions_brief_md():
-    """PLAN_WORKFLOW execute guidance must still mention brief.md after M5."""
+def test_plan_workflow_execute_guidance_omits_brief_md():
+    """Milestone 2: brief.md is an injected handover -- execute guidance must not direct an explicit read."""
     from koan.lib.workflows import PLAN_WORKFLOW
     guidance = PLAN_WORKFLOW.phases["execute"].guidance
-    assert "brief.md" in guidance
+    # brief.md is now injected before the phase; no read directive needed in guidance.
+    assert "brief.md" not in guidance
+    # plan.md is a living document and must still be present.
+    assert "plan.md" in guidance
 
 
-def test_milestones_workflow_execute_guidance_mentions_brief_md():
-    """MILESTONES_WORKFLOW execute guidance must still mention brief.md after M5."""
+def test_milestones_workflow_execute_guidance_omits_brief_md():
+    """Milestone 2: brief.md is an injected handover -- execute guidance must not direct an explicit read."""
     from koan.lib.workflows import MILESTONES_WORKFLOW
     guidance = MILESTONES_WORKFLOW.phases["execute"].guidance
-    assert "brief.md" in guidance
+    # brief.md is now injected before the phase; no read directive needed in guidance.
+    assert "brief.md" not in guidance
+    # Living-document reads must still be present.
+    assert "plan-milestone-N.md" in guidance
+    assert "milestones.md" in guidance
 
 
-def test_initiative_workflow_execute_guidance_mentions_brief_md():
-    """INITIATIVE_WORKFLOW execute guidance must still mention brief.md after M5."""
+def test_initiative_workflow_execute_guidance_omits_brief_md():
+    """Milestone 2: brief.md is an injected handover -- execute guidance must not direct an explicit read."""
     from koan.lib.workflows import INITIATIVE_WORKFLOW
     guidance = INITIATIVE_WORKFLOW.phases["execute"].guidance
-    assert "brief.md" in guidance
+    # brief.md is now injected before the phase; no read directive needed in guidance.
+    assert "brief.md" not in guidance
+    # Living-document reads must still be present.
+    assert "plan-milestone-N.md" in guidance
+    assert "milestones.md" in guidance
 
 
 def test_milestones_execute_guidance_mentions_milestones_md_update():

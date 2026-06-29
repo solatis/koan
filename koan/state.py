@@ -90,6 +90,15 @@ class AgentState:
     # by the history processor before each model request.
     injected_context_files: set = field(default_factory=set)
     pending_context_files: list = field(default_factory=list)
+    # Handover-artifact injection tracking (Milestone 1).
+    # injected_artifacts: artifact filenames (basename only) already injected as
+    # <handoff_artifact> messages; per-agent dedup key that persists for the
+    # agent's whole life and prevents re-injection across phases.
+    # pending_artifacts: resolved filenames queued at phase entry by
+    # _step_phase_handshake_core, drained by preseed_pending_artifacts before
+    # the next model request.
+    injected_artifacts: set = field(default_factory=set)
+    pending_artifacts: list = field(default_factory=list)
 
 
 # -- Sub-state dataclasses (grouped by access pattern) ------------------------
