@@ -376,6 +376,7 @@ export interface ArtifactInfo {
   path: string
   size: number
   modifiedAt: number   // ms since epoch
+  producedPhaseId?: string   // phase that created the artifact (stamped server-side by the fold)
 }
 
 export interface CompletionInfo {

@@ -708,6 +708,9 @@ class ArtifactInfo(KoanBaseModel):
     """Per-artifact metadata.
 
     path/size/modified_at are set by artifact_created/artifact_modified events.
+    produced_phase_id is stamped at artifact_created from run.phase and
+    preserved across artifact_modified -- an artifact's producing phase never
+    changes. camelCase on the wire: producedPhaseId (via KoanBaseModel alias).
     M3: frozen field removed (execute_entry is a no-op started-marker).
     M5: executed/exec_outcome removed -- execution history lives in the event
     log and inline in the plan; no lifecycle state is folded here.
@@ -716,6 +719,9 @@ class ArtifactInfo(KoanBaseModel):
     path: str
     size: int = 0
     modified_at: int = 0                   # milliseconds since epoch
+    # Phase active when the artifact was first created; preserved across
+    # artifact_modified so the timeline handoff badges can group by producer.
+    produced_phase_id: str | None = None
 
 class CompletionInfo(KoanBaseModel):
     success: bool
@@ -2118,10 +2124,13 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 if projection.run is None:
                     return projection
                 path = payload.get("path", "")
+                # Stamp with the phase active at creation; this is the single
+                # server-authoritative source for the timeline handoff badges.
                 info = ArtifactInfo(
                     path=path,
                     size=payload.get("size", 0),
                     modified_at=payload.get("modified_at", 0),
+                    produced_phase_id=projection.run.phase or None,
                 )
                 new_artifacts = dict(projection.run.artifacts)
                 new_artifacts[path] = info
@@ -2132,10 +2141,14 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 if projection.run is None:
                     return projection
                 path = payload.get("path", "")
+                # Carry the producing phase forward -- an artifact's producer
+                # never changes, so we must not reset it on subsequent writes.
+                prev = projection.run.artifacts.get(path)
                 info = ArtifactInfo(
                     path=path,
                     size=payload.get("size", 0),
                     modified_at=payload.get("modified_at", 0),
+                    produced_phase_id=prev.produced_phase_id if prev else None,
                 )
                 new_artifacts = dict(projection.run.artifacts)
                 new_artifacts[path] = info
