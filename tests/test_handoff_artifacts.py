@@ -18,6 +18,8 @@ from koan.tools.handoff_artifacts import (
     format_handoff_message,
     living_artifacts,
     preseed_pending_artifacts,
+    preseed_pending_listing,
+    reset_phase_context,
     select_immutable_handovers,
     subagent_candidates,
 )
@@ -409,3 +411,102 @@ def test_subagent_candidates_immutable_filter_drops_living_from_reviewer():
     # brief.md and tech-plan.md are immutable and must be selected
     assert "brief.md" in pending
     assert "tech-plan.md" in pending
+
+
+# -- reset_phase_context ----------------------------------------------------- #
+
+
+def test_reset_phase_context_clears_everything(tmp_path):
+    """reset_phase_context clears all six conversation and dedup fields."""
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    agent = _make_agent(run_dir=str(tmp_path))
+    # Populate all fields that should be cleared.
+    agent.message_history = [ModelRequest(parts=[UserPromptPart(content="prior turn")])]
+    agent.injected_artifacts = {"brief.md"}
+    agent.injected_context_files = {"/x/AGENTS.md"}
+    agent.pending_context_files = ["/x/y"]
+    agent.pending_artifacts = ["z.md"]
+    agent.pending_listing = "## Artifacts available..."
+
+    reset_phase_context(agent)
+
+    assert agent.message_history == []
+    assert agent.injected_artifacts == set()
+    assert agent.injected_context_files == set()
+    assert agent.pending_context_files == []
+    assert agent.pending_artifacts == []
+    assert agent.pending_listing is None
+
+
+def test_reset_phase_context_is_noop_on_empty_agent():
+    """reset_phase_context on a fresh AgentState changes nothing (bootstrap no-op)."""
+    agent = _make_agent()
+    reset_phase_context(agent)
+    assert agent.message_history == []
+    assert agent.injected_artifacts == set()
+    assert agent.pending_listing is None
+
+
+# -- preseed_pending_listing ------------------------------------------------- #
+
+
+def test_preseed_pending_listing_appends_message():
+    """preseed_pending_listing drains pending_listing and appends it as its own ModelRequest."""
+    from pydantic_ai.messages import ModelRequest
+
+    agent = _make_agent()
+    agent.pending_listing = "## Artifacts available to read on demand\n\n- `plan.md`\n"
+
+    preseed_pending_listing(agent)
+
+    assert len(agent.message_history) == 1
+    msg = agent.message_history[0]
+    assert isinstance(msg, ModelRequest)
+    assert "## Artifacts available to read on demand" in msg.parts[0].content
+    assert agent.pending_listing is None
+
+
+def test_preseed_pending_listing_noop_when_empty():
+    """preseed_pending_listing is a no-op when pending_listing is None or empty string."""
+    agent = _make_agent()
+    agent.pending_listing = None
+    preseed_pending_listing(agent)
+    assert agent.message_history == []
+
+    agent.pending_listing = ""
+    preseed_pending_listing(agent)
+    assert agent.message_history == []
+
+
+def test_preseed_order_artifacts_before_listing(tmp_path):
+    """Artifact message lands at index 0, listing message at index 1."""
+    (tmp_path / "brief.md").write_text("# Brief")
+    app = _make_app_state()
+    agent = _make_agent(run_dir=str(tmp_path))
+    agent.pending_artifacts = ["brief.md"]
+    agent.pending_listing = "LISTING"
+
+    preseed_pending_artifacts(agent, app)
+    preseed_pending_listing(agent)
+
+    assert len(agent.message_history) == 2
+    assert '<handoff_artifact name="brief.md">' in agent.message_history[0].parts[0].content
+    assert "LISTING" in agent.message_history[1].parts[0].content
+
+
+def test_preseed_multi_artifact_order_stable(tmp_path):
+    """Three artifacts land in message_history in brief -> core-flows -> tech-plan order."""
+    (tmp_path / "brief.md").write_text("# Brief")
+    (tmp_path / "core-flows.md").write_text("# Core flows")
+    (tmp_path / "tech-plan.md").write_text("# Tech plan")
+    app = _make_app_state()
+    agent = _make_agent(run_dir=str(tmp_path))
+    agent.pending_artifacts = ["brief.md", "core-flows.md", "tech-plan.md"]
+
+    preseed_pending_artifacts(agent, app)
+
+    assert len(agent.message_history) == 3
+    assert 'name="brief.md"' in agent.message_history[0].parts[0].content
+    assert 'name="core-flows.md"' in agent.message_history[1].parts[0].content
+    assert 'name="tech-plan.md"' in agent.message_history[2].parts[0].content

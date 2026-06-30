@@ -431,6 +431,12 @@ async def run_agent_loop(
     Message history: agent_state.message_history is updated to agent_run.all_messages()
     after each turn, then passed as message_history= to the next agent.iter() call.
     The first turn receives None (empty history) so pydantic-ai treats it fresh.
+    At every phase boundary (step==0), _step_phase_handshake_core calls
+    reset_phase_context to clear the accumulated history and injection-dedup
+    state, so each phase starts with a minimal context. Pre-seeding then
+    rebuilds it: preseed_pending_artifacts injects the new phase's immutable
+    handovers, preseed_pending_listing injects the artifact listing as its own
+    message, and the step guidance is the turn prompt that follows.
 
     Cache effectiveness: the loop accumulates input_tokens, cache_read_tokens,
     and request counts across turns and calls check_cache_effectiveness at each
@@ -472,8 +478,24 @@ async def run_agent_loop(
     # Bootstrap: run the step-0->1 handshake to build the first turn's prompt.
     # This sets agent_state.step=1, runs memory injection, and prepends
     # PHASE_ROLE_CONTEXT -- replacing the removed boot-directive tool call.
+    # reset_phase_context fires here as a no-op (history and dedup state are
+    # empty at bootstrap) so it is safe to seed pending_context_files after
+    # this call -- the seed must follow the reset, not precede it.
     from ..tools.koan_tools import _step_phase_handshake_core
     turn_prompt: str = await _step_phase_handshake_core(agent_state, app_state)
+
+    # Seed the project-directory context file (AGENTS.md > CLAUDE.md) so the
+    # first model request always carries it, regardless of which tools fire.
+    # Seeded here (after the bootstrap handshake) so reset_phase_context's
+    # pending_context_files clear -- a no-op at bootstrap -- does not wipe it.
+    # Uses options.project_dir (set by spawn_subagent) with a fallback to
+    # app_state.run.project_dir; both may be "" in tests (safe -- skipped).
+    from ..tools.context_files import discover_context_file
+    _project_root = options.project_dir or app_state.run.project_dir
+    if _project_root:
+        _proj_ctx_file = discover_context_file(_project_root)
+        if _proj_ctx_file and _proj_ctx_file not in agent_state.injected_context_files:
+            agent_state.pending_context_files.append(_proj_ctx_file)
 
     # Cumulative cache usage counters -- accumulate across all turns so the
     # guard can detect "never cached anything across the whole run" failures.
@@ -482,11 +504,14 @@ async def run_agent_loop(
     cache_requests_total: int = 0
 
     while True:
-        # Pre-seed any queued handover artifacts into message_history before
-        # building the history slice.  A no-op when pending_artifacts is empty.
+        # Pre-seed any queued handover artifacts then the artifact listing into
+        # message_history before building the history slice. Artifacts land
+        # before the listing (stable order for per-message cache locality).
+        # Both are no-ops when their respective pending fields are empty.
         # Function-local import consistent with the loop's existing import pattern.
-        from ..tools.handoff_artifacts import preseed_pending_artifacts
+        from ..tools.handoff_artifacts import preseed_pending_artifacts, preseed_pending_listing
         preseed_pending_artifacts(agent_state, app_state)
+        preseed_pending_listing(agent_state)
 
         # Pass accumulated history so the model has full conversation context.
         # On the first turn, message_history is empty (treated as no history).

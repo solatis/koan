@@ -432,6 +432,63 @@ async def test_yolo_primary_synthesizes_without_parking(tmp_path, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_phase_transition_resets_context(tmp_path):
+    """step==0 transition clears prior-phase history and re-injects new phase's artifacts.
+
+    Guards the phase-boundary context-reset invariant: after _step_phase_handshake_core
+    runs (via resolve_turn_outcome with step==0), the prior conversation is gone and
+    only the new phase's injected artifact message(s) and listing message remain.
+    """
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    from koan.tools.handoff_artifacts import preseed_pending_artifacts, preseed_pending_listing
+
+    # Write brief.md into a tmp run directory so preseed can inject it.
+    run_dir = str(tmp_path)
+    (tmp_path / "brief.md").write_text("# Brief content")
+
+    app_state, agent = _make_agent_state(str(tmp_path), step=0)
+    app_state.run.run_dir = run_dir
+    agent.run_dir = run_dir
+
+    # Inject some prior-phase content so the reset has something to clear.
+    agent.message_history = [
+        ModelRequest(parts=[UserPromptPart(content="prior phase turn 1")]),
+        ModelRequest(parts=[UserPromptPart(content="prior phase turn 2")]),
+    ]
+    agent.injected_artifacts = {"brief.md"}  # previously injected; reset must clear
+
+    # Simulate a phase module with required_artifacts including brief.md.
+    from koan.lib.workflows import get_workflow
+    workflow = get_workflow("plan")
+    app_state.run.workflow = workflow
+    app_state.run.phase = "plan"  # plan phase requires brief.md
+
+    # Drive the step==0 path: invokes _step_phase_handshake_core -> reset_phase_context.
+    outcome, _ = await resolve_turn_outcome(agent, app_state)
+    assert outcome == "inject"
+
+    # After the handshake, injected_artifacts was cleared by reset and
+    # pending_artifacts was repopulated with brief.md for re-injection.
+    # Now drain them (as run_agent_loop does at the top of the while loop).
+    preseed_pending_artifacts(agent, app_state)
+    preseed_pending_listing(agent)
+
+    # Prior-phase messages must be gone.
+    contents = [msg.parts[0].content for msg in agent.message_history]
+    assert not any("prior phase turn" in c for c in contents), (
+        "prior-phase messages must be cleared by the context reset"
+    )
+
+    # brief.md must have been re-injected into the fresh context.
+    assert any('<handoff_artifact name="brief.md">' in c for c in contents), (
+        "brief.md must be re-injected after the reset"
+    )
+    # injected_artifacts should be repopulated by preseed.
+    assert "brief.md" in agent.injected_artifacts
+
+
+@pytest.mark.anyio
 async def test_koan_suggest_next_suggestions_appear_on_yield_started(tmp_path):
     """Recorded koan_suggest_next suggestions appear on the yield_started event.
 

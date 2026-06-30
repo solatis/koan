@@ -227,3 +227,33 @@ def preseed_pending_artifacts(agent: "AgentState", app_state: "AppState") -> Non
         text = format_handoff_message(name, content)
         agent.message_history.append(ModelRequest(parts=[UserPromptPart(content=text)]))
         agent.injected_artifacts.add(name)
+
+
+def reset_phase_context(agent: "AgentState") -> None:
+    # Clear the agent's accumulated conversation and all injection-dedup /
+    # pending state at phase entry, so the next phase rebuilds a minimal
+    # context (artifacts + listing + guidance) instead of accumulating on top
+    # of the prior phase. The system prompt is delivered as pydantic-ai
+    # instructions (re-applied to every request), not as a SystemPromptPart in
+    # history, so clearing message_history does not drop it. injected_artifacts
+    # MUST be cleared too, or select_immutable_handovers would dedup the
+    # required artifacts away and the fresh context would receive none.
+    agent.message_history = []
+    agent.injected_artifacts.clear()
+    agent.injected_context_files.clear()
+    agent.pending_context_files.clear()
+    agent.pending_artifacts.clear()
+    agent.pending_listing = None
+
+
+def preseed_pending_listing(agent: "AgentState") -> None:
+    # Drain pending_listing and append it as its own read-on-demand user
+    # message, after the handover-artifact messages and before the step
+    # guidance. A no-op when pending_listing is empty/None. Appended as a
+    # distinct ModelRequest(UserPromptPart) to keep it a separate message from
+    # the artifacts and the guidance for per-message cache locality.
+    listing = agent.pending_listing
+    agent.pending_listing = None
+    if not listing:
+        return
+    agent.message_history.append(ModelRequest(parts=[UserPromptPart(content=listing)]))

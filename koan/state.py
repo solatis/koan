@@ -79,8 +79,12 @@ class AgentState:
     # Driver-owned conversation history (M5).
     # The multi-turn loop accumulates ModelMessage objects here across hand-backs
     # and passes them as message_history to each subsequent agent.iter() call.
-    # Owning this list in the driver (not inside pydantic-ai) is what enables
-    # future advanced-control features: interrupts, compaction, context surgery.
+    # Owning this list in the driver (not inside pydantic-ai) enables advanced
+    # control: interrupts, compaction, and context surgery.
+    # reset_phase_context clears this at every phase boundary so each phase
+    # starts with a minimal context (injected artifacts + listing + guidance).
+    # The system prompt survives because koan passes it as pydantic-ai
+    # instructions (re-applied to every request), not as a SystemPromptPart.
     message_history: list = field(default_factory=list)
     # Context-file injection tracking (M4).
     # injected_context_files: absolute paths already injected as
@@ -99,6 +103,12 @@ class AgentState:
     # the next model request.
     injected_artifacts: set = field(default_factory=set)
     pending_artifacts: list = field(default_factory=list)
+    # Phase-entry artifact listing queued for injection as its own user message
+    # (kept separate from the step guidance for per-message cache locality).
+    # Set by _step_phase_handshake_core at phase entry, drained by
+    # preseed_pending_listing before the next model request. None when there is
+    # no listing to inject.
+    pending_listing: str | None = None
 
 
 # -- Sub-state dataclasses (grouped by access pattern) ------------------------

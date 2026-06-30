@@ -169,8 +169,23 @@ async def _step_phase_handshake_core(agent: AgentState, app_state: AppState) -> 
 
     Mirrors mcp_endpoint.py's _step_phase_handshake nested function; the
     difference is that app_state is passed explicitly rather than captured via
-    closure. Called by resolve_turn_outcome (loop.py) for the initial step of every phase.
+    closure. Called by resolve_turn_outcome (loop.py) for the initial step of
+    every phase.
+
+    At phase entry, calls reset_phase_context to clear the accumulated
+    conversation and all injection-dedup state, so the new phase starts with a
+    minimal context. This must happen before the pending-artifact computation
+    below, which reads agent.injected_artifacts to select what to re-inject.
+    The reset is a no-op at bootstrap (empty history and sets).
+
+    The read-on-demand artifact listing is queued on agent.pending_listing
+    rather than appended to the returned guidance string, so it lands as a
+    separate message (injected by preseed_pending_listing in run_agent_loop)
+    and its cache entry does not couple to the per-step-variable guidance.
     """
+    from .handoff_artifacts import reset_phase_context
+    reset_phase_context(agent)
+
     from ..events import build_step_advanced
     from ..lib.workflows import get_suggested_phases
     from ..phases import StepGuidance
@@ -245,8 +260,9 @@ async def _step_phase_handshake_core(agent: AgentState, app_state: AppState) -> 
         # Exclude both already-injected and pending (about to be injected) from
         # the listing so the agent is not offered what it already has in-context.
         listing = build_handover_listing(run_dir, set(agent.injected_artifacts) | set(pending))
-        if listing:
-            result = f"{result}\n\n{listing}"
+        # Queue listing as its own pending message (not bundled into guidance)
+        # so it remains independently cacheable across steps within a phase.
+        agent.pending_listing = listing or None
 
     if app_state.server.debug:
         app_state.projection_store.push_event(

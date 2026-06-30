@@ -308,21 +308,11 @@ class PydanticAIAgent:
         # ToolDeps closes over app_state and this agent's AgentState.
         deps = ToolDeps(app_state=self._app_state, agent=agent_state)
 
-        # Seed the project-directory context file so the first model request
-        # always carries it, regardless of which files the model touches.
-        # Uses options.project_dir (set by spawn_subagent) with a fallback to
-        # app_state.run.project_dir; both may be "" in tests (safe -- skipped).
-        from ..tools.context_files import discover_context_file, make_context_history_processor
-        project_root = options.project_dir or self._app_state.run.project_dir
-        if project_root:
-            _proj_ctx_file = discover_context_file(project_root)
-            if _proj_ctx_file and _proj_ctx_file not in agent_state.injected_context_files:
-                agent_state.pending_context_files.append(_proj_ctx_file)
-
         # Build the history processor that drains pending_context_files before
         # each model request and injects them as <project_instructions> user
         # messages. ProcessHistory is the v2.0.0b6 replacement for the
         # deprecated history_processors kwarg; it calls before_model_request.
+        from ..tools.context_files import make_context_history_processor
         from pydantic_ai.capabilities.process_history import ProcessHistory
         context_processor = make_context_history_processor(deps)
         capabilities = [ProcessHistory(context_processor)]
