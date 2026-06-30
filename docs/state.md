@@ -162,6 +162,31 @@ by `preseed_pending_artifacts` in `koan/tools/handoff_artifacts.py`. A
 may have been yield-skipped); other `OSError` faults inject a visible error
 placeholder with `error="true"` so gaps are never silently hidden.
 
+### Phase-boundary context reset
+
+At each phase entry (step==0), `_step_phase_handshake_core` calls
+`reset_phase_context` before computing pending artifacts. This clears:
+
+- `message_history` -- the accumulated conversation
+- `injected_artifacts` and `injected_context_files` -- injection dedup state
+- `pending_artifacts`, `pending_context_files`, and `pending_listing` -- queued injections
+
+`injected_artifacts` must be cleared alongside `message_history` so
+`select_immutable_handovers` re-selects the new phase's required artifacts
+instead of deduping them away. After the reset, the pre-seed mechanism
+rebuilds a minimal context: `preseed_pending_artifacts` injects the phase's
+immutable handovers, `preseed_pending_listing` injects the artifact listing as
+its own message, and the step guidance is the turn prompt that follows.
+
+The system prompt survives the reset because koan passes it as pydantic-ai
+`instructions` (re-applied to every request via `_get_instructions`), not as a
+`SystemPromptPart` stored in `message_history`.
+
+Subagents (executor, scout, reviewer) cannot transition phases -- `koan_set_phase`
+and `koan_set_workflow` are orchestrator-only per `ROLE_PERMISSIONS`. Their
+single step-0 handshake always runs with empty history, so the reset is a
+structural no-op for them.
+
 `InteractionState` carries `next_suggestions: list[dict] \| None`, the
 orchestrator-authored hand-back suggestions recorded by `koan_suggest_next`.
 The loop consumes and clears them at the hand-back, falling back to the
