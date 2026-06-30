@@ -14,7 +14,7 @@
 .tl-phase::before {
   content: '';
   position: absolute;
-  left: 27px;
+  left: 21px;
   top: 0;
   bottom: 0;
   width: 2px;
