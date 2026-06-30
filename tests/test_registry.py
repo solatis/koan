@@ -87,6 +87,20 @@ class TestResolveModelSpecThinkingClamp:
         spec = registry.resolve_model_spec("orchestrator", config, None)
         assert spec.thinking == "disabled"
 
+    def test_max_tokens_clamped_for_opus(self):
+        """spec.settings['max_tokens'] is clamped to 32000 for claude-opus-4-0."""
+        registry = AgentRegistry()
+        config = self._make_config(thinking="medium", model_id="claude-opus-4-0")
+        spec = registry.resolve_model_spec("orchestrator", config, None)
+        assert spec.settings["max_tokens"] == 32000
+
+    def test_max_tokens_default_for_sonnet(self):
+        """spec.settings['max_tokens'] is the 32768 default for claude-sonnet-4-5."""
+        registry = AgentRegistry()
+        config = self._make_config(thinking="medium", model_id="claude-sonnet-4-5")
+        spec = registry.resolve_model_spec("orchestrator", config, None)
+        assert spec.settings["max_tokens"] == 32768
+
 
 # -- save_koan_config write lock -----------------------------------------------
 

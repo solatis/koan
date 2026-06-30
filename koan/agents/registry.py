@@ -74,6 +74,11 @@ def build_resolved_model(
     lookup is needed. base_url, region, embedding_dim, and api_key are inlined
     from the Connection, ConfiguredModel, and credential store at flatten time.
 
+    The resolved max_tokens output budget (clamped to the model's hard cap via
+    max_output_tokens_for) is also baked into ModelSpec.settings here, ensuring
+    a high output floor for all agent roles and the memory LLM without relying
+    on a low provider default.
+
     cache_tier is the koan-level cache duration class (default 'long'),
     selected by the caller from the agent role via cache_tier_for_role or
     set explicitly for memory LLM operations.  It is resolved here once and
@@ -89,6 +94,7 @@ def build_resolved_model(
     """
     from .adapter import _caching_settings, map_thinking
     from .capability_resolver import resolve_capabilities
+    from .model_catalog import max_output_tokens_for
 
     caps = resolve_capabilities(conn.type, cm.model_id)
     clamped = _best_supported_thinking(frozenset(caps.thinking_modes), thinking)
@@ -104,6 +110,10 @@ def build_resolved_model(
     settings: dict = {}
     settings.update(map_thinking(conn.type, caps, clamped))
     settings.update(_caching_settings(conn.type, caching, cache_tier, caps))
+    # Explicit output-token budget (clamped to the model's hard cap). Without
+    # this, providers apply a low default (4096 for Anthropic) that adaptive
+    # thinking can exhaust before emitting any response.
+    settings["max_tokens"] = max_output_tokens_for(conn.type, cm.model_id)
 
     return ModelSpec(
         provider=conn.type,

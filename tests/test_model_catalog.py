@@ -143,6 +143,91 @@ class TestSupportsPromptCaching:
         assert cache_read_expected("bedrock", "amazon.nova-pro-v1:0") is False
 
 
+# -- max_output_tokens_for tests ----------------------------------------------
+
+class TestMaxOutputTokensFor:
+    def test_haiku_clamped(self) -> None:
+        """claude-3-5-haiku-latest returns its hard cap of 8192."""
+        from koan.agents.model_catalog import max_output_tokens_for
+        assert max_output_tokens_for("anthropic", "claude-3-5-haiku-latest") == 8192
+
+    def test_opus_clamped(self) -> None:
+        """claude-opus-4-0 returns its hard cap of 32000."""
+        from koan.agents.model_catalog import max_output_tokens_for
+        assert max_output_tokens_for("anthropic", "claude-opus-4-0") == 32000
+
+    def test_gpt4o_clamped(self) -> None:
+        """gpt-4o returns its hard cap of 16384."""
+        from koan.agents.model_catalog import max_output_tokens_for
+        assert max_output_tokens_for("openai", "gpt-4o") == 16384
+
+    def test_gpt4o_mini_clamped(self) -> None:
+        """gpt-4o-mini returns its hard cap of 16384."""
+        from koan.agents.model_catalog import max_output_tokens_for
+        assert max_output_tokens_for("openai", "gpt-4o-mini") == 16384
+
+    def test_nova_pro_clamped(self) -> None:
+        """amazon.nova-pro-v1:0 returns its hard cap of 5120."""
+        from koan.agents.model_catalog import max_output_tokens_for
+        assert max_output_tokens_for("bedrock", "amazon.nova-pro-v1:0") == 5120
+
+    def test_nova_lite_clamped(self) -> None:
+        """amazon.nova-lite-v1:0 returns its hard cap of 5120."""
+        from koan.agents.model_catalog import max_output_tokens_for
+        assert max_output_tokens_for("bedrock", "amazon.nova-lite-v1:0") == 5120
+
+    def test_nova_micro_clamped(self) -> None:
+        """amazon.nova-micro-v1:0 returns its hard cap of 5120."""
+        from koan.agents.model_catalog import max_output_tokens_for
+        assert max_output_tokens_for("bedrock", "amazon.nova-micro-v1:0") == 5120
+
+    def test_sonnet_takes_default(self) -> None:
+        """claude-sonnet-4-5 (cap >= 32768) returns DEFAULT_MAX_OUTPUT_TOKENS."""
+        from koan.agents.model_catalog import DEFAULT_MAX_OUTPUT_TOKENS, max_output_tokens_for
+        assert max_output_tokens_for("anthropic", "claude-sonnet-4-5") == DEFAULT_MAX_OUTPUT_TOKENS
+
+    def test_gpt41_nano_takes_default(self) -> None:
+        """gpt-4.1-nano (cap == 32768) returns DEFAULT_MAX_OUTPUT_TOKENS."""
+        from koan.agents.model_catalog import DEFAULT_MAX_OUTPUT_TOKENS, max_output_tokens_for
+        assert max_output_tokens_for("openai", "gpt-4.1-nano") == DEFAULT_MAX_OUTPUT_TOKENS
+
+    def test_gemini_pro_takes_default(self) -> None:
+        """gemini-3.1-pro-preview (cap >= 32768) returns DEFAULT_MAX_OUTPUT_TOKENS."""
+        from koan.agents.model_catalog import DEFAULT_MAX_OUTPUT_TOKENS, max_output_tokens_for
+        assert max_output_tokens_for("google", "gemini-3.1-pro-preview") == DEFAULT_MAX_OUTPUT_TOKENS
+
+    def test_openrouter_takes_default(self) -> None:
+        """Openrouter namespaced ids (uncataloged) return DEFAULT_MAX_OUTPUT_TOKENS."""
+        from koan.agents.model_catalog import DEFAULT_MAX_OUTPUT_TOKENS, max_output_tokens_for
+        assert max_output_tokens_for("openrouter", "anthropic/claude-3.5-sonnet") == DEFAULT_MAX_OUTPUT_TOKENS
+
+    def test_unknown_pair_takes_default(self) -> None:
+        """Completely unknown (provider, model) returns DEFAULT_MAX_OUTPUT_TOKENS."""
+        from koan.agents.model_catalog import DEFAULT_MAX_OUTPUT_TOKENS, max_output_tokens_for
+        assert max_output_tokens_for("nope", "nope") == DEFAULT_MAX_OUTPUT_TOKENS
+
+    def test_all_table_values_below_default(self) -> None:
+        """Every value in MODEL_MAX_OUTPUT_TOKENS is strictly less than DEFAULT_MAX_OUTPUT_TOKENS."""
+        from koan.agents.model_catalog import DEFAULT_MAX_OUTPUT_TOKENS, MODEL_MAX_OUTPUT_TOKENS
+        for key, cap in MODEL_MAX_OUTPUT_TOKENS.items():
+            assert cap < DEFAULT_MAX_OUTPUT_TOKENS, (
+                f"{key} cap {cap} is not below DEFAULT_MAX_OUTPUT_TOKENS {DEFAULT_MAX_OUTPUT_TOKENS}; "
+                "entries at or above the default should be omitted from the table"
+            )
+
+    def test_return_never_exceeds_default(self) -> None:
+        """max_output_tokens_for never returns a value above DEFAULT_MAX_OUTPUT_TOKENS."""
+        from koan.agents.model_catalog import (
+            DEFAULT_MAX_OUTPUT_TOKENS, MODEL_MAX_OUTPUT_TOKENS, max_output_tokens_for,
+        )
+        for provider, model in MODEL_MAX_OUTPUT_TOKENS:
+            result = max_output_tokens_for(provider, model)
+            assert result <= DEFAULT_MAX_OUTPUT_TOKENS, (
+                f"max_output_tokens_for({provider!r}, {model!r}) = {result} "
+                f"exceeds DEFAULT_MAX_OUTPUT_TOKENS {DEFAULT_MAX_OUTPUT_TOKENS}"
+            )
+
+
 # -- Hard-cutover: removed symbols must not exist -----------------------------
 
 class TestRemovedSymbols:

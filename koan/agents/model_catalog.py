@@ -67,6 +67,46 @@ MODEL_CAPABILITIES: dict[
 }
 
 
+# Default per-request OUTPUT-token budget (max_tokens). Set explicitly because
+# pydantic-ai applies a low provider default when it is unset -- notably a
+# hardcoded 4096 for Anthropic (pydantic_ai/models/anthropic.py) -- which an
+# adaptive-thinking model can exhaust on thinking alone, producing zero response
+# text. 32768 leaves ample room after thinking; it is clamped per model below
+# where a model's hard cap is lower. This is the OUTPUT ceiling, unrelated to the
+# input context window.
+DEFAULT_MAX_OUTPUT_TOKENS = 32768
+
+# Per-model hard output-token caps, listed ONLY for models whose maximum output
+# is below DEFAULT_MAX_OUTPUT_TOKENS. Providers reject (HTTP 400) a max_tokens
+# above the model cap, so these values must never exceed the true cap. Any
+# (provider, model) not listed here -- including uncataloged or dynamic ids
+# (openrouter, ollama-cloud) -- takes DEFAULT_MAX_OUTPUT_TOKENS. Values verified
+# against provider docs (see plan.md decision 5).
+MODEL_MAX_OUTPUT_TOKENS: dict[tuple[str, str], int] = {
+    ("anthropic", "claude-3-5-haiku-latest"): 8192,
+    ("anthropic", "claude-opus-4-0"):         32000,
+    ("openai",    "gpt-4o"):                  16384,
+    ("openai",    "gpt-4o-mini"):             16384,
+    ("bedrock",   "amazon.nova-pro-v1:0"):    5120,
+    ("bedrock",   "amazon.nova-lite-v1:0"):   5120,
+    ("bedrock",   "amazon.nova-micro-v1:0"):  5120,
+}
+
+
+def max_output_tokens_for(provider: str, model: str) -> int:
+    """Return the max_tokens output budget for (provider, model), clamped to the model cap.
+
+    Returns min(DEFAULT_MAX_OUTPUT_TOKENS, cap), where cap is the model's hard
+    output limit from MODEL_MAX_OUTPUT_TOKENS, or DEFAULT_MAX_OUTPUT_TOKENS when
+    the pair is not listed (the model supports at least the default, or koan has
+    no cap data for it -- e.g. openrouter / ollama-cloud / uncataloged ids).
+    Pure function: no I/O, deterministic per (provider, model) so the value is
+    stable across turns and never perturbs the cacheable prompt prefix.
+    """
+    cap = MODEL_MAX_OUTPUT_TOKENS.get((provider, model), DEFAULT_MAX_OUTPUT_TOKENS)
+    return min(DEFAULT_MAX_OUTPUT_TOKENS, cap)
+
+
 def _snapshot_model_info(provider: str, model: str) -> str | None:
     """Look up (provider, model) in the genai-prices bundled snapshot.
 
