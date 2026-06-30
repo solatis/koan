@@ -1,0 +1,15 @@
+---
+title: koan clears the orchestrator's message_history at every phase boundary (reset_phase_context),
+  re-injecting only the phase's artifacts so the file is the sole cross-phase handover
+type: decision
+created: '2026-06-30T08:09:47Z'
+modified: '2026-06-30T08:09:47Z'
+related:
+- 0161-cache-prefix-stability-is-load-bearing-a-byte.md
+- 0257-phase-handovers-are-injected-immutable-artifacts.md
+- 0153-koan-owns-the-multi-turn-agent-loop-in-process.md
+- 0087-phasecontext-resets-on-koansetphase-orchestrator.md
+- 0238-prompt-caching-capability-is-keyed-on-connection.md
+---
+
+koan's in-process orchestrator loop (koan/agents/loop.py:run_agent_loop) clears the agent's conversation at every phase entry instead of accumulating it across the whole run. Leon directed this on 2026-06-30 after a prior handover-injection change had added artifact injection but left message_history growing monotonically: an initiative run accumulated every tool result and model response from intake through every phase transition in one conversation, heading for the context-window ceiling. The mechanism: reset_phase_context (koan/tools/handoff_artifacts.py), called at the top of the phase-entry handshake _step_phase_handshake_core, sets message_history = [] and clears the injection-dedup state (injected_artifacts, injected_context_files, pending_context_files, pending_artifacts, pending_listing). The pre-seed then rebuilds a minimal context: the phase's required immutable artifacts, the read-on-demand artifact listing, and the step guidance, each as a distinct, stably-ordered user message (kept distinct -- not merged -- so a change to a later message does not invalidate the earlier ones' cache). injected_artifacts MUST be cleared with the history, or select_immutable_handovers would dedup the required artifacts away and the fresh context would receive none. The reset is a no-op at bootstrap (empty history/sets) and fires only at phase boundaries (both koan_set_phase and koan_set_workflow reset the step), so within-a-phase step accumulation is preserved; subagents cannot transition phases, so it is a structural no-op for them. Rationale: between phases the only real handover is the artifact file, so clearing enforces that as a trust boundary in code, bounds context growth, and yields a short highly-cacheable per-phase prefix. Accepted tradeoff: one cache miss per phase entry (the re-encoded artifacts) -- the system-instruction and tool-definition cache breakpoints stay byte-stable across phases, and the system prompt survives because koan passes it as pydantic-ai instructions (re-applied every request), not as history content. Alternatives rejected: append-only accumulation (the prior behavior -- unbounded context that eventually hits the window limit, and a long unique prefix cached but re-read as dead weight every turn); recomposing/extracting a SystemPromptPart at the boundary (unnecessary under instructions). This resolved a tension koan's cache design had left deliberately open -- recompose context at phase boundaries or never -- in favor of resetting; cache-prefix stability remains load-bearing WITHIN a phase.
