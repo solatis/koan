@@ -1611,7 +1611,7 @@ without a doc change is drift -- treat it as a bug.
 
 - `koan/tools/tool_policy.py` -- the per-role tool allowlists and call-time
   phase gate (`phase_gate_message`). Vocabulary is role-based and static;
-  phase-conditional orchestrator tools (`bash`, `koan_request_scouts`,
+  phase-conditional orchestrator tools (`koan_request_scouts`,
   `koan_request_executor`) are gated at call time with a recoverable error.
 - `koan/lib/workflows.py` -- the workflow/binding registry (the organism wiring).
 - The assembly recipe (`format_step`, `_step_phase_handshake_core`) -- changing slot

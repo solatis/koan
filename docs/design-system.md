@@ -75,15 +75,23 @@ should be repointed at these tokens.
 
 ### Tool family indicator colors
 
-| Token        | Hex       | Usage                                                                                                                                                                                                            |
-| ------------ | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--dot-read` | `#5a9a8a` | `StatusDot` `status="read"`. Identifies `read` operations in tool aggregate cards. Aliases `--color-teal`; the alias pattern matches `--status-done`.                                                            |
-| `--dot-grep` | `#7ab0a0` | `StatusDot` `status="grep"`. Identifies `grep` operations. Slightly lighter teal than `--dot-read`; distinguishable from `--dot-read` at 8px stat-block size, secondary to the command text at 6px log-row size. |
-| `--dot-ls`   | `#4a8878` | `StatusDot` `status="ls"`. Identifies `ls` operations. Slightly darker teal than `--dot-read`.                                                                                                                   |
+| Token        | Hex       | Usage                                                                                       |
+| ------------ | --------- | ------------------------------------------------------------------------------------------- |
+| `--dot-read` | `#5a9a8a` | `read` operations. Aliases `--color-teal`.                                                  |
+| `--dot-grep` | `#7ab0a0` | `grep` operations. Lighter teal.                                                            |
+| `--dot-glob` | `#4a8878` | `glob` operations. Darker teal. (Reuses the retired `--dot-ls` hex; `--dot-ls` is removed.) |
+| `--dot-bash` | `#8e7ca0` | `bash` operations. Aliases `--color-purple` — execution, not read-only.                     |
+| `--dot-web`  | `#7a8fb5` | `web_search` and `web_fetch` operations. Desaturated slate blue — remote retrieval.         |
 
-All three tokens belong to the teal family because all three tools are
-read-only exploration operations. Orange is reserved for active state
+Teal family = local read-only filesystem exploration. Purple = shell execution.
+Slate = network retrieval. Orange stays reserved for active state
 (`--color-orange`) and must not appear in tool-family indicator colors.
+
+### Tool component sizing
+
+| Token                  | Value | Usage                                                                                                                                         |
+| ---------------------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--tool-op-row-height` | 24px  | Fixed row height for `ToolLogRow` and `ToolStatBlock` header/meta lines. The shared rhythm that keeps group-stat and group-ops cells aligned. |
 
 ---
 
@@ -102,10 +110,10 @@ use `StatusDot` (e.g., `ScoutRow`) are not affected by changes in this area.
 
 **Sizes:**
 
-- `sm`: 6px × 6px. Used inside `ToolLogRow` log rows where vertical density
-  matters.
-- `md`: 8px × 8px. Default. Used in `ToolStatBlock` stat blocks, scout tables,
-  artifact cards, and the header orchestrator indicator.
+- `sm`: 6px × 6px. Used in `ToolStatBlock` header rows and the `ToolCallRow`
+  family variant, where vertical density matters.
+- `md`: 8px × 8px. Default. Used in scout tables, artifact cards, and the
+  header orchestrator indicator.
 
 **Status variants — operational state:**
 
@@ -118,16 +126,64 @@ use `StatusDot` (e.g., `ScoutRow`) are not affected by changes in this area.
 
 - `read`: `background: var(--dot-read)`. Static.
 - `grep`: `background: var(--dot-grep)`. Static.
-- `ls`: `background: var(--dot-ls)`. Static.
+- `glob`: `background: var(--dot-glob)`. Static.
+- `bash`: `background: var(--dot-bash)`. Static.
+- `web`: `background: var(--dot-web)`. Static. Shared by `web_search` and
+  `web_fetch` — both pass `web`.
 
 The tool-family variants share the `status` prop with the operational variants
 intentionally — the geometry and usage pattern are identical, and a single
 `status` prop keeps consumers' call sites readable.
 
-Type: `Status = 'running' | 'done' | 'queued' | 'failed' | 'read' | 'grep' | 'ls'`,
+Type: `Status = 'running' | 'done' | 'queued' | 'failed' | 'read' | 'grep' | 'glob' | 'bash' | 'web'`,
 `Size = 'sm' | 'md'`.
 
 Props: `status: Status`, `size?: Size` (default `'md'`).
+
+### ToolCommandText
+
+Per-family command rendering. One semantic unit — a formatted text primitive —
+used identically by `ToolLogRow` (aggregate rows) and `ToolCallRow` (standalone
+and single-op fallback rows). Owning the family-specific markup in one atom is
+what keeps the three consumers from drifting.
+
+Container: `display: flex`, `align-items: baseline`, `min-width: 0`,
+`overflow: hidden`, `white-space: nowrap`, `font-family: var(--font-mono)`,
+`font-size: 12px`. The container carries `title` with the untruncated text.
+
+Variants by `family`:
+
+- **`read`** — three spans:
+  - Directory prefix: `color: var(--text-muted)`, `overflow: hidden`,
+    `text-overflow: ellipsis`, `direction: rtl`, `unicode-bidi: plaintext`,
+    `min-width: 0`, `flex-shrink: 1`. Left-truncates so the basename survives.
+  - Basename: `color: var(--text-body)`, `flex-shrink: 0`.
+  - Range (optional): `:{start}–{end}`, `color: var(--text-muted)`,
+    `flex-shrink: 0`. Omitted when the whole file was read.
+- **`grep`** — pattern span (`color: var(--text-body)`, right-ellipsis,
+  `min-width: 0`) + optional scope span (`color: var(--text-muted)`,
+  `flex-shrink: 0`, `padding-left: 8px`). Scope format: `in {path}` and/or the
+  glob filter, middot-joined (`in koan/ · *.py`).
+- **`glob`** — identical structure to `grep` (pattern + scope).
+- **`bash`** — `$` sigil (`color: var(--text-muted)`, `padding-right: 6px`,
+  `flex-shrink: 0`) + command (`color: var(--text-body)`, right-ellipsis,
+  `min-width: 0`). Multiline commands collapse to their first line for display;
+  `title` carries the full command.
+- **`web_search`** — query text, `color: var(--text-body)`, right-ellipsis.
+- **`web_fetch`** — host (`color: var(--text-body)`, `flex-shrink: 0`) + path
+  (`color: var(--text-muted)`, right-ellipsis, `min-width: 0`). Scheme is
+  stripped for display.
+
+Running state (`running={true}`): primary spans (`basename`, pattern, command,
+query, host) drop to `color: var(--text-subtle)`.
+
+Error state (`error={true}`): primary spans render
+`color: var(--status-failed)`.
+
+Props: `family: 'read' | 'grep' | 'glob' | 'bash' | 'web_search' | 'web_fetch'`,
+plus family-specific data
+(`path?`, `range?`, `pattern?`, `scope?`, `command?`, `query?`, `url?`),
+`running?: boolean`, `error?: boolean`.
 
 ### TextInput
 
@@ -559,8 +615,9 @@ Props: `placeholder?: string`, `onSend?: (text: string, attachments?: string[]) 
 #### ToolCallRow
 
 A single horizontal row representing a standalone tool call. Used for
-non-exploration tools (`bash`, `write`, `edit`) that keep their individual
-visual weight outside aggregate cards.
+mutations (`write`, `edit`), which keep their individual visual weight outside
+aggregate cards, and — via the family variant below — for the single-op
+aggregate fallback (a run of exactly one exploration operation).
 
 Container: `display: flex`, `align-items: center`, `gap: 10px`,
 `background: var(--bg-tool-row)`, `border-radius: var(--radius-md)`,
@@ -594,167 +651,99 @@ Error state: container background `#f6e8e8` (hardcoded, candidate for
 
 Running state: container `opacity: 0.8`.
 
+**Family variant** — used for (a) the single-op aggregate fallback and (b) any
+future standalone exploration rendering. `write`/`edit` rows are unchanged
+(status indicator + type label). When `family` is set:
+
+- The 13px status-indicator column renders `StatusDot size="sm"
+status={family}` instead of the check; for a running op it renders the pulsing
+  orange dot; for an error, the `✕`.
+- The command slot renders `ToolCommandText` instead of a plain string.
+- Type label and metric behave as before (metric formats from the `ToolLogRow`
+  table).
+
 Props: `tool: string`, `command: string`, `status?: 'done' | 'running' | 'error'`
-(default `'done'`), `metric?: string`.
+(default `'done'`), `metric?: string`, `family?: ExplorationFamily`, plus
+command data forwarded to `ToolCommandText` when `family` is set. When `family`
+is absent the row renders exactly as specced above (string `command`).
 
 #### ToolLogRow
 
-A compact, no-background log row used inside the right pane of
-`ToolAggregateCard`. Visually lighter than `ToolCallRow` — no background fill,
-no explicit type label (the colored dot encodes the tool family instead).
+One operation line inside a `ToolAggregateCard` group-ops cell. No leading
+family dot — family identity lives on the group's stat block, not per row. The
+only leading indicator is the pulsing orange dot on an in-flight row.
 
-Container: `display: flex`, `align-items: center`, `gap: 10px`,
-`padding: 3px 0`, `font-family: var(--font-mono)`, `font-size: 12px`,
-`line-height: 1.5`.
+Container: `height: var(--tool-op-row-height)`, `display: flex`,
+`align-items: center`, `gap: 10px`, `min-width: 0`,
+`font-family: var(--font-mono)`, `font-size: 12px`.
 
-Status indicator: one of
+Content: `ToolCommandText` (`flex: 1`, `min-width: 0`) + metric span
+(`flex-shrink: 0`, `font-size: 11px`, `color: var(--text-muted)`,
+`padding-left: 12px`).
 
-- `StatusDot size="sm" status={type}` where `type` is `read`, `grep`, or `ls`,
-  for completed operations. Static teal-family dot.
-- An inline pulsing orange dot (6px, same pattern as `ToolCallRow`'s
-  `.tcr-running-dot` — local `@keyframes` on the molecule, independent of
-  `StatusDot`) for the in-flight operation.
+Metric formats by family:
 
-Command (`flex: 1`, `min-width: 0`): `--font-mono`, `font-size: 12px`,
-`--text-body`, `white-space: nowrap`, `overflow: hidden`,
-`text-overflow: ellipsis`. Typically a compact path or pattern
-(e.g., `"plan.md:160-560"`, `"^from|^import"`).
+| Family       | Completed metric                      | Notes                                                        |
+| ------------ | ------------------------------------- | ------------------------------------------------------------ |
+| `read`       | `{n} lines · {kb} KB`                 |                                                              |
+| `grep`       | `{m} matches · {l} lines · {f} files` | Zero matches: `0 matches`, italic, `--text-muted` — not red. |
+| `glob`       | `{f} files`                           |                                                              |
+| `bash`       | `exit {code} · {l} lines`             | Non-zero exit: metric `color: var(--status-failed)`.         |
+| `web_search` | `{n} results`                         |                                                              |
+| `web_fetch`  | `{kb} KB`                             |                                                              |
 
-Metric (optional, `flex-shrink: 0`, `padding-left: 12px`):
-`font-size: 11px`, `--text-muted`. Right-aligned. Examples:
-`"400 lines · 16.1 KB"`, `"46 matches · 6 files"`.
+Running state: inline pulsing orange dot (6px, local `@keyframes`, same pattern
+as `ToolCallRow`'s `.tcr-running-dot` — independent of `StatusDot`),
+`ToolCommandText running`, metric shows the in-progress verb (`reading…`,
+`grepping…`, `globbing…`, `running…`, `searching…`, `fetching…`) in
+`color: var(--color-orange)`.
 
-Running state: command text color becomes `--text-subtle`, metric text color
-becomes `--color-orange`. This muted-text + orange-metric treatment fires
-whenever the row is in its `running` status — there is no separate boolean
-prop for it. A completed read renders with a `--dot-read` StatusDot, normal
-command text, and a `--text-muted` metric; an in-flight read renders with a
-pulsing orange dot, `--text-subtle` command text, and a `--color-orange`
-metric text like "reading…".
+Error state: `ToolCommandText error`, metric in `color: var(--status-failed)`
+(e.g. `not found` for a failed read).
 
-Props: `status: 'read' | 'grep' | 'ls' | 'running'`, `command: string`,
-`metric?: string`.
-
-The single `status` prop covers both the dot's visual and the row's running-
-state styling. For an in-flight operation, callers pass `status="running"`
-and get both the pulsing orange dot and the dimmed text; for a completed
-operation, callers pass the tool-family variant and get both the static
-teal-family dot and normal text. The two states always move together, so
-collapsing them into one prop keeps the API honest.
+Props: `family`, command data (forwarded to `ToolCommandText`),
+`metric?: string`, `status?: 'done' | 'running' | 'error'` (default `'done'`).
 
 #### ToolStatBlock
 
-A single per-tool-type statistics block in the left pane of
-`ToolAggregateCard`. Presents aggregated scope information — operation count,
-bytes, lines, matches, files touched — for one tool family.
+The navy stat cell for one family group in `ToolAggregateCard`. Renders **on
+`--color-navy`** — all text uses the on-dark palette.
 
-Container: `display: flex`, `flex-direction: column`, `gap: 3px`. Multiple
-blocks within a pane are separated by `gap: 12px` via the parent.
+Container: `background: var(--color-navy)`, `padding: 9px 16px`,
+`font-family: var(--font-mono)`, `font-size: 12px`. Adjacent group-stat cells
+separated by `border-top: 1px solid rgba(240,232,216,0.10)` (navy-specific,
+hardcoded with comment; first cell has none).
 
-Header row: `display: flex`, `align-items: center`, `gap: 8px`. Contains:
+Header row: `height: var(--tool-op-row-height)`, `display: flex`,
+`align-items: center`, `gap: 8px`. Contains `StatusDot size="sm"
+status={family}` (web tools pass `web`), family name
+(`color: var(--text-on-dark)`, `font-weight: 500`), op count
+(`margin-left: auto`, `font-size: 11px`, `color: var(--text-on-dark-muted)`,
+e.g. `4 ops`).
 
-- `StatusDot size="md" status={type}` where `type` is `read`, `grep`, or `ls`.
-- Tool name: `--font-mono`, `font-size: 12px`, `--text-primary`,
-  `font-weight: 500`. E.g., "read", "grep", "ls".
-- Op count: `--font-mono`, `font-size: 11px`, `--text-muted`,
-  `margin-left: auto` (right-aligned). E.g., "4 ops".
+Meta lines: `padding-left: 14px`, `font-size: 11px`,
+`color: var(--text-on-dark-muted)`, `line-height: var(--tool-op-row-height)`.
+Rollup content by family:
 
-Meta lines (`padding-left: 16px` to align under the tool name, past the dot):
-`--font-mono`, `font-size: 11px`, `--text-muted`, `line-height: 1.4`.
-Multiple lines rendered via `<br>` or separate elements. Examples:
-`"612 lines · 24.7 KB"`, `"3 files touched"`, `"76 matches"`.
+| Family       | Rollup lines                                                                                         |
+| ------------ | ---------------------------------------------------------------------------------------------------- |
+| `read`       | `{Σlines} lines · {ΣKB} KB`; `{distinct} files`; `{k} failed` (line only when k>0, `color: #e8a0a0`) |
+| `grep`       | `{Σmatches} matches · {Σlines} lines` (no file counts — see rationale)                               |
+| `glob`       | `{Σfiles} files`                                                                                     |
+| `bash`       | `{k} failed` (only when k>0, `#e8a0a0`)                                                              |
+| `web_search` | `{Σresults} results`                                                                                 |
+| `web_fetch`  | `{ΣKB} KB`                                                                                           |
 
-Active variant: when the currently-running operation in the aggregate belongs
-to this tool type, the tool name becomes `color: var(--color-orange)`,
-font-weight 500. The StatusDot and op count are unchanged. Only one
-`ToolStatBlock` in a card can be active at a time.
+Single-op groups render the header row only — no meta lines (the row's own
+metric already carries the numbers; restating them is noise).
 
-Props: `type: 'read' | 'grep' | 'ls'`, `name: string`, `opCount: string`
-(formatted, e.g., `"4 ops"`), `metaLines: string[]`, `active?: boolean`.
+Active variant: family name `color: var(--color-orange)` when the in-flight op
+belongs to this group. Only one `ToolStatBlock` in a card can be active at a
+time. `#e8a0a0` is the on-navy failure red (`--status-failed` lacks contrast
+on navy); hardcoded with comment, navy-specific.
 
-#### ToolAggregateCard
-
-A card that groups consecutive exploration tool calls (`read`, `grep`, `ls`)
-into a single two-pane visual unit. Always rendered fully expanded — there is
-no collapsed state. Replaces the run of individual `ToolCallRow` rows that
-would otherwise wall the content stream.
-
-Container: `--bg-card`, `0.5px solid var(--border-card)`,
-`border-left: 3px solid var(--color-orange)`, `--radius-xl` (10px),
-`overflow: hidden`. The 3px orange left border follows the existing
-"left border = content source" convention — tool calls are agent output, so
-the card inherits the same source accent as `ProseCard`. The border color
-does NOT change when the card is in its active state.
-
-Active state — signaled only in the header and in the inner components, not
-in the outer border. When any child operation is in-flight:
-
-1. The header renders a pulsing orange dot plus a short label
-   (e.g., "reading projections.py"). This is the primary signal — visible
-   at a glance, persistent through the entire active period.
-2. The `ToolStatBlock` for the tool type that owns the in-flight operation
-   renders with `active={true}`, turning its tool name orange.
-3. The in-flight `ToolLogRow` in the right pane renders with
-   `status="running"`, replacing its dot with a pulsing orange dot and
-   dimming its command text.
-
-When no child operation is in-flight, the header does not render the running
-indicator and no stat block or log row is in the active/running state.
-
-Header: `display: flex`, `align-items: baseline`, `gap: 10px`,
-`padding: 10px 18px 9px 18px`, `border-bottom: 1px solid var(--border-divider-light)`.
-Contains, in order:
-
-1. Aggregate label: `--type-tool-type` (12px), `--text-muted`,
-   `letter-spacing: 0.3px`. Always the literal string "explore".
-2. Operation count: `--type-body` (14px), `--text-primary`, `font-weight: 500`.
-   E.g., "8 operations".
-3. Spacer (`flex: 1`).
-4. Running indicator (only when `runningLabel` prop is set): inline-flex
-   group — a 6px orange pulsing dot (inline span with local `@keyframes`,
-   same pattern as `ToolCallRow`'s `.tcr-running-dot`, not `StatusDot`)
-   plus a short label in `--font-mono`, `font-size: 11px`, `--color-orange`.
-   The label is a human-readable fragment like "reading projections.py" or
-   "grepping" — supplied by the caller; the card does not compute it.
-   Padding: gap 5px between dot and label.
-5. Elapsed (optional): `--font-mono`, `font-size: 11px`, `--text-hint`,
-   `padding-left: 8px`. A formatted duration string like "3m 24s". Shown for
-   both completed and active cards. This is the aggregate's total wall-clock
-   duration — per-operation durations are intentionally NOT shown anywhere,
-   because exploration tools return near-instantly and per-op duration is
-   noise. See the design rationale section on duration vs scope metrics.
-
-Body: `display: grid`, `grid-template-columns: 240px 1fr`. Two panes with a
-vertical divider between them.
-
-Left pane (stats): `background: var(--bg-card-warm)`,
-`border-right: 1px solid var(--border-divider-light)`, `padding: 14px 16px`,
-`display: flex`, `flex-direction: column`, `gap: 12px`. Contains a stack of
-`ToolStatBlock` molecules, one per tool family present in the aggregate. Tool
-families with zero operations are not rendered. Ordering: `read`, `grep`,
-`ls` (alphabetical-by-convention; the caller orders).
-
-Right pane (log): `padding: 11px 18px 11px 16px`, `display: flex`,
-`flex-direction: column`, `gap: 0`. Contains a stack of `ToolLogRow`
-molecules in strict chronological order. The currently-running row, if any,
-is rendered last.
-
-The two panes carry orthogonal information. The left pane is enduring
-summary — operations fold into their type's totals. The right pane is the
-chronological event stream. The left pane is meant to land the eye; the
-right pane is meant to scroll past.
-
-Props: `operationCount: number`, `runningLabel?: string`
-(when set, card is in active state and the running indicator renders),
-`elapsed?: string`, `statsPane: ReactNode` (typically a list of
-`ToolStatBlock` elements), `logPane: ReactNode` (typically a list of
-`ToolLogRow` elements).
-
-The card uses slot-based composition rather than prescribed data arrays,
-because the grouping logic that produces the stats and log rows lives
-outside the card (in a utility function consumed by `App.tsx`). Keeping
-the card slot-based keeps it pure layout and lets the molecules it contains
-stay independently usable.
+Props: `family`, `opCount: number`, `metaLines: string[]`, `active?: boolean`,
+`failedCount?: number`.
 
 ### Memory Molecules
 
@@ -1401,6 +1390,57 @@ share the same arrival-ordered rendering.
 Props: `question: string`, `state: InProgressProps | DoneProps` (discriminated
 union on `status`), `sidebar: MemorySidebarProps`.
 
+### ToolAggregateCard
+
+Container: `background: var(--bg-card)`, `0.5px solid var(--border-card)`,
+`border-radius: var(--radius-xl)`, `overflow: hidden`. **No orange left
+border** — the navy header band carries the card's identity; doubling it with
+the content-source accent over-decorated the card. (Deliberate deviation from
+"left border = content source"; the navy band is a stronger, unambiguous marker
+of agent tool activity.)
+
+Header band: `background: var(--color-navy)`, `display: flex`,
+`align-items: baseline`, `gap: 10px`, `padding: 10px 18px 9px`. Contains:
+
+1. Label "explore": `font-size: 11px`, `color: var(--text-on-dark-muted)`,
+   `letter-spacing: 1px`, uppercase.
+2. Op count: `font-size: 14px`, `color: var(--text-on-dark)`,
+   `font-weight: 500`. E.g. "10 operations".
+3. Spacer (`flex: 1`).
+4. Running indicator (when in-flight): pulsing orange dot + label,
+   `--font-mono`, 11px, `color: var(--color-orange)` — unchanged semantics.
+5. Elapsed: `--font-mono`, 11px, `color: var(--text-on-dark-subtle)`,
+   `padding-left: 8px`. Computed from the first child's `started_at_ms` (which
+   the backend must stamp correctly — see the backend data contract).
+
+Body: `display: grid`, `grid-template-columns: 208px 1fr`. One **pair of grid
+cells per family group**, in first-occurrence order:
+
+- Group-stat cell: a `ToolStatBlock`. The navy column is formed by the stacked
+  stat cells — there is no separate pane element.
+- Group-ops cell: `padding: 9px 18px`, `min-width: 0`; a stack of
+  `ToolLogRow`s in chronological order within the family. Adjacent group-ops
+  cells separated by `border-top: 1px solid var(--border-divider-light)`
+  (first has none).
+
+Because stat cell and ops cell are cells of the same grid row, the stat header
+top-aligns with the group's first op row by construction.
+
+Active state: unchanged three-signal rationale — header running indicator,
+owning `ToolStatBlock` `active`, in-flight `ToolLogRow` `running`.
+
+Props: `groups: FamilyGroup[]` (ordered; each `{ family, ops, metaLines }`),
+`operationCount: number`, `runningLabel?: string`, `elapsed?: string`. The
+grouping utility (`groupExplorationOps`) folds chronological `ExplorationOp[]`
+into `FamilyGroup[]`, keeping the organism pure layout.
+
+#### Rendering rule (stream level)
+
+- Run of 2+ consecutive exploration ops → `ToolAggregateCard`.
+- Run of exactly 1 exploration op → `ToolCallRow` family variant.
+- `write`/`edit` → standalone `ToolCallRow` (status variant), breaks runs.
+- Thinking, prose, user messages, step/phase boundaries break runs (unchanged).
+
 ---
 
 ## Header Bar
@@ -1505,20 +1545,78 @@ The dot-on-divider pattern is extended with color semantics. A **teal dot** sign
 
 The ReviewPanel card uses `border-top: 3px solid --color-orange`, the same "panel-level attention" signal as ElicitationPanel's decision panel. Both are organisms that yield the conversation and require user action to proceed. The visual consistency communicates this shared interaction pattern: the workflow is paused, waiting for you.
 
-### Tool aggregation scope
+### Family-grouped panes over chronological two-pane
 
-Exploration tools (`read`, `grep`, `ls`) are aggregated into
-`ToolAggregateCard` when two or more appear consecutively in the conversation
-stream without any other entry type between them (prose, thinking, user
-message, step boundary, phase marker, `bash`, `write`, `edit`, or any other
-tool). A lone `read` renders as a standalone `ToolCallRow`. A run of two or
-more consecutive reads/greps/ls's collapses into one card.
+The prior `ToolAggregateCard` put family stats in a fixed left pane and a
+chronological log in the right pane. The two panes had independent vertical
+rhythm, so their lines never aligned. The redesign groups the log **by tool
+family**: each family is one grid row whose left cell is that family's stat
+block and whose right cell is that family's operations. Alignment is
+structural — the stat block is the row header of its group and cannot drift
+from it. Chronological order is preserved _within_ each family; family order
+is first-occurrence order in the run.
 
-`bash`, `write`, and `edit` are never aggregated. `bash` has too much
-semantic variance — it can be a one-line formatter, a heavy test run, or an
-arbitrary script — and compressing disparate bash calls into a summary
-obscures rather than clarifies. `write` and `edit` are mutations; each is
-individually significant. All three render as standalone `ToolCallRow`s.
+Cross-family chronology inside one card is sacrificed. This is acceptable
+because aggregates are bounded by thinking blocks, prose, and mutations —
+consecutive exploration runs are short, and the stream-level ordering (card →
+thinking → card) carries the narrative. Cards are summaries, not transcripts.
+
+### Single-op fallback
+
+An aggregate containing exactly **one** operation renders as a compact
+`ToolCallRow` (family variant), not as the card. Two or more operations render
+the full card. Thinking blocks break aggregate runs, and the agent thinks
+between most calls, so single-op aggregates are the dominant case in practice —
+a full card (navy stat block restating one row under a full header) is absurd
+at n=1. The threshold is op count, not family count: a 6-family / 6-op card
+(one op each) still renders as a card.
+
+### Exploration family set
+
+`read`, `grep`, `glob`, `bash`, `web_search`, `web_fetch`. These are the
+builtin tools an agent uses to gather context. `write` and `edit` are
+mutations — individually significant, never aggregated, and they break an
+aggregate run. Koan orchestration tools remain suppressed (existing rationale).
+`ls` is not registered as a builtin; no fold case, store union member, or
+`StatusDot` variant exists for it.
+
+`bash` joins the aggregate unconditionally — no read-only heuristic. Bash has
+semantic variance (explore vs mutate), but classifying commands by intent is
+guesswork, and a wrong "mutation" guess would eject an `ls -la` to a standalone
+row while a wrong "exploration" guess would bury a `git commit`. The exit-code
+metric and the `$` sigil keep bash rows self-describing inside the card.
+
+### Family indicator colors
+
+Filesystem read-only tools stay in the teal family (`read`, `grep`, `glob`).
+`bash` is execution, not read-only — it takes the purple already established as
+a decorative anchor (`--color-purple`). Web tools are remote retrieval and get
+a desaturated slate blue, distinct from both teal (local reads) and navy
+(surface). Orange remains reserved for active state and never appears as a
+family color.
+
+### Secondary text weight on white
+
+Directory prefixes, line ranges, grep scopes, and the `$` sigil render in
+`--text-muted` (#9a8e7e), **not** `--text-hint` (#c8baa8). Hint-weight text on
+`--bg-card` white fails comfortable readability for content the user actually
+scans (which directory was that file in?). `--text-hint` remains correct for
+genuinely ignorable chrome (elapsed timestamps) but not for command content.
+
+### Tool command overflow
+
+Truncate + native `title` tooltip. No click-to-expand, no row caps. Read paths
+truncate from the **left** (directory side) so the basename always survives;
+patterns, commands, queries, and URL paths truncate from the right. Every
+truncating element carries `title` with the full text.
+
+### Grep rollup omits file counts
+
+Summing `files_matched` across greps double-counts files that matched multiple
+patterns. Distinct-file counting requires the backend to report _which_ files
+matched, which it does not. The grep group rollup therefore shows
+`matches · lines` only. Per-op rows still show that op's file count — a single
+op's count is exact.
 
 ### Tool aggregation active state
 
@@ -1530,16 +1628,16 @@ card is in-flight:
    (e.g., "reading projections.py").
 2. The stat block for the tool type that owns the in-flight operation
    renders with `active={true}`, turning its tool name orange.
-3. The in-flight log row in the right pane renders with `status="running"`,
-   replacing its dot with a pulsing orange dot and dimming its command
+3. The in-flight log row in its group-ops cell renders with
+   `status="running"`, gaining a pulsing orange dot and dimming its command
    text.
 
-The card's left border stays orange throughout (see "Left border = content
-source"). Not changing the border preserves the content-source convention
-without conflating "this is agent content" with "this is happening right
-now." The three in-card signals are enough: the user always has a clear
-"something is still happening" indicator without ambiguity in the outer
-chrome.
+The card's outer chrome does not change with activity — the navy header band
+is constant (the card carries no content-source left border; see the
+`ToolAggregateCard` spec). Keeping the chrome static avoids conflating "this
+is agent content" with "this is happening right now." The three in-card
+signals are enough: the user always has a clear "something is still
+happening" indicator without ambiguity in the outer chrome.
 
 The signal is qualitative and textual (label + pulsing dot) rather than
 quantitative and spatial (a progress bar), because the total number of
@@ -1560,10 +1658,9 @@ useful — it tells the user whether the agent is thinking slowly, spawning
 many ops, or encountering a tool that happened to be genuinely slow. The
 distinction is scale: individual ops are fast, aggregates are not.
 
-`ToolCallRow` (standalone) does show a metric that may include duration for
-`bash` specifically, because bash duration is frequently meaningful.
 `ToolCallRow` for `write` and `edit` shows size/line-count metrics without
-duration.
+duration. `bash` now aggregates (see "Exploration family set") and follows the
+per-op metric table — exit code and output lines, no duration.
 
 ### Model configuration is three fields
 
@@ -2124,3 +2221,32 @@ setViewingPhaseId: (id: string | null) => void
 phaseHistory: PhaseNodeData[] // ordered list of all phases in the workflow
 milestones?: MilestoneGroupData[] // populated after tech-plan phase
 ```
+
+---
+
+## Exploration Aggregate: Backend Data Contract
+
+The tool-aggregate renderers consume fields the projection fold produces.
+All items are implemented:
+
+1. **Args on children.** `tool_request` creates entries with empty
+   command fields, filled by `tool_input_delta` for all six families
+   (read, grep, glob, bash, web_search, web_fetch). Providers that send
+   complete args at tool_start (e.g. Anthropic) populate fields immediately
+   via the `args` payload key.
+2. **Timestamps.** `tool_request` carries real epoch-ms `ts_ms`; children
+   and the aggregate entry carry real timestamps.
+3. **Read ranges.** The display range is derived from `offset`/`limit` in
+   `tool_input`; whole-file reads (no explicit limit) carry no range.
+4. **Grep line counts.** The `matched_lines` metric is reported alongside
+   match and file counts.
+5. **Bash metrics.** `exit_code` and `output_lines` are computed natively
+   by the tool function.
+6. **Web metrics.** web_search `result_count`; web_fetch `content_size_bytes`.
+7. **Store union.** Frontend `ExplorationChild` includes all six families
+   (`read`, `grep`, `glob`, `bash`, `web_search`, `web_fetch`); `ls` is
+   not present anywhere.
+8. **Aggregation scope.** The fold's exploration set is
+   `{read, grep, glob, bash, web_search, web_fetch}`; bash renders as a
+   `ToolCallRow` family variant when standalone and as an aggregate child
+   when inside a run.

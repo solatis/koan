@@ -385,11 +385,11 @@ dict only encodes the suggested defaults, not constraints.
 New phases need entries in the toolset allowlist tables at
 `koan/tools/tool_policy.py`. The `_ORCHESTRATOR_SCOUT_PHASES` frozenset
 lists `intake`, `core-flows`, `tech-plan`, `milestone`, `plan`,
-`curation`, and `frame`. `_ORCHESTRATOR_BASH_PHASES` lists `execute` and
-`frame`. The `frame` phase is included in both frozensets to support bug
+`curation`, and `frame`. The `frame` phase is included to support bug
 hunting and troubleshooting, which require codebase investigation via
-scouts, bash, and direct file reading. `compose_toolset` consults these
-frozensets when building the tool vocabulary for a given (role, phase) pair.
+scouts, bash, and direct file reading. `compose_toolset` builds the tool
+vocabulary per role; phase-appropriateness for `koan_request_scouts` and
+`koan_request_executor` is enforced at call time by `phase_gate_message`.
 
 ## Producer-and-reviewer summary
 

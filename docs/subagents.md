@@ -255,8 +255,9 @@ scheduling, subagent spawning) that compete with koan's step-first workflow.
 
 The allowlist tables in `koan/tools/tool_policy.py` define which koan tools
 are composed into each role's toolset. The orchestrator's toolset is
-phase-aware -- tools vary by the current phase (`ROLE_PERMISSIONS` joined with
-the `_ORCHESTRATOR_SCOUT_PHASES` and `_ORCHESTRATOR_BASH_PHASES` frozensets).
+phase-aware for `koan_request_scouts` and `koan_request_executor`
+(`ROLE_PERMISSIONS` joined with the `_ORCHESTRATOR_SCOUT_PHASES` frozenset).
+Bash is always available to the orchestrator.
 Executor and scout use static sets:
 
 | Role         | koan tools                   | notes                                                      |
