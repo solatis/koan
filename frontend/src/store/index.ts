@@ -185,10 +185,11 @@ export interface RunConfig {
 // -- ConversationEntry — discriminated union ----------------------------------
 
 // Server-assigned stable key (camelCase wire of entry_id); consumed by virtualization in M4, ignored until then.
-export interface ThinkingEntry { type: 'thinking'; content: string; entryId?: string }
-export interface TextEntry { type: 'text'; text: string; entryId?: string }
-export interface StepEntry { type: 'step'; step: number; stepName: string; totalSteps: number | null; entryId?: string }
-export interface UserMessageEntry { type: 'user_message'; content: string; timestampMs: number; entryId?: string }
+// phaseId is the camelCase wire of phase_id, stamped server-side by the fold (_stamp_entry_phases).
+export interface ThinkingEntry { type: 'thinking'; content: string; entryId?: string; phaseId?: string }
+export interface TextEntry { type: 'text'; text: string; entryId?: string; phaseId?: string }
+export interface StepEntry { type: 'step'; step: number; stepName: string; totalSteps: number | null; entryId?: string; phaseId?: string }
+export interface UserMessageEntry { type: 'user_message'; content: string; timestampMs: number; entryId?: string; phaseId?: string }
 
 // Mirrors backend AttachmentEntry with Pydantic's to_camel wire format.
 export interface AttachmentEntry {
@@ -213,60 +214,82 @@ interface BaseToolEntry {
   toolInputDelta?: Record<string, unknown> | string | null
   // Server-assigned stable key (camelCase wire of entry_id); consumed by virtualization in M4, ignored until then.
   entryId?: string
+  // Phase this entry belongs to (camelCase wire of phase_id); inherited by all tool entries.
+  phaseId?: string
 }
 export interface ToolWriteEntry   extends BaseToolEntry { type: 'tool_write';   file: string }
 export interface ToolEditEntry    extends BaseToolEntry { type: 'tool_edit';    file: string }
-export interface ToolBashEntry    extends BaseToolEntry { type: 'tool_bash';    command: string }
+export interface ToolBashEntry    extends BaseToolEntry { type: 'tool_bash';    command: string; startedAtMs: number; completedAtMs: number | null; exitCode: number | null; outputLines: number | null }
 export interface ToolGenericEntry extends BaseToolEntry { type: 'tool_generic'; toolName: string; summary: string }
 export interface ToolKoanEntry   extends BaseToolEntry { type: 'tool_koan';    toolName: string; args: Record<string, unknown>; result: Record<string, unknown> | null }
 
-// Aggregate children — exploration tools (read/grep/ls) never appear as
-// top-level ConversationEntry values. They live only inside ToolAggregateEntry.
-export interface AggregateReadChild extends BaseToolEntry {
-  tool: 'read'
+// Exploration entry types — the six exploration tools (read, grep, glob, bash,
+// web_search, web_fetch) are valid both as top-level ConversationEntry values
+// (single call -> ToolCallRow family variant) and as ToolAggregateEntry
+// children (2+ calls -> ToolAggregateCard).
+export interface ToolReadEntry extends BaseToolEntry {
+  type: 'tool_read'
   file: string
-  lines: string
   startedAtMs: number
   completedAtMs: number | null
   linesRead: number | null
   bytesRead: number | null
+  offset: number
+  limit: number | null
 }
-export interface AggregateGrepChild extends BaseToolEntry {
-  tool: 'grep'
+export interface ToolGrepEntry extends BaseToolEntry {
+  type: 'tool_grep'
+  pattern: string
+  startedAtMs: number
+  completedAtMs: number | null
+  matches: number | null
+  filesMatched: number | null
+  matchedLines: number | null
+}
+export interface ToolGlobEntry extends BaseToolEntry {
+  type: 'tool_glob'
   pattern: string
   startedAtMs: number
   completedAtMs: number | null
   matches: number | null
   filesMatched: number | null
 }
-export interface AggregateLsChild extends BaseToolEntry {
-  tool: 'ls'
-  path: string
+export interface ToolWebSearchEntry extends BaseToolEntry {
+  type: 'tool_web_search'
+  query: string
   startedAtMs: number
   completedAtMs: number | null
-  entries: number | null
-  directories: number | null
+  resultCount: number | null
 }
-export type AggregateChild = AggregateReadChild | AggregateGrepChild | AggregateLsChild
+export interface ToolWebFetchEntry extends BaseToolEntry {
+  type: 'tool_web_fetch'
+  url: string
+  startedAtMs: number
+  completedAtMs: number | null
+  contentSizeBytes: number | null
+}
+export type ExplorationChild = ToolReadEntry | ToolGrepEntry | ToolGlobEntry | ToolBashEntry | ToolWebSearchEntry | ToolWebFetchEntry
 
 export interface ToolAggregateEntry {
   type: 'tool_aggregate'
-  children: AggregateChild[]
+  children: ExplorationChild[]
   startedAtMs: number
   // Server-assigned stable key (camelCase wire of entry_id); consumed by virtualization in M4, ignored until then.
   entryId?: string
+  phaseId?: string
 }
 
-export interface DebugStepGuidanceEntry { type: 'debug_step_guidance'; content: string; entryId?: string }
-export interface PhaseBoundaryEntry { type: 'phase_boundary'; phase: string; message: string; description: string; entryId?: string }
+export interface DebugStepGuidanceEntry { type: 'debug_step_guidance'; content: string; entryId?: string; phaseId?: string }
+export interface PhaseBoundaryEntry { type: 'phase_boundary'; phase: string; message: string; description: string; entryId?: string; phaseId?: string }
 
-export interface Suggestion { id: string; label: string; command: string; recommended?: boolean }
-export interface YieldEntry { type: 'yield'; prompt: string; suggestions: Suggestion[]; entryId?: string }
+export interface Suggestion { id: string; label: string; command: string; recommended?: boolean; phase?: string }
+export interface YieldEntry { type: 'yield'; prompt: string; suggestions: Suggestion[]; entryId?: string; phaseId?: string }
 
 export type ConversationEntry =
   | ThinkingEntry | TextEntry | StepEntry | UserMessageEntry
   | ToolWriteEntry | ToolEditEntry | ToolBashEntry | ToolGenericEntry
   | ToolKoanEntry | ToolAggregateEntry
+  | ToolReadEntry | ToolGrepEntry | ToolGlobEntry | ToolWebSearchEntry | ToolWebFetchEntry
   | DebugStepGuidanceEntry | PhaseBoundaryEntry | YieldEntry
 
 export interface Conversation {
@@ -488,8 +511,9 @@ export interface KoanState {
   // Local UI state: currently open artifact review (path or null)
   reviewingArtifact: string | null
 
-  // Local UI state: which phase the user is viewing in the timeline rail.
-  // Null means viewing the active phase. Not yet wired to content switching.
+  // Local UI state: which phase's entries are shown in the content stream.
+  // null — follow the active phase (live mode; filters to run.phase).
+  // non-null string — view a specific historical phase's entries.
   viewingPhaseId: string | null
 
   // Timestamp of the last yield resolution (suggestion clicked / chat submitted).

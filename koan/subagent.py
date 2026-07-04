@@ -390,8 +390,8 @@ async def spawn_subagent(
                     # Also emit tool_result_captured for exploration tools so
                     # aggregate child metrics continue to populate (preserved
                     # per intake constraint -- tool_result_captured is orthogonal
-                    # to tool_result and both fire for read/grep/ls).
-                    if ev.tool_name in ("read", "grep", "ls", "glob"):
+                    # to tool_result and both fire for read/grep/glob/bash/web_search/web_fetch).
+                    if ev.tool_name in ("read", "grep", "glob", "bash", "web_search", "web_fetch"):
                         store.push_event(
                             "tool_result_captured",
                             build_tool_result_captured(

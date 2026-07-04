@@ -68,6 +68,16 @@ function _extractText(entry: ConversationEntry): string {
 
     case 'tool_bash':
       return entry.command
+    case 'tool_read':
+      return entry.file
+    case 'tool_grep':
+      return entry.pattern
+    case 'tool_glob':
+      return entry.pattern
+    case 'tool_web_search':
+      return entry.query
+    case 'tool_web_fetch':
+      return entry.url
 
     case 'tool_generic':
       return [entry.toolName, entry.summary].filter(Boolean).join(' ')
@@ -88,9 +98,12 @@ function _extractText(entry: ConversationEntry): string {
       // filenames, patterns, or paths involved in aggregated exploration.
       const cmds: string[] = []
       for (const c of entry.children) {
-        if (c.tool === 'read') cmds.push(c.file)
-        else if (c.tool === 'grep') cmds.push(c.pattern)
-        else if (c.tool === 'ls') cmds.push(c.path)
+        if (c.type === 'tool_read') cmds.push(c.file)
+        else if (c.type === 'tool_grep') cmds.push(c.pattern)
+        else if (c.type === 'tool_glob') cmds.push(c.pattern)
+        else if (c.type === 'tool_bash') cmds.push(c.command)
+        else if (c.type === 'tool_web_search') cmds.push(c.query)
+        else if (c.type === 'tool_web_fetch') cmds.push(c.url)
       }
       return cmds.join(' ')
     }
@@ -153,6 +166,16 @@ function serializeEntry(entry: ConversationEntry): string {
 
     case 'tool_bash':
       return `[bash] ${entry.command}`
+    case 'tool_read':
+      return `[read] ${entry.file}`
+    case 'tool_grep':
+      return `[grep] ${entry.pattern}`
+    case 'tool_glob':
+      return `[glob] ${entry.pattern}`
+    case 'tool_web_search':
+      return `[web_search] ${entry.query}`
+    case 'tool_web_fetch':
+      return `[web_fetch] ${entry.url}`
 
     case 'tool_generic':
       return `[tool:${entry.toolName}] ${entry.summary}`
@@ -165,9 +188,12 @@ function serializeEntry(entry: ConversationEntry): string {
     case 'tool_aggregate': {
       const lines = [`[explore ${entry.children.length} ops]`]
       for (const c of entry.children) {
-        if (c.tool === 'read') lines.push(`  read ${c.file}`)
-        else if (c.tool === 'grep') lines.push(`  grep ${c.pattern}`)
-        else if (c.tool === 'ls') lines.push(`  ls ${c.path}`)
+        if (c.type === 'tool_read') lines.push(`  read ${c.file}`)
+        else if (c.type === 'tool_grep') lines.push(`  grep ${c.pattern}`)
+        else if (c.type === 'tool_glob') lines.push(`  glob ${c.pattern}`)
+        else if (c.type === 'tool_bash') lines.push(`  bash ${c.command}`)
+        else if (c.type === 'tool_web_search') lines.push(`  web_search ${c.query}`)
+        else if (c.type === 'tool_web_fetch') lines.push(`  web_fetch ${c.url}`)
       }
       return lines.join('\n')
     }

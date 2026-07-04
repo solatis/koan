@@ -50,20 +50,20 @@ EventType = Literal[
     "tool_stopped",
     "tool_called",
     "tool_completed",
-    "tool_read",
     "tool_write",
     "tool_edit",
     "tool_bash",
-    "tool_grep",
-    "tool_ls",
     "tool_request",
     "tool_input_delta",
     "tool_result",
     "tool_result_captured",
+    "tool_aggregate",
     # Domain events correlated by agent_id (not call_id): target the in-flight
     # tool entry for the agent. reflect_delta streams internal-LLM text output;
     # tool_attachments carries koan-side upload manifests from MCP handlers.
     "reflect_delta",
+    "reflect_delta",
+    "reflect_inline_trace",
     "tool_attachments",
     "thinking",
     "stream_delta",
@@ -179,11 +179,14 @@ class ThinkingEntry(KoanBaseModel):
     # Stable per-conversation id assigned in the fold (_assign_entry_ids); '' until assigned;
     # aggregate children leave this unset and key by call_id.
     entry_id: str = ""
+    # Phase this entry belongs to, stamped by _stamp_entry_phases in the fold.
+    phase_id: str = ""
 
 class TextEntry(KoanBaseModel):
     type: Literal["text"] = "text"
     text: str                              # full accumulated output text
     entry_id: str = ""
+    phase_id: str = ""
 
 class StepEntry(KoanBaseModel):
     type: Literal["step"] = "step"
@@ -191,12 +194,14 @@ class StepEntry(KoanBaseModel):
     step_name: str
     total_steps: int | None = None
     entry_id: str = ""
+    phase_id: str = ""
 
 class UserMessageEntry(KoanBaseModel):
     type: Literal["user_message"] = "user_message"
     content: str
     timestamp_ms: int
     entry_id: str = ""
+    phase_id: str = ""
 
 class AttachmentEntry(KoanBaseModel):
     """Wire shape for a committed upload attached to a tool call.
@@ -221,14 +226,18 @@ class BaseToolEntry(KoanBaseModel):
     """Shared fields for all tool entries and aggregate children.
 
     entry_id is the stable per-conversation id for top-level entries, assigned
-    by _assign_entry_ids in the fold.  Aggregate children inherit the field but
-    leave it '' -- they are keyed by call_id instead.
+    by _assign_entry_ids in the fold.  phase_id is the phase the entry belongs
+    to, stamped by _stamp_entry_phases.  Aggregate children inherit both
+    fields but leave them '' -- they are keyed by call_id instead.
     """
     call_id: str                           # unique per tool invocation
     in_flight: bool                        # True until tool_result
     # Stable per-conversation id assigned in the fold (_assign_entry_ids); '' until assigned;
     # aggregate children leave this unset and key by call_id.
     entry_id: str = ""
+    # Phase this entry belongs to, stamped by _stamp_entry_phases; aggregate
+    # children inherit it but leave it '' -- they are keyed by call_id.
+    phase_id: str = ""
     # Populated by tool_completed when the backend committed uploads were
     # attached to this tool call (via build_tool_completed attachments arg).
     attachments: list[AttachmentEntry] | None = None
@@ -250,8 +259,19 @@ class ToolEditEntry(BaseToolEntry):
     file: str                              # path that was edited in-place
 
 class ToolBashEntry(BaseToolEntry):
+    """A bash tool call — shell command execution.
+
+    Valid as a top-level ConversationEntry (single bash) and as a
+    ToolAggregateEntry child (bash in a run of 2+ exploration ops). The
+    aggregate-child fields (started_at_ms, completed_at_ms, exit_code,
+    output_lines) are populated when bash is part of an aggregate run.
+    """
     type: Literal["tool_bash"] = "tool_bash"
     command: str                           # shell command executed
+    started_at_ms: int = 0                 # creation timestamp (aggregate child)
+    completed_at_ms: int | None = None     # set by tool_completed/tool_result
+    exit_code: int | None = None           # attached by tool_result_captured
+    output_lines: int | None = None        # attached by tool_result_captured
 
 class ToolGenericEntry(BaseToolEntry):
     """Catch-all for tools without a typed variant (e.g. custom MCP tools)."""
@@ -267,90 +287,134 @@ class ToolKoanEntry(BaseToolEntry):
     result: dict | None = None
 
 # ---------------------------------------------------------------------------
-# Aggregate children — exploration tools (read, grep, ls) never appear as
-# top-level ConversationEntry values. They live only inside a ToolAggregateEntry.
+# Exploration entry types — the six exploration tools (read, grep, glob, bash,
+# web_search, web_fetch) are valid both as top-level ConversationEntry values
+# (single call -> ToolCallRow family variant) and as children of
+# ToolAggregateEntry (2+ calls -> ToolAggregateCard). The ExplorationChild union
+# is used for aggregate children; the same types also appear in the
+# ConversationEntry union for top-level rendering.
 # ---------------------------------------------------------------------------
 
-class AggregateReadChild(BaseToolEntry):
-    tool: Literal["read"] = "read"
+class ToolReadEntry(BaseToolEntry):
+    """A read tool call — file content retrieval.
+
+    Valid as a top-level ConversationEntry (single read) and as a
+    ToolAggregateEntry child (read in a run of 2+ exploration ops). The
+    range property derives the display string (e.g. "1-80") from offset/limit;
+    whole-file reads (limit is None) carry no range.
+    """
+    type: Literal["tool_read"] = "tool_read"
     file: str                              # path that was read
-    lines: str = ""                        # line range, e.g. "1-50"
     started_at_ms: int = 0                 # creation timestamp
-    completed_at_ms: int | None = None     # set by tool_completed
+    completed_at_ms: int | None = None     # set by tool_completed/tool_result
     lines_read: int | None = None          # attached by tool_result_captured
     bytes_read: int | None = None          # attached by tool_result_captured
+    offset: int = 0                        # 0-based line offset from tool args
+    limit: int | None = None              # max lines; None = whole-file read
 
-class AggregateGrepChild(BaseToolEntry):
-    tool: Literal["grep"] = "grep"
+    @property
+    def range(self) -> str | None:
+        """Derive display range string, e.g. "1-80". None for whole-file reads."""
+        if self.limit is not None and self.limit > 0:
+            return f"{self.offset + 1}–{self.offset + self.limit}"
+        return None
+
+class ToolGrepEntry(BaseToolEntry):
+    """A grep tool call — regex search across files.
+
+    Valid as a top-level ConversationEntry and as a ToolAggregateEntry child.
+    """
+    type: Literal["tool_grep"] = "tool_grep"
     pattern: str                           # search pattern
     started_at_ms: int = 0
     completed_at_ms: int | None = None
     matches: int | None = None             # attached by tool_result_captured
     files_matched: int | None = None       # attached by tool_result_captured
+    matched_lines: int | None = None       # attached by tool_result_captured
 
-class AggregateLsChild(BaseToolEntry):
-    tool: Literal["ls"] = "ls"
-    path: str                              # directory listed
-    started_at_ms: int = 0
-    completed_at_ms: int | None = None
-    entries: int | None = None             # attached by tool_result_captured
-    directories: int | None = None         # attached by tool_result_captured
+class ToolGlobEntry(BaseToolEntry):
+    """A glob tool call — file pattern search.
 
-# M4: glob is a built-in file-search tool analogous to grep; it uses the
-# same metrics shape (matches / files_matched) since each matched path is
-# one match and one file. Separate discriminator value keeps the fold's
-# dispatch clean and lets the frontend render glob entries distinctly later.
-class AggregateGlobChild(BaseToolEntry):
-    tool: Literal["glob"] = "glob"
+    Valid as a top-level ConversationEntry and as a ToolAggregateEntry child.
+    """
+    type: Literal["tool_glob"] = "tool_glob"
     pattern: str                           # glob pattern searched
     started_at_ms: int = 0
     completed_at_ms: int | None = None
     matches: int | None = None             # attached by tool_result_captured
     files_matched: int | None = None       # attached by tool_result_captured
 
-AggregateChild = Annotated[
-    AggregateReadChild | AggregateGrepChild | AggregateLsChild | AggregateGlobChild,
-    Field(discriminator="tool"),
+class ToolWebSearchEntry(BaseToolEntry):
+    """A web_search tool call — DuckDuckGo search.
+
+    Valid as a top-level ConversationEntry and as a ToolAggregateEntry child.
+    """
+    type: Literal["tool_web_search"] = "tool_web_search"
+    query: str = ""
+    started_at_ms: int = 0
+    completed_at_ms: int | None = None
+    result_count: int | None = None
+
+class ToolWebFetchEntry(BaseToolEntry):
+    """A web_fetch tool call — URL content retrieval.
+
+    Valid as a top-level ConversationEntry and as a ToolAggregateEntry child.
+    """
+    type: Literal["tool_web_fetch"] = "tool_web_fetch"
+    url: str = ""
+    started_at_ms: int = 0
+    completed_at_ms: int | None = None
+    content_size_bytes: int | None = None
+
+ExplorationChild = Annotated[
+    ToolReadEntry | ToolGrepEntry | ToolGlobEntry | ToolBashEntry
+    | ToolWebSearchEntry | ToolWebFetchEntry,
+    Field(discriminator="type"),
 ]
 
 class ToolAggregateEntry(KoanBaseModel):
-    """A run of consecutive exploration tool calls (read, grep, ls).
+    """A run of 2+ consecutive exploration tool calls.
 
-    Created when the first exploration tool in a run arrives; grown as
-    subsequent consecutive exploration tools arrive; left alone once any
-    other entry type intervenes. Single-child aggregates are normal — the
-    frontend renders one child as a ToolCallRow and 2+ children as a
-    ToolAggregateCard. Active/elapsed state is derived from children at
-    render time, not stored here.
+    Invariant: len(children) >= 2. A single exploration tool is a top-level
+    entry (ToolReadEntry, ToolGrepEntry, etc.), never a single-child
+    aggregate. The aggregate is created when a second consecutive exploration
+    tool arrives and the previous entry is a top-level exploration entry;
+    it grows as further consecutive exploration tools arrive. Active/elapsed
+    state is derived from children at render time, not stored here.
     """
     type: Literal["tool_aggregate"] = "tool_aggregate"
-    children: list[AggregateChild] = []
+    children: list[ExplorationChild] = []
     started_at_ms: int = 0                 # timestamp of the first child's creation
     entry_id: str = ""
+    phase_id: str = ""
 
 class DebugStepGuidanceEntry(KoanBaseModel):
     """Step guidance prompt shown in --debug mode."""
     type: Literal["debug_step_guidance"] = "debug_step_guidance"
     content: str                           # full formatted step guidance text
     entry_id: str = ""
+    phase_id: str = ""
 
 class PhaseBoundaryEntry(KoanBaseModel):
     type: Literal["phase_boundary"] = "phase_boundary"
     phase: str
     message: str
     entry_id: str = ""
+    phase_id: str = ""
 
 class Suggestion(KoanBaseModel):
     """A structured option presented to the user at a yield point."""
     id: str                                # machine key (e.g. "plan", "done")
     label: str                             # display text (e.g. "Write implementation plan")
     command: str = ""                      # pre-fills the chat input when the pill is clicked
+    phase: str = ""                         # marks a mechanical phase-transition suggestion; empty for free-text
 
 class YieldEntry(KoanBaseModel):
     """Conversation entry emitted when the orchestrator yields to the user."""
     type: Literal["yield"] = "yield"
     suggestions: list[Suggestion] = []     # clickable options shown in the UI
     entry_id: str = ""
+    phase_id: str = ""
 
 class ActiveYield(KoanBaseModel):
     """Run-level state tracking the current yield's suggestions.
@@ -364,6 +428,8 @@ ConversationEntry = Annotated[
     ThinkingEntry | TextEntry | StepEntry | UserMessageEntry |
     ToolWriteEntry | ToolEditEntry | ToolBashEntry | ToolGenericEntry |
     ToolKoanEntry | ToolAggregateEntry |
+    ToolReadEntry | ToolGrepEntry | ToolGlobEntry |
+    ToolWebSearchEntry | ToolWebFetchEntry |
     DebugStepGuidanceEntry | PhaseBoundaryEntry | YieldEntry,
     Field(discriminator="type"),
 ]
@@ -846,31 +912,34 @@ def _flush_pending_thinking(conv: Conversation) -> Conversation:
 
 def _append_exploration_child(
     conv: Conversation,
-    child: AggregateChild,
+    child: ExplorationChild,
     ts_ms: int,
 ) -> Conversation:
-    """Append an exploration-tool child to the trailing aggregate, or start a new one.
+    """Append an exploration-tool child to the trailing aggregate.
+
+    Only appends when the last entry is already a ToolAggregateEntry; the
+    invariant len(children) >= 2 is maintained because this function is never
+    called to create a new aggregate (single exploration tools are top-level
+    entries). When there is no trailing aggregate, this is a no-op — the
+    caller (tool_request fold case) handles top-level entry creation and
+    aggregate promotion separately.
 
     Always flushes pending text/thinking first — exploration tools appear in the
     same stream as prose, so any in-progress prose must close out before a tool
-    entry lands. After the flush, if the last entry is a ToolAggregateEntry the
-    child is appended to it; otherwise a new ToolAggregateEntry is created. The
-    existing aggregate's started_at_ms is preserved; only the children list grows.
+    entry lands.
     """
     flushed = _flush_conversation(conv)
     entries = list(flushed.entries)
     if entries and isinstance(entries[-1], ToolAggregateEntry):
         aggregate = entries[-1]
+        assert len(aggregate.children) >= 1, "aggregate must have >= 1 child before append"
         grown = aggregate.model_copy(update={
             "children": [*aggregate.children, child],
         })
         entries[-1] = grown
-    else:
-        entries.append(ToolAggregateEntry(
-            children=[child],
-            started_at_ms=ts_ms,
-        ))
-    return flushed.model_copy(update={"entries": entries})
+        return flushed.model_copy(update={"entries": entries})
+    # No trailing aggregate — no-op; the tool_request case handles promotion.
+    return flushed
 
 
 def _get_agent(run: Run, agent_id: str | None) -> Agent | None:
@@ -893,6 +962,31 @@ def _primary_agent_id(run: Run) -> str | None:
     return None
 
 
+
+
+def _stamp_entry_phases(conv: Conversation, phase: str) -> Conversation:
+    """Stamp every top-level entry lacking a phase_id with the current phase.
+
+    Idempotent and append-only: entries that already have a non-empty
+    phase_id are preserved unchanged.  Returns the same conversation object
+    when no stamping is needed (no JSON Patch ops), matching the contract
+    of _assign_entry_ids.  Aggregate children are intentionally left
+    untouched -- they are keyed by call_id and do not appear as top-level
+    entries.
+    """
+    if not phase:
+        return conv
+    new_entries = []
+    changed = False
+    for e in conv.entries:
+        if e.phase_id == "":
+            new_entries.append(e.model_copy(update={"phase_id": phase}))
+            changed = True
+        else:
+            new_entries.append(e)
+    if not changed:
+        return conv
+    return conv.model_copy(update={"entries": new_entries})
 
 
 def _assign_entry_ids(conv: Conversation) -> Conversation:
@@ -922,12 +1016,14 @@ def _assign_entry_ids(conv: Conversation) -> Conversation:
 def _update_agent_conversation(run: Run, agent_id: str, new_conv: Conversation, **extra) -> Run:
     """Return a new Run with the agent's conversation replaced and optional extra updates.
 
-    Assigns stable entry ids via _assign_entry_ids before writing back, so every
-    top-level entry carries a monotonic per-conversation id on the wire.
+    Stamps phase ids via _stamp_entry_phases, then assigns stable entry ids
+    via _assign_entry_ids before writing back, so every top-level entry
+    carries a monotonic per-conversation id and its phase on the wire.
     """
     agent = run.agents.get(agent_id)
     if agent is None:
         return run
+    new_conv = _stamp_entry_phases(new_conv, run.phase)
     new_conv = _assign_entry_ids(new_conv)
     new_agent = agent.model_copy(update={"conversation": new_conv, **extra})
     new_agents = dict(run.agents)
@@ -984,6 +1080,122 @@ def _derive_usage(conv: "Conversation", agent: "Agent", usage: dict) -> "Convers
             pass
 
     return conv
+
+
+# Tuple of all six exploration entry types, for isinstance checks in the fold.
+EXPLORATION_ENTRY_TYPES: tuple[type, ...] = (
+    ToolReadEntry, ToolGrepEntry, ToolGlobEntry, ToolBashEntry,
+    ToolWebSearchEntry, ToolWebFetchEntry,
+)
+
+
+def _make_exploration_entry(
+    tool_name: str, call_id: str, ts_ms: int, tool_args: dict | None = None,
+) -> ExplorationChild:
+    """Create an exploration entry of the appropriate type from a tool_request.
+
+    Command fields are populated from tool_args when available (providers that
+    send complete args at tool_start, e.g. Anthropic). The tool_input_delta
+    fold case fills them in for all providers at tool_stop time.
+    """
+    ti = tool_args or {}
+    if tool_name == "read":
+        e = ToolReadEntry(
+            call_id=call_id, in_flight=True, file="",
+            started_at_ms=ts_ms,
+        )
+        if ti:
+            e = e.model_copy(update=_read_args_update(ti))
+        return e
+    elif tool_name == "grep":
+        e = ToolGrepEntry(
+            call_id=call_id, in_flight=True, pattern="",
+            started_at_ms=ts_ms,
+        )
+        if ti:
+            e = e.model_copy(update={"pattern": ti.get("pattern", "") or ti.get("query", "")})
+        return e
+    elif tool_name == "glob":
+        e = ToolGlobEntry(
+            call_id=call_id, in_flight=True, pattern="",
+            started_at_ms=ts_ms,
+        )
+        if ti:
+            e = e.model_copy(update={"pattern": ti.get("pattern", "")})
+        return e
+    elif tool_name == "bash":
+        e = ToolBashEntry(
+            call_id=call_id, in_flight=True, command="",
+            started_at_ms=ts_ms,
+        )
+        if ti:
+            e = e.model_copy(update={"command": ti.get("command", "")})
+        return e
+    elif tool_name == "web_search":
+        e = ToolWebSearchEntry(
+            call_id=call_id, in_flight=True, query="",
+            started_at_ms=ts_ms,
+        )
+        if ti:
+            e = e.model_copy(update={"query": ti.get("query", "")})
+        return e
+    elif tool_name == "web_fetch":
+        e = ToolWebFetchEntry(
+            call_id=call_id, in_flight=True, url="",
+            started_at_ms=ts_ms,
+        )
+        if ti:
+            e = e.model_copy(update={"url": ti.get("url", "")})
+        return e
+    # Should not reach here; caller filters by the exploration set.
+    raise ValueError(f"not an exploration tool: {tool_name}")
+
+
+def _read_args_update(ti: dict) -> dict:
+    """Derive ToolReadEntry update dict from tool_input args."""
+    upd: dict = {"file": ti.get("file_path", "") or ti.get("path", "")}
+    upd["offset"] = ti.get("offset", 0)
+    if "limit" in ti:
+        upd["limit"] = ti["limit"]
+    return upd
+
+
+def _apply_exploration_metrics(child: BaseToolEntry, metrics: dict) -> dict:
+    """Derive a model_copy update dict from native metrics for an exploration entry.
+
+    Handles all six families. Returns an empty dict when no metrics apply.
+    Works for both aggregate children and top-level exploration entries.
+    """
+    update: dict = {}
+    if isinstance(child, ToolReadEntry):
+        if "lines_read" in metrics:
+            update["lines_read"] = metrics["lines_read"]
+        if "bytes_read" in metrics:
+            update["bytes_read"] = metrics["bytes_read"]
+    elif isinstance(child, ToolGrepEntry):
+        if "matches" in metrics:
+            update["matches"] = metrics["matches"]
+        if "files_matched" in metrics:
+            update["files_matched"] = metrics["files_matched"]
+        if "matched_lines" in metrics:
+            update["matched_lines"] = metrics["matched_lines"]
+    elif isinstance(child, ToolGlobEntry):
+        if "matches" in metrics:
+            update["matches"] = metrics["matches"]
+        if "files_matched" in metrics:
+            update["files_matched"] = metrics["files_matched"]
+    elif isinstance(child, ToolBashEntry):
+        if "exit_code" in metrics:
+            update["exit_code"] = metrics["exit_code"]
+        if "output_lines" in metrics:
+            update["output_lines"] = metrics["output_lines"]
+    elif isinstance(child, ToolWebSearchEntry):
+        if "result_count" in metrics:
+            update["result_count"] = metrics["result_count"]
+    elif isinstance(child, ToolWebFetchEntry):
+        if "content_size_bytes" in metrics:
+            update["content_size_bytes"] = metrics["content_size_bytes"]
+    return update
 
 
 # ---------------------------------------------------------------------------
@@ -1358,29 +1570,6 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                                                       last_tool=last_tool),
                 })
 
-            case "tool_read":
-                if projection.run is None or not agent_id:
-                    return projection
-                agent = projection.run.agents.get(agent_id)
-                if agent is None:
-                    return projection
-                file = payload.get("file", "")
-                lines = payload.get("lines", "")
-                last_tool = f"read {file}:{lines}" if lines else f"read {file}"
-                ts_ms = payload.get("ts_ms", 0)
-                child = AggregateReadChild(
-                    call_id=payload.get("call_id", ""),
-                    in_flight=True,
-                    file=file,
-                    lines=lines,
-                    started_at_ms=ts_ms,
-                )
-                new_conv = _append_exploration_child(agent.conversation, child, ts_ms)
-                return projection.model_copy(update={
-                    "run": _update_agent_conversation(projection.run, agent_id, new_conv,
-                                                      last_tool=last_tool),
-                })
-
             case "tool_write":
                 if projection.run is None or not agent_id:
                     return projection
@@ -1444,46 +1633,6 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                                                       last_tool=f"bash {command}"),
                 })
 
-            case "tool_grep":
-                if projection.run is None or not agent_id:
-                    return projection
-                agent = projection.run.agents.get(agent_id)
-                if agent is None:
-                    return projection
-                pattern = payload.get("pattern", "")
-                ts_ms = payload.get("ts_ms", 0)
-                child = AggregateGrepChild(
-                    call_id=payload.get("call_id", ""),
-                    in_flight=True,
-                    pattern=pattern,
-                    started_at_ms=ts_ms,
-                )
-                new_conv = _append_exploration_child(agent.conversation, child, ts_ms)
-                return projection.model_copy(update={
-                    "run": _update_agent_conversation(projection.run, agent_id, new_conv,
-                                                      last_tool=f"grep {pattern}"),
-                })
-
-            case "tool_ls":
-                if projection.run is None or not agent_id:
-                    return projection
-                agent = projection.run.agents.get(agent_id)
-                if agent is None:
-                    return projection
-                path = payload.get("path", "")
-                ts_ms = payload.get("ts_ms", 0)
-                child = AggregateLsChild(
-                    call_id=payload.get("call_id", ""),
-                    in_flight=True,
-                    path=path,
-                    started_at_ms=ts_ms,
-                )
-                new_conv = _append_exploration_child(agent.conversation, child, ts_ms)
-                return projection.model_copy(update={
-                    "run": _update_agent_conversation(projection.run, agent_id, new_conv,
-                                                      last_tool=f"ls {path}"),
-                })
-
             case "tool_completed":
                 if projection.run is None or not agent_id:
                     return projection
@@ -1513,15 +1662,40 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                         and not isinstance(entry, ToolAggregateEntry)
                     ):
                         update: dict = {"in_flight": False}
+                        # Top-level exploration entries get completed_at_ms.
+                        if isinstance(entry, EXPLORATION_ENTRY_TYPES):
+                            update["completed_at_ms"] = ts_ms or None
                         if isinstance(entry, ToolKoanEntry):
                             raw_result = payload.get("result")
+                            parsed = None
                             if raw_result and isinstance(raw_result, str):
                                 try:
-                                    update["result"] = json.loads(raw_result)
+                                    parsed = json.loads(raw_result)
                                 except (json.JSONDecodeError, TypeError):
-                                    update["result"] = {"raw": raw_result}
+                                    parsed = {"raw": raw_result}
                             elif isinstance(raw_result, dict):
-                                update["result"] = raw_result
+                                parsed = raw_result
+                            if parsed is not None:
+                                existing = entry.result or {}
+                                # Merge to preserve fields accumulated by domain events
+                                # (reflect_inline_trace sets traces/model/maxIterations/
+                                #  iteration; reflect_delta sets answer). tool_completed
+                                #  adds citations and the final iterations count.
+                                update["result"] = {**existing, **parsed}
+                                # If the last trace is a thinking_start without a matching
+                                # thinking_end, append one. The reflect loop can terminate
+                                # while the model is still in thinking state.
+                                result = update["result"]
+                                traces = result.get("traces", [])
+                                if traces and isinstance(traces, list):
+                                    last = traces[-1]
+                                    if isinstance(last, dict) and last.get("kind") == "thinking_start":
+                                        has_end = any(
+                                            isinstance(t, dict) and t.get("kind") == "thinking_end"
+                                            for t in traces
+                                        )
+                                        if not has_end:
+                                            result["traces"] = list(traces) + [{"kind": "thinking_end"}]
                         if parsed_attachments:
                             update["attachments"] = parsed_attachments
                         new_entries.append(entry.model_copy(update=update))
@@ -1572,45 +1746,32 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 new_entries = []
                 found = False
                 for entry in agent.conversation.entries:
-                    if not isinstance(entry, ToolAggregateEntry):
-                        new_entries.append(entry)
-                        continue
-                    new_children = []
-                    child_found = False
-                    for child in entry.children:
-                        if child.call_id != call_id:
-                            new_children.append(child)
-                            continue
-                        update: dict = {}
-                        if isinstance(child, AggregateReadChild):
-                            if "lines_read" in metrics:
-                                update["lines_read"] = metrics["lines_read"]
-                            if "bytes_read" in metrics:
-                                update["bytes_read"] = metrics["bytes_read"]
-                        elif isinstance(child, AggregateGrepChild):
-                            if "matches" in metrics:
-                                update["matches"] = metrics["matches"]
-                            if "files_matched" in metrics:
-                                update["files_matched"] = metrics["files_matched"]
-                        elif isinstance(child, AggregateLsChild):
-                            if "entries" in metrics:
-                                update["entries"] = metrics["entries"]
-                            if "directories" in metrics:
-                                update["directories"] = metrics["directories"]
-                        elif isinstance(child, AggregateGlobChild):
-                            # M4: glob uses same metrics shape as grep.
-                            if "matches" in metrics:
-                                update["matches"] = metrics["matches"]
-                            if "files_matched" in metrics:
-                                update["files_matched"] = metrics["files_matched"]
-                        if update:
-                            new_children.append(child.model_copy(update=update))
+                    if isinstance(entry, ToolAggregateEntry):
+                        new_children = []
+                        child_found = False
+                        for child in entry.children:
+                            if child.call_id != call_id:
+                                new_children.append(child)
+                                continue
+                            update = _apply_exploration_metrics(child, metrics)
+                            if update:
+                                new_children.append(child.model_copy(update=update))
+                            else:
+                                new_children.append(child)
+                            child_found = True
+                        if child_found:
+                            found = True
+                            new_entries.append(entry.model_copy(update={"children": new_children}))
                         else:
-                            new_children.append(child)
-                        child_found = True
-                    if child_found:
+                            new_entries.append(entry)
+                    elif isinstance(entry, EXPLORATION_ENTRY_TYPES) and entry.call_id == call_id:
+                        # Top-level exploration entry (single call).
+                        update = _apply_exploration_metrics(entry, metrics)
+                        if update:
+                            new_entries.append(entry.model_copy(update=update))
+                        else:
+                            new_entries.append(entry)
                         found = True
-                        new_entries.append(entry.model_copy(update={"children": new_children}))
                     else:
                         new_entries.append(entry)
                 if not found:
@@ -1673,44 +1834,41 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                             projection.run, agent_id, new_conv, last_tool="edit",
                         ),
                     })
-                if tool_name == "bash":
-                    new_conv = _flush_conversation(agent.conversation)
-                    new_entry = ToolBashEntry(call_id=call_id, in_flight=True, command="")
-                    new_conv = new_conv.model_copy(update={
-                        "entries": [*new_conv.entries, new_entry],
-                    })
-                    return projection.model_copy(update={
-                        "run": _update_agent_conversation(
-                            projection.run, agent_id, new_conv, last_tool="bash",
-                        ),
-                    })
-                if tool_name in ("read", "grep", "ls", "glob"):
-                    # Exploration tools aggregate into ToolAggregateEntry.
-                    # Typed fields start empty; tool_input_delta fills them in.
-                    # glob is treated like grep (file-search returning matches +
-                    # files_matched); added in M4 when the built-in glob tool landed.
-                    ts_ms = 0
-                    if tool_name == "read":
-                        child: AggregateChild = AggregateReadChild(
-                            call_id=call_id, in_flight=True,
-                            file="", lines="", started_at_ms=ts_ms,
+                if tool_name in ("read", "grep", "glob", "bash", "web_search", "web_fetch"):
+                    # Exploration tools: valid as top-level entries (single call) and
+                    # as ToolAggregateEntry children (2+ consecutive calls). The
+                    # invariant len(children) >= 2 is maintained: the first
+                    # exploration tool in a run creates a top-level entry; a second
+                    # consecutive one promotes the top-level entry to a 2-child
+                    # aggregate; further ones append to the existing aggregate.
+                    ts_ms = payload.get("ts_ms", 0)
+                    tool_args = payload.get("args")  # complete args at start (Anthropic)
+                    child = _make_exploration_entry(tool_name, call_id, ts_ms, tool_args)
+                    flushed = _flush_conversation(agent.conversation)
+                    entries = list(flushed.entries)
+                    if entries and isinstance(entries[-1], ToolAggregateEntry):
+                        # Append to existing aggregate (3rd+ consecutive tool).
+                        agg = entries[-1]
+                        assert len(agg.children) >= 1
+                        grown = agg.model_copy(update={
+                            "children": [*agg.children, child],
+                        })
+                        entries[-1] = grown
+                    elif entries and isinstance(entries[-1], EXPLORATION_ENTRY_TYPES):
+                        # Promote the previous top-level exploration entry to a
+                        # 2-child aggregate (2nd consecutive tool). Clear the
+                        # promoted entry's entry_id — children are keyed by
+                        # call_id, not entry_id.
+                        prev = entries[-1]
+                        prev_child = prev.model_copy(update={"entry_id": ""}) if prev.entry_id else prev
+                        entries[-1] = ToolAggregateEntry(
+                            children=[prev_child, child],
+                            started_at_ms=prev.started_at_ms if hasattr(prev, "started_at_ms") else ts_ms,
                         )
-                    elif tool_name == "grep":
-                        child = AggregateGrepChild(
-                            call_id=call_id, in_flight=True,
-                            pattern="", started_at_ms=ts_ms,
-                        )
-                    elif tool_name == "glob":
-                        child = AggregateGlobChild(
-                            call_id=call_id, in_flight=True,
-                            pattern="", started_at_ms=ts_ms,
-                        )
-                    else:  # ls
-                        child = AggregateLsChild(
-                            call_id=call_id, in_flight=True,
-                            path="", started_at_ms=ts_ms,
-                        )
-                    new_conv = _append_exploration_child(agent.conversation, child, ts_ms)
+                    else:
+                        # First exploration tool in a run: top-level entry.
+                        entries.append(child)
+                    new_conv = flushed.model_copy(update={"entries": entries})
                     return projection.model_copy(update={
                         "run": _update_agent_conversation(
                             projection.run, agent_id, new_conv, last_tool=tool_name,
@@ -1756,12 +1914,18 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                                     "tool_input": ti,
                                     "tool_input_delta": new_delta,
                                 }
-                                if isinstance(child, AggregateReadChild):
-                                    upd["file"] = ti.get("file_path", "") or ti.get("path", "")
-                                elif isinstance(child, AggregateGrepChild):
+                                if isinstance(child, ToolReadEntry):
+                                    upd.update(_read_args_update(ti))
+                                elif isinstance(child, ToolGrepEntry):
                                     upd["pattern"] = ti.get("pattern", "") or ti.get("query", "")
-                                elif isinstance(child, AggregateLsChild):
-                                    upd["path"] = ti.get("path", "") or ti.get("directory", "")
+                                elif isinstance(child, ToolGlobEntry):
+                                    upd["pattern"] = ti.get("pattern", "")
+                                elif isinstance(child, ToolBashEntry):
+                                    upd["command"] = ti.get("command", "")
+                                elif isinstance(child, ToolWebSearchEntry):
+                                    upd["query"] = ti.get("query", "")
+                                elif isinstance(child, ToolWebFetchEntry):
+                                    upd["url"] = ti.get("url", "")
                                 new_children.append(child.model_copy(update=upd))
                                 child_found = True
                             else:
@@ -1778,6 +1942,16 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                             upd["file"] = ti.get("file_path", "") or ti.get("path", "")
                         elif isinstance(entry, ToolBashEntry):
                             upd["command"] = ti.get("command", "")
+                        elif isinstance(entry, ToolReadEntry):
+                            upd.update(_read_args_update(ti))
+                        elif isinstance(entry, ToolGrepEntry):
+                            upd["pattern"] = ti.get("pattern", "") or ti.get("query", "")
+                        elif isinstance(entry, ToolGlobEntry):
+                            upd["pattern"] = ti.get("pattern", "")
+                        elif isinstance(entry, ToolWebSearchEntry):
+                            upd["query"] = ti.get("query", "")
+                        elif isinstance(entry, ToolWebFetchEntry):
+                            upd["url"] = ti.get("url", "")
                         elif isinstance(entry, ToolKoanEntry):
                             # args is the canonical "latest known input" for koan tools
                             upd["args"] = ti
@@ -1824,16 +1998,40 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                         and entry.call_id == call_id
                         and not isinstance(entry, ToolAggregateEntry)
                     ):
-                        upd = {"in_flight": False}
+                        upd: dict = {"in_flight": False}
+                        # Exploration entries (top-level or bash) get completed_at_ms
+                        # and metrics applied here, same as aggregate children.
+                        if isinstance(entry, EXPLORATION_ENTRY_TYPES):
+                            upd["completed_at_ms"] = ts_ms or None
+                            if metrics and isinstance(metrics, dict):
+                                upd.update(_apply_exploration_metrics(entry, metrics))
                         if isinstance(entry, ToolKoanEntry):
                             raw_result = payload.get("result")
+                            parsed = None
                             if raw_result and isinstance(raw_result, str):
                                 try:
-                                    upd["result"] = json.loads(raw_result)
+                                    parsed = json.loads(raw_result)
                                 except (json.JSONDecodeError, TypeError):
-                                    upd["result"] = {"raw": raw_result}
+                                    parsed = {"raw": raw_result}
                             elif isinstance(raw_result, dict):
-                                upd["result"] = raw_result
+                                parsed = raw_result
+                            if parsed is not None:
+                                existing = entry.result or {}
+                                # Merge to preserve fields accumulated by domain events
+                                # (same rationale as tool_completed case above).
+                                upd["result"] = {**existing, **parsed}
+                                # Dangling thinking_end cleanup (same as tool_completed).
+                                result = upd["result"]
+                                traces = result.get("traces", [])
+                                if traces and isinstance(traces, list):
+                                    last = traces[-1]
+                                    if isinstance(last, dict) and last.get("kind") == "thinking_start":
+                                        has_end = any(
+                                            isinstance(t, dict) and t.get("kind") == "thinking_end"
+                                            for t in traces
+                                        )
+                                        if not has_end:
+                                            result["traces"] = list(traces) + [{"kind": "thinking_end"}]
                         if parsed_attachments:
                             upd["attachments"] = parsed_attachments
                         new_entries.append(entry.model_copy(update=upd))
@@ -1851,27 +2049,7 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                                 # are complete after a single tool_result event;
                                 # tool_result_captured may still arrive and is no-op.
                                 if metrics and isinstance(metrics, dict):
-                                    if isinstance(child, AggregateReadChild):
-                                        if "lines_read" in metrics:
-                                            child_upd["lines_read"] = metrics["lines_read"]
-                                        if "bytes_read" in metrics:
-                                            child_upd["bytes_read"] = metrics["bytes_read"]
-                                    elif isinstance(child, AggregateGrepChild):
-                                        if "matches" in metrics:
-                                            child_upd["matches"] = metrics["matches"]
-                                        if "files_matched" in metrics:
-                                            child_upd["files_matched"] = metrics["files_matched"]
-                                    elif isinstance(child, AggregateLsChild):
-                                        if "entries" in metrics:
-                                            child_upd["entries"] = metrics["entries"]
-                                        if "directories" in metrics:
-                                            child_upd["directories"] = metrics["directories"]
-                                    elif isinstance(child, AggregateGlobChild):
-                                        # M4: glob reuses grep's metrics shape.
-                                        if "matches" in metrics:
-                                            child_upd["matches"] = metrics["matches"]
-                                        if "files_matched" in metrics:
-                                            child_upd["files_matched"] = metrics["files_matched"]
+                                    child_upd.update(_apply_exploration_metrics(child, metrics))
                                 new_children.append(child.model_copy(update=child_upd))
                                 child_found = True
                             else:
@@ -1925,6 +2103,74 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 existing_result = target.result or {}
                 existing_answer = existing_result.get("answer", "") or ""
                 new_result = {**existing_result, "answer": existing_answer + delta}
+                new_entries[target_idx] = target.model_copy(update={"result": new_result})
+                new_conv = agent.conversation.model_copy(update={"entries": new_entries})
+                return projection.model_copy(update={
+                    "run": _update_agent_conversation(projection.run, agent_id, new_conv),
+                })
+
+            case "reflect_inline_trace":
+                # Domain event: forward reflect subagent trace events (thinking
+                # transitions, search lifecycle, metadata) to the in-flight
+                # ToolKoanEntry's result.traces array. Correlated by agent_id
+                # only -- same uniqueness invariant as reflect_delta.
+                if projection.run is None or not agent_id:
+                    return projection
+                agent = projection.run.agents.get(agent_id)
+                if agent is None:
+                    return projection
+                trace = payload.get("trace")
+                if not trace or not isinstance(trace, dict):
+                    return projection
+                new_entries = list(agent.conversation.entries)
+                target_idx: int | None = None
+                for i, entry in enumerate(new_entries):
+                    if isinstance(entry, ToolKoanEntry) and entry.in_flight:
+                        target_idx = i
+                        break
+                if target_idx is None:
+                    log.warning(
+                        "fold reflect_inline_trace: no in-flight ToolKoanEntry for agent=%r",
+                        agent_id,
+                    )
+                    return projection
+                target = new_entries[target_idx]
+                existing_result = target.result or {}
+                trace_kind = trace.get("kind", "")
+
+                if trace_kind == "meta":
+                    new_result = {
+                        **existing_result,
+                        "model": trace.get("model", ""),
+                        "maxIterations": trace.get("maxIterations", 0),
+                        "iteration": trace.get("iteration", 0),
+                        "traces": existing_result.get("traces", []),
+                    }
+                elif trace_kind == "search_done":
+                    # Match the last running search entry and update it in place.
+                    # The reflect agent calls search sequentially, so at most one
+                    # running search exists at any time.
+                    traces: list = list(existing_result.get("traces", []))
+                    for j in range(len(traces) - 1, -1, -1):
+                        t = traces[j]
+                        if isinstance(t, dict) and t.get("kind") == "search" and t.get("status") == "running":
+                            traces[j] = {**t, "status": "done", "resultCount": trace.get("resultCount")}
+                            break
+                    new_result = {
+                        **existing_result,
+                        "traces": traces,
+                        "iteration": trace.get("iteration", existing_result.get("iteration")),
+                    }
+                else:
+                    # thinking_start, thinking_end, search (running) -- append.
+                    traces: list = list(existing_result.get("traces", []))
+                    traces.append(trace)
+                    new_result = {
+                        **existing_result,
+                        "traces": traces,
+                        "iteration": trace.get("iteration", existing_result.get("iteration")),
+                    }
+
                 new_entries[target_idx] = target.model_copy(update={"result": new_result})
                 new_conv = agent.conversation.model_copy(update={"entries": new_entries})
                 return projection.model_copy(update={
@@ -2380,6 +2626,7 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                         id=s.get("id", ""),
                         label=s.get("label", ""),
                         command=s.get("command", ""),
+                        phase=s.get("phase", ""),
                     )
                     for s in raw_suggestions
                 ]

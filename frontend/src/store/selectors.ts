@@ -72,12 +72,29 @@ function focusedConversation(s: KoanState): Conversation | undefined {
 // ---------------------------------------------------------------------------
 
 /**
- * The committed conversation entries for the focused agent.
- * Returns EMPTY_ENTRIES (same reference) when there is no focused conversation,
- * so CommittedList does not re-render when there is no active run.
+ * Committed conversation entries for the focused agent, filtered to the
+ * target phase. When viewingPhaseId is null (live mode), filters to
+ * run.phase; when viewingPhaseId is a non-null string, filters to that
+ * historical phase. When there is no active run (no target phase), returns
+ * all entries unfiltered. phase_boundary entries pass through the filter
+ * and are suppressed in renderEntryBody. Returns EMPTY_ENTRIES (same
+ * reference) when there is no focused conversation or the filtered result
+ * is empty, so consumers do not re-render on unrelated patches. Memoized
+ * via reselect so the filtered array reference is stable when inputs have
+ * not changed (Immer structural sharing keeps the entries reference stable
+ * across unrelated patches; viewingPhaseId and phase are primitives).
  */
-export const selectFocusedEntries = (s: KoanState): ConversationEntry[] =>
-  focusedConversation(s)?.entries ?? EMPTY_ENTRIES
+export const selectFocusedEntries = createSelector(
+  [(s: KoanState) => focusedConversation(s)?.entries ?? EMPTY_ENTRIES,
+   (s: KoanState) => s.viewingPhaseId ?? null,
+   (s: KoanState) => s.run?.phase ?? ''],
+  (entries, viewingPhaseId, activePhase): ConversationEntry[] => {
+    const targetPhase = viewingPhaseId ?? activePhase
+    if (!targetPhase) return entries
+    const filtered = entries.filter(e => e.phaseId === targetPhase)
+    return filtered.length > 0 ? filtered : EMPTY_ENTRIES
+  },
+)
 
 /**
  * The raw pending-thinking text (empty string when absent).

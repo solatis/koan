@@ -1,0 +1,85 @@
+/* ToolAggregateCard (organism) — family-grouped two-pane exploration card.
+ * Spec: docs/design-system.md — Organisms → ToolAggregateCard.
+ *
+ * No orange left border — deliberate deviation from "left border =
+ * content source"; the navy header band carries the card's identity. */
+
+.tagg {
+  background: var(--bg-card);
+  border: 0.5px solid var(--border-card);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+}
+
+/* ---- Header band (navy) ---- */
+.tagg-header {
+  background: var(--color-navy);
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 18px 9px;
+}
+
+.tagg-label {
+  font-size: 11px;
+  color: var(--text-on-dark-muted);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.tagg-opcount {
+  font-size: 14px;
+  color: var(--text-on-dark);
+  font-weight: 500;
+}
+
+.tagg-spacer {
+  flex: 1;
+}
+
+.tagg-running {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-orange);
+}
+
+.tagg-running-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-circle);
+  background: var(--status-running);
+  animation: tagg-pulse 1.5s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+@keyframes tagg-pulse {
+  0%, 100% { opacity: 0.3; }
+  50%      { opacity: 1; }
+}
+
+.tagg-elapsed {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-on-dark-subtle);
+  padding-left: 8px;
+}
+
+/* ---- Body: one grid row per family group ---- */
+/* Stat cells stretch to their row height (default align stretch), so the
+ * stacked navy cells form a continuous column with no white gaps. */
+.tagg-body {
+  display: grid;
+  grid-template-columns: 208px 1fr;
+}
+
+.tagg-ops {
+  padding: 9px 18px;
+  min-width: 0;
+}
+
+.tagg-ops--not-first {
+  border-top: 1px solid var(--border-divider-light);
+}
