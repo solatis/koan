@@ -10,9 +10,6 @@ import pytest
 
 from koan.projections import (
     Agent,
-    AggregateGrepChild,
-    AggregateLsChild,
-    AggregateReadChild,
     ArtifactInfo,
     BaseToolEntry,
     Conversation,
@@ -30,7 +27,12 @@ from koan.projections import (
     ToolBashEntry,
     ToolEditEntry,
     ToolGenericEntry,
+    ToolGlobEntry,
+    ToolGrepEntry,
     ToolKoanEntry,
+    ToolReadEntry,
+    ToolWebFetchEntry,
+    ToolWebSearchEntry,
     ToolWriteEntry,
     VersionedEvent,
     WorkflowInfo,
@@ -443,29 +445,24 @@ class TestFoldConversation:
 
 class TestFoldTools:
 
-    def test_tool_read_creates_aggregate_with_one_child(self):
+    def test_tool_request_read_creates_top_level_entry(self):
+        """Single read via tool_request creates a ToolReadEntry directly."""
         p = _proj_with_primary("a1")
-        r = fold(p, _e("tool_read", {
-            "call_id": "c1", "file": "/foo.py", "lines": "1-10", "ts_ms": 1000,
-        }, agent_id="a1"))
+        r = fold(p, _e("tool_request", {"call_id": "c1", "tool": "read", "ts_ms": 1000}, agent_id="a1"))
         conv = r.run.agents["a1"].conversation
         assert len(conv.entries) == 1
-        agg = conv.entries[0]
-        assert isinstance(agg, ToolAggregateEntry)
-        assert agg.started_at_ms == 1000
-        assert len(agg.children) == 1
-        child = agg.children[0]
-        assert isinstance(child, AggregateReadChild)
-        assert child.file == "/foo.py"
-        assert child.lines == "1-10"
-        assert child.in_flight is True
-        assert child.started_at_ms == 1000
-        assert r.run.agents["a1"].last_tool == "read /foo.py:1-10"
+        entry = conv.entries[0]
+        assert isinstance(entry, ToolReadEntry)
+        assert entry.call_id == "c1"
+        assert entry.in_flight is True
+        assert entry.started_at_ms == 1000
+        # No aggregate for a single exploration tool
+        assert not isinstance(entry, ToolAggregateEntry)
 
     def test_two_consecutive_reads_form_one_aggregate(self):
         p = _proj_with_primary("a1")
-        p = fold(p, _e("tool_read", {"call_id": "c1", "file": "/a", "lines": "", "ts_ms": 1}, agent_id="a1"))
-        r = fold(p, _e("tool_read", {"call_id": "c2", "file": "/b", "lines": "", "ts_ms": 2}, agent_id="a1"))
+        p = fold(p, _e("tool_request", {"call_id": "c1", "tool": "read", "ts_ms": 1}, agent_id="a1"))
+        r = fold(p, _e("tool_request", {"call_id": "c2", "tool": "read", "ts_ms": 2}, agent_id="a1"))
         entries = r.run.agents["a1"].conversation.entries
         assert len(entries) == 1
         assert isinstance(entries[0], ToolAggregateEntry)
@@ -474,30 +471,114 @@ class TestFoldTools:
 
     def test_read_grep_ls_form_one_aggregate_three_children(self):
         p = _proj_with_primary("a1")
-        p = fold(p, _e("tool_read", {"call_id": "c1", "file": "/a", "lines": "", "ts_ms": 1}, agent_id="a1"))
-        p = fold(p, _e("tool_grep", {"call_id": "c2", "pattern": "foo", "ts_ms": 2}, agent_id="a1"))
-        r = fold(p, _e("tool_ls", {"call_id": "c3", "path": "/d", "ts_ms": 3}, agent_id="a1"))
+        p = fold(p, _e("tool_request", {"call_id": "c1", "tool": "read", "ts_ms": 1}, agent_id="a1"))
+        p = fold(p, _e("tool_request", {"call_id": "c2", "tool": "grep", "ts_ms": 2}, agent_id="a1"))
+        r = fold(p, _e("tool_request", {"call_id": "c3", "tool": "glob", "ts_ms": 3}, agent_id="a1"))
         entries = r.run.agents["a1"].conversation.entries
         assert len(entries) == 1
         agg = entries[0]
         assert isinstance(agg, ToolAggregateEntry)
-        assert isinstance(agg.children[0], AggregateReadChild)
-        assert isinstance(agg.children[1], AggregateGrepChild)
-        assert isinstance(agg.children[2], AggregateLsChild)
+        assert isinstance(agg.children[0], ToolReadEntry)
+        assert isinstance(agg.children[1], ToolGrepEntry)
+        assert isinstance(agg.children[2], ToolGlobEntry)
 
-    def test_read_bash_read_produces_three_top_level_entries(self):
+    def test_tool_request_bash_in_aggregate(self):
+        """bash inside a run of exploration tools becomes an aggregate child."""
         p = _proj_with_primary("a1")
-        p = fold(p, _e("tool_read", {"call_id": "c1", "file": "/a", "lines": "", "ts_ms": 1}, agent_id="a1"))
-        p = fold(p, _e("tool_bash", {"call_id": "c2", "command": "ls"}, agent_id="a1"))
-        r = fold(p, _e("tool_read", {"call_id": "c3", "file": "/b", "lines": "", "ts_ms": 3}, agent_id="a1"))
+        p = fold(p, _e("tool_request", {"call_id": "c1", "tool": "read", "ts_ms": 1}, agent_id="a1"))
+        r = fold(p, _e("tool_request", {"call_id": "c2", "tool": "bash", "ts_ms": 2}, agent_id="a1"))
         entries = r.run.agents["a1"].conversation.entries
-        assert len(entries) == 3
-        assert isinstance(entries[0], ToolAggregateEntry)
-        assert len(entries[0].children) == 1
-        assert isinstance(entries[1], ToolBashEntry)
-        assert isinstance(entries[2], ToolAggregateEntry)
-        assert len(entries[2].children) == 1
-        assert entries[2].children[0].call_id == "c3"
+        assert len(entries) == 1
+        agg = entries[0]
+        assert isinstance(agg, ToolAggregateEntry)
+        assert len(agg.children) == 2
+        assert isinstance(agg.children[0], ToolReadEntry)
+        assert isinstance(agg.children[1], ToolBashEntry)
+
+    def test_tool_result_captured_bash_metrics(self):
+        """bash metrics (exit_code, output_lines) applied to aggregate child."""
+        p = _proj_with_primary("a1")
+        p = fold(p, _e("tool_request", {"call_id": "c1", "tool": "read", "ts_ms": 1}, agent_id="a1"))
+        p = fold(p, _e("tool_request", {"call_id": "c2", "tool": "bash", "ts_ms": 2}, agent_id="a1"))
+        r = fold(p, _e("tool_result_captured", {
+            "call_id": "c2", "tool": "bash",
+            "metrics": {"exit_code": 0, "output_lines": 5},
+        }, agent_id="a1"))
+        child = r.run.agents["a1"].conversation.entries[0].children[1]
+        assert isinstance(child, ToolBashEntry)
+        assert child.exit_code == 0
+        assert child.output_lines == 5
+
+    def test_tool_result_captured_web_metrics(self):
+        """web_search and web_fetch metrics applied to aggregate children."""
+        p = _proj_with_primary("a1")
+        p = fold(p, _e("tool_request", {"call_id": "c1", "tool": "read", "ts_ms": 1}, agent_id="a1"))
+        p = fold(p, _e("tool_request", {"call_id": "c2", "tool": "web_search", "ts_ms": 2}, agent_id="a1"))
+        p = fold(p, _e("tool_request", {"call_id": "c3", "tool": "web_fetch", "ts_ms": 3}, agent_id="a1"))
+        r = fold(p, _e("tool_result_captured", {
+            "call_id": "c2", "tool": "web_search",
+            "metrics": {"result_count": 5},
+        }, agent_id="a1"))
+        r = fold(r, _e("tool_result_captured", {
+            "call_id": "c3", "tool": "web_fetch",
+            "metrics": {"content_size_bytes": 2048},
+        }, agent_id="a1"))
+        agg = r.run.agents["a1"].conversation.entries[0]
+        assert isinstance(agg.children[1], ToolWebSearchEntry)
+        assert agg.children[1].result_count == 5
+        assert isinstance(agg.children[2], ToolWebFetchEntry)
+        assert agg.children[2].content_size_bytes == 2048
+
+    def test_read_range_derivation(self):
+        """offset/limit from tool_input_delta produce correct range."""
+        p = _proj_with_primary("a1")
+        p = fold(p, _e("tool_request", {"call_id": "c1", "tool": "read", "ts_ms": 1}, agent_id="a1"))
+        p = fold(p, _e("tool_request", {"call_id": "c2", "tool": "read", "ts_ms": 2}, agent_id="a1"))
+        # tool_input_delta with offset/limit
+        r = fold(p, _e("tool_input_delta", {
+            "call_id": "c1", "tool": "read",
+            "tool_input": {"file_path": "/foo.py", "offset": 10, "limit": 80},
+        }, agent_id="a1"))
+        child = r.run.agents["a1"].conversation.entries[0].children[0]
+        assert isinstance(child, ToolReadEntry)
+        assert child.offset == 10
+        assert child.limit == 80
+        assert child.range == "11–90"  # offset+1 to offset+limit
+        # Whole-file read: limit is None
+        r2 = fold(r, _e("tool_input_delta", {
+            "call_id": "c2", "tool": "read",
+            "tool_input": {"file_path": "/bar.py"},
+        }, agent_id="a1"))
+        child2 = r2.run.agents["a1"].conversation.entries[0].children[1]
+        assert child2.limit is None
+        assert child2.range is None
+
+    def test_ts_ms_on_tool_request(self):
+        """tool_request carries real timestamps on aggregate entries."""
+        p = _proj_with_primary("a1")
+        p = fold(p, _e("tool_request", {"call_id": "c1", "tool": "read", "ts_ms": 1000}, agent_id="a1"))
+        r = fold(p, _e("tool_request", {"call_id": "c2", "tool": "read", "ts_ms": 2000}, agent_id="a1"))
+        agg = r.run.agents["a1"].conversation.entries[0]
+        assert isinstance(agg, ToolAggregateEntry)
+        assert agg.started_at_ms == 1000  # first child's started_at_ms
+        assert agg.children[0].started_at_ms == 1000
+        assert agg.children[1].started_at_ms == 2000
+
+    def test_read_bash_read_produces_single_aggregate_three_children(self):
+        """read -> bash -> read: bash is in the exploration set, so all three
+        form a single ToolAggregateEntry with 3 children."""
+        p = _proj_with_primary("a1")
+        p = fold(p, _e("tool_request", {"call_id": "c1", "tool": "read", "ts_ms": 1}, agent_id="a1"))
+        p = fold(p, _e("tool_request", {"call_id": "c2", "tool": "bash", "ts_ms": 2}, agent_id="a1"))
+        r = fold(p, _e("tool_request", {"call_id": "c3", "tool": "read", "ts_ms": 3}, agent_id="a1"))
+        entries = r.run.agents["a1"].conversation.entries
+        assert len(entries) == 1
+        agg = entries[0]
+        assert isinstance(agg, ToolAggregateEntry)
+        assert len(agg.children) == 3
+        assert isinstance(agg.children[0], ToolReadEntry)
+        assert isinstance(agg.children[1], ToolBashEntry)
+        assert isinstance(agg.children[2], ToolReadEntry)
 
     def test_tool_write_appends_entry(self):
         p = _proj_with_primary("a1")
@@ -510,28 +591,59 @@ class TestFoldTools:
         r = fold(p, _e("tool_edit", {"call_id": "c1", "file": "/edit.py"}, agent_id="a1"))
         assert isinstance(r.run.agents["a1"].conversation.entries[0], ToolEditEntry)
 
-    def test_tool_bash_appends_entry(self):
+    def test_tool_request_bash_creates_top_level_entry(self):
+        """Single bash via tool_request creates a ToolBashEntry."""
         p = _proj_with_primary("a1")
-        r = fold(p, _e("tool_bash", {"call_id": "c1", "command": "ls -la"}, agent_id="a1"))
+        r = fold(p, _e("tool_request", {"call_id": "c1", "tool": "bash", "ts_ms": 5}, agent_id="a1"))
         entry = r.run.agents["a1"].conversation.entries[0]
         assert isinstance(entry, ToolBashEntry)
-        assert entry.command == "ls -la"
+        assert entry.call_id == "c1"
+        assert entry.in_flight is True
+        assert entry.started_at_ms == 5
+        assert entry.command == ""  # filled by tool_input_delta
 
-    def test_tool_grep_single_event_wraps_in_aggregate(self):
+    def test_tool_request_grep_creates_top_level_entry(self):
+        """Single grep via tool_request creates a ToolGrepEntry."""
         p = _proj_with_primary("a1")
-        r = fold(p, _e("tool_grep", {"call_id": "c1", "pattern": "def foo", "ts_ms": 5}, agent_id="a1"))
-        agg = r.run.agents["a1"].conversation.entries[0]
-        assert isinstance(agg, ToolAggregateEntry)
-        assert isinstance(agg.children[0], AggregateGrepChild)
-        assert agg.children[0].pattern == "def foo"
+        r = fold(p, _e("tool_request", {"call_id": "c1", "tool": "grep", "ts_ms": 5}, agent_id="a1"))
+        entry = r.run.agents["a1"].conversation.entries[0]
+        assert isinstance(entry, ToolGrepEntry)
+        assert entry.call_id == "c1"
+        assert entry.in_flight is True
 
-    def test_tool_ls_single_event_wraps_in_aggregate(self):
+    def test_tool_request_glob_creates_top_level_entry(self):
+        """Single glob via tool_request creates a ToolGlobEntry."""
         p = _proj_with_primary("a1")
-        r = fold(p, _e("tool_ls", {"call_id": "c1", "path": "/src", "ts_ms": 9}, agent_id="a1"))
-        agg = r.run.agents["a1"].conversation.entries[0]
-        assert isinstance(agg, ToolAggregateEntry)
-        assert isinstance(agg.children[0], AggregateLsChild)
-        assert agg.children[0].path == "/src"
+        r = fold(p, _e("tool_request", {"call_id": "c1", "tool": "glob", "ts_ms": 9}, agent_id="a1"))
+        entry = r.run.agents["a1"].conversation.entries[0]
+        assert isinstance(entry, ToolGlobEntry)
+        assert entry.call_id == "c1"
+        assert entry.in_flight is True
+
+    def test_tool_request_web_search_creates_top_level_entry(self):
+        """Single web_search via tool_request creates a ToolWebSearchEntry."""
+        p = _proj_with_primary("a1")
+        r = fold(p, _e("tool_request", {"call_id": "c1", "tool": "web_search", "ts_ms": 7}, agent_id="a1"))
+        entry = r.run.agents["a1"].conversation.entries[0]
+        assert isinstance(entry, ToolWebSearchEntry)
+        assert entry.call_id == "c1"
+
+    def test_tool_request_web_fetch_creates_top_level_entry(self):
+        """Single web_fetch via tool_request creates a ToolWebFetchEntry."""
+        p = _proj_with_primary("a1")
+        r = fold(p, _e("tool_request", {"call_id": "c1", "tool": "web_fetch", "ts_ms": 8}, agent_id="a1"))
+        entry = r.run.agents["a1"].conversation.entries[0]
+        assert isinstance(entry, ToolWebFetchEntry)
+        assert entry.call_id == "c1"
+
+    def test_tool_aggregate_invariant_single_tool_is_not_aggregate(self):
+        """A single exploration tool is a top-level entry, never a single-child aggregate."""
+        for tool in ("read", "grep", "glob", "bash", "web_search", "web_fetch"):
+            p = _proj_with_primary("a1")
+            r = fold(p, _e("tool_request", {"call_id": "c1", "tool": tool, "ts_ms": 1}, agent_id="a1"))
+            entries = r.run.agents["a1"].conversation.entries
+            assert len(entries) == 1
+            assert not isinstance(entries[0], ToolAggregateEntry), f"{tool} should not create aggregate"
 
     def test_tool_called_appends_generic_entry(self):
         p = _proj_with_primary("a1")
@@ -617,7 +729,7 @@ class TestFoldTools:
     def test_tool_completed_no_attachments_leaves_field_none(self):
         """When tool_completed has no attachments, entry.attachments stays None."""
         p = _proj_with_primary("a1")
-        p = fold(p, _e("tool_bash", {"call_id": "c1", "command": "ls"}, agent_id="a1"))
+        p = fold(p, _e("tool_request", {"call_id": "c1", "tool": "bash"}, agent_id="a1"))
         r = fold(p, _e("tool_completed", {"call_id": "c1", "tool": "bash"}, agent_id="a1"))
         entry = r.run.agents["a1"].conversation.entries[0]
         assert entry.in_flight is False
@@ -632,8 +744,8 @@ class TestFoldTools:
 
     def test_tool_completed_marks_aggregate_child_done(self):
         p = _proj_with_primary("a1")
-        p = fold(p, _e("tool_read", {"call_id": "c1", "file": "/a", "lines": "", "ts_ms": 1}, agent_id="a1"))
-        p = fold(p, _e("tool_read", {"call_id": "c2", "file": "/b", "lines": "", "ts_ms": 2}, agent_id="a1"))
+        p = fold(p, _e("tool_request", {"call_id": "c1", "tool": "read", "ts_ms": 1}, agent_id="a1"))
+        p = fold(p, _e("tool_request", {"call_id": "c2", "tool": "read", "ts_ms": 2}, agent_id="a1"))
         r = fold(p, _e("tool_completed", {"call_id": "c1", "tool": "read", "ts_ms": 5}, agent_id="a1"))
         agg = r.run.agents["a1"].conversation.entries[0]
         assert isinstance(agg, ToolAggregateEntry)
@@ -646,27 +758,27 @@ class TestFoldTools:
 
     def test_tool_completed_for_top_level_tool_still_works(self):
         p = _proj_with_primary("a1")
-        p = fold(p, _e("tool_bash", {"call_id": "c1", "command": "ls"}, agent_id="a1"))
+        p = fold(p, _e("tool_request", {"call_id": "c1", "tool": "bash"}, agent_id="a1"))
         assert p.run.agents["a1"].conversation.entries[0].in_flight is True
         r = fold(p, _e("tool_completed", {"call_id": "c1", "tool": "bash"}, agent_id="a1"))
         assert r.run.agents["a1"].conversation.entries[0].in_flight is False
 
     def test_tool_completed_unknown_call_id_is_noop(self):
         p = _proj_with_primary("a1")
-        p = fold(p, _e("tool_read", {"call_id": "c1", "file": "/a", "lines": ""}, agent_id="a1"))
+        p = fold(p, _e("tool_request", {"call_id": "c1", "tool": "read", "ts_ms": 1}, agent_id="a1"))
         r = fold(p, _e("tool_completed", {"call_id": "missing", "tool": "read"}, agent_id="a1"))
-        # Projection shape unchanged; c1 still in-flight.
-        agg = r.run.agents["a1"].conversation.entries[0]
-        assert agg.children[0].in_flight is True
+        # Projection shape unchanged; c1 still in-flight (top-level entry).
+        entry = r.run.agents["a1"].conversation.entries[0]
+        assert entry.in_flight is True
 
     def test_tool_flushes_pending_fields(self):
         p = _proj_with_primary("a1")
         p = fold(p, _e("stream_delta", {"delta": "output"}, agent_id="a1"))
-        r = fold(p, _e("tool_read", {"call_id": "c1", "file": "/f", "lines": ""}, agent_id="a1"))
+        r = fold(p, _e("tool_request", {"call_id": "c1", "tool": "read", "ts_ms": 1}, agent_id="a1"))
         conv = r.run.agents["a1"].conversation
         assert len(conv.entries) == 2
         assert isinstance(conv.entries[0], TextEntry)   # flushed
-        assert isinstance(conv.entries[1], ToolAggregateEntry)
+        assert isinstance(conv.entries[1], ToolReadEntry)  # top-level entry
         assert conv.pending_text == ""
 
     def test_tool_events_per_agent_not_primary_only(self):
@@ -674,28 +786,30 @@ class TestFoldTools:
         p = _proj_with_run()
         p = fold(p, _e("scout_queued", {"scout_id": "s1", "label": "eng", "model": None}))
         p = fold(p, _e("agent_spawned", {"agent_id": "s1", "role": "scout", "is_primary": False, "started_at_ms": 0}, agent_id="s1"))
-        r = fold(p, _e("tool_read", {"call_id": "c1", "file": "/f", "lines": ""}, agent_id="s1"))
+        r = fold(p, _e("tool_request", {"call_id": "c1", "tool": "read", "ts_ms": 1}, agent_id="s1"))
         assert len(r.run.agents["s1"].conversation.entries) == 1
-        assert isinstance(r.run.agents["s1"].conversation.entries[0], ToolAggregateEntry)
+        assert isinstance(r.run.agents["s1"].conversation.entries[0], ToolReadEntry)
 
     # --- tool_result_captured -----------------------------------------------
 
     def test_tool_result_captured_attaches_read_metrics(self):
         p = _proj_with_primary("a1")
-        p = fold(p, _e("tool_read", {"call_id": "c1", "file": "/a", "lines": "", "ts_ms": 1}, agent_id="a1"))
+        # Two reads form an aggregate so tool_result_captured targets a child.
+        p = fold(p, _e("tool_request", {"call_id": "c1", "tool": "read", "ts_ms": 1}, agent_id="a1"))
+        p = fold(p, _e("tool_request", {"call_id": "c2", "tool": "read", "ts_ms": 2}, agent_id="a1"))
         r = fold(p, _e("tool_result_captured", {
             "call_id": "c1", "tool": "read",
             "metrics": {"lines_read": 42, "bytes_read": 1024},
         }, agent_id="a1"))
         child = r.run.agents["a1"].conversation.entries[0].children[0]
-        assert isinstance(child, AggregateReadChild)
+        assert isinstance(child, ToolReadEntry)
         assert child.lines_read == 42
         assert child.bytes_read == 1024
 
     def test_tool_result_captured_grep_leaves_read_siblings_alone(self):
         p = _proj_with_primary("a1")
-        p = fold(p, _e("tool_read", {"call_id": "c1", "file": "/a", "lines": "", "ts_ms": 1}, agent_id="a1"))
-        p = fold(p, _e("tool_grep", {"call_id": "c2", "pattern": "x", "ts_ms": 2}, agent_id="a1"))
+        p = fold(p, _e("tool_request", {"call_id": "c1", "tool": "read", "ts_ms": 1}, agent_id="a1"))
+        p = fold(p, _e("tool_request", {"call_id": "c2", "tool": "grep", "ts_ms": 2}, agent_id="a1"))
         r = fold(p, _e("tool_result_captured", {
             "call_id": "c2", "tool": "grep",
             "metrics": {"matches": 7, "files_matched": 3},
@@ -703,15 +817,15 @@ class TestFoldTools:
         agg = r.run.agents["a1"].conversation.entries[0]
         read_child = agg.children[0]
         grep_child = agg.children[1]
-        assert isinstance(read_child, AggregateReadChild)
+        assert isinstance(read_child, ToolReadEntry)
         assert read_child.lines_read is None  # untouched
-        assert isinstance(grep_child, AggregateGrepChild)
+        assert isinstance(grep_child, ToolGrepEntry)
         assert grep_child.matches == 7
         assert grep_child.files_matched == 3
 
     def test_tool_result_captured_unknown_call_id_is_noop(self):
         p = _proj_with_primary("a1")
-        p = fold(p, _e("tool_read", {"call_id": "c1", "file": "/a", "lines": ""}, agent_id="a1"))
+        p = fold(p, _e("tool_request", {"call_id": "c1", "tool": "read", "ts_ms": 1}, agent_id="a1"))
         before = p.run.agents["a1"].conversation.entries[0]
         r = fold(p, _e("tool_result_captured", {
             "call_id": "missing", "tool": "read",
@@ -722,23 +836,25 @@ class TestFoldTools:
 
     def test_tool_result_captured_no_metrics_is_noop(self):
         p = _proj_with_primary("a1")
-        p = fold(p, _e("tool_read", {"call_id": "c1", "file": "/a", "lines": ""}, agent_id="a1"))
+        p = fold(p, _e("tool_request", {"call_id": "c1", "tool": "read", "ts_ms": 1}, agent_id="a1"))
+        p = fold(p, _e("tool_request", {"call_id": "c2", "tool": "read", "ts_ms": 2}, agent_id="a1"))
         r = fold(p, _e("tool_result_captured", {"call_id": "c1", "tool": "read"}, agent_id="a1"))
         child = r.run.agents["a1"].conversation.entries[0].children[0]
         assert child.lines_read is None
         assert child.bytes_read is None
 
-    def test_tool_result_captured_ls_metrics(self):
+    def test_tool_result_captured_glob_metrics(self):
         p = _proj_with_primary("a1")
-        p = fold(p, _e("tool_ls", {"call_id": "c1", "path": "/d", "ts_ms": 1}, agent_id="a1"))
+        p = fold(p, _e("tool_request", {"call_id": "c1", "tool": "glob", "ts_ms": 1}, agent_id="a1"))
+        p = fold(p, _e("tool_request", {"call_id": "c2", "tool": "glob", "ts_ms": 2}, agent_id="a1"))
         r = fold(p, _e("tool_result_captured", {
-            "call_id": "c1", "tool": "ls",
-            "metrics": {"entries": 12, "directories": 3},
+            "call_id": "c1", "tool": "glob",
+            "metrics": {"matches": 12, "files_matched": 12},
         }, agent_id="a1"))
         child = r.run.agents["a1"].conversation.entries[0].children[0]
-        assert isinstance(child, AggregateLsChild)
-        assert child.entries == 12
-        assert child.directories == 3
+        assert isinstance(child, ToolGlobEntry)
+        assert child.matches == 12
+        assert child.files_matched == 12
 
 
 # ---------------------------------------------------------------------------
@@ -772,14 +888,16 @@ class TestEntryIds:
         assert conv.entries[1].entry_id == "e1"
 
     def test_aggregate_child_has_empty_entry_id_parent_has_non_empty(self):
-        """ToolAggregateEntry gets an entry_id; its AggregateReadChild does not."""
+        """ToolAggregateEntry gets an entry_id; its children do not."""
         p = _proj_with_primary("a1")
-        r = fold(p, _e("tool_read", {"call_id": "c1", "file": "/f.py", "lines": "", "ts_ms": 1}, agent_id="a1"))
+        # Two reads form an aggregate so children exist.
+        p = fold(p, _e("tool_request", {"call_id": "c1", "tool": "read", "ts_ms": 1}, agent_id="a1"))
+        r = fold(p, _e("tool_request", {"call_id": "c2", "tool": "read", "ts_ms": 2}, agent_id="a1"))
         conv = r.run.agents["a1"].conversation
         agg = conv.entries[0]
         assert isinstance(agg, ToolAggregateEntry)
-        assert agg.entry_id == "e0"
-        # Child is keyed by call_id; entry_id stays '' (intentionally unset)
+        assert agg.entry_id == "e1"  # aggregate gets new id (first read had e0)
+        # Children are keyed by call_id; entry_id stays '' (intentionally unset)
         assert agg.children[0].call_id == "c1"
         assert agg.children[0].entry_id == ""
 
@@ -1092,7 +1210,7 @@ class TestJSONPatchPaths:
         }, agent_id="a1")
         store.push_event("agent_step_advanced", {"step": 1, "step_name": "Scout"}, agent_id="a1")
         q = store.subscribe()
-        store.push_event("tool_read", {"call_id": "c1", "file": "/f.py", "lines": ""}, agent_id="a1")
+        store.push_event("tool_request", {"call_id": "c1", "tool": "read", "ts_ms": 1}, agent_id="a1")
         msg = q.get_nowait()
         ops = msg["patch"]
         # Check some paths contain camelCase
@@ -1302,6 +1420,193 @@ class TestFoldReflectDelta:
 
 
 # ---------------------------------------------------------------------------
+# fold: reflect_inline_trace domain event
+# ---------------------------------------------------------------------------
+
+class TestFoldReflectInlineTrace:
+    """reflect_inline_trace appends trace events to the in-flight ToolKoanEntry's
+    result.traces array and updates metadata (model, maxIterations, iteration).
+
+    Correlated by agent_id only (koan MCP tools block, so at most one
+    in-flight koan entry per agent at any time). Fold case is pure.
+    """
+
+    def _with_inflight_koan_entry(self, tool_name: str = "koan_reflect") -> tuple:
+        """Return (projection, agent_id) with an in-flight ToolKoanEntry."""
+        p = _proj_with_primary("a1")
+        p = fold(p, _e("tool_request", {
+            "call_id": "c1", "tool": tool_name,
+        }, agent_id="a1"))
+        return p, "a1"
+
+    def _trace(self, trace: dict, agent_id: str = "a1") -> VersionedEvent:
+        return _e("reflect_inline_trace", {"trace": trace}, agent_id=agent_id)
+
+    def test_meta_sets_model_and_max_iterations(self):
+        """meta trace sets result.model, result.maxIterations, result.iteration, and initializes traces."""
+        p, aid = self._with_inflight_koan_entry()
+        r = fold(p, self._trace({
+            "kind": "meta", "model": "gemini-flash-latest",
+            "maxIterations": 10, "iteration": 0,
+        }, aid))
+        entry = r.run.agents[aid].conversation.entries[0]
+        assert isinstance(entry, ToolKoanEntry)
+        assert entry.result["model"] == "gemini-flash-latest"
+        assert entry.result["maxIterations"] == 10
+        assert entry.result["iteration"] == 0
+        assert entry.result["traces"] == []
+
+    def test_thinking_start_appends_to_traces(self):
+        """thinking_start trace is appended to result.traces."""
+        p, aid = self._with_inflight_koan_entry()
+        r = fold(p, self._trace({"kind": "thinking_start"}, aid))
+        entry = r.run.agents[aid].conversation.entries[0]
+        assert entry.result["traces"] == [{"kind": "thinking_start"}]
+
+    def test_thinking_end_appends_to_traces(self):
+        """thinking_end trace is appended to result.traces."""
+        p, aid = self._with_inflight_koan_entry()
+        r = fold(p, self._trace({"kind": "thinking_end"}, aid))
+        entry = r.run.agents[aid].conversation.entries[0]
+        assert entry.result["traces"] == [{"kind": "thinking_end"}]
+
+    def test_search_running_appends_to_traces(self):
+        """search (running) trace is appended with all fields."""
+        p, aid = self._with_inflight_koan_entry()
+        r = fold(p, self._trace({
+            "kind": "search", "status": "running",
+            "query": "auth", "type_filter": "decision", "iteration": 1,
+        }, aid))
+        entry = r.run.agents[aid].conversation.entries[0]
+        assert entry.result["traces"] == [{
+            "kind": "search", "status": "running",
+            "query": "auth", "type_filter": "decision", "iteration": 1,
+        }]
+
+    def test_search_done_updates_last_running(self):
+        """search_done updates the last running search entry with resultCount and status done."""
+        p, aid = self._with_inflight_koan_entry()
+        p = fold(p, self._trace({
+            "kind": "search", "status": "running",
+            "query": "auth", "type_filter": "decision", "iteration": 1,
+        }, aid))
+        r = fold(p, self._trace({
+            "kind": "search_done", "query": "auth",
+            "resultCount": 5, "iteration": 1,
+        }, aid))
+        entry = r.run.agents[aid].conversation.entries[0]
+        assert len(entry.result["traces"]) == 1
+        t = entry.result["traces"][0]
+        assert t["status"] == "done"
+        assert t["resultCount"] == 5
+
+    def test_search_done_no_running_is_noop(self):
+        """search_done without a prior running search leaves traces unchanged (empty)."""
+        p, aid = self._with_inflight_koan_entry()
+        r = fold(p, self._trace({
+            "kind": "search_done", "query": "auth",
+            "resultCount": 3, "iteration": 1,
+        }, aid))
+        entry = r.run.agents[aid].conversation.entries[0]
+        # traces is not set because search_done branch does not append
+        assert entry.result.get("traces", []) == []
+
+    def test_multiple_traces_accumulate(self):
+        """meta, thinking_start, search running, search_done, thinking_end accumulate in order."""
+        p, aid = self._with_inflight_koan_entry()
+        p = fold(p, self._trace({
+            "kind": "meta", "model": "opus", "maxIterations": 10, "iteration": 0,
+        }, aid))
+        p = fold(p, self._trace({"kind": "thinking_start"}, aid))
+        p = fold(p, self._trace({
+            "kind": "search", "status": "running",
+            "query": "auth", "type_filter": "", "iteration": 1,
+        }, aid))
+        p = fold(p, self._trace({
+            "kind": "search_done", "query": "auth",
+            "resultCount": 2, "iteration": 1,
+        }, aid))
+        r = fold(p, self._trace({"kind": "thinking_end"}, aid))
+        entry = r.run.agents[aid].conversation.entries[0]
+        traces = entry.result["traces"]
+        assert traces[0] == {"kind": "thinking_start"}
+        assert traces[1]["kind"] == "search"
+        assert traces[1]["status"] == "done"
+        assert traces[1]["resultCount"] == 2
+        assert traces[1]["query"] == "auth"
+        assert traces[2] == {"kind": "thinking_end"}
+        assert len(traces) == 3
+
+    def test_iteration_updates_on_trace(self):
+        """iteration field is updated from the trace's iteration field when present."""
+        p, aid = self._with_inflight_koan_entry()
+        p = fold(p, self._trace({
+            "kind": "meta", "model": "opus", "maxIterations": 10, "iteration": 0,
+        }, aid))
+        r = fold(p, self._trace({
+            "kind": "search", "status": "running",
+            "query": "x", "type_filter": "", "iteration": 2,
+        }, aid))
+        entry = r.run.agents[aid].conversation.entries[0]
+        assert entry.result["iteration"] == 2
+
+    def test_no_inflight_entry_is_noop(self):
+        """When there is no in-flight ToolKoanEntry the event is dropped silently."""
+        p = _proj_with_primary("a1")
+        r = fold(p, self._trace({"kind": "thinking_start"}, "a1"))
+        assert r.run.agents["a1"].conversation.entries == []
+
+    def test_inflight_remains_true(self):
+        """After emitting reflect_inline_trace, entry.in_flight stays True."""
+        p, aid = self._with_inflight_koan_entry()
+        r = fold(p, self._trace({"kind": "thinking_start"}, aid))
+        entry = r.run.agents[aid].conversation.entries[0]
+        assert entry.in_flight is True
+
+    def test_preserves_existing_result_fields(self):
+        """reflect_inline_trace preserves answer set by reflect_delta."""
+        p, aid = self._with_inflight_koan_entry()
+        p = fold(p, _e("reflect_delta", {"delta": "hello"}, agent_id=aid))
+        r = fold(p, self._trace({"kind": "thinking_start"}, aid))
+        entry = r.run.agents[aid].conversation.entries[0]
+        assert entry.result["answer"] == "hello"
+        assert entry.result["traces"] == [{"kind": "thinking_start"}]
+
+    def test_tool_completed_merges_not_replaces_result(self):
+        """tool_completed merges parsed result into existing result, preserving traces/model."""
+        p, aid = self._with_inflight_koan_entry()
+        p = fold(p, self._trace({
+            "kind": "meta", "model": "opus", "maxIterations": 10, "iteration": 0,
+        }, aid))
+        p = fold(p, self._trace({"kind": "thinking_start"}, aid))
+        p = fold(p, self._trace({"kind": "thinking_end"}, aid))
+        result_json = '{"answer": "final", "citations": [{"id": "1", "title": "T"}], "iterations": 3}'
+        r = fold(p, _e("tool_completed", {
+            "call_id": "c1", "tool": "koan_reflect", "result": result_json,
+        }, agent_id=aid))
+        entry = r.run.agents[aid].conversation.entries[0]
+        assert isinstance(entry, ToolKoanEntry)
+        assert entry.in_flight is False
+        assert entry.result["answer"] == "final"
+        assert entry.result["model"] == "opus"
+        assert entry.result["traces"] == [{"kind": "thinking_start"}, {"kind": "thinking_end"}]
+        assert entry.result["iterations"] == 3
+
+    def test_tool_completed_cleans_up_dangling_thinking(self):
+        """tool_completed appends thinking_end if the last trace is thinking_start."""
+        p, aid = self._with_inflight_koan_entry()
+        p = fold(p, self._trace({"kind": "thinking_start"}, aid))
+        result_json = '{"answer": "done", "iterations": 1}'
+        r = fold(p, _e("tool_completed", {
+            "call_id": "c1", "tool": "koan_reflect", "result": result_json,
+        }, agent_id=aid))
+        entry = r.run.agents[aid].conversation.entries[0]
+        traces = entry.result["traces"]
+        assert traces[-1] == {"kind": "thinking_end"}
+        assert traces[0] == {"kind": "thinking_start"}
+
+
+# ---------------------------------------------------------------------------
 # fold: tool_attachments domain event
 # ---------------------------------------------------------------------------
 
@@ -1360,8 +1665,9 @@ class TestFoldToolAttachments:
     def test_tool_attachments_does_not_target_aggregate_entry(self):
         """ToolAggregateEntry has no in_flight field; it is skipped."""
         p = _proj_with_primary("a1")
-        # Seed an aggregate entry (read tool creates ToolAggregateEntry, not ToolBashEntry)
-        p = fold(p, _e("tool_read", {"call_id": "c1", "file": "/a", "lines": "", "ts_ms": 1}, agent_id="a1"))
+        # Two reads form a ToolAggregateEntry (not a ToolBashEntry).
+        p = fold(p, _e("tool_request", {"call_id": "c1", "tool": "read", "ts_ms": 1}, agent_id="a1"))
+        p = fold(p, _e("tool_request", {"call_id": "c2", "tool": "read", "ts_ms": 2}, agent_id="a1"))
         from koan.projections import ToolAggregateEntry
         assert isinstance(p.run.agents["a1"].conversation.entries[0], ToolAggregateEntry)
         # tool_attachments should be a no-op (no non-aggregate in-flight entry).

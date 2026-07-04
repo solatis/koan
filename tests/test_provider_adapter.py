@@ -114,16 +114,16 @@ def test_caching_off_emits_nothing():
 
 
 def test_caching_anthropic_long_tier_emits_1h():
-    """Anthropic long cache tier: _caching_settings emits all three anthropic_cache* keys as '1h'."""
+    """Anthropic long tier: stable keys '1h' (instructions+tools), tail key '5m' (anthropic_cache)."""
     caps = _caps(supports_prompt_caching=True)
     s = adapter._caching_settings("anthropic", CachingPolicy(mode="auto"), "long", caps)
-    assert s["anthropic_cache"] == "1h"
+    assert s["anthropic_cache"] == "5m"
     assert s["anthropic_cache_instructions"] == "1h"
     assert s["anthropic_cache_tool_definitions"] == "1h"
 
 
 def test_caching_anthropic_short_tier_emits_5m():
-    """Anthropic short cache tier: _caching_settings emits all three anthropic_cache* keys as '5m'."""
+    """Anthropic short tier: all three anthropic_cache* keys '5m' (uniform-short, no split)."""
     caps = _caps(supports_prompt_caching=True)
     s = adapter._caching_settings("anthropic", CachingPolicy(mode="auto"), "short", caps)
     assert s["anthropic_cache"] == "5m"
@@ -132,7 +132,7 @@ def test_caching_anthropic_short_tier_emits_5m():
 
 
 def test_caching_bedrock_short_tier_emits_5m():
-    """Bedrock short cache tier: _caching_settings emits all three bedrock_cache* keys as '5m'."""
+    """Bedrock short tier: all three bedrock_cache* keys '5m' (uniform-short, no split)."""
     caps = _caps(supports_prompt_caching=True)
     s = adapter._caching_settings("bedrock", CachingPolicy(mode="auto"), "short", caps)
     assert s["bedrock_cache_messages"] == "5m"
@@ -141,10 +141,10 @@ def test_caching_bedrock_short_tier_emits_5m():
 
 
 def test_caching_bedrock_long_tier_emits_1h():
-    """Bedrock long cache tier: _caching_settings emits all three bedrock_cache* keys as '1h'."""
+    """Bedrock long tier: stable keys '1h' (instructions+tools), tail key '5m' (bedrock_cache_messages)."""
     caps = _caps(supports_prompt_caching=True)
     s = adapter._caching_settings("bedrock", CachingPolicy(mode="auto"), "long", caps)
-    assert s["bedrock_cache_messages"] == "1h"
+    assert s["bedrock_cache_messages"] == "5m"
     assert s["bedrock_cache_instructions"] == "1h"
     assert s["bedrock_cache_tool_definitions"] == "1h"
 

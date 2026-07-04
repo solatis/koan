@@ -7,7 +7,7 @@
 #   (d) Step 3 (Reconcile) guidance instructs inline ## Execution N section,
 #       milestones.md UPDATE on conforming path, and koan_request_executor re-run
 #       or escalation on non-conforming path.
-#   (e) "execute" is in _ORCHESTRATOR_BASH_PHASES; compose_toolset includes bash.
+#   (e) compose_toolset includes bash for the orchestrator.
 #   (f) Workflow transitions["execute"] do NOT contain "exec-review".
 #   (g) Plan workflow execute -> curation only (no "plan"); initiative execute drops "tech-plan".
 #
@@ -306,16 +306,6 @@ def test_execute_step3_no_exec_review_reference():
     g = execute.step_guidance(3, _ctx())
     text = "\n".join(g.instructions)
     assert "exec-review" not in text
-
-
-# ---------------------------------------------------------------------------
-# (e) Tool policy: bash available in execute phase for orchestrator
-# ---------------------------------------------------------------------------
-
-def test_execute_in_orchestrator_bash_phases():
-    """'execute' must be in _ORCHESTRATOR_BASH_PHASES after M5."""
-    from koan.tools.tool_policy import _ORCHESTRATOR_BASH_PHASES
-    assert "execute" in _ORCHESTRATOR_BASH_PHASES
 
 
 def test_compose_toolset_orchestrator_execute_includes_bash():

@@ -43,16 +43,9 @@ def _build_integration_cred_components(koan_home: Path):
             Connection(id="voyage-1", type="voyage"),
         ],
         configured_models=[
-            ConfiguredModel(
-                id="google-llm",
-                connection_id="google-1",
-                model_id="gemini-flash-lite-latest",
-            ),
-            ConfiguredModel(
-                id="google-reflect",
-                connection_id="google-1",
-                model_id="gemini-flash-latest",
-            ),
+            # google-llm / google-reflect removed: memory LLMs now resolve from
+            # the active preset's cheap/standard slots. google-1 connection is
+            # kept for test_pydantic_ai_agent's live Gemini smoke test.
             ConfiguredModel(
                 id="voyage-embed",
                 connection_id="voyage-1",
@@ -61,8 +54,6 @@ def _build_integration_cred_components(koan_home: Path):
         ],
         memory=MemoryBindings(
             embedding=MemoryBinding(configured_model_id="voyage-embed"),
-            memory_llm=MemoryBinding(configured_model_id="google-llm"),
-            reflect_llm=MemoryBinding(configured_model_id="google-reflect"),
         ),
     )
     backend = FileKeyBackend(koan_home)

@@ -355,15 +355,13 @@ async def test_read_tool_returns_numbered_lines(tmp_path):
 
 @pytest.mark.anyio
 async def test_read_tool_metrics_derivable(tmp_path):
-    """read_tool output lets _parse_read_result_from_content derive metrics."""
-    from koan.agents.pydantic_ai import _parse_read_result_from_content
-
+    """read_tool stores native metrics on deps.agent._pending_tool_metrics."""
     target = tmp_path / "data.txt"
     content = "line one\nline two\n"
     target.write_text(content)
     ctx = _make_ctx(run_dir=str(tmp_path))
     result = await read_tool(ctx, str(target))
-    metrics = _parse_read_result_from_content(result)
+    metrics = ctx.deps.agent._pending_tool_metrics
     assert metrics is not None
     assert metrics["lines_read"] == 2
     assert metrics["bytes_read"] > 0
@@ -394,16 +392,15 @@ async def test_grep_tool_no_matches(tmp_path):
 
 @pytest.mark.anyio
 async def test_grep_tool_metrics_derivable(tmp_path):
-    """grep_tool output lets _parse_grep_result_from_content derive metrics."""
-    from koan.agents.pydantic_ai import _parse_grep_result_from_content
-
+    """grep_tool stores native metrics on deps.agent._pending_tool_metrics."""
     (tmp_path / "f.py").write_text("def foo():\n    pass\ndef bar():\n    pass\n")
     ctx = _make_ctx(run_dir=str(tmp_path))
     result = await grep_tool(ctx, r"def ", str(tmp_path))
-    metrics = _parse_grep_result_from_content(result)
+    metrics = ctx.deps.agent._pending_tool_metrics
     assert metrics is not None
     assert metrics["matches"] == 2
     assert metrics["files_matched"] == 1
+    assert metrics["matched_lines"] == 2
 
 
 # -- glob_tool --------------------------------------------------------------- #
@@ -433,14 +430,12 @@ async def test_glob_tool_no_matches(tmp_path):
 
 @pytest.mark.anyio
 async def test_glob_tool_metrics_derivable(tmp_path):
-    """glob_tool output lets _parse_grep_result_from_content derive metrics."""
-    from koan.agents.pydantic_ai import _parse_grep_result_from_content
-
+    """glob_tool stores native metrics on deps.agent._pending_tool_metrics."""
     (tmp_path / "x.md").write_text("")
     (tmp_path / "y.md").write_text("")
     ctx = _make_ctx(run_dir=str(tmp_path))
     result = await glob_tool(ctx, "*.md", str(tmp_path))
-    metrics = _parse_grep_result_from_content(result)
+    metrics = ctx.deps.agent._pending_tool_metrics
     assert metrics is not None
     assert metrics["matches"] == 2
     assert metrics["files_matched"] == 2

@@ -182,16 +182,6 @@ def test_koan_mcp_tools_contains_live_artifact_tools() -> None:
         )
 
 
-def test_bash_phases_final_set() -> None:
-    """_ORCHESTRATOR_BASH_PHASES must be exactly {'execute', 'frame'} after M6."""
-    from koan.tools.tool_policy import _ORCHESTRATOR_BASH_PHASES
-
-    expected = frozenset({"execute", "frame"})
-    assert _ORCHESTRATOR_BASH_PHASES == expected, (
-        f"_ORCHESTRATOR_BASH_PHASES mismatch: {_ORCHESTRATOR_BASH_PHASES!r} != {expected!r}"
-    )
-
-
 def test_scout_phases_no_review_phase() -> None:
     """_ORCHESTRATOR_SCOUT_PHASES must contain no *-review phase after M6."""
     from koan.tools.tool_policy import _ORCHESTRATOR_SCOUT_PHASES

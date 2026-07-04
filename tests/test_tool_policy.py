@@ -14,7 +14,6 @@ from koan.tools.tool_policy import (
     phase_gate_message,
     # _ORCHESTRATOR_STORY_TOOLS removed in M1; story tools deleted.
     _ORCHESTRATOR_SCOUT_PHASES,
-    _ORCHESTRATOR_BASH_PHASES,
     _ORCHESTRATOR_EXECUTOR_PHASES,
     _UNIVERSAL_MEMORY_TOOLS,
     _UNIVERSAL_READ_TOOLS,
@@ -80,8 +79,7 @@ class TestOrchestratorPlanningPhase:
     def test_bash_present(self, policy):
         """Bash is always registered in the orchestrator's static toolset.
 
-        Phase-appropriateness is enforced by phase_gate_message at call time
-        (bash is gated to _ORCHESTRATOR_BASH_PHASES); the tool is present in
+        Bash is always allowed for the orchestrator; the tool is present in
         the registered vocabulary regardless of phase.
         """
         toolset = _compose(policy, "orchestrator", self.PHASE)
@@ -379,7 +377,7 @@ class TestPhaseGateMessage:
 
     The gate only applies to the orchestrator role; all other roles always
     get None regardless of tool or phase. Among orchestrator calls, only the
-    three phase-conditional tools (bash, koan_request_scouts,
+    two phase-conditional tools (koan_request_scouts,
     koan_request_executor) can produce a non-None message; all other tool
     names return None.
     """
@@ -398,22 +396,6 @@ class TestPhaseGateMessage:
         """koan_request_executor in execute phase returns None (allowed)."""
         assert "execute" in _ORCHESTRATOR_EXECUTOR_PHASES
         msg = phase_gate_message(policy, "orchestrator", "execute", "koan_request_executor")
-        assert msg is None
-
-    def test_bash_in_plan_phase_denied(self, policy):
-        """bash in plan phase returns a non-None denial message.
-
-        bash is only allowed for orchestrator in _ORCHESTRATOR_BASH_PHASES.
-        """
-        assert "plan" not in _ORCHESTRATOR_BASH_PHASES
-        msg = phase_gate_message(policy, "orchestrator", "plan", "bash")
-        assert msg is not None
-        assert "bash" in msg
-
-    def test_bash_in_execute_phase_allowed(self, policy):
-        """bash in execute phase returns None (allowed)."""
-        assert "execute" in _ORCHESTRATOR_BASH_PHASES
-        msg = phase_gate_message(policy, "orchestrator", "execute", "bash")
         assert msg is None
 
     def test_scouts_in_execute_phase_denied(self, policy):

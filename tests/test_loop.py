@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager
-from unittest.mock import AsyncMock, MagicMock
+
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -81,7 +82,7 @@ def test_build_phase_suggestions_from_workflow():
     wf = get_workflow("plan")
     sugg = build_phase_suggestions(wf, wf.initial_phase)
     assert sugg, "expected at least the 'done' option"
-    assert all({"id", "label", "command"} <= set(s) for s in sugg)
+    assert all({"id", "label", "phase"} <= set(s) for s in sugg)
     ids = [s["id"] for s in sugg]
     assert ids[-1] == "done"  # terminal option always last
 
@@ -531,3 +532,152 @@ async def test_koan_suggest_next_suggestions_appear_on_yield_started(tmp_path):
     payload = yield_events[0].payload
     sugg_ids = [s["id"] for s in payload.get("suggestions", [])]
     assert "plan" in sugg_ids
+
+
+# -- Mechanical resume sentinel tests -----------------------------------------
+
+
+def test_yolo_yield_response_phase_derived_when_no_command():
+    """_yolo_yield_response synthesizes a phase-derived sentence when command is absent."""
+    from koan.agents.loop import _yolo_yield_response
+
+    suggestions = [
+        {"id": "plan", "label": "Write plan", "phase": "plan"},
+        {"id": "done", "label": "End workflow", "phase": "done"},
+    ]
+    result = _yolo_yield_response(suggestions)
+    assert "plan" in result
+    assert "phase" in result.lower()
+
+
+def test_yolo_yield_response_prefers_command_over_phase():
+    """_yolo_yield_response prefers command when both command and phase are present."""
+    from koan.agents.loop import _yolo_yield_response
+
+    suggestions = [
+        {"id": "custom", "label": "Custom", "command": "do the custom thing", "phase": "plan"},
+    ]
+    result = _yolo_yield_response(suggestions)
+    assert result == "do the custom thing"
+
+
+@pytest.mark.anyio
+async def test_loop_sentinel_resume_no_model_turn_done(tmp_path):
+    """When mechanical_resume is set and workflow_done is True, the loop terminates.
+
+    This simulates the done-path: the route sets mechanical_resume and resolves
+    yield_future; the loop's sentinel branch sees workflow_done and returns.
+    """
+    import asyncio
+    from koan.agents.base import AgentOptions
+    from koan.agents.pydantic_ai import PydanticAIAgent
+    from koan.phases import PhaseContext
+    from koan.types import ModelSpec
+    from unittest.mock import AsyncMock, MagicMock
+    # _fake_phase_module_exhausted is defined at module level in this test file.
+
+    app_state = AppState()
+    app_state.run.phase = "intake"
+    app_state.run.workflow = None
+
+    event_log = AsyncMock()
+    event_log.emit_step_transition = AsyncMock()
+
+    agent_state = AgentState(
+        agent_id="sentinel-done",
+        role="orchestrator",
+        subagent_dir=str(tmp_path),
+        run_dir="",
+        step=0,
+        phase_module=_fake_phase_module_exhausted(),
+        phase_ctx=PhaseContext(run_dir="", subagent_dir=str(tmp_path)),
+        event_log=event_log,
+        is_primary=True,
+        runner_type="pydantic_ai",
+    )
+    app_state.agents[agent_state.agent_id] = agent_state
+
+    spec = ModelSpec(provider="google", model="gemini-2.0-flash", thinking="disabled")
+    pai_agent = PydanticAIAgent(model_spec=spec, app_state=app_state, subagent_dir=str(tmp_path))
+    options = AgentOptions(role="orchestrator", agent_id="sentinel-done", model=None, thinking=None, system_prompt="")
+
+    import koan.agents.adapter as adapter_mod
+    from pydantic_ai.models.test import TestModel
+    orig_bm, orig_bms = adapter_mod.build_model, adapter_mod.build_model_settings
+    adapter_mod.build_model = lambda s, api_key=None, **_: TestModel(call_tools=[], custom_output_text="done")
+    adapter_mod.build_model_settings = lambda s: {}
+
+    try:
+        async def consume():
+            async for _ in pai_agent.run(options):
+                pass
+
+        task = asyncio.create_task(consume())
+
+        for _ in range(500):
+            if app_state.interactions.yield_future is not None:
+                break
+            await asyncio.sleep(0.005)
+        assert app_state.interactions.yield_future is not None, "loop did not park"
+
+        # Simulate mechanical done: set workflow_done + mechanical_resume, resolve.
+        app_state.run.workflow_done = True
+        app_state.interactions.mechanical_resume = True
+        app_state.interactions.yield_future.set_result(None)
+
+        await asyncio.wait_for(task, timeout=10)
+        # Loop terminated cleanly.
+        assert task.done()
+    finally:
+        adapter_mod.build_model = orig_bm
+        adapter_mod.build_model_settings = orig_bms
+
+
+# -- Driver push guard test ---------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_driver_skips_workflow_completed_when_done(tmp_path):
+    """When workflow_done is True, driver_main does not push a second workflow_completed."""
+    from unittest.mock import AsyncMock, MagicMock
+    from koan.driver import driver_main
+    from koan.state import AppState
+    from koan.subagent import SubagentResult
+
+    app_state = AppState()
+    app_state.run.run_dir = str(tmp_path)
+    app_state.run.workflow_done = True  # done path already pushed
+    app_state.run.phase = "plan"
+
+    # Patch spawn_subagent to return immediately.
+    with patch("koan.driver.spawn_subagent", new_callable=AsyncMock) as mock_spawn:
+        mock_spawn.return_value = SubagentResult(exit_code=0, final_response="")
+        await driver_main(app_state)
+
+    # No second workflow_completed pushed.
+    event_types = [e.event_type for e in app_state.projection_store.events]
+    wc_count = event_types.count("workflow_completed")
+    assert wc_count == 0, "driver should not push workflow_completed when workflow_done is True"
+
+
+@pytest.mark.anyio
+async def test_driver_pushes_workflow_completed_on_failure(tmp_path):
+    """When workflow_done is False (crash), driver pushes workflow_completed then run_cleared."""
+    from unittest.mock import AsyncMock
+    from koan.driver import driver_main
+    from koan.state import AppState
+    from koan.subagent import SubagentResult
+
+    app_state = AppState()
+    app_state.run.run_dir = str(tmp_path)
+    app_state.run.workflow_done = False  # crash exit
+    app_state.run.phase = "plan"
+
+    with patch("koan.driver.spawn_subagent", new_callable=AsyncMock) as mock_spawn:
+        mock_spawn.return_value = SubagentResult(exit_code=1, final_response="")
+        await driver_main(app_state)
+
+    event_types = [e.event_type for e in app_state.projection_store.events]
+    assert "workflow_completed" in event_types
+    assert "run_cleared" in event_types
+    assert event_types.index("workflow_completed") < event_types.index("run_cleared")
