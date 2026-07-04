@@ -24,6 +24,7 @@ _FAMILY_TABLE: dict[str, tuple[ModelTier | None, str]] = {
     "claude-opus":        ("strong",   "Claude Opus"),
     "claude-sonnet":      ("standard", "Claude Sonnet"),
     "claude-haiku":       ("cheap",    "Claude Haiku"),
+    "claude-fable":       ("strong",   "Claude Fable"),
     # Google
     "gemini-flash-lite":  ("cheap",    "Gemini Flash Lite"),
     "gemini-flash":       ("standard", "Gemini Flash"),
@@ -59,7 +60,7 @@ _VERSION_OVERRIDES: dict[str, tuple[int, ...]] = {
 # Anthropic new naming:  "claude-{family}-{major}-{minor}[...]"
 #   e.g. claude-opus-4-0, claude-sonnet-4-5
 _RE_CLAUDE_NEW = re.compile(
-    r"^claude-(?P<family>opus|sonnet|haiku|3-haiku)"
+    r"^claude-(?P<family>opus|sonnet|haiku|3-haiku|fable)"
     r"-(?P<version>\d+[-\d]*)$",
 )
 

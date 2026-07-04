@@ -55,6 +55,10 @@ MODEL_CAPABILITIES: dict[
     # Anthropic -- extended thinking supported on Opus and Sonnet tiers.
     ("anthropic", "claude-opus-4-0"):         (["medium", "high"], "strong",   "Claude Opus 4"),
     ("anthropic", "claude-sonnet-4-5"):       (["low", "medium"],  "standard", "Claude Sonnet 4.5"),
+    # Sonnet 5: budget-based thinking (same shape as 4.5); intro pricing $2/$10 per M tokens.
+    ("anthropic", "claude-sonnet-5"):         (["low", "medium"],  "standard", "Claude Sonnet 5"),
+    # Fable 5: adaptive thinking only (effort/xhigh in profile); $10/$50 per M tokens.
+    ("anthropic", "claude-fable-5"):          (["low", "medium", "high", "xhigh"], "strong", "Claude Fable 5"),
     ("anthropic", "claude-3-5-haiku-latest"): ([],                 "cheap",    "Claude Haiku 3.5"),
     # OpenAI -- no koan thinking modes (o-series reasoning is opaque to the adapter).
     ("openai", "gpt-4o"):      ([], "strong",   "GPT-4o"),
@@ -157,7 +161,7 @@ _EXPLICIT_CACHE_TRANSPORTS: frozenset[str] = frozenset({"anthropic", "bedrock"})
 # regardless of which transport serves them. Bedrock-Nova is excluded by
 # family-scoping: only Claude models get cache-control settings emitted.
 _EXPLICIT_CACHE_FAMILIES: frozenset[str] = frozenset(
-    {"claude-opus", "claude-sonnet", "claude-haiku"}
+    {"claude-opus", "claude-sonnet", "claude-haiku", "claude-fable"}
 )
 
 # Providers that cache automatically server-side (no koan-emitted settings needed).
