@@ -41,7 +41,6 @@ from ..events import (
     build_provider_status_listed,
     build_model_registry_listed,
     build_provider_models_listed,
-    build_run_cleared,
     build_run_started,
     build_steering_queued,
     build_connections_listed,
@@ -65,7 +64,7 @@ from ..memory import MEMORY_TYPES
 from ..memory.retrieval.backend import search as memory_search
 
 if TYPE_CHECKING:
-    from ..state import AppState
+    from ..state import AgentState, AppState
 
 NOT_IMPL = Response("Not Implemented", status_code=501)
 
@@ -80,6 +79,16 @@ FRONTEND_DIST = Path(__file__).parent / "static" / "app"
 
 def _app_state(r: Request) -> AppState:
     return r.app.state.app_state
+
+def _primary_agent(st: AppState) -> AgentState | None:
+    """Resolve the live primary orchestrator AgentState for HTTP handlers.
+
+    Returns the first agent in st.agents with is_primary=True, or None when
+    no orchestrator is registered (no run active, or orchestrator already
+    exited). Used by the mechanical phase/workflow routes to build a
+    ToolDeps for delegation to the shared cores.
+    """
+    return next((a for a in st.agents.values() if a.is_primary), None)
 
 
 def _runs_dir(st: AppState) -> Path:
@@ -284,19 +293,36 @@ async def api_start_run(r: Request) -> Response:
     # code share the same binding without a duplicate _app_state(r) call.
     st = _app_state(r)
 
-    # Reject concurrent starts. driver_task.done() treats a completed task as
-    # absent so the next run is naturally permitted without an explicit reset.
-    if (
-        st.run.driver_task is not None
-        and not st.run.driver_task.done()
-    ):
-        return JSONResponse(
-            {
-                "error": "run_active",
-                "message": "A workflow run is already active. Wait for it to complete or clear it first.",
-            },
-            status_code=409,
-        )
+    # Three-way guard for concurrent starts:
+    #   (a) driver_task done or None -> proceed (no active run).
+    #   (b) driver_task pending + projection.run is None -> winding down
+    #       (run_cleared already emitted at workflow end). Await the teardown
+    #       with a shielded timeout so a prompt restart does not 409 while
+    #       the loop/subagent/driver stack unwinds.
+    #   (c) driver_task pending + projection.run is non-None -> genuinely live
+    #       run; reject with 409 run_active.
+    driver_task = st.run.driver_task
+    if driver_task is not None and not driver_task.done():
+        if st.projection_store.projection.run is None:
+            # Winding down: await teardown (shield so timeout does not cancel it).
+            try:
+                await asyncio.wait_for(asyncio.shield(driver_task), timeout=10)
+            except asyncio.TimeoutError:
+                return JSONResponse(
+                    {
+                        "error": "run_active",
+                        "message": "The previous run is still winding down. Try again in a moment.",
+                    },
+                    status_code=409,
+                )
+        else:
+            return JSONResponse(
+                {
+                    "error": "run_active",
+                    "message": "A workflow run is already active. Wait for it to complete or clear it first.",
+                },
+                status_code=409,
+            )
 
     # Block when no connection has a credential available.
     # Check against live provider_status before building the frozen copy so the
@@ -505,52 +531,21 @@ async def api_start_run(r: Request) -> Response:
     return JSONResponse({"ok": True, "run_dir": str(run_dir)})
 
 
-async def api_run_clear(r: Request) -> Response:
-    """Clear the active run projection, resetting the server to the no-run state.
-
-    This is called by the frontend after a workflow completes (on a 3s timer for
-    success; on user action for failure). It is a plain HTTP POST rather than an
-    MCP tool because the orchestrator has already exited by the time it is called.
-
-    Idempotent: returns ok=true even when the run is already None. The fold
-    case also guards this, but checking here avoids emitting a no-op event.
-    """
-    st = _app_state(r)
-
-    if st.projection_store.projection.run is None:
-        return JSONResponse({"ok": True})
-
-    # Drain any lingering interaction state left over from the completed run.
-    # These should be empty post-completion, but guard defensively so a future
-    # code path that clears early does not leave dangling futures or buffers.
-    st.interactions.user_message_buffer.clear()
-    st.interactions.steering_queue.clear()
-    if st.interactions.yield_future is not None and not st.interactions.yield_future.done():
-        st.interactions.yield_future.set_result(False)
-    st.interactions.yield_future = None
-    st.run.workflow_done = False
-    # Guard: clear start_attachments so a race between run_clear and a stale
-    # orchestrator cannot leak boot-time attachments into the next run.
-    st.run.start_attachments = []
-    # Clear the in-memory frozen snapshot; the on-disk run-config.yaml is
-    # retained as the historical record and is never deleted here.
-    st.run.frozen_config = None
-    st.run.frozen_credential_store = None
-    st.run.frozen_models = {}
-    # Clear the per-run memory bundle; the module-global memory seam was
-    # removed. Out-of-run memory operations build their bundle on demand
-    # from app_state.provider_config.
-    st.run.memory_models = None
-
-    st.projection_store.push_event("run_cleared", build_run_cleared())
-    return JSONResponse({"ok": True})
+# api_run_clear deleted: run clearing is now server-authoritative at workflow
+# end (finalize_workflow_end, called from apply_set_phase's done branch and
+# driver_main's failure exit). Mid-run abandonment is deliberately unhandled
+# (out of scope).
 
 
 async def api_chat(r: Request) -> Response:
-    """Accept a user chat message, buffer it, and unblock any waiting koan_yield.
+    """Accept a user chat message, buffer it, and resolve the yield_future hand-back.
 
-    Commits any attachment uploads before buffering so koan_yield can find
-    the files in the run_dir when it drains the message buffer.
+    Commits any attachment uploads before buffering so the loop can find
+    the files in the run_dir when it drains the message buffer. When
+    mechanical_resume is set (a mechanical transition is mid-apply), the
+    message is deferred to the steering queue instead of resolving the
+    yield_future.
+
     """
     body = await r.json()
     message = body.get("message", "")
@@ -578,14 +573,25 @@ async def api_chat(r: Request) -> Response:
     primary_id = _primary_agent_id(run) if run else None
 
     # Determine route before branching so the log line reflects actual routing.
+    # Determine route before branching so the log line reflects actual routing.
+    # mechanical_resume claim: when a mechanical transition is mid-apply, defer
+    # chat to steering so the route does not resolve yield_future out from
+    # under the mechanical route handler.
     route = "yield" if (
         st.interactions.yield_future is not None
         and not st.interactions.yield_future.done()
+        and not st.interactions.mechanical_resume
     ) else "steering"
     log.info("chat message received: route=%s len=%d", route, len(message))
     log.debug("chat message payload: %s", truncate_payload(message))
 
-    if st.interactions.yield_future is not None and not st.interactions.yield_future.done():
+    # mechanical_resume deferral: a mechanical transition is mid-apply; route
+    # to steering so the message is delivered in the new phase, not stranded.
+    if (
+        st.interactions.yield_future is not None
+        and not st.interactions.yield_future.done()
+        and not st.interactions.mechanical_resume
+    ):
         st.interactions.user_message_buffer.append(msg)
         # Show inline in the activity feed -- this is a direct conversation message
         st.projection_store.push_event(
@@ -608,6 +614,209 @@ async def api_chat(r: Request) -> Response:
     return JSONResponse({"ok": True})
 
 
+async def api_set_phase(r: Request) -> Response:
+    """Mechanical phase transition sharing apply_set_phase with the koan_set_phase tool.
+
+    Accepts {"phase": "<name>"} (including "done"). Only valid while the workflow
+    is parked at a yield (yield_future pending); rejected with 409 otherwise. The
+    route sets mechanical_resume (the claim) synchronously before the first await
+    so concurrent api_chat / api_artifact_comment messages reroute to steering
+    during the apply. On "done", the shared core performs the server-authoritative
+    workflow end (emits workflow_completed + run_cleared).
+
+    Error codes: 422 invalid_phase / invalid_transition; 409 no_run / not_at_yield /
+    transition_pending / no_agent.
+    """
+    body = await r.json()
+    phase = body.get("phase")
+    if not isinstance(phase, str) or not phase.strip():
+        return JSONResponse(
+            {"error": "invalid_phase", "message": "Missing or empty 'phase' field."},
+            status_code=422,
+        )
+    phase = phase.strip()
+
+    st = _app_state(r)
+    if st.run.run_dir is None:
+        return JSONResponse(
+            {"error": "no_run", "message": "No active run."},
+            status_code=409,
+        )
+
+    # Yield-park guard: mechanical transitions only while parked at a yield.
+    fut = st.interactions.yield_future
+    if fut is None or fut.done():
+        return JSONResponse(
+            {"error": "not_at_yield",
+             "message": "The agent is not awaiting input; mechanical transitions "
+                        "are only accepted while the workflow is parked at a phase boundary."},
+            status_code=409,
+        )
+    if st.interactions.mechanical_resume:
+        return JSONResponse(
+            {"error": "transition_pending",
+             "message": "A mechanical transition is already being applied."},
+            status_code=409,
+        )
+
+    agent = _primary_agent(st)
+    if agent is None:
+        return JSONResponse(
+            {"error": "no_agent",
+             "message": "No primary orchestrator agent is registered."},
+            status_code=409,
+        )
+
+    # Pre-validate: reuse the same validator the shared core uses (not a
+    # parallel implementation). "done" bypasses the transition check.
+    if phase != "done":
+        if st.run.workflow is None:
+            return JSONResponse(
+                {"error": "invalid_transition",
+                 "message": f"No active workflow; cannot transition to '{phase}'."},
+                status_code=422,
+            )
+        from ..lib.workflows import is_valid_transition
+        if not is_valid_transition(st.run.workflow, st.run.phase, phase):
+            phases = list(st.run.workflow.available_phases)
+            return JSONResponse(
+                {"error": "invalid_transition",
+                 "message": f"'{phase}' is not available from '{st.run.phase}'. "
+                            f"Available phases: {phases} (plus 'done')."},
+                status_code=422,
+            )
+
+    # Claim: set BEFORE the first await of the apply so concurrent chat /
+    # artifact-comment messages reroute to steering during the apply.
+    st.interactions.mechanical_resume = True
+
+    try:
+        from ..tools.koan_tools import ToolDeps, apply_set_phase
+        result = await apply_set_phase(ToolDeps(app_state=st, agent=agent), phase)
+    except Exception:
+        st.interactions.mechanical_resume = False
+        raise
+
+    # Envelope check: the core RETURNS agent-correctable failures as a
+    # {"ok": false, ...} JSON string rather than raising. If pre-validation
+    # and the core's validator have drifted, treat the envelope as failure:
+    # reset the claim, do NOT resolve the future, return 422.
+    try:
+        parsed = json.loads(result)
+        if isinstance(parsed, dict) and parsed.get("ok") is False:
+            st.interactions.mechanical_resume = False
+            err = parsed.get("error", {})
+            return JSONResponse(
+                {"error": err.get("reason", "invalid_transition"),
+                 "message": err.get("message", "Phase transition rejected.")},
+                status_code=422,
+            )
+    except (ValueError, TypeError):
+        pass  # Not a JSON envelope -- success return is a plain sentence.
+
+    # Resolve: the value is ignored; mechanical_resume is the sentinel.
+    fut2 = st.interactions.yield_future
+    if fut2 is not None and not fut2.done():
+        fut2.set_result(True)
+    else:
+        # Defensive: the claim makes this unreachable in normal operation.
+        log.warning("api_set_phase: yield_future no longer pending after apply")
+        st.interactions.mechanical_resume = False
+
+    return JSONResponse({"ok": True, "phase": phase})
+
+
+async def api_set_workflow(r: Request) -> Response:
+    """Mechanical workflow switch sharing apply_set_workflow with the koan_set_workflow tool.
+
+    Accepts {"workflow": "<name>"}. Same parked-at-yield precondition, claim-flag
+    race protection, and error-path discipline as api_set_phase. No frontend
+    trigger exists for this route (backend consistency only).
+
+    Error codes: 422 invalid_workflow / unknown_workflow; 409 no_run / not_at_yield /
+    transition_pending / no_agent.
+    """
+    body = await r.json()
+    workflow = body.get("workflow")
+    if not isinstance(workflow, str) or not workflow.strip():
+        return JSONResponse(
+            {"error": "invalid_workflow", "message": "Missing or empty 'workflow' field."},
+            status_code=422,
+        )
+    workflow = workflow.strip()
+
+    st = _app_state(r)
+    if st.run.run_dir is None:
+        return JSONResponse(
+            {"error": "no_run", "message": "No active run."},
+            status_code=409,
+        )
+
+    fut = st.interactions.yield_future
+    if fut is None or fut.done():
+        return JSONResponse(
+            {"error": "not_at_yield",
+             "message": "The agent is not awaiting input; mechanical transitions "
+                        "are only accepted while the workflow is parked at a phase boundary."},
+            status_code=409,
+        )
+    if st.interactions.mechanical_resume:
+        return JSONResponse(
+            {"error": "transition_pending",
+             "message": "A mechanical transition is already being applied."},
+            status_code=409,
+        )
+
+    agent = _primary_agent(st)
+    if agent is None:
+        return JSONResponse(
+            {"error": "no_agent",
+             "message": "No primary orchestrator agent is registered."},
+            status_code=409,
+        )
+
+    # Pre-validate: reuse get_workflow (the same validator the core uses).
+    from ..lib.workflows import get_workflow
+    try:
+        get_workflow(workflow)
+    except ValueError as e:
+        return JSONResponse(
+            {"error": "unknown_workflow", "message": str(e)},
+            status_code=422,
+        )
+
+    st.interactions.mechanical_resume = True
+
+    try:
+        from ..tools.koan_tools import ToolDeps, apply_set_workflow
+        result = await apply_set_workflow(ToolDeps(app_state=st, agent=agent), workflow)
+    except Exception:
+        st.interactions.mechanical_resume = False
+        raise
+
+    try:
+        parsed = json.loads(result)
+        if isinstance(parsed, dict) and parsed.get("ok") is False:
+            st.interactions.mechanical_resume = False
+            err = parsed.get("error", {})
+            return JSONResponse(
+                {"error": err.get("reason", "unknown_workflow"),
+                 "message": err.get("message", "Workflow switch rejected.")},
+                status_code=422,
+            )
+    except (ValueError, TypeError):
+        pass
+
+    fut2 = st.interactions.yield_future
+    if fut2 is not None and not fut2.done():
+        fut2.set_result(True)
+    else:
+        log.warning("api_set_workflow: yield_future no longer pending after apply")
+        st.interactions.mechanical_resume = False
+
+    return JSONResponse({"ok": True, "workflow": workflow})
+
+
 async def api_artifact_comment(r: Request) -> Response:
     """Accept an artifact-anchored comment; route as steering input.
 
@@ -619,8 +828,9 @@ async def api_artifact_comment(r: Request) -> Response:
     Otherwise it is enqueued to the steering queue; the next step boundary
     drains it and includes [artifact: {path}] in the steering envelope.
 
-    Mirrors api_chat routing logic; the only differences are the required path
-    field and the artifact_path tag on the ChatMessage.
+    Mirrors api_chat routing logic (including the mechanical_resume deferral);
+    the only differences are the required path field and the artifact_path
+    tag on the ChatMessage.
     """
     body = await r.json()
     path = body.get("path", "")
@@ -651,9 +861,14 @@ async def api_artifact_comment(r: Request) -> Response:
     run = st.projection_store.projection.run
     primary_id = _primary_agent_id(run) if run else None
 
+    # mechanical_resume deferral: mirrors api_chat -- when a mechanical
+    # transition is mid-apply, route the comment to steering so it is
+    # delivered in the new phase rather than resolving the future (which
+    # would skip the drain and strand the comment for stale delivery).
     if (
         st.interactions.yield_future is not None
         and not st.interactions.yield_future.done()
+        and not st.interactions.mechanical_resume
     ):
         # Resolve the yield with the artifact comment so the orchestrator
         # receives it as its yield reply rather than queued steering input.
@@ -902,7 +1117,6 @@ async def _run_reflect_background(
     CancelledError is re-raised so the DELETE handler can await the task and
     emit reflect_cancelled exactly once. All other exceptions emit reflect_failed.
     """
-    from ..memory.bindings import build_memory_models
     from ..memory.retrieval.reflect import (
         run_reflect_agent, IterationCapExceeded,
     )
@@ -923,11 +1137,46 @@ async def _run_reflect_background(
             build_reflect_trace(session_id, trace),
         )
 
-    _models = build_memory_models(st.provider_config.config, st.provider_config.credential_store)
     try:
+        from ..memory.bindings import build_memory_models, require_memory_model
+        from ..agents.registry import build_resolved_model
+
+        _cfg = st.provider_config.config
+        _cred_store = st.provider_config.credential_store
+
+        # Resolve embedding from the memory bindings.
+        _mem_models = build_memory_models(_cfg, _cred_store)
+        embed = require_memory_model(_mem_models.embedding, "embedding")
+
+        # Resolve the standard model spec from the active preset's standard slot.
+        _active_preset = _cfg.presets.get(_cfg.active)
+        _std_slot = _active_preset.slots.get("standard") if _active_preset else None
+        if _std_slot is None:
+            raise RuntimeError(
+                f"Standard model slot is not configured in preset '{_cfg.active}'. "
+                "Assign a model to the 'standard' tier to use memory reflection."
+            )
+        _std_cm = next(
+            (m for m in _cfg.configured_models if m.id == _std_slot.configured_model_id), None
+        )
+        _std_conn = (
+            next((c for c in _cfg.connections if c.id == _std_cm.connection_id), None)
+            if _std_cm else None
+        )
+        if _std_cm is None or _std_conn is None:
+            raise RuntimeError(
+                "Standard model slot references a missing configured model or connection."
+            )
+        _std_api_key = _cred_store.resolve(_std_conn.id) if _cred_store and _std_conn.id else None
+        standard_spec = build_resolved_model(
+            _std_conn, _std_cm, _std_slot.thinking, _std_slot.caching,
+            _std_cm.embedding_dim, _std_api_key, cache_tier="short",
+        )
+
         result = await run_reflect_agent(
             index=st.memory.retrieval_index,
-            models=_models,
+            model=standard_spec,
+            embed=embed,
             question=question,
             context=context,
             on_trace=on_trace,
@@ -994,16 +1243,18 @@ async def api_memory_reflect_start(r: Request) -> Response:
             status_code=409,
         )
 
-    # Resolve model name from reflect_llm memory binding for the projection event.
-    # Graceful fallback to a safe default when binding is not configured.
-    # Note: the old code read .model_id which does not exist on ModelSpec (it always
-    # raised into the fallback). The faithful fix uses .model (the correct field).
+    # Resolve display model name from the active preset's standard slot for the projection event.
     try:
-        from ..memory.bindings import build_memory_models
-        _reflect_models = build_memory_models(st.provider_config.config, st.provider_config.credential_store)
-        model = _reflect_models.reflect_llm.model
+        _cfg = st.provider_config.config
+        _active_preset = _cfg.presets.get(_cfg.active)
+        _std_slot = _active_preset.slots.get("standard") if _active_preset else None
+        _std_cm = (
+            next((m for m in _cfg.configured_models if m.id == _std_slot.configured_model_id), None)
+            if _std_slot else None
+        )
+        model = _std_cm.model_id if _std_cm else "standard"
     except Exception:
-        model = os.environ.get("KOAN_REFLECT_MODEL") or "gemini-flash-latest"
+        model = "standard"
     session_id = uuid.uuid4().hex
     started_at_ms = int(time.time() * 1000)
     max_iterations = 10  # matches reflect.MAX_ITERATIONS
@@ -1314,16 +1565,20 @@ def _serialize_preset(preset) -> dict:
 
 
 def _serialize_memory_bindings(bindings) -> dict | None:
-    """Serialize MemoryBindings to a wire dict for memory_bindings_listed."""
+    """Serialize MemoryBindings to a wire dict for memory_bindings_listed.
+
+    Only the embedding binding is serialized; memory_llm and reflect_llm were
+    removed. Each entry carries only 'configured_model_id'. Returns None when
+    bindings is None or has no binding configured.
+    """
     if bindings is None:
         return None
     result = {}
-    for key in ("embedding", "memory_llm", "reflect_llm"):
+    for key in ("embedding",):
         mb = getattr(bindings, key, None)
         if mb is not None:
             result[key] = {
                 "configured_model_id": mb.configured_model_id,
-                "thinking": getattr(mb, "thinking", "disabled"),
             }
     return result or None
 
@@ -1762,7 +2017,8 @@ async def api_settings_retry(r: Request) -> Response:
 
 _VALID_CONNECTION_TYPES = {"google", "anthropic", "openai", "bedrock", "openrouter", "ollama-cloud", "voyage"}
 _VALID_SLOT_NAMES = {"strong", "standard", "cheap"}
-_VALID_MEMORY_KINDS = {"embedding", "memory_llm", "reflect_llm"}
+# memory_llm and reflect_llm removed — LLM tiers now derive from preset cheap/standard slots.
+_VALID_MEMORY_KINDS = {"embedding"}
 
 
 def _build_frozen_run_config(cfg: "KoanConfig", overrides: dict) -> "KoanConfig":
@@ -2169,8 +2425,8 @@ async def api_config_slot_set(r: Request) -> Response:
 async def api_config_memory_set(r: Request) -> Response:
     """Set a memory binding (PUT /api/config/memory/{kind}).
 
-    kind is one of embedding, memory_llm, reflect_llm.
-    Body: {configured_model_id, thinking?}.  Validates that configured_model_id
+    kind must be 'embedding'.
+    Body: {configured_model_id}.  Validates that configured_model_id
     exists.  Pushes memory_bindings_listed after saving.
 
     For kind == 'embedding': validates that the referenced configured model's
@@ -2197,7 +2453,6 @@ async def api_config_memory_set(r: Request) -> Response:
 
     body = await r.json()
     cm_id = body.get("configured_model_id", "")
-    thinking = body.get("thinking", "disabled")
 
     if not cm_id or not isinstance(cm_id, str):
         return JSONResponse({"error": "validation_error", "message": "configured_model_id is required"}, status_code=422)
@@ -2244,7 +2499,7 @@ async def api_config_memory_set(r: Request) -> Response:
     # Capture the embedding identity before mutation for the rebuild trigger.
     old_identity = _effective_embedding_identity(cfg)
 
-    setattr(cfg.memory, kind, MemoryBinding(configured_model_id=cm_id, thinking=thinking))
+    setattr(cfg.memory, kind, MemoryBinding(configured_model_id=cm_id))
 
     await save_koan_config(cfg, Path(st.server.koan_home))
     st.projection_store.push_event(
@@ -2520,7 +2775,10 @@ def create_app(app_state: AppState) -> Starlette:
     routes = [
         # /mcp removed: tools run in-process via the koan FunctionToolset.
         Route("/api/start-run", api_start_run, methods=["POST"]),
-        Route("/api/run/clear", api_run_clear, methods=["POST"]),
+        # /api/run/clear removed: run clearing is server-authoritative at
+        # workflow end (finalize_workflow_end). Mid-run abandonment unhandled.
+        Route("/api/phase", api_set_phase, methods=["POST"]),
+        Route("/api/workflow", api_set_workflow, methods=["POST"]),
         Route("/api/start-run/preflight", api_start_run_preflight, methods=["GET"]),
         Route("/api/answer", api_answer, methods=["POST"]),
         Route("/api/chat", api_chat, methods=["POST"]),

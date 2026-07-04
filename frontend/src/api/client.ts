@@ -74,8 +74,16 @@ export async function startRun(
   return post('/api/start-run', body)
 }
 
-export async function clearRun(): Promise<{ ok: boolean }> {
-  return post('/api/run/clear', {})
+// clearRun removed: run clearing is server-authoritative at workflow end; the
+// backend emits run_cleared at done-receipt / failure exit.
+
+/**
+ * Mechanical phase transition (including 'done'). Only valid while the workflow
+ * is parked at a yield -- the server rejects with 409 otherwise.
+ * @param phase - The target phase name, or 'done' to end the workflow.
+ */
+export async function setPhase(phase: string): Promise<{ ok: boolean; error?: string; message?: string; phase?: string }> {
+  return post('/api/phase', { phase })
 }
 
 // -- Interactions ------------------------------------------------------------

@@ -55,6 +55,11 @@ async def driver_main(app_state: AppState) -> None:
     The orchestrator's task.json carries workflow_history (an append-only list
     whose most-recent entry is the active workflow) rather than a single
     workflow string.
+
+    Workflow end ownership is split: the done path (apply_set_phase("done"))
+    emits workflow_completed + run_cleared; the driver pushes workflow_completed
+    only on crash/abnormal exit (when workflow_done is False) and then calls
+    finalize_workflow_end to emit run_cleared.
     """
     log.info("driver_main starting for run_dir=%s", app_state.run.run_dir)
 
@@ -99,9 +104,16 @@ async def driver_main(app_state: AppState) -> None:
         "workflow complete: exit_code=%d final_phase=%s",
         result.exit_code, app_state.run.phase,
     )
-    # Orchestrator exited -- workflow is over
-    app_state.projection_store.push_event("workflow_completed", {
-        "success": result.exit_code == 0,
-        "phase": app_state.run.phase,
-        "summary": f"Workflow ended in phase '{app_state.run.phase}'",
-    })
+    # Orchestrator exited. The done path (apply_set_phase("done")) owns the
+    # workflow_completed + run_cleared emission; skip the push when the
+    # tombstone was set. This branch covers only crash/abnormal exits, where
+    # workflow_done is still False -- push the completion, then clear the
+    # run so the UI (which no longer has a clear endpoint) is not stranded.
+    if not app_state.run.workflow_done:
+        app_state.projection_store.push_event("workflow_completed", {
+            "success": result.exit_code == 0,
+            "phase": app_state.run.phase,
+            "summary": f"Workflow ended in phase '{app_state.run.phase}'",
+        })
+        from .state import finalize_workflow_end
+        finalize_workflow_end(app_state)

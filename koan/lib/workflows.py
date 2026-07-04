@@ -892,26 +892,27 @@ def get_suggested_phases(workflow: Workflow, phase: str) -> list[str]:
 
 
 def build_phase_suggestions(workflow: Workflow, phase: str) -> list[dict]:
-    """Build {id, label, command} hand-back suggestions for the yield UI.
+    """Build {id, label, phase} hand-back suggestions for the yield UI.
 
     Derived deterministically from the workflow's suggested next phases for the
-    current phase, plus a terminal "done" option -- this replaces the structured
-    suggestions koan_yield used to carry, now that the in-process loop's
-    terminal-text turn is the hand-back (M5b removed koan_yield; M7.5 restores
-    the YieldPanel options without requiring the model to call a tool).
+    current phase, plus a terminal "done" option. Suggestions now carry a
+    "phase" field (consumed by the frontend's mechanical-transition routing --
+    POST /api/phase) instead of a "command" field; "command" is reserved for
+    free-text (orchestrator-authored) suggestions.
     """
+
     suggestions: list[dict] = []
     for p in get_suggested_phases(workflow, phase):
         label = p.replace("-", " ").replace("_", " ").title()
         suggestions.append({
             "id": p,
             "label": label,
-            "command": f"Proceed to the {p} phase.",
+            "phase": p,
         })
     suggestions.append({
         "id": "done",
         "label": "End workflow",
-        "command": "The workflow is complete.",
+        "phase": "done",
     })
     return suggestions
 

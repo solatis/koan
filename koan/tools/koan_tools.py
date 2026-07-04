@@ -363,7 +363,13 @@ async def apply_set_phase(deps: ToolDeps, phase: str) -> str:
     without crashing the run. Infrastructure and internal-config faults
     (no_run_dir, unknown_phase) still raise.
 
-    Called by the in-process koan_set_phase PydanticAI tool.
+    Called by the in-process koan_set_phase PydanticAI tool and the HTTP
+    api_set_phase route (mechanical UI-initiated transitions share this core).
+
+    The "done" branch is server-authoritative: it emits workflow_completed
+    and run_cleared immediately and performs the end-of-workflow state reset
+    via finalize_workflow_end. The driver's completion push is skipped when
+    workflow_done is True (see driver_main).
     """
     from ..driver import _push_artifact_diff
     from ..events import build_step_advanced
@@ -391,6 +397,14 @@ async def apply_set_phase(deps: ToolDeps, phase: str) -> str:
             "phase": current,
             "summary": f"Workflow completed from phase '{current}'",
         })
+        # Server-authoritative workflow end: emit run_cleared and reset
+        # per-run state here so the UI navigates to the front page
+        # immediately. The driver's completion push is skipped when
+        # workflow_done is True (see driver_main). Event order:
+        # yield_cleared -> workflow_completed -> run_cleared, so the
+        # completion folds into the projection before the run clears.
+        from ..state import finalize_workflow_end
+        finalize_workflow_end(app_state)
         return "Workflow complete. End your turn to finish."
 
     # Validate transition using workflow membership check.

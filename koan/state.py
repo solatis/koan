@@ -143,7 +143,8 @@ class RunState:
     # (with any per-run overrides applied) and also serialized to
     # <run_dir>/run-config.yaml as the durable on-disk record.  The spawn path
     # reads these instead of live global config so mid-run settings changes
-    # never affect an active run.  Both are cleared by api_run_clear.
+    # never affect an active run.  Both are cleared by finalize_workflow_end
+    # at workflow end (done-receipt or driver failure exit).
     frozen_config: "KoanConfig | None" = None
     frozen_credential_store: "CredentialStore | None" = None
     # Eager-flattened ModelSpec constructs for all tier slots.
@@ -175,6 +176,17 @@ class InteractionState:
     reflect_task: asyncio.Task | None = None
     reflect_session_id: str | None = None
     steering_queue: list[ChatMessage] = field(default_factory=list)
+    # Sentinel + claim flag for mechanical phase/workflow transitions.
+    # Set synchronously by api_set_phase/api_set_workflow BEFORE the first
+    # await of the apply call. Serves two roles: (a) a claim that reroutes
+    # concurrent api_chat / api_artifact_comment messages to steering while
+    # a mechanical transition is being applied (closes the race where a chat
+    # message resolves yield_future out from under the route), and (b) the
+    # sentinel the loop checks after yield_future resolves to skip the model
+    # turn entirely -- terminating on done or injecting the new phase's
+    # step-1 guidance. Cleared by the loop's sentinel branch on resume and
+    # by the route's error paths.
+    mechanical_resume: bool = False
 
 
 @dataclass
@@ -367,3 +379,40 @@ def drain_steering_messages(app_state: AppState) -> list[ChatMessage]:
     messages = list(app_state.interactions.steering_queue)
     app_state.interactions.steering_queue.clear()
     return messages
+
+
+def finalize_workflow_end(app_state: AppState) -> None:
+    """Server-authoritative end-of-workflow reset, then emit run_cleared.
+
+    Performs the state reset previously owned by the deleted api_run_clear
+    endpoint: clears interaction buffers and per-run frozen snapshots. Emits
+    run_cleared immediately so the UI navigates to the front page without
+    waiting for a frontend-initiated clear.
+
+    Call sites:
+      - apply_set_phase("done") -- the tombstone branch owns workflow end
+        for the success path (emits workflow_completed then this).
+      - driver_main failure exit -- when the orchestrator exits without the
+        done tombstone (crash/abnormal), the driver pushes workflow_completed
+        then calls this to clear the run so the UI is not stranded.
+
+    Deliberately does NOT reset:
+      - run.workflow_done: the loop's termination check reads it after the
+        sentinel resume; api_start_run resets it on the next run.
+      - yield_future: owned by its resolution sites (api_chat,
+        api_artifact_comment, crash cleanup, mechanical routes); clearing it
+        blindly would violate the resolution-site discipline.
+      - run.run_dir/workflow/phase: overwritten by the next api_start_run, and
+        the winding-down orchestrator may still read them.
+    """
+    app_state.interactions.user_message_buffer.clear()
+    app_state.interactions.steering_queue.clear()
+    app_state.run.start_attachments = []
+    app_state.run.frozen_config = None
+    app_state.run.frozen_credential_store = None
+    app_state.run.frozen_models = {}
+    app_state.run.memory_models = None
+    # Function-local import avoids a circular state -> events dependency
+    # at module load (precedent: build_memory_summary_updated above).
+    from .events import build_run_cleared
+    app_state.projection_store.push_event("run_cleared", build_run_cleared())

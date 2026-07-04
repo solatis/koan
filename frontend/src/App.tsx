@@ -16,7 +16,7 @@ import { useStore, CompletionInfo } from './store/index'
 import { connectSSE } from './sse/connect'
 import { useHeaderData } from './hooks/useHeaderData'
 import { derivePhaseNodes } from './store/selectors'
-import * as api from './api/client'
+// api import removed: clearRun callers deleted; run clearing is server-authoritative.
 
 import { HeaderBar } from './components/organisms/HeaderBar'
 // Content stream and its sub-components moved to organisms/ContentStream.tsx in M2.
@@ -29,6 +29,7 @@ import { ReviewView } from './components/organisms/ReviewView'
 import { ConnectedSettingsPage } from './components/organisms/ConnectedSettingsPage'
 import { ConnectedNewRunForm } from './components/organisms/ConnectedNewRunForm'
 
+import { ReviewReflectCard } from './components/molecules/ReviewReflectCard'
 import { Notification } from './components/Notification'
 import { SessionsPage } from './components/organisms/SessionsPage'
 import { MemoryRoutes } from './components/organisms/MemoryRoutes'
@@ -60,6 +61,11 @@ const PATH_BY_KEY: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 export default function App() {
+  const harnessParam = new URLSearchParams(window.location.search).get('harness')
+  if (harnessParam === 'reflect-card') {
+    return <ReviewReflectCard />
+  }
+
   const run = useStore(s => s.run)
   const connected = useStore(s => s.connected)
   const reviewingArtifact = useStore(s => s.reviewingArtifact)
@@ -69,8 +75,8 @@ export default function App() {
   const navigate = useNavigate()
 
   // Timeline rail: phase nodes derived from the run, plus the viewing-phase
-  // UI state. onPhaseClick only records viewingPhaseId for now -- phase-scoped
-  // content switching is a later task.
+  // UI state. onPhaseClick sets viewingPhaseId for historical viewing, or
+  // null (live view) when clicking the active phase.
   const viewingPhaseId = useStore(s => s.viewingPhaseId)
   const setViewingPhaseId = useStore(s => s.setViewingPhaseId)
   const phaseNodes = useMemo(() => (run ? derivePhaseNodes(run) : []), [run])
@@ -99,17 +105,18 @@ export default function App() {
     prevCompletionRef.current = current
   }, [run?.completion])
 
-  // Success: auto-clear + navigate after 3 seconds so the user can read the
-  // completion banner before the overview appears. The timer is cancelled if
-  // the component unmounts or if completion changes (e.g. SSE reconnect).
+  // Falling-edge navigation: when run goes from non-null to null (run_cleared
+  // received from the backend at workflow end), navigate to the front page.
+  // The ref guard ensures this only fires on the actual falling edge, not on
+  // every re-render. The backend owns the full end-of-workflow reset; the UI
+  // just responds to the projection clearing.
+  const prevRunRef = useRef<typeof run>(null)
   useEffect(() => {
-    if (!completion || !completion.success) return
-    const timer = setTimeout(async () => {
-      await api.clearRun()
+    if (prevRunRef.current !== null && run === null) {
       navigate('/')
-    }, 3000)
-    return () => clearTimeout(timer)
-  }, [completion, navigate])
+    }
+    prevRunRef.current = run
+  }, [run, navigate])
 
   useEffect(() => {
     let es: EventSource | null = null
@@ -159,7 +166,9 @@ export default function App() {
       phases={phaseNodes}
       activePhaseId={run.phase}
       viewingPhaseId={viewingPhaseId}
-      onPhaseClick={setViewingPhaseId}
+      // Clicking the active phase returns to live view (null) rather than
+      // setting viewingPhaseId to the active phase ID.
+      onPhaseClick={(id: string) => setViewingPhaseId(id === run.phase ? null : id)}
     />
   ) : null
 
@@ -215,8 +224,9 @@ export default function App() {
 
   if (completion) {
     if (completion.success) {
-      // Auto-navigation timer is running (3s). Keep workflow-mode header so
-      // the phase/step breadcrumb remains visible while the user waits.
+      // Completion view: the backend emits run_cleared at workflow end, which
+      // triggers the falling-edge navigation to '/'. Keep the workflow-mode header
+      // so the phase/step breadcrumb remains visible until then.
       return (
         <div className="app-root">
           <HeaderBar {...header} onSettingsClick={goToSettings} />
@@ -225,14 +235,12 @@ export default function App() {
         </div>
       )
     }
-    // Failure: switch to navigation-mode header so nav clicks can clear and
-    // navigate. No auto-navigation -- user must take an explicit action.
-    const handleNav = async (k: string) => {
-      await api.clearRun()
+    // Failure: the backend clears failed runs via run_cleared at driver exit.
+    // These handlers only navigate -- no clearRun call needed.
+    const handleNav = (k: string) => {
       navigate(PATH_BY_KEY[k] ?? '/')
     }
-    const handleBack = async () => {
-      await api.clearRun()
+    const handleBack = () => {
       navigate('/')
     }
     return (

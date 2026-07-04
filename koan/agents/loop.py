@@ -457,6 +457,12 @@ async def run_agent_loop(
     The hand-back block sources suggestions from koan_suggest_next if recorded,
     falling back to build_phase_suggestions.
 
+    Mechanical-resume branch: when yield_future resolves with
+    mechanical_resume set (a mechanical transition applied via the HTTP
+    api_set_phase / api_set_workflow route), the loop skips the model turn
+    entirely -- it terminates on "done" or calls resolve_turn_outcome to
+    inject the new phase's step-1 guidance (step==0 handshake).
+
     Steering injection: after each CallToolsNode completes, drain_and_render_steering
     is called. Non-empty result is injected via agent_run.enqueue() which delivers
     it as a UserPromptPart before the next model request -- never between a tool
@@ -804,6 +810,33 @@ async def run_agent_loop(
             app_state.interactions.yield_future = future
             await future
             app_state.interactions.yield_future = None
+            # Mechanical-resume sentinel: a mechanical transition (api_set_phase
+            # or api_set_workflow) was applied while parked. apply_set_phase
+            # already reset step to 0, so resolve_turn_outcome runs the
+            # step-0->1 handshake and injects the new phase's step-1 guidance --
+            # no model turn occurs in the old phase. "done" terminates
+            # immediately (workflow_done is True).
+            if app_state.interactions.mechanical_resume:
+                app_state.interactions.mechanical_resume = False
+                # Defensive stale-bleed guard: the buffer should be empty (the
+                # claim reroutes chat and artifact comments to steering), but
+                # if a resolver raced the claim, preserve its messages as
+                # steering rather than stranding them for a stale delivery on
+                # the NEXT resume.
+                if app_state.interactions.user_message_buffer:
+                    from ..state import drain_user_messages
+                    from ..logger import get_logger
+                    get_logger("loop").warning(
+                        "mechanical resume: stale user_message_buffer rerouted to steering",
+                    )
+                    app_state.interactions.steering_queue.extend(
+                        drain_user_messages(app_state),
+                    )
+                if app_state.run.workflow_done:
+                    return
+                outcome, payload = await resolve_turn_outcome(agent_state, app_state)
+                turn_prompt = payload  # type: ignore[assignment]
+                continue
 
             # Drain the user messages that api_chat buffered and form the next prompt.
             from ..state import drain_user_messages

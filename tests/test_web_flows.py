@@ -1344,3 +1344,141 @@ async def test_koan_set_workflow_emits_projection_events(tmp_path):
     assert wf_event.payload.get("workflow") == "milestones"
     ph_event = new_events[ph_idx]
     assert ph_event.payload.get("phase") == "intake"
+
+# -- Mechanical phase/workflow transition routes -------------------------------
+
+
+def _setup_parked_yield(app_state):
+    """Set up app_state with a run_dir, a pending yield_future, and a primary agent."""
+    import asyncio
+    from koan.state import AgentState
+
+    app_state.run.run_dir = "/tmp/test-run"
+    loop = asyncio.new_event_loop()
+    app_state.interactions.yield_future = loop.create_future()
+    agent = AgentState(
+        agent_id="primary-test", role="orchestrator", subagent_dir="/tmp/test-sub",
+        is_primary=True,
+    )
+    app_state.agents[agent.agent_id] = agent
+    return agent
+
+
+def test_api_set_phase_happy_path(client, app_state):
+    """POST /api/phase with a valid phase transitions and resolves the yield_future."""
+    from koan.lib.workflows import get_workflow
+
+    app_state.run.workflow = get_workflow("plan")
+    app_state.run.phase = "intake"
+    agent = _setup_parked_yield(app_state)
+
+    resp = client.post("/api/phase", json={"phase": "plan"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["phase"] == "plan"
+    # Phase updated by the shared core.
+    assert app_state.run.phase == "plan"
+    # yield_future resolved.
+    assert app_state.interactions.yield_future is not None
+    assert app_state.interactions.yield_future.done()
+    # mechanical_resume was set as the claim (the loop clears it on resume).
+    assert app_state.interactions.mechanical_resume is True
+
+
+def test_api_set_phase_done(client, app_state):
+    """POST /api/phase with 'done' triggers server-authoritative workflow end."""
+    from koan.lib.workflows import get_workflow
+
+    app_state.run.workflow = get_workflow("plan")
+    app_state.run.phase = "plan"
+    _setup_parked_yield(app_state)
+
+    resp = client.post("/api/phase", json={"phase": "done"})
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+
+    # workflow_done set.
+    assert app_state.run.workflow_done is True
+
+    # Event sequence: workflow_completed strictly before run_cleared.
+    event_types = [e.event_type for e in app_state.projection_store.events]
+    assert "workflow_completed" in event_types
+    assert "run_cleared" in event_types
+    assert event_types.index("workflow_completed") < event_types.index("run_cleared")
+
+    # Interaction buffers cleared by finalize_workflow_end.
+    assert app_state.interactions.user_message_buffer == []
+    assert app_state.interactions.steering_queue == []
+
+
+def test_api_set_phase_no_run(client, app_state):
+    """POST /api/phase with no run_dir returns 409 no_run."""
+    resp = client.post("/api/phase", json={"phase": "plan"})
+    assert resp.status_code == 409
+    assert resp.json()["error"] == "no_run"
+
+
+def test_api_set_phase_not_at_yield(client, app_state):
+    """POST /api/phase when no yield is pending returns 409 not_at_yield."""
+    app_state.run.run_dir = "/tmp/test-run"
+    app_state.interactions.yield_future = None
+    resp = client.post("/api/phase", json={"phase": "plan"})
+    assert resp.status_code == 409
+    assert resp.json()["error"] == "not_at_yield"
+
+
+def test_api_set_phase_invalid_transition(client, app_state):
+    """POST /api/phase with an invalid phase returns 422 invalid_transition."""
+    from koan.lib.workflows import get_workflow
+
+    app_state.run.workflow = get_workflow("plan")
+    app_state.run.phase = "intake"
+    _setup_parked_yield(app_state)
+
+    resp = client.post("/api/phase", json={"phase": "nonexistent"})
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "invalid_transition"
+
+
+def test_api_set_phase_missing_body_key(client, app_state):
+    """POST /api/phase with no 'phase' key returns 422."""
+    app_state.run.run_dir = "/tmp/test-run"
+    _setup_parked_yield(app_state)
+    resp = client.post("/api/phase", json={})
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "invalid_phase"
+
+
+def test_api_set_phase_transition_pending(client, app_state):
+    """POST /api/phase while mechanical_resume is already set returns 409."""
+    from koan.lib.workflows import get_workflow
+
+    app_state.run.workflow = get_workflow("plan")
+    app_state.run.phase = "intake"
+    _setup_parked_yield(app_state)
+    app_state.interactions.mechanical_resume = True
+
+    resp = client.post("/api/phase", json={"phase": "plan"})
+    assert resp.status_code == 409
+    assert resp.json()["error"] == "transition_pending"
+
+
+def test_api_set_workflow_unknown_workflow(client, app_state):
+    """POST /api/workflow with an unknown workflow returns 422 unknown_workflow."""
+    _setup_parked_yield(app_state)
+    resp = client.post("/api/workflow", json={"workflow": "nonexistent"})
+    assert resp.status_code == 422
+    assert resp.json()["error"] == "unknown_workflow"
+
+
+def test_api_run_clear_route_deleted(client):
+    """POST /api/run/clear is gone (404 or 405 -- route deleted, no POST handler)."""
+    resp = client.post("/api/run/clear", json={})
+    assert resp.status_code in (404, 405), f"expected 404/405, got {resp.status_code}"
+
+
+def test_api_run_clear_not_importable():
+    """api_run_clear is not importable from koan.web.app."""
+    from koan.web import app as app_module
+    assert not hasattr(app_module, "api_run_clear")
