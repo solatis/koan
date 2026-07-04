@@ -857,35 +857,128 @@ async def reflect_core(
 ) -> str:
     """Core logic for koan_reflect.
 
-    Runs run_reflect_agent with a trace callback that emits reflect_delta
-    projection events for text-kind deltas (keeping the live streaming feed
-    in sync). Returns a JSON string with answer, citations, and iterations.
+    Runs run_reflect_agent with a state-machine trace callback that emits
+    reflect_delta projection events for text streaming and reflect_inline_trace
+    events for thinking transitions, search lifecycle, and metadata. Returns
+    a JSON string with answer, citations, and iterations.
 
     Re-raises IterationCapExceeded and RuntimeError so callers can map them
     to their error shapes.
     """
     import json
 
-    from ..events import build_reflect_delta
+    from ..events import build_reflect_delta, build_reflect_inline_trace
     from ..memory.retrieval import ReflectTraceEvent, run_reflect_agent
+    from ..memory.retrieval.reflect import MAX_ITERATIONS
 
     agent = deps.agent
     app_state = deps.app_state
 
-    # Only text-kind deltas flow into the projection feed; other kinds (search,
-    # done, thinking) are consumed by /api/memory/reflect instead.
-    def _on_trace(ev: ReflectTraceEvent) -> None:
-        if ev.kind != "text" or not ev.delta:
-            return
-        app_state.projection_store.push_event(
-            "reflect_delta",
-            build_reflect_delta(ev.delta),
-            agent_id=agent.agent_id,
-        )
-
+    from ..memory.bindings import require_memory_model
+    from ..agents.base import AgentError, AgentDiagnostic
     models = app_state.run.memory_models
+    frozen = app_state.run.frozen_models
     index = app_state.memory.retrieval_index
-    result = await run_reflect_agent(index, models, question, context=context, on_trace=_on_trace)
+    embed = require_memory_model(models.embedding if models else None, "embedding")
+    standard = frozen.get("standard") if frozen else None
+    if standard is None:
+        raise AgentError(AgentDiagnostic(
+            code="unconfigured",
+            agent="",
+            stage="reflect_core",
+            message=(
+                "Standard model slot is not configured. "
+                "Assign a model to the 'standard' tier in the active preset."
+            ),
+        ))
+
+    # State-machine callback: emits reflect_delta for text streaming (unchanged)
+    # and reflect_inline_trace for traces/metadata (new). The callback is defined
+    # after `standard` is resolved so it can capture the model name for the meta
+    # event. All state-machine logic lives in the projection fold; this callback
+    # only translates ReflectTraceEvent kinds into projection events.
+    is_thinking = False
+    started = False
+
+    def _on_trace(ev: ReflectTraceEvent) -> None:
+        """State-machine callback for reflect subagent traces.
+
+        Tracks thinking state to emit start/end transitions rather than
+        raw deltas. Emits reflect_delta for text streaming (unchanged) and
+        reflect_inline_trace for traces/metadata (new). On first call,
+        emits a meta event with model and maxIterations.
+        """
+        nonlocal is_thinking, started
+        if not started:
+            started = True
+            app_state.projection_store.push_event(
+                "reflect_inline_trace",
+                build_reflect_inline_trace({
+                    "kind": "meta",
+                    "model": standard.model,
+                    "maxIterations": MAX_ITERATIONS,
+                    "iteration": 0,
+                }),
+                agent_id=agent.agent_id,
+            )
+
+        # Flush thinking state when a non-thinking event arrives.
+        if ev.kind != "thinking" and is_thinking:
+            is_thinking = False
+            app_state.projection_store.push_event(
+                "reflect_inline_trace",
+                build_reflect_inline_trace({"kind": "thinking_end"}),
+                agent_id=agent.agent_id,
+            )
+
+        if ev.kind == "text":
+            if ev.delta:
+                app_state.projection_store.push_event(
+                    "reflect_delta",
+                    build_reflect_delta(ev.delta),
+                    agent_id=agent.agent_id,
+                )
+        elif ev.kind == "thinking":
+            if not is_thinking:
+                is_thinking = True
+                app_state.projection_store.push_event(
+                    "reflect_inline_trace",
+                    build_reflect_inline_trace({"kind": "thinking_start"}),
+                    agent_id=agent.agent_id,
+                )
+        elif ev.kind == "search_start":
+            app_state.projection_store.push_event(
+                "reflect_inline_trace",
+                build_reflect_inline_trace({
+                    "kind": "search",
+                    "status": "running",
+                    "query": ev.query,
+                    "type_filter": ev.type_filter,
+                    "iteration": ev.iteration,
+                }),
+                agent_id=agent.agent_id,
+            )
+        elif ev.kind == "search":
+            app_state.projection_store.push_event(
+                "reflect_inline_trace",
+                build_reflect_inline_trace({
+                    "kind": "search_done",
+                    "query": ev.query,
+                    "resultCount": ev.result_count,
+                    "iteration": ev.iteration,
+                }),
+                agent_id=agent.agent_id,
+            )
+        # kind == "done" is intentionally ignored (dead path: done_tool sets
+        # deps.done_result and the loop breaks without emitting a trace).
+    result = await run_reflect_agent(
+        index,
+        model=standard,
+        embed=embed,
+        question=question,
+        context=context,
+        on_trace=_on_trace,
+    )
     out = {
         "answer": result.answer,
         "citations": [
@@ -1636,7 +1729,7 @@ def build_koan_toolset(allowed_names: "frozenset[str] | None" = None) -> Any:
     # ---- M6: koan_suggest_next ----
 
     async def _koan_suggest_next(ctx, suggestions: list[dict] | None = None) -> str:
-        """Record the next-step suggestions to show the user at the upcoming phase-boundary hand-back."""
+        """Record next-step suggestions; each carries either phase (transition) or command (free-text)."""
         return await suggest_next_core(ctx.deps, suggestions or [])
 
     _reg(

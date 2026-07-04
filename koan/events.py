@@ -529,6 +529,17 @@ def build_reflect_delta(delta: str) -> dict:
     return {"delta": delta}
 
 
+def build_reflect_inline_trace(trace: dict) -> dict:
+    """Build reflect_inline_trace event payload.
+
+    Carries a single trace event from the reflect subagent's internal
+    tool-calling loop. The fold appends it to the in-flight ToolKoanEntry's
+    result.traces array. Correlated by agent_id only -- koan MCP tools block,
+    so at most one in-flight koan entry per agent.
+    """
+    return {"trace": trace}
+
+
 def build_tool_attachments(manifest: list[dict]) -> dict:
     """Build tool_attachments event payload.
 
