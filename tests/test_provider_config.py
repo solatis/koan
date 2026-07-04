@@ -150,18 +150,22 @@ class TestResolveModelSpec:
         )
 
     def test_orchestrator_bakes_long_cache_tier(self):
-        """resolve_model_spec for orchestrator bakes anthropic_cache='1h' (long tier)."""
+        """resolve_model_spec for orchestrator bakes the long-tier split: tail '5m', stable '1h'."""
         config = self._make_anthropic_claude_config()
         reg = AgentRegistry()
         spec = reg.resolve_model_spec("orchestrator", config, None)
-        assert spec.settings.get("anthropic_cache") == "1h"
+        assert spec.settings.get("anthropic_cache") == "5m"
+        assert spec.settings.get("anthropic_cache_instructions") == "1h"
+        assert spec.settings.get("anthropic_cache_tool_definitions") == "1h"
 
     def test_scout_bakes_short_cache_tier(self):
-        """resolve_model_spec for scout bakes anthropic_cache='5m' (short tier)."""
+        """resolve_model_spec for scout bakes all-short: anthropic_cache* keys '5m' (short tier)."""
         config = self._make_anthropic_claude_config()
         reg = AgentRegistry()
         spec = reg.resolve_model_spec("scout", config, None)
         assert spec.settings.get("anthropic_cache") == "5m"
+        assert spec.settings.get("anthropic_cache_instructions") == "5m"
+        assert spec.settings.get("anthropic_cache_tool_definitions") == "5m"
 
     def test_caching_mode_off_suppresses_settings(self):
         """CachingPolicy(mode='off') suppresses all cache settings regardless of role."""

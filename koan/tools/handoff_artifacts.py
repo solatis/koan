@@ -23,9 +23,11 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pydantic_ai.messages import ModelRequest, UserPromptPart
+from pydantic_ai.messages import CachePoint, ModelRequest, UserPromptPart
 
 from .artifact_registry import LIVING_DOC_FAMILIES, parse_artifact_filename
+from ..agents.adapter import cache_ttl_for
+from ..types import cache_tier_for_role
 
 if TYPE_CHECKING:
     from ..phases import PhaseContext
@@ -257,3 +259,91 @@ def preseed_pending_listing(agent: "AgentState") -> None:
     if not listing:
         return
     agent.message_history.append(ModelRequest(parts=[UserPromptPart(content=listing)]))
+
+
+def apply_artifact_cache_point(agent: "AgentState", target_index: int) -> None:
+    """Attach the ``cache_artifacts`` long-TTL CachePoint to a preseeded message.
+
+    Realizes the ``cache_artifacts`` semantic breakpoint by attaching a
+    long-TTL ``pydantic_ai.messages.CachePoint`` to the artifact/listing
+    message at ``target_index`` -- the message the preseeds appended this turn.
+    The CachePoint is appended to the ``UserPromptPart.content`` list so it
+    becomes ``[<original str>, CachePoint(ttl='1h')]``, giving the stable
+    artifact region its own long-lived cache breakpoint distinct from the
+    churny conversation tail (which carries the short TTL via the settings-key
+    ``anthropic_cache`` / ``bedrock_cache_messages``).
+
+    Role gate: only long-tier agents (orchestrator/executor) receive the long
+    artifact CachePoint, via ``cache_tier_for_role``.  Scouts/reviewers are
+    single-shot and never benefit from a 1h TTL, so this is a no-op for them.
+
+    No-op conditions (all return without attaching):
+
+      - ``target_index < 0``: the caller's sentinel meaning "no message was
+        preseeded this turn" (turns 2+ within a phase).
+      - ``target_index >= len(agent.message_history)``: out of range.
+      - ``cache_tier_for_role(agent.role) != "long"``: short-tier agent.
+      - ``cache_ttl_for(agent.provider, "long") is None``: provider has no
+        koan-managed explicit cache (e.g. google/openai, or unset in tests).
+      - The target message is not a ``ModelRequest`` whose last part is a
+        ``UserPromptPart`` whose ``content`` is a plain ``str``.  The
+        plain-``str`` check is also the idempotency guard: if ``content`` is
+        already a list, a CachePoint was attached on a prior call to the same
+        object, so return (no double-append, preserving byte-stability).
+
+    .. warning::
+
+        The ``target_index`` is passed by the caller (the agent loop) and
+        MUST NOT be re-derived as ``message_history[-1]``.  On turns 2+,
+        ``[-1]`` points at the churny tail (a ``ModelResponse``, a tool-return
+        ``ModelRequest``, or a steering/user ``ModelRequest``), and attaching
+        the long TTL there would invert the initiative's goal.  The loop passes
+        the sentinel ``-1`` on all non-phase-entry turns so this helper is a
+        no-op then; the CachePoint placed on turn 1 rides forward at the fixed
+        artifact boundary via ``all_messages()``.
+
+    A CachePoint may not be the first content in a user message (transport
+    constraint on Anthropic and Bedrock), so it attaches to the existing text
+    rather than appending a bare CachePoint-only message.
+
+    Args:
+        agent: The AgentState whose message_history contains the target.
+        target_index: Index of the last message the preseeds appended this
+            turn, or ``-1`` (sentinel) when nothing was preseeded.
+    """
+    # Sentinel / out-of-range: nothing to attach to (turns 2+ pass -1).
+    if target_index < 0 or target_index >= len(agent.message_history):
+        return
+
+    # Role gate: only long-tier agents get the long artifact CachePoint.
+    if cache_tier_for_role(agent.role) != "long":
+        return
+
+    # Provider must have a koan-managed explicit cache (anthropic/bedrock).
+    ttl = cache_ttl_for(agent.provider or "", "long")
+    if ttl is None:
+        return
+
+    target = agent.message_history[target_index]
+    # Only attach to a ModelRequest whose last part is a str-content
+    # UserPromptPart -- the exact shape the preseeds produce.  The str check
+    # is also the idempotency guard: a list means a CachePoint was already
+    # attached on a prior call to this same object.
+    if not isinstance(target, ModelRequest):
+        return
+    if not target.parts:
+        return
+    last_part = target.parts[-1]
+    if not isinstance(last_part, UserPromptPart):
+        return
+    if not isinstance(last_part.content, str):
+        return
+
+    # Attach: rebuild the ModelRequest with content [original_str, CachePoint].
+    # The CachePoint is a separate marker appended to the content list, not a
+    # mutation of the existing text bytes (byte-stability invariant #161).
+    new_parts = list(target.parts[:-1])
+    new_parts.append(
+        UserPromptPart(content=[last_part.content, CachePoint(ttl=ttl)])
+    )
+    agent.message_history[target_index] = ModelRequest(parts=new_parts)

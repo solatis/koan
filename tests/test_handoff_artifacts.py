@@ -14,6 +14,7 @@ import pytest
 from koan.phases import PhaseContext
 from koan.state import AgentState, AppState
 from koan.tools.handoff_artifacts import (
+    apply_artifact_cache_point,
     build_handover_listing,
     format_handoff_message,
     living_artifacts,
@@ -510,3 +511,130 @@ def test_preseed_multi_artifact_order_stable(tmp_path):
     assert 'name="brief.md"' in agent.message_history[0].parts[0].content
     assert 'name="core-flows.md"' in agent.message_history[1].parts[0].content
     assert 'name="tech-plan.md"' in agent.message_history[2].parts[0].content
+
+
+# -- apply_artifact_cache_point ----------------------------------------------- #
+
+
+def _make_agent_with_provider(role: str = "orchestrator", provider: str = "anthropic") -> AgentState:
+    """Build an AgentState with an explicit role and provider for CachePoint tests."""
+    agent = AgentState(agent_id="test-agent", role=role, subagent_dir="", run_dir="")
+    agent.provider = provider
+    return agent
+
+
+def _artifact_msg(text: str = "ARTIFACT_TEXT"):
+    """Build a ModelRequest with a plain-str UserPromptPart (preseed shape)."""
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    return ModelRequest(parts=[UserPromptPart(content=text)])
+
+
+def test_apply_cache_point_long_tier_attaches_cache_point():
+    """Long-tier role + anthropic provider: content becomes [str, CachePoint(ttl='1h')]."""
+    from pydantic_ai.messages import CachePoint
+
+    agent = _make_agent_with_provider(role="orchestrator", provider="anthropic")
+    agent.message_history.append(_artifact_msg("ARTIFACT"))
+
+    apply_artifact_cache_point(agent, 0)
+
+    part = agent.message_history[0].parts[-1]
+    assert isinstance(part.content, list)
+    assert part.content[0] == "ARTIFACT"
+    assert isinstance(part.content[1], CachePoint)
+    assert part.content[1].ttl == "1h"
+
+
+def test_apply_cache_point_short_tier_no_op():
+    """Short-tier role (scout): no CachePoint attached; content stays a plain str."""
+    agent = _make_agent_with_provider(role="scout", provider="anthropic")
+    agent.message_history.append(_artifact_msg("ARTIFACT"))
+
+    apply_artifact_cache_point(agent, 0)
+
+    assert agent.message_history[0].parts[-1].content == "ARTIFACT"
+
+
+def test_apply_cache_point_sentinel_index_no_op():
+    """Sentinel target_index=-1: no error, no change to history (turn-2+ no-op)."""
+    agent = _make_agent_with_provider(role="orchestrator", provider="anthropic")
+    agent.message_history.append(_artifact_msg("ARTIFACT"))
+
+    apply_artifact_cache_point(agent, -1)
+
+    assert agent.message_history[0].parts[-1].content == "ARTIFACT"
+
+
+def test_apply_cache_point_turn2_regression_tail_not_mutated():
+    """Turn-2+ regression (reviewer C1): sentinel -1 does NOT attach to the churny tail.
+
+    History has an artifact message at index 0 and a churny tail message at
+    index 1.  Calling with -1 (nothing preseeded this turn) must leave the
+    tail message untouched -- it must NOT get a long-TTL CachePoint.
+    """
+    agent = _make_agent_with_provider(role="orchestrator", provider="anthropic")
+    agent.message_history.append(_artifact_msg("ARTIFACT"))
+    agent.message_history.append(_artifact_msg("CHURNY_TAIL"))
+
+    apply_artifact_cache_point(agent, -1)
+
+    # Tail message must stay a plain str -- no CachePoint leaked onto it.
+    assert agent.message_history[1].parts[-1].content == "CHURNY_TAIL"
+    # Artifact message also untouched (sentinel means nothing was preseeded).
+    assert agent.message_history[0].parts[-1].content == "ARTIFACT"
+
+
+def test_apply_cache_point_idempotent():
+    """Calling twice with the same valid target_index attaches only one CachePoint."""
+    from pydantic_ai.messages import CachePoint
+
+    agent = _make_agent_with_provider(role="orchestrator", provider="anthropic")
+    agent.message_history.append(_artifact_msg("ARTIFACT"))
+
+    apply_artifact_cache_point(agent, 0)
+    apply_artifact_cache_point(agent, 0)
+
+    content = agent.message_history[0].parts[-1].content
+    assert isinstance(content, list)
+    cache_points = [p for p in content if isinstance(p, CachePoint)]
+    assert len(cache_points) == 1
+
+
+def test_apply_cache_point_no_cache_provider_no_op():
+    """Provider with no koan-managed cache (google): no CachePoint even for long-tier role."""
+    agent = _make_agent_with_provider(role="orchestrator", provider="google")
+    agent.message_history.append(_artifact_msg("ARTIFACT"))
+
+    apply_artifact_cache_point(agent, 0)
+
+    assert agent.message_history[0].parts[-1].content == "ARTIFACT"
+
+
+def test_apply_cache_point_persistence_rides_forward():
+    """After attaching, the CachePoint persists on the original artifact message object.
+
+    Simulates all_messages() growth: the artifact ModelRequest is wrapped in a
+    larger list with later messages.  The CachePoint must still be present on
+    the artifact message at its original position (rides-forward invariant).
+    """
+    from pydantic_ai.messages import CachePoint, ModelRequest, UserPromptPart
+
+    agent = _make_agent_with_provider(role="orchestrator", provider="anthropic")
+    agent.message_history.append(_artifact_msg("ARTIFACT"))
+
+    apply_artifact_cache_point(agent, 0)
+
+    # Simulate later turns appending churny messages after the artifact message.
+    artifact_msg = agent.message_history[0]
+    simulated_all_messages = [
+        artifact_msg,
+        ModelRequest(parts=[UserPromptPart(content="LATER_TURN_1")]),
+        ModelRequest(parts=[UserPromptPart(content="LATER_TURN_2")]),
+    ]
+
+    # The artifact message (index 0) still carries the CachePoint.
+    content = simulated_all_messages[0].parts[-1].content
+    assert isinstance(content, list)
+    assert isinstance(content[1], CachePoint)
+    assert content[1].ttl == "1h"

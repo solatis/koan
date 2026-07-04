@@ -470,7 +470,10 @@ async def run_agent_loop(
     state, so each phase starts with a minimal context. Pre-seeding then
     rebuilds it: preseed_pending_artifacts injects the new phase's immutable
     handovers, preseed_pending_listing injects the artifact listing as its own
-    message, and the step guidance is the turn prompt that follows.
+    message, and the step guidance is the turn prompt that follows.  On the
+    phase-entry turn, apply_artifact_cache_point attaches a long-TTL CachePoint
+    to the freshly-preseeded artifact/listing message, which then persists at
+    the fixed artifact boundary across subsequent turns via all_messages().
 
     Cache effectiveness: the loop accumulates input_tokens, cache_read_tokens,
     and request counts across turns and calls check_cache_effectiveness at each
@@ -542,10 +545,24 @@ async def run_agent_loop(
         # message_history before building the history slice. Artifacts land
         # before the listing (stable order for per-message cache locality).
         # Both are no-ops when their respective pending fields are empty.
+        # After pre-seeding, apply_artifact_cache_point attaches the long-TTL
+        # cache_artifacts CachePoint to the message the preseeds just appended
+        # (identified by index, NOT [-1] which on turns 2+ is the churny tail).
+        # It is a no-op on turns where nothing was preseeded (target_index=-1).
         # Function-local import consistent with the loop's existing import pattern.
-        from ..tools.handoff_artifacts import preseed_pending_artifacts, preseed_pending_listing
+        from ..tools.handoff_artifacts import (
+            apply_artifact_cache_point,
+            preseed_pending_artifacts,
+            preseed_pending_listing,
+        )
+        pre_len = len(agent_state.message_history)
         preseed_pending_artifacts(agent_state, app_state)
         preseed_pending_listing(agent_state)
+        # Target the last message the preseeds appended THIS turn, or -1 sentinel
+        # when nothing was appended (turns 2+) so the CachePoint placed on turn 1
+        # rides forward at the fixed artifact boundary via all_messages().
+        target_index = len(agent_state.message_history) - 1 if len(agent_state.message_history) > pre_len else -1
+        apply_artifact_cache_point(agent_state, target_index)
 
         # Pass accumulated history so the model has full conversation context.
         # On the first turn, message_history is empty (treated as no history).

@@ -198,18 +198,35 @@ def _caching_settings(
 ) -> dict:
     """Resolve a CachingPolicy + cache tier into transport-specific cache settings.
 
+    Emits a per-breakpoint TTL split (unified cache TTL policy):
+
+      - For the **long** tier (orchestrator/executor): the stable settings keys
+        (system-prompt instructions + tool definitions) carry the **long** TTL
+        ('1h'), while the growing-tail key carries the **short** TTL ('5m').
+        This gives the stable prefix a long-lived cache while the churny
+        conversation tail avoids wasteful long-TTL cache writes.
+      - For the **short** tier (scout/reviewer): all three keys carry the
+        short TTL ('5m'), preserving the prior uniform-short behavior.
+
+    The ``cache_artifacts`` semantic breakpoint (long-TTL CachePoint on the
+    injected artifact/listing message) is realized separately in the injection
+    layer (handoff_artifacts.py), not here.  Both layers consult the same role
+    gate via ``cache_tier_for_role`` so a short-tier agent never receives a
+    long-TTL breakpoint at either layer.
+
     Takes provider (conn.type) and cache_tier (derived from the agent role via
     cache_tier_for_role) to dispatch the correct pydantic-ai setting keys and
     concrete TTL.  Anthropic and Bedrock use different key families -- there is
-    no single literal key that works across both (brief Decision 6).  The TTL
-    value comes from cache_ttl_for(provider, cache_tier); providers without an
+    no single literal key that works across both (brief Decision 6).  TTL values
+    come from cache_ttl_for (the single gateway); providers without an
     explicit-cache mapping return {}.
 
     Emits three breakpoints per transport:
-      - Anthropic: anthropic_cache (message prefix), anthropic_cache_instructions,
-        anthropic_cache_tool_definitions.
-      - Bedrock: bedrock_cache_messages (message prefix / last cachePoint),
-        bedrock_cache_instructions, bedrock_cache_tool_definitions.
+      - Anthropic: anthropic_cache (growing tail), anthropic_cache_instructions
+        (system prompt), anthropic_cache_tool_definitions (tool schemas).
+      - Bedrock: bedrock_cache_messages (growing tail / last cachePoint),
+        bedrock_cache_instructions (system prompt),
+        bedrock_cache_tool_definitions (tool schemas).
 
     Note: anthropic_cache is mutually exclusive with anthropic_cache_messages;
     anthropic_cache is the correct key for the growing-history prefix breakpoint
@@ -225,21 +242,29 @@ def _caching_settings(
         # Provider handles caching automatically (google/openai) or the model
         # family does not support explicit cache control (bedrock-nova, voyage).
         return {}
-    ttl = cache_ttl_for(provider, cache_tier)
-    if ttl is None:
+    # Unified cache TTL policy: emit a per-breakpoint split.
+    # For long-tier agents (orchestrator/executor): stable keys (system prompt
+    # + tool defs) get the long TTL so the stable prefix benefits from a
+    # long-lived cache; the tail key gets the short TTL because the growing
+    # conversation churns every turn and a long TTL there wastes cache-write
+    # cost.  For short-tier agents (scout/reviewer): both TTLs resolve to
+    # '5m' (uniform-short, preserving prior behavior).
+    stable_ttl = cache_ttl_for(provider, "long") if cache_tier == "long" else cache_ttl_for(provider, cache_tier)
+    if stable_ttl is None:
         # Provider has no koan-managed explicit cache mapping; skip emission.
         return {}
+    tail_ttl = cache_ttl_for(provider, "short") if cache_tier == "long" else cache_ttl_for(provider, cache_tier)
     if provider == "anthropic":
         return {
-            "anthropic_cache": ttl,                  # growing message prefix
-            "anthropic_cache_instructions": ttl,     # system prompt
-            "anthropic_cache_tool_definitions": ttl, # tool schemas
+            "anthropic_cache": tail_ttl,                    # growing conversation tail
+            "anthropic_cache_instructions": stable_ttl,     # system prompt (stable)
+            "anthropic_cache_tool_definitions": stable_ttl, # tool schemas (stable)
         }
     if provider == "bedrock":
         return {
-            "bedrock_cache_messages": ttl,           # last-message cachePoint (prefix)
-            "bedrock_cache_instructions": ttl,       # system prompt
-            "bedrock_cache_tool_definitions": ttl,   # tool schemas
+            "bedrock_cache_messages": tail_ttl,             # last-message cachePoint / tail
+            "bedrock_cache_instructions": stable_ttl,       # system prompt (stable)
+            "bedrock_cache_tool_definitions": stable_ttl,   # tool schemas (stable)
         }
     # Defensive fallthrough: supports_prompt_caching guards Anthropic/Bedrock-Claude
     # only, so this branch should not be reached in practice.
