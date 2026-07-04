@@ -1,0 +1,9 @@
+---
+title: Native tool metrics via AgentState._pending_tool_metrics side channel replaces
+  text-parsing
+type: decision
+created: '2026-07-03T04:03:32Z'
+modified: '2026-07-03T04:03:32Z'
+---
+
+The koan agent loop's tool-metrics pipeline — the team adopted a native side-channel approach where exploration tools (`read`, `grep`, `glob`, `bash`, `web_search`, `web_fetch` in `koan/tools/builtin_tools.py`) store computed metrics on `deps.agent._pending_tool_metrics` before returning their result string. The agent loop in `koan/agents/loop.py` reads and clears this field after each tool completes, attaching the metrics directly to the `StreamEvent` without parsing the tool's text output. Rationale: the prior approach — parsing self-generated tool output text in `koan/agents/pydantic_ai.py` via `_parse_read_result_from_content` and `_parse_grep_result_from_content` — was fragile (a tool output format change silently dropped metrics, returning `None` with no error) and violated separation of concerns (the loop had to know each tool's output format). The side channel keeps metrics computation inside the tool that owns the data and delivers them through a typed field on the agent state. Alternatives rejected: pushing projection events directly from tool functions (tools lack the `call_id` needed to address the correct aggregate child); returning structured results from tools (PydanticAI `FunctionTool` returns strings, and changing the return type would break the framework contract); keeping the text-parsing approach (the empty-row defect in the production `ToolAggregateCard` was partly caused by metrics parsers returning `None` when output format expectations drifted). Decision surfaced during the exploration `ToolAggregateCard` redesign, when the production card's empty metric rows traced to the text-parsing fragility.

@@ -1,0 +1,9 @@
+---
+title: "Tool args delivered via dual path \u2014 tool_start for complete args, tool_stop\
+  \ for accumulated args"
+type: decision
+created: '2026-07-03T04:03:32Z'
+modified: '2026-07-03T04:03:32Z'
+---
+
+The koan agent loop's tool-argument delivery in `koan/agents/loop.py` — the team adopted a dual-path approach to populate exploration tool command fields on projection events. `tool_start` carries `part.args` when the LLM provider sends complete arguments at part-start time (Anthropic does this); `tool_stop` emits a `tool_input_delta` projection event with the complete accumulated `part.args` for all providers, ensuring command fields are populated regardless of whether the provider streams arguments incrementally or delivers them all at once. Rationale: the prior implementation only populated command fields from `tool_input_delta` events, and the glob branch was missing entirely from the delta fold case in `koan/projections.py` — glob children never received their pattern. This was the root cause of the empty rows in the production `ToolAggregateCard`. The dual-path approach guarantees that every exploration tool's command data (file path, pattern, query, URL, command string) is populated by the time the tool completes, for whichever arg-delivery path the provider uses. Alternatives rejected: single-path only via `tool_input_delta` (leaves gaps for providers that send complete args at part start, and the missing glob branch showed how easy it is to miss a family in a single-path design); parsing raw delta strings incrementally (fragile — PydanticAI already accumulates args into `part.args` as a dict, so reconstructing from deltas duplicates framework work). Decision surfaced during the exploration `ToolAggregateCard` redesign, when investigation of the empty-row defect traced to unpopulated command fields on aggregate children.

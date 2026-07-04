@@ -14,7 +14,7 @@ dependencies = [
     "lancedb>=0.20",
     "cryptography",
     "pydantic-ai-slim[anthropic,bedrock,google,openai,duckduckgo]==2.0.0",
-    "genai-prices>=0.0.64",
+    "genai-prices>=0.0.68",
     "mcp",
 ]
 

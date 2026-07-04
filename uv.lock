@@ -733,15 +733,15 @@ wheels = [
 
 [[package]]
 name = "genai-prices"
-version = "0.0.64"
+version = "0.0.68"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx2" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f6/51/15078695fd965be2656ec187e5b6c7c819d54fb699102d452cfee07e41b7/genai_prices-0.0.64.tar.gz", hash = "sha256:4d28b6010587bdde5a9cb4028e429762236ac45dad800e2a4c3699948e92e0d1", size = 68909, upload-time = "2026-06-05T21:42:23.027Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/39/57/dd50a29498868e302c1467464a159b4f26ebb6a758cc1ad5080b50d02fa8/genai_prices-0.0.68.tar.gz", hash = "sha256:1dc26321b1ffa1423ff421d63c0683ae4620e8989456ca25a63724f666a7ad34", size = 81449, upload-time = "2026-07-01T23:53:43.522Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/02/4c/9cc5688f6956f87162efaa3b3d7abbc39df121356fc87a04c1d2348c8b30/genai_prices-0.0.64-py3-none-any.whl", hash = "sha256:ffa7a3bd5e75dcddba236d18096d21d998bc57f513fc39ded63d8cf132d79c1c", size = 71549, upload-time = "2026-06-05T21:42:21.813Z" },
+    { url = "https://files.pythonhosted.org/packages/ba/df/876340a1f76a6828db9720b53b60b6797d7b2af2b98b32e929095450b9e5/genai_prices-0.0.68-py3-none-any.whl", hash = "sha256:cde3eed2501c845473663286268d51dab1f1a64cc5fec6b855548560003af0fc", size = 83942, upload-time = "2026-07-01T23:53:42.226Z" },
 ]
 
 [[package]]
@@ -1243,7 +1243,7 @@ dev = [
 requires-dist = [
     { name = "aiofiles" },
     { name = "cryptography" },
-    { name = "genai-prices", specifier = ">=0.0.64" },
+    { name = "genai-prices", specifier = ">=0.0.68" },
     { name = "json-repair", specifier = ">=0.59.4" },
     { name = "jsonpatch" },
     { name = "lancedb", specifier = ">=0.20" },
