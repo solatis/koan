@@ -611,14 +611,11 @@ async def run_agent_loop(
                                     else str(raw_content) if raw_content is not None
                                     else ""
                                 )
-                                # Derive metrics mirroring PydanticAIAgent's parser paths.
-                                metrics = None
-                                if tool_name == "read":
-                                    from ..agents.pydantic_ai import _parse_read_result_from_content
-                                    metrics = _parse_read_result_from_content(content_str)
-                                elif tool_name in ("grep", "glob"):
-                                    from ..agents.pydantic_ai import _parse_grep_result_from_content
-                                    metrics = _parse_grep_result_from_content(content_str)
+                                # Read native metrics computed by the tool function
+                                # via the AgentState._pending_tool_metrics side
+                                # channel, then clear it for the next tool.
+                                metrics = getattr(agent_state, '_pending_tool_metrics', None)
+                                agent_state._pending_tool_metrics = None
                                 yield StreamEvent(
                                     type="tool_result",
                                     tool_name=tool_name,

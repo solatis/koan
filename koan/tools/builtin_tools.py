@@ -186,6 +186,13 @@ async def read_tool(
     # Anchored output: "{lineno}\t{anchor}§{content}". The anchor lets edit
     # target this line without exact-string-match (see docs/tools.md).
     rendered = render_anchored(content, offset, limit)
+    # Native metrics side channel: the agent loop reads and clears this after
+    # the tool returns, avoiding fragile text-output parsing.
+    if deps is not None and getattr(deps, 'agent', None) is not None:
+        deps.agent._pending_tool_metrics = {
+            "lines_read": len(rendered.splitlines()),
+            "bytes_read": len(rendered.encode('utf-8')),
+        }
     return _enforce_output_limits(rendered) if enforce_limits else rendered
 
 
@@ -388,6 +395,12 @@ async def glob_tool(ctx: Any, pattern: str, path: str | None = None) -> str:
     if deps is not None:
         _record_path_for_context_injection(deps, search_root)
 
+    # Native metrics: glob matches are file-per-match.
+    if deps is not None and getattr(deps, 'agent', None) is not None:
+        deps.agent._pending_tool_metrics = {
+            "matches": n,
+            "files_matched": n,
+        }
     return _enforce_output_limits(result)
 
 
@@ -463,6 +476,13 @@ async def grep_tool(
     if deps is not None:
         _record_path_for_context_injection(deps, search_root)
 
+    # Native metrics: matched_lines equals n_matches (one line per match).
+    if deps is not None and getattr(deps, 'agent', None) is not None:
+        deps.agent._pending_tool_metrics = {
+            "matches": n_matches,
+            "files_matched": n_files,
+            "matched_lines": n_matches,
+        }
     return _enforce_output_limits(result)
 
 
@@ -500,10 +520,23 @@ async def bash_tool(
             combined = combined + result.stderr if combined else result.stderr
         if result.returncode != 0:
             combined = f"Exit code: {result.returncode}\n{combined}"
+        # Native metrics: exit_code + output line count.
+        if deps is not None and getattr(deps, 'agent', None) is not None:
+            output_lines = len(combined.splitlines()) if combined else 0
+            deps.agent._pending_tool_metrics = {
+                "exit_code": result.returncode,
+                "output_lines": output_lines,
+            }
         return _enforce_output_limits(combined) if combined else ""
     except subprocess.TimeoutExpired:
+        # Native metrics: timeout has no output lines.
+        if deps is not None and getattr(deps, 'agent', None) is not None:
+            deps.agent._pending_tool_metrics = {"exit_code": -1}
         return f"Error: command timed out after {timeout}s: {command}"
     except Exception as e:
+        # Native metrics: generic failure has no output lines.
+        if deps is not None and getattr(deps, 'agent', None) is not None:
+            deps.agent._pending_tool_metrics = {"exit_code": -1}
         return f"Error running command: {e}"
 
 
@@ -552,6 +585,10 @@ async def web_search_tool(ctx: Any, query: str, max_results: int = 5) -> str:
         href = r.get("href") or r.get("url") or ""
         body = r.get("body") or r.get("snippet") or ""
         lines.append(f"{i}. {title}\n   {href}\n   {body}")
+    # Native metrics: result count for rollup display.
+    deps = getattr(ctx, "deps", None)
+    if deps is not None and getattr(deps, 'agent', None) is not None:
+        deps.agent._pending_tool_metrics = {"result_count": len(results)}
     return "\n".join(lines)
 
 
@@ -576,6 +613,10 @@ async def web_fetch_tool(ctx: Any, url: str, max_chars: int = 20000) -> str:
     text = _strip_html(body) if "html" in ctype.lower() else body
     if len(text) > max_chars:
         text = text[:max_chars] + f"\n\n[truncated at {max_chars} chars]"
+    # Native metrics: content size in bytes for rollup display.
+    deps = getattr(ctx, "deps", None)
+    if deps is not None and getattr(deps, 'agent', None) is not None:
+        deps.agent._pending_tool_metrics = {"content_size_bytes": len(text.encode('utf-8'))}
     return text
 
 

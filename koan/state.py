@@ -109,6 +109,12 @@ class AgentState:
     # preseed_pending_listing before the next model request. None when there is
     # no listing to inject.
     pending_listing: str | None = None
+    # Native-metrics side channel for built-in exploration tools. Each tool
+    # function computes its metrics (lines_read, exit_code, result_count, etc.)
+    # before returning and stores them here. The agent loop reads and clears
+    # this field after each tool completes, attaching the metrics to the
+    # tool_result StreamEvent without parsing text output.
+    _pending_tool_metrics: dict | None = None
 
 
 # -- Sub-state dataclasses (grouped by access pattern) ------------------------

@@ -52,70 +52,6 @@ if TYPE_CHECKING:
 log = get_logger("pydantic_ai")
 
 
-def _parse_read_result_from_content(content: str) -> dict | None:
-    """Derive {lines_read, bytes_read} metrics from a cat -n formatted read result.
-
-    Mirrors koan/agents/claude.py:_parse_read_result so that read tool results
-    emitted by PydanticAIAgent carry the same metrics shape as the ClaudeSDKAgent
-    path. Only read results (lines starting with a digit followed by a tab) are
-    counted; non-matching lines are ignored. Returns None when no numbered lines
-    are found (e.g. error string from read_tool).
-    """
-    if not content:
-        return None
-    lines = 0
-    byte_total = 0
-    any_numbered = False
-    for raw_line in content.splitlines():
-        stripped = raw_line.lstrip()
-        tab_idx = stripped.find("\t")
-        if tab_idx == -1:
-            continue
-        prefix = stripped[:tab_idx]
-        if not prefix.isdigit():
-            continue
-        any_numbered = True
-        content_part = stripped[tab_idx + 1:]
-        lines += 1
-        byte_total += len(content_part.encode("utf-8"))
-    if not any_numbered:
-        return None
-    return {"lines_read": lines, "bytes_read": byte_total}
-
-
-def _parse_grep_result_from_content(content: str) -> dict | None:
-    """Derive {matches, files_matched} metrics from grep/glob tool output.
-
-    Mirrors koan/agents/claude.py:_parse_grep_result. The authoritative format
-    emitted by grep_tool is "Found N matches in M files"; glob_tool emits
-    "Found N files" (files_matched == matches). Both are handled here.
-
-    Returns None when the content does not look like grep/glob output
-    (e.g. an error string from the tool).
-    """
-    import re
-    if not content:
-        return None
-    first_line = content.splitlines()[0] if content else ""
-    if not first_line.lower().startswith("found "):
-        return None
-    m = re.search(
-        r"found\s+(\d+)\s+matches?(?:\s+in\s+(\d+)\s+files?)?",
-        first_line,
-        re.IGNORECASE,
-    )
-    if m:
-        result: dict = {"matches": int(m.group(1))}
-        if m.group(2) is not None:
-            result["files_matched"] = int(m.group(2))
-        return result
-    m = re.search(r"found\s+(\d+)\s+files?", first_line, re.IGNORECASE)
-    if m:
-        n = int(m.group(1))
-        return {"matches": n, "files_matched": n}
-    return None
-
-
 class PydanticAIAgent:
     """In-process agent that drives pydantic-ai's agent.iter() and emits StreamEvents.
 
@@ -235,7 +171,7 @@ class PydanticAIAgent:
         via compose_toolset(build_tool_policy(), ...), building a static
         phase-independent vocabulary so the tool-definition cache prefix stays
         byte-stable across all phases.  Phase-appropriateness for the
-        orchestrator's phase-conditional tools (bash, koan_request_scouts,
+        orchestrator's phase-conditional tools (koan_request_scouts,
         koan_request_executor) is enforced at call time by phase_gate_message.
 
         M4 context-file injection: the project-directory context file
@@ -244,9 +180,9 @@ class PydanticAIAgent:
         capability. Subsequent subtree files are queued just-in-time by the
         path-bearing tools and injected before the next request.
 
-        M4 metrics extension: grep and glob results carry {matches, files_matched}
-        metrics derived from the "Found N matches in M files" / "Found N files"
-        header so the projection fold populates AggregateGrepChild / AggregateGlobChild.
+        Native metrics are computed by the tool functions themselves and stored
+        on AgentState._pending_tool_metrics; the loop reads and clears this field
+        after each tool completes (replacing the former text-output parsing).
         """
         from pydantic_ai._agent_graph import CallToolsNode, End, ModelRequestNode
         from pydantic_ai.agent import Agent as PAIAgent
@@ -319,7 +255,7 @@ class PydanticAIAgent:
 
         # Compose toolsets per role -- M3 fence replacement, updated for
         # prompt-cache stability.  Phase-appropriateness for the orchestrator's
-        # phase-conditional tools (bash, koan_request_scouts, koan_request_executor)
+        # phase-conditional tools (koan_request_scouts, koan_request_executor)
         # is enforced at call time by phase_gate_message rather than here, so the
         # tool-definition prefix stays byte-stable across all phases.
         policy = build_tool_policy()
