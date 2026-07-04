@@ -218,6 +218,84 @@ async def test_loop_handback_falls_back_to_build_phase_suggestions(tmp_path):
         adapter_mod.build_model_settings = orig_bms
 
 
+# -- suggest_next_core phase validation tests ---------------------------------
+
+
+@pytest.mark.anyio
+async def test_suggest_next_core_validates_phase_metadata():
+    """Suggestions with a non-empty 'phase' key are validated against the active workflow.
+
+    Valid phase values ('done' or a valid transition target) are stored; an
+    invalid phase value returns the recoverable {"ok": false} envelope and
+    stores nothing.
+    """
+    from koan.lib.workflows import get_workflow
+    from koan.tools.koan_tools import ToolDeps, suggest_next_core
+
+    app_state = AppState()
+    app_state.run.workflow = get_workflow("plan")
+    app_state.run.phase = "intake"
+    agent = AgentState(agent_id="t1", role="orchestrator", subagent_dir="")
+    deps = ToolDeps(app_state=app_state, agent=agent)
+
+    # Valid: "plan" is a valid transition from "intake" in the plan workflow.
+    suggestions = [
+        {"id": "plan", "label": "Write plan", "phase": "plan", "recommended": True},
+        {"id": "done", "label": "End workflow", "phase": "done"},
+    ]
+    result = await suggest_next_core(deps, suggestions)
+    assert app_state.interactions.next_suggestions == suggestions
+    assert "2" in result
+
+    # Invalid: "nonexistent" is not a valid phase in the plan workflow.
+    bad_suggestions = [
+        {"id": "bad", "label": "Bad", "phase": "nonexistent"},
+    ]
+    result = await suggest_next_core(deps, bad_suggestions)
+    import json
+    parsed = json.loads(result)
+    assert parsed["ok"] is False
+    assert parsed["error"]["reason"] == "invalid_suggestion_phase"
+    # Nothing stored -- the previous valid suggestions remain.
+    assert app_state.interactions.next_suggestions == suggestions
+
+
+@pytest.mark.anyio
+async def test_suggest_next_core_free_text_passes_unvalidated():
+    """Free-text suggestions (no 'phase' key) pass through without validation."""
+    from koan.tools.koan_tools import ToolDeps, suggest_next_core
+
+    app_state = AppState()
+    app_state.run.workflow = None  # no workflow -- would fail if validated
+    agent = AgentState(agent_id="t1", role="orchestrator", subagent_dir="")
+    deps = ToolDeps(app_state=app_state, agent=agent)
+
+    suggestions = [
+        {"id": "custom", "label": "Do something", "command": "do the thing"},
+    ]
+    result = await suggest_next_core(deps, suggestions)
+    assert app_state.interactions.next_suggestions == suggestions
+    assert "1" in result
+
+
+# -- build_phase_suggestions shape tests --------------------------------------
+
+
+def test_build_phase_suggestions_carries_phase_no_command():
+    """build_phase_suggestions entries carry 'phase', not 'command'."""
+    from koan.lib.workflows import build_phase_suggestions, get_workflow
+
+    wf = get_workflow("plan")
+    sugg = build_phase_suggestions(wf, wf.initial_phase)
+    assert sugg, "expected at least the 'done' option"
+    for s in sugg:
+        assert "phase" in s
+        assert "command" not in s
+    ids = [s["id"] for s in sugg]
+    assert ids[-1] == "done"
+    assert sugg[-1]["phase"] == "done"
+
+
 # -- KOAN_MCP_TOOLS and ROLE_PERMISSIONS membership ---------------------------
 
 

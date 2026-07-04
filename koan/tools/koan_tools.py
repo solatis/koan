@@ -489,16 +489,54 @@ async def suggest_next_core(deps: ToolDeps, suggestions: list[dict]) -> str:
     consume them at the next hand-back. build_phase_suggestions is the fallback when
     this is never called. Coerces None to [] so callers need not guard for None.
 
-    Each suggestion is a dict with keys: id, label, command, and optionally
-    recommended (bool). No strict schema validation -- permissive to avoid
-    blocking the orchestrator on schema changes.
+    Each suggestion is a dict with keys: id, label, and either:
+      - phase: marks a mechanical phase-transition suggestion; must be "done"
+        or a valid transition target in the active workflow. The frontend
+        routes clicks on this field to POST /api/phase. No command needed.
+      - command: free-text instruction for non-transition suggestions, drafted
+        into the chat input on click.
+    Both may optionally carry recommended (bool). Suggestions carrying a
+    non-empty phase are validated against the active workflow; on the first
+    invalid value the recoverable {"ok": false, "error": {...}} envelope is
+    returned and nothing is stored. Free-text suggestions pass through
+    unvalidated.
     """
     app_state = deps.app_state
+    # Validate phase metadata on any suggestion carrying a non-empty "phase"
+    # key. Phase suggestions MUST be valid -- the frontend routes clicks on
+    # this field to a mechanical POST, so an invalid phase id would produce a
+    # 422 at click time. Catch it here so the model self-corrects before the
+    # hand-back. Free-text suggestions (no "phase" key) pass unvalidated.
+    if suggestions:
+        from ..lib.workflows import is_valid_transition
+        from .artifact_registry import ValidationError
+        workflow = app_state.run.workflow
+        current = app_state.run.phase
+        phases = list(workflow.available_phases) if workflow else []
+        for s in suggestions:
+            phase_val = s.get("phase", "")
+            if not phase_val:
+                continue
+            if phase_val == "done":
+                continue
+            if workflow is None or not is_valid_transition(workflow, current, phase_val):
+                return _permission_error_result(ValidationError(
+                    code="invalid_suggestion_phase",
+                    message=(
+                        f"Suggestion phase '{phase_val}' is not available from "
+                        f"'{current}' in the current workflow. "
+                        f"Available phases: {phases} (plus 'done')."
+                    ),
+                    allowed=(
+                        f"Use a phase available from '{current}': {phases}, "
+                        f"or 'done' to end the workflow."
+                    ),
+                ))
     # Coerce None to [] so the loop's `recorded if recorded` check works correctly
     # (an empty list is falsy and falls back to build_phase_suggestions, which is
     # the intended behaviour when the orchestrator calls with an empty list).
     app_state.interactions.next_suggestions = suggestions if suggestions else []
-    n = len(suggestions)
+    n = len(suggestions) if suggestions else 0
     return f"Recorded {n} next-step suggestion(s) for the hand-back."
 
 
@@ -1607,7 +1645,10 @@ def build_koan_toolset(allowed_names: "frozenset[str] | None" = None) -> Any:
         (
             "Record the next-step suggestions to show the user at the upcoming "
             "phase-boundary hand-back. Call before ending your final turn of a phase. "
-            "Args: suggestions (list of {id, label, command, recommended?})."
+            "Args: suggestions (list of {id, label, recommended?} plus either "
+            "phase -- for a phase-transition suggestion, must be 'done' or a valid "
+            "phase in the active workflow, no command needed -- or command -- "
+            "free-text instruction for non-transition suggestions)."
         ),
     )
 

@@ -436,6 +436,8 @@ export interface Suggestion {
   id: string
   label: string
   command: string
+  /** Non-empty marks a mechanical phase-transition suggestion routed to POST /api/phase; empty/absent means free-text (chat-draft path). */
+  phase?: string
 }
 
 export interface ActiveYield {

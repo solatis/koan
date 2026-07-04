@@ -40,19 +40,31 @@ def _yolo_yield_response(suggestions: list[dict] | None) -> str:
 
     Priority: first recommended non-done suggestion's command
               -> first non-done suggestion's command
+              -> first non-done suggestion's phase-derived sentence
               -> "proceed"
 
-    Driving by suggestion command keeps the orchestrator on the workflow's
-    intended path without hardcoding any phase names here.
+    When a suggestion has no command but a non-empty phase (mechanical
+    phase-transition suggestions), synthesizes "Proceed to the {phase} phase."
+    so yolo stays on the workflow path without hardcoding phase names.
+
+
     """
+    def _resolve(s: dict) -> str:
+        cmd = s.get("command", "")
+        if cmd:
+            return cmd
+        phase = s.get("phase", "")
+        if phase:
+            return f"Proceed to the {phase} phase."
+        return "proceed"
     if not suggestions:
         return "proceed"
     for s in suggestions:
         if s.get("recommended") and s.get("id") != "done":
-            return s.get("command", "proceed")
+            return _resolve(s)
     for s in suggestions:
         if s.get("id") != "done":
-            return s.get("command", "proceed")
+            return _resolve(s)
     return "proceed"
 
 

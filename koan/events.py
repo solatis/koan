@@ -254,7 +254,7 @@ def build_yield_started(suggestions: list[dict]) -> dict:
     """Build yield_started event payload.
 
     Args:
-        suggestions: List of {id, label, command} dicts — the structured
+        suggestions: List of {id, label, command?, phase?, recommended?} dicts — the structured
                      options the orchestrator presents at a yield point.
     """
     return {"suggestions": suggestions}
