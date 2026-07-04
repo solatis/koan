@@ -4,7 +4,7 @@
 # inlined here in M1 when that module was deleted). compose_toolset reads them
 # once per role to build the registered toolset for PydanticAIAgent.run().
 # Phase-appropriateness for the orchestrator's phase-conditional tools
-# (bash, koan_request_scouts, koan_request_executor) is enforced at call time
+# (koan_request_scouts, koan_request_executor) is enforced at call time
 # by phase_gate_message, which returns a recoverable error when invoked in a
 # disallowed phase.
 #
@@ -119,14 +119,6 @@ _ORCHESTRATOR_SCOUT_PHASES: frozenset[str] = frozenset({
 # _ORCHESTRATOR_STORY_TOOLS removed in M1: the legacy "execution" phase and its
 # four koan_*_story tools are dead code (bound to no active workflow since T4 Phases).
 
-_ORCHESTRATOR_BASH_PHASES: frozenset[str] = frozenset({
-    # "execution" and "implementation-validation" removed: legacy phases deleted in M1.
-    # "execute" added in M5: the orchestrator runs inline conformance verification.
-    # M6: "exec-review" removed -- that phase is deleted; inline review lives in execute.
-    "execute",
-    "frame",
-})
-
 # koan_request_executor is only useful in execute: need-to-know keeps the
 # cached tool prefix lean in all other phases.
 _ORCHESTRATOR_EXECUTOR_PHASES: frozenset[str] = frozenset({"execute"})
@@ -137,8 +129,8 @@ class ToolPolicy:
     """Retained allowlist data from the deleted check_permission fence.
 
     Pure data structure; no enforcement logic of its own. compose_toolset
-    reads it once per role to build the registered toolset. The three
-    phase-conditional orchestrator tools (bash, koan_request_scouts,
+    reads it once per role to build the registered toolset. The two
+    phase-conditional orchestrator tools (koan_request_scouts,
     koan_request_executor) are always registered in the orchestrator's
     static toolset; phase_gate_message uses the *_phases fields to enforce
     call-time phase-appropriateness and return a recoverable error when
@@ -153,8 +145,6 @@ class ToolPolicy:
             koan_artifact_read).
         read_tools: Non-bash file tools always allowed for all roles
             (read, grep, glob, find, ls).
-        bash_phases: Phases where bash is allowed for the orchestrator role;
-            used by phase_gate_message. Non-orchestrator roles always have bash.
         scout_phases: Phases where koan_request_scouts is allowed for the
             orchestrator; used by phase_gate_message.
         executor_phases: Phases where koan_request_executor is allowed for
@@ -164,7 +154,6 @@ class ToolPolicy:
     role_tools: dict[str, frozenset[str]]
     universal_tools: frozenset[str]
     read_tools: frozenset[str]
-    bash_phases: frozenset[str]
     scout_phases: frozenset[str]
     executor_phases: frozenset[str]
 
@@ -178,14 +167,14 @@ def build_tool_policy() -> ToolPolicy:
     role_tools is built directly from ROLE_PERMISSIONS for all roles; the
     orchestrator's entry includes bash, koan_request_scouts, and
     koan_request_executor because they are always registered in the static
-    toolset. The *_phases fields feed phase_gate_message for call-time
-    phase-appropriateness enforcement rather than controlling registration.
+    toolset. The scout_phases and executor_phases fields feed
+    phase_gate_message for call-time phase-appropriateness enforcement
+    rather than controlling registration.
     """
     return ToolPolicy(
         role_tools=dict(ROLE_PERMISSIONS),
         universal_tools=_UNIVERSAL_MEMORY_TOOLS | _UNIVERSAL_READ_TOOLS,
         read_tools=_NON_BASH_READ_TOOLS,
-        bash_phases=_ORCHESTRATOR_BASH_PHASES,
         scout_phases=_ORCHESTRATOR_SCOUT_PHASES,
         executor_phases=_ORCHESTRATOR_EXECUTOR_PHASES,
     )
@@ -197,7 +186,7 @@ def compose_toolset(policy: ToolPolicy, role: str) -> frozenset[str]:
     Builds a static, phase-independent vocabulary for the role so the
     tool-definition cache prefix stays byte-stable across all phases for
     the long-lived orchestrator. Phase-appropriateness for the orchestrator's
-    phase-conditional tools (bash, koan_request_scouts, koan_request_executor)
+    phase-conditional tools (koan_request_scouts, koan_request_executor)
     is enforced at call time by phase_gate_message rather than here.
 
     For non-orchestrator roles, bash is added unconditionally regardless of
@@ -235,8 +224,8 @@ def phase_gate_message(
     """Return a denial message when tool_name is not allowed in the current phase.
 
     Only the orchestrator role has phase-conditional tools; all other roles
-    short-circuit to None immediately. For the orchestrator, the three
-    phase-conditional tools (bash, koan_request_scouts, koan_request_executor)
+    short-circuit to None immediately. For the orchestrator, the two
+    phase-conditional tools (koan_request_scouts, koan_request_executor)
     are looked up against their respective phase allowlists. Any other tool
     name is always allowed (returns None).
 
@@ -257,7 +246,6 @@ def phase_gate_message(
     gate_map: dict[str, frozenset[str]] = {
         "koan_request_executor": policy.executor_phases,
         "koan_request_scouts": policy.scout_phases,
-        "bash": policy.bash_phases,
     }
     allowed_phases = gate_map.get(tool_name)
     if allowed_phases is None:

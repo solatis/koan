@@ -477,26 +477,12 @@ async def bash_tool(
     exempt from context-file injection (no single canonical path argument).
     Results are rejected with an error when they exceed the size ceiling.
 
-    For the orchestrator role, a call-time phase gate is applied: bash is only
-    allowed in the phases listed in _ORCHESTRATOR_BASH_PHASES. A wrong-phase
-    call returns a recoverable "Error: ..." string. Non-orchestrator roles
-    (executor, scout, reviewer) always run bash regardless of phase.
-
     Args:
         ctx: PydanticAI RunContext with ToolDeps as deps.
         command: Shell command to execute.
         timeout: Optional timeout in seconds (default None = no limit).
     """
     deps = getattr(ctx, "deps", None)
-
-    # Call-time phase gate for orchestrator; non-orchestrators short-circuit to None.
-    from .tool_policy import build_tool_policy, phase_gate_message
-    role = getattr(getattr(deps, "agent", None), "role", "") if deps else ""
-    phase = getattr(getattr(getattr(deps, "app_state", None), "run", None), "phase", "") or ""
-    gate_msg = phase_gate_message(build_tool_policy(), role, phase, "bash")
-    if gate_msg is not None:
-        return f"Error: {gate_msg}"
-
     run_dir = getattr(getattr(deps, "agent", None), "run_dir", None) if deps else None
     cwd = run_dir or None
 
