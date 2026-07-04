@@ -347,10 +347,11 @@ def build_active_changed(active: str) -> dict:
 
 
 def build_memory_bindings_listed(memory_bindings: dict | None) -> dict:
-    """Build memory_bindings_listed payload.
+    """Build a memory_bindings_listed event payload.
 
-    memory_bindings is a dict with optional keys embedding, memory_llm, reflect_llm,
-    each containing {configured_model_id, thinking}.  None when not configured.
+    memory_bindings is a dict containing only the 'embedding' key (memory_llm
+    and reflect_llm were removed). Each binding entry carries only
+    'configured_model_id'; the 'thinking' field was removed.
     """
     return {"memory_bindings": memory_bindings}
 

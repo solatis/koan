@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from koan.memory.bindings import MemoryModels
 from koan.memory.retrieval.rag import generate_queries, inject
 from koan.types import ModelSpec
 
@@ -19,8 +18,6 @@ def _fake_embed() -> ModelSpec:
                      connection_id="v", embedding_dim=1024, api_key="k")
 
 
-def _fake_models() -> MemoryModels:
-    return MemoryModels(embedding=_fake_embed(), memory_llm=_fake_llm())
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +76,7 @@ async def test_inject_calls_search_candidates_per_query(tmp_path: Path) -> None:
     with patch("koan.memory.retrieval.rag.llm_generate", new=AsyncMock(return_value="query A\nquery B\n")):
         with patch("koan.memory.retrieval.rag.search_candidates", new=mock_sc):
             with patch("koan.memory.retrieval.rag.rerank_results", new=mock_rr):
-                await inject(index, _fake_models(), directive="find stuff", anchor="some context")
+                await inject(index, _fake_embed(), _fake_llm(), directive="find stuff", anchor="some context")
 
     # search_candidates called once per query (2 queries)
     assert mock_sc.call_count == 2
@@ -115,7 +112,7 @@ async def test_inject_deduplicates_across_queries(tmp_path: Path) -> None:
     with patch("koan.memory.retrieval.rag.llm_generate", new=AsyncMock(return_value="q1\nq2\n")):
         with patch("koan.memory.retrieval.rag.search_candidates", new=mock_sc):
             with patch("koan.memory.retrieval.rag.rerank_results", new=AsyncMock(side_effect=mock_rr)):
-                await inject(index, _fake_models(), directive="d", anchor="a")
+                await inject(index, _fake_embed(), _fake_llm(), directive="d", anchor="a")
 
     merged = captured_candidates[0]
     ids = [c["entry_id"] for c in merged]
@@ -148,6 +145,6 @@ async def test_inject_returns_top_k(tmp_path: Path) -> None:
     with patch("koan.memory.retrieval.rag.llm_generate", new=AsyncMock(return_value="q1\n")):
         with patch("koan.memory.retrieval.rag.search_candidates", new=mock_sc):
             with patch("koan.memory.retrieval.rag.rerank_results", new=mock_rr):
-                results = await inject(index, _fake_models(), directive="d", anchor="a", k=3)
+                results = await inject(index, _fake_embed(), _fake_llm(), directive="d", anchor="a", k=3)
 
     assert len(results) <= 3

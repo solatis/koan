@@ -307,17 +307,22 @@ class Preset:
 
 @dataclass
 class MemoryBinding:
-    """A memory-subsystem model selection (global, not per-preset; brief D9)."""
+    """A memory-subsystem model selection (global, not per-preset; brief D9).
+
+    Contains only configured_model_id and caching. The thinking field was
+    removed because the only active binding is embedding, where thinking is
+    meaningless (initiative: remove dedicated memory LLM bindings).
+    """
 
     configured_model_id: str
-    thinking: ThinkingMode = "disabled"
     caching: CachingPolicy = field(default_factory=CachingPolicy)
 
 
 @dataclass
 class MemoryBindings:
-    """Global memory model selections; the reranker is coupled to embedding's connection."""
+    """Global memory model selections. Today only the embedding binding is
+    configured here; memory_llm and reflect_llm were removed — LLM tiers
+    now resolve from the active preset's cheap/standard slots.
+    """
 
     embedding: MemoryBinding | None = None
-    memory_llm: MemoryBinding | None = None
-    reflect_llm: MemoryBinding | None = None

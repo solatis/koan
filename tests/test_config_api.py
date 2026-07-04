@@ -98,6 +98,35 @@ def client(app_state, config_path):
             yield c
 
 
+@pytest.fixture
+def app_state_with_voyage(koan_home, tmp_key_path):
+    """AppState with both anthropic and voyage connections for embedding-kind memory tests."""
+    anthropic_conn = Connection(id="anthropic-1", type="anthropic")
+    voyage_conn = Connection(id="voyage-1", type="voyage")
+    anthropic_cm = ConfiguredModel(id="cm-haiku", connection_id="anthropic-1", model_id="claude-3-5-haiku-20241022")
+    # voyage-4-large is a recognized Voyage embedding model (validated by the endpoint).
+    voyage_cm = ConfiguredModel(id="cm-voyage", connection_id="voyage-1", model_id="voyage-4-large")
+    cfg = KoanConfig(connections=[anthropic_conn, voyage_conn], configured_models=[anthropic_cm, voyage_cm])
+    backend = FileKeyBackend(koan_home)
+    store = CredentialStore(cfg, backend)
+    store.set("anthropic-1", "test-api-key")
+    store.set("voyage-1", "voyage-api-key")
+    st = AppState()
+    st.provider_config.config = cfg
+    st.provider_config.credential_store = store
+    st.server.koan_home = str(koan_home)
+    return st
+
+
+@pytest.fixture
+def client_with_voyage(app_state_with_voyage, config_path):
+    """TestClient wired to app_state_with_voyage for embedding-kind memory binding tests."""
+    with patch("koan.driver.driver_main", new_callable=AsyncMock):
+        app = create_app(app_state_with_voyage)
+        with TestClient(app) as c:
+            yield c
+
+
 # -- Helpers ------------------------------------------------------------------
 
 def _last_event_of_type(app_state: AppState, event_type: str) -> dict | None:
@@ -361,23 +390,23 @@ def test_slot_set_rejects_missing_model(client, app_state, config_path):
 
 # -- Memory binding -----------------------------------------------------------
 
-def test_memory_set_stores_binding(client, app_state, config_path):
-    """PUT /api/config/memory/{kind} stores a MemoryBinding and pushes memory_bindings_listed.
+def test_memory_set_stores_binding(client_with_voyage, app_state_with_voyage):
+    """PUT /api/config/memory/embedding stores a MemoryBinding and pushes memory_bindings_listed.
 
-    Uses memory_llm (unrestricted kind) because the embedding kind now requires
-    a recognized Voyage model on a voyage connection -- cm-haiku is anthropic.
+    Uses the embedding kind with a voyage connection + recognized Voyage model
+    (cm-voyage -> voyage-4-large), the only valid memory binding kind.
     """
-    resp = client.put("/api/config/memory/memory_llm", json={
-        "configured_model_id": "cm-haiku",
+    resp = client_with_voyage.put("/api/config/memory/embedding", json={
+        "configured_model_id": "cm-voyage",
     })
     assert resp.status_code == 200
-    assert app_state.provider_config.config.memory is not None
-    assert app_state.provider_config.config.memory.memory_llm is not None
-    assert app_state.provider_config.config.memory.memory_llm.configured_model_id == "cm-haiku"
+    assert app_state_with_voyage.provider_config.config.memory is not None
+    assert app_state_with_voyage.provider_config.config.memory.embedding is not None
+    assert app_state_with_voyage.provider_config.config.memory.embedding.configured_model_id == "cm-voyage"
 
-    ev = _last_event_of_type(app_state, "memory_bindings_listed")
+    ev = _last_event_of_type(app_state_with_voyage, "memory_bindings_listed")
     assert ev is not None
-    assert ev["memory_bindings"]["memory_llm"]["configured_model_id"] == "cm-haiku"
+    assert ev["memory_bindings"]["embedding"]["configured_model_id"] == "cm-voyage"
 
 
 def test_memory_set_invalid_kind(client, app_state, config_path):
@@ -389,8 +418,8 @@ def test_memory_set_invalid_kind(client, app_state, config_path):
 
 
 def test_memory_set_rejects_missing_model(client, app_state, config_path):
-    """Memory binding that references a non-existent configured_model returns 422."""
-    resp = client.put("/api/config/memory/memory_llm", json={
+    """Embedding binding that references a non-existent configured_model returns 422."""
+    resp = client.put("/api/config/memory/embedding", json={
         "configured_model_id": "no-such-model",
     })
     assert resp.status_code == 422

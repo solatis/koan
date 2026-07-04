@@ -29,20 +29,9 @@ def memory_config(koan_home):
 
     config = KoanConfig(
         connections=[
-            Connection(id="google-1", type="google"),
             Connection(id="voyage-1", type="voyage"),
         ],
         configured_models=[
-            ConfiguredModel(
-                id="google-llm",
-                connection_id="google-1",
-                model_id="gemini-flash-lite-latest",
-            ),
-            ConfiguredModel(
-                id="google-reflect",
-                connection_id="google-1",
-                model_id="gemini-flash-latest",
-            ),
             ConfiguredModel(
                 id="voyage-embed",
                 connection_id="voyage-1",
@@ -51,8 +40,6 @@ def memory_config(koan_home):
         ],
         memory=MemoryBindings(
             embedding=MemoryBinding(configured_model_id="voyage-embed"),
-            memory_llm=MemoryBinding(configured_model_id="google-llm"),
-            reflect_llm=MemoryBinding(configured_model_id="google-reflect"),
         ),
     )
     backend = FileKeyBackend(koan_home)

@@ -144,11 +144,19 @@ async def _compute_memory_injection_core(app_state: AppState, agent: AgentState)
         from ..memory.retrieval.rag import inject, render_injection_block
         index = app_state.memory.retrieval_index
         models = app_state.run.memory_models
+        frozen = app_state.run.frozen_models
         if models is None:
+            return ""
+        embed = models.embedding
+        if embed is None:
+            return ""
+        cheap = frozen.get("cheap") if frozen else None
+        if cheap is None:
             return ""
         results = await inject(
             index=index,
-            models=models,
+            embed=embed,
+            llm=cheap,
             directive=binding.retrieval_directive,
             anchor=anchor,
             k=5,
@@ -722,9 +730,9 @@ async def memory_status_core(deps: ToolDeps, type: str | None = None) -> str:
     agent = deps.agent
     app_state = deps.app_state
     store = app_state.memory.memory_store
-    models = app_state.run.memory_models
-
-    result = await memory_ops.status(store, model=(models.memory_llm if models else None), type=type)
+    frozen = app_state.run.frozen_models
+    cheap = frozen.get("cheap") if frozen else None
+    result = await memory_ops.status(store, model=cheap, type=type)
 
     if result.get("regenerated"):
         app_state.projection_store.push_event(

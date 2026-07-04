@@ -58,7 +58,7 @@ def mem_dir(tmp_path: Path) -> Path:
 
 @_SKIP_NO_KEYS
 @pytest.mark.anyio
-async def test_reflect_cites_fixture_entries(mem_dir: Path, real_memory_models) -> None:
+async def test_reflect_cites_fixture_entries(mem_dir: Path, real_memory_models, real_credential_store) -> None:
     """run_reflect_agent returns citations that all come from the fixture entry set."""
     # Five entries across three types so the model has enough to synthesize.
     _write_entry(
@@ -108,9 +108,23 @@ async def test_reflect_cites_fixture_entries(mem_dir: Path, real_memory_models) 
         trace_events.append(ev)
 
     index = RetrievalIndex(mem_dir)
+    # run_reflect_agent now takes separate model (reflect LLM) and embed ModelSpecs.
+    embed = real_memory_models.embedding
+    if embed is None:
+        pytest.skip("embedding binding not available in real_memory_models")
+    from koan.types import ModelSpec
+    # Resolve a standard-tier Gemini model for the reflect LLM from the google-1 connection.
+    standard = ModelSpec(
+        provider="google",
+        model="gemini-flash-latest",
+        thinking="disabled",
+        connection_id="google-1",
+        api_key=real_credential_store.resolve("google-1"),
+    )
     result = await run_reflect_agent(
         index,
-        real_memory_models,
+        model=standard,
+        embed=embed,
         question="How does the memory retrieval system work, and what models does it use?",
         on_trace=record_trace,
     )

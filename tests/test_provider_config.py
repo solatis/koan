@@ -248,14 +248,12 @@ class TestConfigRoundTrip:
 
     @pytest.mark.anyio
     async def test_memory_bindings_round_trip(self, koan_home, monkeypatch):
-        """MemoryBindings persists and loads correctly."""
+        """MemoryBindings embedding binding persists and loads correctly."""
         monkeypatch.setattr("koan.config._config_write_lock", None)
 
         original = KoanConfig(
             memory=MemoryBindings(
                 embedding=MemoryBinding(configured_model_id="voyage-cm"),
-                memory_llm=MemoryBinding(configured_model_id="gemini-flash-cm"),
-                reflect_llm=MemoryBinding(configured_model_id="gemini-pro-cm"),
             ),
         )
         await save_koan_config(original, koan_home)
@@ -263,8 +261,6 @@ class TestConfigRoundTrip:
 
         assert loaded.memory is not None
         assert loaded.memory.embedding.configured_model_id == "voyage-cm"
-        assert loaded.memory.memory_llm.configured_model_id == "gemini-flash-cm"
-        assert loaded.memory.reflect_llm.configured_model_id == "gemini-pro-cm"
 
 
 # TestShimProperties removed in M5: profiles/active_profile shim deleted from KoanConfig.

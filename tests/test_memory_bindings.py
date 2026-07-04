@@ -157,18 +157,19 @@ def _build_store(
     koan_home,
     *,
     voyage_key: str | None = "voyage-api-key",
-    google_key: str | None = "google-api-key",
     embedding_dim: int | None = None,
 ) -> tuple[KoanConfig, CredentialStore]:
-    """Build a KoanConfig + CredentialStore with voyage + google connections."""
+    """Build a KoanConfig + CredentialStore with a voyage connection.
+
+    Only the embedding binding is configured now; the dedicated LLM fields
+    were removed — LLM tiers resolve from the active preset's cheap/standard
+    slots.
+    """
     config = KoanConfig(
         connections=[
-            Connection(id="google-1", type="google"),
             Connection(id="voyage-1", type="voyage"),
         ],
         configured_models=[
-            ConfiguredModel(id="google-llm", connection_id="google-1", model_id="gemini-flash-lite-latest"),
-            ConfiguredModel(id="google-reflect", connection_id="google-1", model_id="gemini-flash-latest"),
             ConfiguredModel(
                 id="voyage-embed",
                 connection_id="voyage-1",
@@ -178,16 +179,12 @@ def _build_store(
         ],
         memory=MemoryBindings(
             embedding=MemoryBinding(configured_model_id="voyage-embed"),
-            memory_llm=MemoryBinding(configured_model_id="google-llm"),
-            reflect_llm=MemoryBinding(configured_model_id="google-reflect"),
         ),
     )
     backend = FileKeyBackend(koan_home)
     store = CredentialStore(config, backend)
     if voyage_key:
         store.set("voyage-1", voyage_key)
-    if google_key:
-        store.set("google-1", google_key)
     return config, store
 
 
@@ -220,26 +217,6 @@ class TestBuildMemoryModels:
         assert models.embedding is not None
         assert models.embedding.embedding_dim == 512
 
-    def test_memory_llm_returns_google_model_spec(self, koan_home):
-        """build_memory_models resolves memory_llm to a ModelSpec for google."""
-        config, store = _build_store(koan_home)
-        models = build_memory_models(config, store)
-        assert models.memory_llm is not None
-        assert isinstance(models.memory_llm, ModelSpec)
-        assert models.memory_llm.provider == "google"
-        assert models.memory_llm.model == "gemini-flash-lite-latest"
-        assert models.memory_llm.api_key == "google-api-key"
-
-    def test_reflect_llm_returns_google_model_spec(self, koan_home):
-        """build_memory_models resolves reflect_llm to a ModelSpec for google."""
-        config, store = _build_store(koan_home)
-        models = build_memory_models(config, store)
-        assert models.reflect_llm is not None
-        assert isinstance(models.reflect_llm, ModelSpec)
-        assert models.reflect_llm.provider == "google"
-        assert models.reflect_llm.model == "gemini-flash-latest"
-        assert models.reflect_llm.api_key == "google-api-key"
-
     def test_missing_credential_produces_none_api_key(self, koan_home):
         """api_key is None when no credential is stored for a connection."""
         config, store = _build_store(koan_home, voyage_key=None)
@@ -248,13 +225,11 @@ class TestBuildMemoryModels:
         assert models.embedding.api_key is None
 
     def test_no_memory_block_returns_empty_bundle(self, koan_home):
-        """config.memory=None -> all three fields None."""
+        """config.memory=None -> embedding field None."""
         config = KoanConfig(memory=None)
         store = CredentialStore(config, FileKeyBackend(koan_home))
         models = build_memory_models(config, store)
         assert models.embedding is None
-        assert models.memory_llm is None
-        assert models.reflect_llm is None
 
     def test_missing_configured_model_returns_none_field(self, koan_home):
         """Binding pointing to a nonexistent configured_model_id -> None field."""
@@ -284,13 +259,11 @@ class TestBuildMemoryModels:
         assert models.embedding is None
 
     def test_none_credential_store_produces_none_api_keys(self, koan_home):
-        """credential_store=None -> api_key=None on all specs."""
+        """credential_store=None -> api_key=None on the embedding spec."""
         config, _ = _build_store(koan_home)
         models = build_memory_models(config, None)
         assert models.embedding is not None
         assert models.embedding.api_key is None
-        assert models.memory_llm is not None
-        assert models.memory_llm.api_key is None
 
 
 # ---------------------------------------------------------------------------
@@ -316,8 +289,8 @@ class TestRequireMemoryModel:
 
     def test_error_message_includes_kind(self):
         """The error message names the missing binding kind."""
-        with pytest.raises(RuntimeError, match="reflect_llm"):
-            require_memory_model(None, "reflect_llm")
+        with pytest.raises(RuntimeError, match="embedding"):
+            require_memory_model(None, "embedding")
 
 
 # ---------------------------------------------------------------------------

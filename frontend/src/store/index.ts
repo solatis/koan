@@ -88,17 +88,15 @@ export interface ModelCapabilityInfo {
 
 /**
  * Wire: memory_bindings dict (opaque snake_case on the wire -- NOT camelCase).
- * The backend stores this as a raw dict keyed by binding name, so the keys
- * stay snake_case unlike the typed KoanBaseModel sub-objects.
+ * Only the embedding key is present; memory_llm and reflect_llm were removed.
+ * The thinking field on each binding is now optional (no longer sent by the backend).
  */
 export interface MemoryBindingInfo {
   configured_model_id: string
-  thinking: string
+  thinking?: string
 }
 export type MemoryBindingsInfo = {
   embedding?: MemoryBindingInfo
-  memory_llm?: MemoryBindingInfo
-  reflect_llm?: MemoryBindingInfo
 } | null
 
 /** One entry from the all-providers model catalog surfaced via Settings.modelRegistry (M2/M3). */

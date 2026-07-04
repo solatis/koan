@@ -10,7 +10,6 @@ from .index import RetrievalIndex
 from .types import SearchResult
 
 if TYPE_CHECKING:
-    from koan.memory.bindings import MemoryModels
     from koan.types import ModelSpec
 
 log = get_logger("memory.retrieval.rag")
@@ -48,21 +47,18 @@ _generate_queries = generate_queries
 
 async def inject(
     index: RetrievalIndex,
-    models: "MemoryModels",
+    embed: "ModelSpec",
+    llm: "ModelSpec",
     directive: str,
     anchor: str,
     k: int = 5,
 ) -> list[SearchResult]:
     """Run the mechanical RAG injection pipeline.
 
-    The memory model bundle arrives via the explicit models parameter;
-    no module global is read. Raises RuntimeError when a required binding
-    is not configured (via require_memory_model).
+    embed and llm ModelSpecs arrive via explicit parameters; the caller is
+    responsible for resolving and validating them before calling. No module
+    global is read.
     """
-    from koan.memory.bindings import require_memory_model
-
-    embed = require_memory_model(models.embedding, "embedding")
-    llm = require_memory_model(models.memory_llm, "memory_llm")
 
     await index.ensure_synced(embed)
     queries = await _generate_queries(directive, anchor, llm)

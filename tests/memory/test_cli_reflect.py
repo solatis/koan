@@ -52,14 +52,24 @@ def _fake_reflect_result() -> ReflectResult:
 # Tests
 # ---------------------------------------------------------------------------
 
+def _fake_embed_spec() -> "ModelSpec":
+    """Minimal embedding ModelSpec for cmd_reflect tests (run_reflect_agent is mocked)."""
+    from koan.types import ModelSpec
+    return ModelSpec(provider="voyage", model="voyage-4-large", thinking="disabled",
+                     connection_id="v", embedding_dim=1024, api_key="k")
+
+
+def _fake_standard_spec() -> "ModelSpec":
+    """Minimal standard-tier ModelSpec for cmd_reflect tests (run_reflect_agent is mocked)."""
+    from koan.types import ModelSpec
+    return ModelSpec(provider="google", model="gemini-flash-latest", thinking="disabled",
+                     connection_id="g", api_key="k")
+
+
 class TestCmdReflect:
     # cmd_reflect is a synchronous function that calls asyncio.run() internally.
     # Tests must be synchronous too; calling asyncio.run() from within an anyio
     # event loop would raise "cannot be called from a running event loop".
-
-    def _models(self):
-        from koan.memory.bindings import MemoryModels
-        return MemoryModels()
 
     def test_json_output(self, tmp_path, monkeypatch, capsys):
         """--json flag emits a valid JSON object with the expected shape."""
@@ -69,7 +79,7 @@ class TestCmdReflect:
         monkeypatch.setattr(cli_memory, "_make_store", lambda: _MockStore(tmp_path))
         monkeypatch.setattr(cli_memory, "_make_index", lambda s: object())
 
-        cli_memory.cmd_reflect(_make_args(json_output=True), self._models())
+        cli_memory.cmd_reflect(_make_args(json_output=True), _fake_embed_spec(), _fake_standard_spec())
 
         captured = capsys.readouterr()
         body = json.loads(captured.out)
@@ -88,7 +98,7 @@ class TestCmdReflect:
         monkeypatch.setattr(cli_memory, "_make_store", lambda: _MockStore(tmp_path))
         monkeypatch.setattr(cli_memory, "_make_index", lambda s: object())
 
-        cli_memory.cmd_reflect(_make_args(), self._models())
+        cli_memory.cmd_reflect(_make_args(), _fake_embed_spec(), _fake_standard_spec())
 
         captured = capsys.readouterr()
         assert "# Briefing" in captured.out
@@ -106,7 +116,7 @@ class TestCmdReflect:
         )
 
         # Custom fake that invokes the on_trace callback before returning.
-        async def fake_reflect(index, models, question, context=None, *, on_trace=None, max_iterations=10):
+        async def fake_reflect(index, model, embed, question, context=None, *, on_trace=None, max_iterations=10):
             if on_trace is not None:
                 on_trace(trace_event)
             return _fake_reflect_result()
@@ -115,7 +125,7 @@ class TestCmdReflect:
         monkeypatch.setattr(cli_memory, "_make_store", lambda: _MockStore(tmp_path))
         monkeypatch.setattr(cli_memory, "_make_index", lambda s: object())
 
-        cli_memory.cmd_reflect(_make_args(show_trace=True), self._models())
+        cli_memory.cmd_reflect(_make_args(show_trace=True), _fake_embed_spec(), _fake_standard_spec())
 
         captured = capsys.readouterr()
         assert "[iter 1] search('vector storage') -> 3 results" in captured.err
@@ -132,7 +142,7 @@ class TestCmdReflect:
         monkeypatch.setattr(cli_memory, "_make_index", lambda s: object())
 
         with pytest.raises(SystemExit) as exc:
-            cli_memory.cmd_reflect(_make_args(), self._models())
+            cli_memory.cmd_reflect(_make_args(), _fake_embed_spec(), _fake_standard_spec())
         assert exc.value.code != 0
 
 

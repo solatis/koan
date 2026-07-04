@@ -1,9 +1,9 @@
 # Tests for koan.memory.summarize
-# Unit tests mock the LLM; integration tests require GEMINI_API_KEY or GOOGLE_API_KEY.
+# Unit tests mock the LLM; the live integration test was removed when
+# memory-specific LLM bindings were eliminated (tiers resolve from preset slots).
 
 from __future__ import annotations
 
-import os
 from unittest.mock import patch
 
 import pytest
@@ -238,24 +238,3 @@ class TestGenerateRouting:
         assert calls[0] is spec
 
 
-# ---------------------------------------------------------------------------
-# Integration tests (require API key)
-# ---------------------------------------------------------------------------
-
-# Gate on either key name so the test runs when GOOGLE_API_KEY is set.
-_SKIP_NO_KEY = pytest.mark.skipif(
-    not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")),
-    reason="GEMINI_API_KEY or GOOGLE_API_KEY not set",
-)
-
-
-@_SKIP_NO_KEY
-class TestIntegrationSummary:
-    @pytest.mark.anyio
-    async def test_produces_coherent_overview(self, tmp_path, real_memory_models):
-        """generate_summary produces a non-trivial result using the memory_llm binding."""
-        store = _populated_store(tmp_path)
-        model = real_memory_models.memory_llm
-        summary = await generate_summary(store, model, project_name="TrapperKeeper")
-        assert len(summary) > 50
-        assert store.get_summary() is not None

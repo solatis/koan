@@ -197,7 +197,10 @@ def _parse_presets(raw: object) -> dict[str, Preset]:
 
 
 def _parse_memory_binding(raw: object) -> MemoryBinding | None:
-    """Parse a MemoryBinding from a config dict; returns None on malformed input."""
+    """Parse a MemoryBinding from a config dict; returns None on malformed input.
+
+    Stale 'thinking' keys in YAML are silently ignored (hard cutover).
+    """
     if not isinstance(raw, dict):
         return None
     cm_id = raw.get("configured_model_id", "")
@@ -205,19 +208,19 @@ def _parse_memory_binding(raw: object) -> MemoryBinding | None:
         return None
     return MemoryBinding(
         configured_model_id=cm_id,
-        thinking=raw.get("thinking", "disabled"),
         caching=_parse_caching_policy(raw.get("caching")),
     )
 
 
 def _parse_memory(raw: object) -> MemoryBindings | None:
-    """Parse the global MemoryBindings from the config; returns None when absent."""
+    """Parse the global MemoryBindings from the config; returns None when absent.
+
+    Stale 'memory_llm' and 'reflect_llm' keys in YAML are silently ignored.
+    """
     if not isinstance(raw, dict):
         return None
     return MemoryBindings(
         embedding=_parse_memory_binding(raw.get("embedding")),
-        memory_llm=_parse_memory_binding(raw.get("memory_llm")),
-        reflect_llm=_parse_memory_binding(raw.get("reflect_llm")),
     )
 
 
@@ -380,14 +383,11 @@ def _config_to_dict(config: "KoanConfig") -> dict:
 
     if config.memory is not None:
         mem: dict = {}
-        for binding_name in ("embedding", "memory_llm", "reflect_llm"):
+        for binding_name in ("embedding",):
             binding = getattr(config.memory, binding_name)
             if binding is not None:
                 entry: dict = {"configured_model_id": binding.configured_model_id}
-                if binding.thinking != "disabled":
-                    entry["thinking"] = binding.thinking
-                # 'caching' carries only 'mode'; cache duration is code-derived from
-                # the binding kind (memory_llm/reflect_llm always resolve 'short').
+                # 'caching' carries only 'mode'.
                 entry["caching"] = {"mode": binding.caching.mode}
                 mem[binding_name] = entry
         if mem:

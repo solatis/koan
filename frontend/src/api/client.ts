@@ -208,8 +208,7 @@ export async function setSlot(slot: string, body: SlotBody): Promise<ConfigApiRe
 
 /**
  * Assign a memory binding (PUT /api/config/memory/{kind}).
- * kind is one of 'embedding', 'memory_llm', 'reflect_llm'.
- * Note: UI slot names use hyphens ('memory-llm'); the API uses underscores.
+ * kind must be 'embedding'; memory_llm and reflect_llm are no longer valid API kinds.
  */
 export async function setMemoryBinding(kind: string, body: SlotBody): Promise<ConfigApiResult> {
   return put(`/api/config/memory/${encodeURIComponent(kind)}`, body)

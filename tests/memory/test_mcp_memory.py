@@ -22,9 +22,6 @@ def _json(result: str) -> dict:
     return json.loads(result)
 
 
-def _fake_memory_llm() -> ModelSpec:
-    """Minimal LLM ModelSpec for memory_status_core tests."""
-    return ModelSpec(provider="google", model="gemini", thinking="disabled", connection_id="g")
 
 
 def _fake_embed() -> ModelSpec:
@@ -33,7 +30,8 @@ def _fake_embed() -> ModelSpec:
 
 
 def _fake_models() -> MemoryModels:
-    return MemoryModels(embedding=_fake_embed(), memory_llm=_fake_memory_llm())
+    # Only the embedding binding remains; the dedicated LLM fields were removed.
+    return MemoryModels(embedding=_fake_embed())
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +62,9 @@ def mem_env(tmp_path):
     app_state.init_memory_services()
     # Provide fake memory models so memory_status_core can attempt summary regeneration.
     app_state.run.memory_models = _fake_models()
+    # memory_status_core resolves the cheap model from frozen_models["cheap"];
+    # without it, summary regeneration is skipped (model=None guard in ops.status).
+    app_state.run.frozen_models = {"cheap": _fake_embed()}
 
     deps = ToolDeps(app_state=app_state, agent=agent)
 

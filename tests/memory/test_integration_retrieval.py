@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from koan.memory.retrieval import RetrievalIndex, inject, search
+from koan.memory.retrieval import RetrievalIndex, search
 
 requires_keys = pytest.mark.skipif(
     not os.environ.get("VOYAGE_API_KEY"),
@@ -62,22 +62,3 @@ async def test_search_type_filter_narrows_results(mem_dir: Path, real_memory_mod
     assert all(r.entry.type == "procedure" for r in results)
 
 
-@requires_keys
-@pytest.mark.anyio
-async def test_rag_inject_returns_relevant_entries(mem_dir: Path, real_memory_models) -> None:
-    _write_entry(mem_dir, 1, "Auth decision", "JWT chosen over sessions for stateless auth.", "decision")
-    _write_entry(mem_dir, 2, "DB decision", "PostgreSQL for relational data.", "decision")
-    _write_entry(mem_dir, 3, "Caching lesson", "Redis TTL must match session timeout.", "lesson")
-
-    index = RetrievalIndex(mem_dir)
-    results = await inject(
-        index,
-        real_memory_models,
-        directive="authentication and session management decisions",
-        anchor="implementing the login flow using JWT",
-        k=3,
-    )
-
-    assert len(results) > 0
-    for r in results:
-        assert r.entry_id in {1, 2, 3}

@@ -106,42 +106,38 @@ def resolve_voyage_embedding_dim(model_id: str, selected: int | None) -> int:
 class MemoryModels:
     """Self-contained per-run memory model bundle.
 
-    Each spec carries its baked api_key resolved from the per-run frozen
-    credential store. Fields are Optional so the bundle can be built even
-    when a binding is unconfigured; the 'binding not configured' error is
-    raised at point of use via require_memory_model.
+    Contains only the embedding ModelSpec; its api_key is baked from the
+    per-run frozen credential store. LLM tiers (cheap/standard) are resolved
+    from frozen_models on RunState, not stored here.
     """
 
     embedding: ModelSpec | None = None
-    memory_llm: ModelSpec | None = None
-    reflect_llm: ModelSpec | None = None
 
 
 def build_memory_models(
     config: "KoanConfig",
     credential_store: "CredentialStore | None",
 ) -> MemoryModels:
-    """Build a MemoryModels bundle by resolving all three memory bindings.
+    """Build a MemoryModels bundle by resolving only the embedding binding.
 
-    Pure: resolves all three bindings from explicit config + credential_store,
-    never reads a module global. Returns None fields for unconfigured or
-    unresolvable bindings -- does NOT raise on missing config so the CLI
-    can call this even with no bindings configured.
-
-    Memory LLM bindings (memory_llm, reflect_llm) are resolved at the 'short'
-    cache tier: summarize and reflect operations are bounded and never trigger
-    long-running tool use that would benefit from a 1h cache window.  The
-    embedding binding does not use prompt caching and is unchanged.
+    Pure: resolves the embedding binding from explicit config + credential_store,
+    never reads a module global. Returns MemoryModels(embedding=None) when
+    unconfigured — does NOT raise on missing config so the CLI can call this
+    even with no bindings configured.
 
     The credential_store may be None (degraded boot or keyless provider);
     api_key is None on all specs in that case.
+
+    LLM bindings (memory_llm, reflect_llm) were removed; callers resolve
+    cheap/standard from frozen_models (in-run) or directly from the active
+    preset's slot assignments (out-of-run).
     """
     if config.memory is None:
         return MemoryModels()
 
     specs: dict[str, ModelSpec | None] = {}
 
-    for kind in ("embedding", "memory_llm", "reflect_llm"):
+    for kind in ("embedding",):
         binding = getattr(config.memory, kind, None)
         if binding is None:
             specs[kind] = None
@@ -184,24 +180,8 @@ def build_memory_models(
                 embedding_dim=embedding_dim,
                 api_key=api_key,
             )
-        else:
-            # LLM bindings: build via build_resolved_model so thinking/caching baked.
-            # memory_llm (summarize) and reflect_llm (reflect) never run long tool
-            # loops, so 'short' (5m) is the correct cache tier for both.
-            from ..agents.registry import build_resolved_model
-            try:
-                specs[kind] = build_resolved_model(
-                    conn, cm, binding.thinking, binding.caching, cm.embedding_dim, api_key,
-                    cache_tier="short",
-                )
-            except Exception:
-                specs[kind] = None
 
-    return MemoryModels(
-        embedding=specs.get("embedding"),
-        memory_llm=specs.get("memory_llm"),
-        reflect_llm=specs.get("reflect_llm"),
-    )
+    return MemoryModels(embedding=specs.get("embedding"))
 
 
 def require_memory_model(spec: "ModelSpec | None", kind: str) -> "ModelSpec":

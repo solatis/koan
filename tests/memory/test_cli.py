@@ -58,14 +58,12 @@ def test_forget_prints_json_to_stdout(store_env, capsys):
 
 
 def test_status_stale_no_api_key_exits(store_env, monkeypatch, capsys):
-    """Early-exit guard: stale summary without a configured memory_llm exits with code 1."""
-    from koan.memory.bindings import MemoryModels
+    """Early-exit guard: stale summary without a configured cheap model exits with code 1."""
     ops.memorize(store_env, "context", "Entry", "Body.")
     # summary.md is absent -> summary_is_stale() returns True.
-    # MemoryModels with no memory_llm -> _has_api_key returns False.
-    models = MemoryModels()
+    # None cheap_spec -> _has_cheap_model returns False, stale summary triggers early exit.
     with pytest.raises(SystemExit) as exc:
-        cmd_status(ns(type=None, json_output=True), models)
+        cmd_status(ns(type=None, json_output=True), None)
     assert exc.value.code == 1
     err = capsys.readouterr().err
     assert "not configured" in err
@@ -73,7 +71,6 @@ def test_status_stale_no_api_key_exits(store_env, monkeypatch, capsys):
 
 def test_status_human_readable_output(store_env, tmp_path, capsys):
     """Human-readable format: table header and entry titles appear in stdout."""
-    from koan.memory.bindings import MemoryModels
     ops.memorize(store_env, "context", "Alpha entry", "Body.")
     ops.memorize(store_env, "decision", "Beta entry", "Body.")
 
@@ -84,7 +81,8 @@ def test_status_human_readable_output(store_env, tmp_path, capsys):
     future = time.time() + 2
     os.utime(summary_path, (future, future))
 
-    cmd_status(ns(type=None, json_output=False), MemoryModels())
+    # cheap_spec=None: fresh summary means the stale guard is skipped.
+    cmd_status(ns(type=None, json_output=False), None)
     out = capsys.readouterr().out
     assert "entry_id" in out
     assert "type" in out

@@ -3,8 +3,8 @@
 # run_reflect_agent runs a single-conversation tool-calling loop that searches
 # memory as many times as needed, then returns a cited briefing. Uses
 # pydantic-ai with any chat provider via the adapter.
-# Model selection is now driven by an explicit MemoryModels bundle passed to
-# run_reflect_agent; no module global is read.
+# Model selection is driven by explicit `model` (reflect LLM) and `embed` (embedding) ModelSpec parameters
+# passed to `run_reflect_agent`; no module global is read.
 # Evaluation is handled through evals/, not unit mocks.
 
 from __future__ import annotations
@@ -32,7 +32,6 @@ from .index import RetrievalIndex
 from .types import SearchResult
 
 if TYPE_CHECKING:
-    from ..bindings import MemoryModels
     from ...types import ModelSpec
 
 log = get_logger("memory.retrieval.reflect")
@@ -147,8 +146,26 @@ all, so spend calls on evidence, not deliberation.
 
 @dataclass
 class ReflectTraceEvent:
+    """A single trace event from the reflect subagent's internal loop.
+
+    Kinds:
+        search_start -- emitted before _dispatch_search; signals a search
+            is running (two-phase lifecycle with ``search``).
+        search       -- emitted after _dispatch_search completes; carries
+            result_count. The inline projection fold matches this to the
+            last ``search_start``-derived running entry.
+        done         -- never emitted by the loop (done_tool sets
+            deps.done_result and breaks); retained for the standalone
+            reflect page's passthrough callback.
+        thinking     -- raw thinking content delta from PartStart/PartDelta
+            events. The inline callback consumes these internally and
+            emits thinking_start/thinking_end transitions instead.
+        text         -- raw text content delta; the inline callback
+            forwards these as reflect_delta events for answer streaming.
+    """
+
     iteration: int
-    kind: Literal["search", "done", "thinking", "text"]
+    kind: Literal["search_start", "search", "done", "thinking", "text"]
     query: str = ""
     type_filter: str = ""
     result_count: int | None = None   # populated for search after dispatch
@@ -206,7 +223,7 @@ class _Deps:
 # is resolved at call time via the explicit MemoryModels bundle.
 
 def _build_agent(model: "ModelSpec") -> Agent[_Deps, None]:
-    """Build the reflect agent using the explicit reflect_llm ModelSpec.
+    """Build the reflect agent using the explicit `model` ModelSpec (the reflect LLM).
 
     The model/key arrive via the explicit model parameter; no module global
     is read. Model settings (thinking + caching, baked into the spec at flatten
@@ -256,6 +273,17 @@ def _build_agent(model: "ModelSpec") -> Agent[_Deps, None]:
                 Raise to 10-20 only for broad recall. Hard cap: 20.
         """
         args = {"query": query, "type": type, "k": k}
+        # Pre-dispatch trace enables two-phase search (running -> done) in the
+        # inline projection: the fold appends a running entry on search_start
+        # and updates it with resultCount when the post-dispatch search trace
+        # arrives.
+        if ctx.deps.on_trace is not None:
+            ctx.deps.on_trace(ReflectTraceEvent(
+                iteration=ctx.deps.iteration,
+                kind="search_start",
+                query=query,
+                type_filter=type or "",
+            ))
         payload = await _dispatch_search(ctx.deps.index, args, ctx.deps.retrieved, ctx.deps.embedding)
         result_count = len(payload.get("results", []))
         if ctx.deps.on_trace is not None:
@@ -390,7 +418,8 @@ async def _dispatch_search(
 
 async def run_reflect_agent(
     index: RetrievalIndex,
-    models: "MemoryModels",
+    model: "ModelSpec",
+    embed: "ModelSpec",
     question: str,
     context: str | None = None,
     *,
@@ -399,22 +428,18 @@ async def run_reflect_agent(
 ) -> ReflectResult:
     """Run the pydantic-ai tool-calling reflection loop and return a cited briefing.
 
-    The memory model bundle arrives via the explicit models parameter; no module
-    global is read. Raises RuntimeError when reflect_llm or embedding bindings
-    are not configured (via require_memory_model). Raises IterationCapExceeded
-    if the model does not call "done" within max_iterations model-request turns.
-    No partial/best-effort answer is synthesized on overflow.
+    model (reflect LLM) and embed (embedding) ModelSpecs arrive via explicit
+    parameters; the caller is responsible for resolving them before calling.
+    Raises IterationCapExceeded if the model does not call "done" within
+    max_iterations model-request turns. No partial/best-effort answer is
+    synthesized on overflow.
     """
     from ...agents.adapter import build_usage_limits
-    from ..bindings import require_memory_model
-
-    reflect_model = require_memory_model(models.reflect_llm, "reflect_llm")
-    embed_model = require_memory_model(models.embedding, "embedding")
 
     # Sync the index once before the loop; each retrieval_search call also
     # calls ensure_synced internally, but front-loading it avoids paying the
     # sync cost inside the first iteration's latency.
-    await index.ensure_synced(embed_model)
+    await index.ensure_synced(embed)
 
     user_text = f"# Question\n{question}"
     if context:
@@ -423,8 +448,8 @@ async def run_reflect_agent(
             f"{context}"
         )
 
-    deps = _Deps(index=index, on_trace=on_trace, embedding=embed_model)
-    agent = _build_agent(reflect_model)
+    deps = _Deps(index=index, on_trace=on_trace, embedding=embed)
+    agent = _build_agent(model)
     model_request_count = 0
 
     async with agent.iter(user_text, deps=deps, usage_limits=build_usage_limits()) as run:

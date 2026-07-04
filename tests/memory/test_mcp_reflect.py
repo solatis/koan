@@ -42,6 +42,17 @@ def mem_env(tmp_path):
     app_state.agents[agent.agent_id] = agent
     app_state.init_memory_services()
 
+    # reflect_core resolves embed from memory_models.embedding and standard
+    # from frozen_models["standard"]; both must be non-None or it raises.
+    from koan.types import ModelSpec
+    from koan.memory.bindings import MemoryModels
+    app_state.run.memory_models = MemoryModels(embedding=ModelSpec(
+        provider="voyage", model="voyage-4-large", thinking="disabled",
+        connection_id="v", embedding_dim=1024, api_key="k"))
+    app_state.run.frozen_models = {"standard": ModelSpec(
+        provider="google", model="gemini-flash-latest", thinking="disabled",
+        connection_id="g", api_key="k")}
+
     deps = ToolDeps(app_state=app_state, agent=agent)
 
     yield {
@@ -122,7 +133,7 @@ class TestKoanReflect:
 
         captured_on_trace = []
 
-        async def _fake_run_reflect(index, models, question, context=None, *, on_trace=None, max_iterations=10):
+        async def _fake_run_reflect(index, model, embed, question, context=None, *, on_trace=None, max_iterations=10):
             captured_on_trace.append(on_trace)
             return ReflectResult(
                 answer="The answer.",

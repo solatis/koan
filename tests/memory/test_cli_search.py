@@ -41,6 +41,17 @@ def _fake_models() -> MemoryModels:
     return MemoryModels(embedding=_fake_embedding_spec())
 
 
+def _fake_llm_spec() -> ModelSpec:
+    """Minimal ModelSpec for the cheap/standard tier in cmd_rag tests (mocked)."""
+    return ModelSpec(
+        provider="google",
+        model="gemini-flash-latest",
+        thinking="disabled",
+        connection_id="test-google",
+        api_key="fake-key",
+    )
+
+
 def _make_entry(n: int = 1, etype: str = "context") -> MemoryEntry:
     return MemoryEntry(
         title=f"Title {n}",
@@ -115,7 +126,7 @@ def test_cmd_search_type_filter_forwarded(search_env, monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 
 def test_cmd_rag_json_output(search_env, capsys) -> None:
-    cmd_rag(ns(directive="find stuff", anchor="some context", k=5, json_output=True), _fake_models())
+    cmd_rag(ns(directive="find stuff", anchor="some context", k=5, json_output=True), _fake_embedding_spec(), _fake_llm_spec())
     out = capsys.readouterr().out
     result = json.loads(out)
     assert "results" in result
@@ -128,7 +139,7 @@ def test_cmd_rag_at_file_anchor(search_env, tmp_path, capsys) -> None:
 
     captured = {}
 
-    async def mock_inject(index, models, directive, anchor, k=5):
+    async def mock_inject(index, embed, llm, directive, anchor, k=5):
         captured["anchor"] = anchor
         return FIXED_RESULTS
 
@@ -139,12 +150,12 @@ def test_cmd_rag_at_file_anchor(search_env, tmp_path, capsys) -> None:
             anchor=f"@{anchor_file}",
             k=5,
             json_output=False,
-        ), _fake_models())
+        ), _fake_embedding_spec(), _fake_llm_spec())
 
     assert captured["anchor"] == "anchor content from file"
 
 
 def test_cmd_rag_missing_anchor_file_exits(search_env, capsys) -> None:
     with pytest.raises(SystemExit) as exc:
-        cmd_rag(ns(directive="d", anchor="@/nonexistent/file.txt", k=5, json_output=False), _fake_models())
+        cmd_rag(ns(directive="d", anchor="@/nonexistent/file.txt", k=5, json_output=False), _fake_embedding_spec(), _fake_llm_spec())
     assert exc.value.code == 1
