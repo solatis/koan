@@ -24,12 +24,12 @@
 }
 
 .timeline-dot--future {
-  background: transparent;
+  background: var(--color-navy);
   border: 2px solid rgba(255, 255, 255, 0.15); /* future-state stroke on navy */
 }
 
 .timeline-dot--skipped {
-  background: transparent;
+  background: var(--color-navy);
   border: 2px solid rgba(255, 255, 255, 0.08); /* skipped stroke on navy */
 }
 

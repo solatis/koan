@@ -5,7 +5,9 @@
  * Shows a prompt header and a stack of clickable command rows. At most
  * one row is marked recommended (orange left accent + warm tint).
  *
- * Used in: content stream at koan_yield points.
+ * Used in: content stream at phase-boundary hand-back points.
+ * Phase-transition suggestions have no command text; the description falls
+ * back to the suggestion label in that case.
  */
 
 import './YieldPanel.css'
@@ -14,6 +16,7 @@ interface Suggestion {
   id: string
   label: string
   command: string
+  phase?: string
   recommended?: boolean
 }
 
@@ -51,7 +54,7 @@ export function YieldPanel({ prompt, suggestions, onSelect, changedArtifacts = [
             <span className={`yp-command${s.recommended ? ' yp-command--recommended' : ''}`}>
               <span className="yp-slash">/</span>{s.id}
             </span>
-            <span className="yp-desc">{s.command}</span>
+            <span className="yp-desc">{s.command || s.label}</span>
           </div>
         ))}
       </div>

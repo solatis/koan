@@ -49,52 +49,209 @@
   margin-left: auto;
 }
 
-/* ---- Question ---- */
-.ktc-question {
-  margin-top: 8px;
-  font-size: var(--type-prose);
+/* ---- ReflectCard variant ---- */
+.ktc--reflect {
+  padding: 0;
+  border-left: 3px solid var(--color-teal);
+}
+
+.ktc-reflect-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px;
+  border-bottom: 0.5px solid var(--border-divider-light);
+}
+
+.ktc-reflect-eyebrow {
+  font-size: var(--type-label);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--color-teal);
+}
+
+.ktc-reflect-iter {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: var(--type-tool-path);
+  color: var(--text-muted);
+}
+
+.ktc-reflect-model {
+  font-family: var(--font-mono);
+  font-size: var(--type-badge);
+  color: var(--text-muted);
+  padding: 1px 7px;
+  background: var(--bg-tool-row);
+  border-radius: var(--radius-pill);
+}
+
+.ktc-reflect-question {
+  padding: 10px 20px 0;
+  font-size: var(--type-body);
+  font-style: italic;
   color: var(--text-primary);
   line-height: 1.5;
 }
 
-/* ---- Context (optional) ---- */
-.ktc-context {
-  margin-top: 4px;
-  font-size: var(--type-breadcrumb);
+/* ---- Trace stream ---- */
+.ktc-reflect-trace {
+  padding: 10px 20px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ktc-reflect-thinking {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  background: var(--bg-thinking);
+  border-radius: var(--radius-md);
+}
+
+.ktc-reflect-thinking-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: var(--radius-circle);
+  background: var(--text-thinking-label);
+  animation: ktc-pulse 1.5s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+.ktc-reflect-thinking-label {
+  font-size: var(--type-tool-type);
+  color: var(--text-thinking-label);
+  font-weight: 500;
+}
+
+.ktc-reflect-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-tool-row);
+  border-radius: var(--radius-md);
+  padding: var(--padding-tool-row);
+}
+
+.ktc-reflect-search--running {
+  opacity: 0.8;
+}
+
+.ktc-reflect-search-type {
+  font-size: var(--type-tool-type);
   color: var(--text-muted);
 }
 
-/* ---- Answer (after completion) ---- */
-.ktc-answer {
-  margin-top: 12px;
-  padding-top: 10px;
-  border-top: 0.5px solid var(--border-card);
+.ktc-reflect-search-query {
+  font-family: var(--font-mono);
+  font-size: var(--type-tool-path);
+  color: var(--text-body);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ktc-reflect-search-metric {
+  font-family: var(--font-mono);
+  font-size: var(--type-tool-path);
+  color: var(--text-muted);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.ktc-reflect-search-metric--running {
+  color: var(--status-running);
+}
+
+/* ---- Briefing ---- */
+.ktc-reflect-briefing {
+  padding: 0 20px 16px;
+  border-top: 0.5px solid var(--border-divider-light);
+  margin-top: 2px;
+  padding-top: 14px;
   font-size: var(--type-body);
+  line-height: 1.7;
   color: var(--text-body);
 }
 
-.ktc-answer .markdown {
-  line-height: 1.6;
+.ktc-reflect-briefing .markdown strong {
+  color: var(--text-primary);
+  font-weight: 500;
 }
 
-/* ---- Citations ---- */
-.ktc-citations {
+.ktc-reflect-briefing .markdown code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--bg-tool-row);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+.ktc-reflect-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 14px;
+  background: var(--color-teal);
+  vertical-align: text-bottom;
+  margin-left: 1px;
+  animation: ktc-blink 1s steps(2) infinite;
+}
+
+@keyframes ktc-blink {
+  0%   { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* ---- Citations strip ---- */
+.ktc-reflect-citations {
+  padding: 0 20px 16px;
+}
+
+.ktc-reflect-citations-label {
+  font-size: var(--type-label);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+
+.ktc-reflect-citations-badges {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 8px;
+  gap: 5px;
 }
 
-.ktc-cite {
-  display: inline-block;
-  padding: 1px 6px;
-  border-radius: 3px;
-  background: var(--bg-selected);
-  border: 0.5px solid rgba(142, 124, 160, 0.3); /* purple-derived chip border */
+.ktc-cite-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: var(--radius-pill);
+  font-size: var(--type-badge);
   font-family: var(--font-mono);
-  font-size: var(--type-label);
-  color: var(--color-purple);
   white-space: nowrap;
+}
+
+.ktc-cite-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-circle);
+  flex-shrink: 0;
+}
+
+.ktc-cite-seq {
+  font-family: var(--font-mono);
+  font-size: var(--type-badge);
+}
+
+.ktc-cite-title {
+  font-family: var(--font-body);
+  font-size: var(--type-badge);
+  color: var(--text-body);
 }
 
 /* ---- In-flight state ---- */

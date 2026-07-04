@@ -1,46 +1,54 @@
 /**
- * ToolLogRow — a compact log row for the right pane of ToolAggregateCard.
+ * ToolLogRow — one operation line inside a ToolAggregateCard group-ops
+ * cell.
  *
- * Visually lighter than ToolCallRow — no background fill, no text type
- * label. The leading dot encodes the tool family via color:
- * read/grep/ls each get their tool-family hue from StatusDot; the
- * in-flight `running` variant uses an inline pulsing orange dot (not
- * StatusDot, because StatusDot stays static for consistency with
- * ScoutRow — see design-system.md § StatusDot).
+ * No leading family dot — family identity lives on the group's stat
+ * block, not per row. The only leading indicator is the pulsing orange
+ * dot on an in-flight row (inline, intentionally NOT StatusDot, which
+ * stays static for consistency with ScoutRow — see design-system.md
+ * § StatusDot). Command content renders through ToolCommandText; the
+ * metric string is caller-supplied and preformatted.
  *
- * Used in: ToolAggregateCard right pane (not yet built — this molecule
- * is delivered ahead of the card).
+ * Spec: docs/design-system.md — Molecules → ToolLogRow.
  */
 
 import React from 'react'
-import { StatusDot } from '../atoms/StatusDot'
+import { ToolCommandText } from '../atoms/ToolCommandText'
+import type { ExplorationFamily, ToolCommandTextProps } from '../atoms/ToolCommandText'
 import './ToolLogRow.css'
 
-interface ToolLogRowProps {
-  /** Tool family for completed ops (drives dot color), or 'running' for
-   *  the in-flight op (drives both the pulsing dot and the muted-text
-   *  styling). Completed and in-flight states always move together, so
-   *  one prop controls both. */
-  status: 'read' | 'grep' | 'ls' | 'running'
-  command: string
-  /** Optional right-aligned metric text. Examples: "400 lines · 16.1 KB",
-   *  "46 matches · 6 files", "7 entries". When status is 'running', the
-   *  metric typically reads like "reading…" or "grepping…". */
+export interface ToolLogRowProps {
+  family: ExplorationFamily
+  command: Omit<ToolCommandTextProps, 'family' | 'running' | 'error'>
+  /** Preformatted metric, e.g. "80 lines · 3.9 KB", "exit 0 · 5 lines";
+   *  for running rows the in-progress verb, e.g. "reading…". */
   metric?: string
+  status?: 'done' | 'running' | 'error'
+  /** Metric styling: 'fail' → --status-failed (non-zero bash exit),
+   *  'zero' → italic muted (zero-match grep — informative, not red). */
+  metricTone?: 'default' | 'fail' | 'zero'
 }
 
-export const ToolLogRow = React.memo(function ToolLogRow({ status, command, metric }: ToolLogRowProps) {
-  const isRunning = status === 'running'
+export const ToolLogRow = React.memo(function ToolLogRow(
+  props: ToolLogRowProps
+) {
+  const { family, command, metric, status = 'done', metricTone = 'default' } = props
+  const running = status === 'running'
+  const error = status === 'error'
+  const metricClass = [
+    'tool-log-op-metric',
+    running && 'tool-log-op-metric--running',
+    (error || metricTone === 'fail') && 'tool-log-op-metric--fail',
+    !running && !error && metricTone === 'zero' && 'tool-log-op-metric--zero',
+  ]
+    .filter(Boolean)
+    .join(' ')
+
   return (
-    <div className={`tlr tlr--${status}`}>
-      {isRunning ? (
-        // Inline pulsing dot — intentionally NOT StatusDot. See file header.
-        <span className="tlr-running-dot" aria-label="running" />
-      ) : (
-        <StatusDot status={status} size="sm" />
-      )}
-      <span className="tlr-command">{command}</span>
-      {metric && <span className="tlr-metric">{metric}</span>}
+    <div className="tool-log-op">
+      {running && <span className="tool-log-running-dot" aria-label="running" />}
+      <ToolCommandText family={family} {...command} running={running} error={error} />
+      {metric && <span className={metricClass}>{metric}</span>}
     </div>
   )
 })

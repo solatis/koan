@@ -10,7 +10,9 @@
   cursor: pointer;
 }
 
-/* Vertical connecting line — stacked nodes form one continuous line. */
+/* Vertical connecting line — stacked nodes form one continuous line.
+   Handoff badges between phases carry their own line segment (see
+   TimelineHandoff.css) to bridge the gap. */
 .tl-phase::before {
   content: '';
   position: absolute;
@@ -72,12 +74,26 @@
   margin-top: 1px;
 }
 
-/* Viewing state — the phase whose history is being inspected. */
+/* Viewing state — the phase whose history is being inspected.
+   The highlight lives on __row (not the phase element) so it does not
+   bleed into adjacent handoff badges that use negative margins. The
+   connecting line gets z-index: 1 so it remains visible through the
+   highlight background. */
 .tl-phase--viewing {
-  background: rgba(255, 255, 255, 0.06); /* viewing highlight on navy */
-  border-radius: var(--radius-md);
   margin: 0 4px;
   padding: 0 12px;
+}
+
+.tl-phase--viewing::before {
+  left: 17px; /* 21px - 4px margin shift */
+  z-index: 1;
+}
+
+.tl-phase--viewing .tl-phase__row {
+  background: rgba(255, 255, 255, 0.06); /* viewing highlight on navy */
+  border-radius: var(--radius-md);
+  margin: 6px -12px;
+  padding: 6px 12px;
 }
 
 .tl-phase--viewing .tl-phase__name {

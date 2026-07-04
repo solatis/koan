@@ -10,12 +10,22 @@
  *
  * Used in: header orchestrator indicator, scout table rows, artifact
  * cards, step guidance pill (operational state variants); ToolLogRow and
- * ToolStatBlock (tool-family variants — read, grep, ls).
+ * ToolStatBlock (tool-family variants — read, grep, ls, glob, bash, web;
+ * both web_search and web_fetch pass `web`).
  */
 
 import './StatusDot.css'
 
-type Status = 'running' | 'done' | 'queued' | 'failed' | 'read' | 'grep' | 'ls'
+type Status =
+  | 'running'
+  | 'done'
+  | 'queued'
+  | 'failed'
+  | 'read'
+  | 'grep'
+  | 'glob'
+  | 'bash'
+  | 'web'
 type Size = 'sm' | 'md'
 
 interface StatusDotProps {

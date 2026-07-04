@@ -114,7 +114,9 @@
   /* ===== Tool Family Indicator Colors ===== */
   --dot-read:                  #5a9a8a;
   --dot-grep:                  #7ab0a0;
-  --dot-ls:                    #4a8878;
+  --dot-glob:                  #4a8878;  /* glob operations — darker teal (read-only filesystem family) */
+  --dot-bash:                  #8e7ca0;  /* bash operations — aliases --color-purple; execution, not read-only */
+  --dot-web:                   #7a8fb5;  /* web_search / web_fetch — desaturated slate blue; remote retrieval */
 
 
   /* ===== Font Families ===== */
@@ -177,6 +179,10 @@
   --padding-card-settings:     22px 26px;
   --padding-entity-row:        12px 16px;
   --padding-inline-form:       22px 26px;
+
+
+  /* ===== Component Sizing ===== */
+  --tool-op-row-height:        24px;  /* shared row rhythm: ToolLogRow rows + ToolStatBlock header/meta lines */
 
 
   /* ===== Border Radius ===== */

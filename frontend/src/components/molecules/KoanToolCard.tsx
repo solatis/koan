@@ -69,40 +69,123 @@ function CheckSvg() {
 
 // -- Tool renderers -----------------------------------------------------------
 
-// ReflectCard reads toolInput (not args) for question/context per M3 split-source
-// design: streaming args come via tool_input_delta -> toolInput; the result
-// accumulates via reflect_delta domain events and is overwritten by the final
-// tool_result payload. Both fields are on the same entry; no args needed.
+interface ReflectTrace {
+  kind: 'thinking' | 'search' | 'text'
+  query?: string
+  resultCount?: number
+  status?: 'done' | 'running'
+}
+
+interface ReflectCitation {
+  id: number
+  title: string
+  type: string
+  modifiedMs?: number
+}
+
+// Badge background/border per citation type. Hardcoded -- no tokens exist for
+// these yet; candidates for promotion to variables.css.
+const CITE_STYLES: Record<string, { bg: string; border: string; colorVar: string }> = {
+  decision:  { bg: '#fdf5f2', border: '#f0d8cc', colorVar: 'var(--color-orange)' },
+  lesson:    { bg: '#f0f8f5', border: '#c8e4d8', colorVar: 'var(--color-teal)' },
+  context:   { bg: '#f2f2f8', border: '#d0d0e0', colorVar: 'var(--color-navy)' },
+  procedure: { bg: '#f6f2fa', border: '#dcd0e8', colorVar: 'var(--color-purple)' },
+}
+
 function ReflectCard({ toolInput, result, inFlight }: Omit<KoanToolCardProps, 'toolName'>) {
   const question = (toolInput?.question as string) || ''
-  const context = (toolInput?.context as string) || ''
   const answer = result?.answer as string | undefined
-  const citations = (result?.citations as { id: string; title: string }[]) || []
-  const iterations = result?.iterations as number | undefined
+  const citations = (result?.citations as ReflectCitation[] | undefined) ?? []
+  const traces = (result?.traces as ReflectTrace[] | undefined) ?? []
+  const model = (result?.model as string | undefined) ?? null
+  const maxIterations = (result?.maxIterations as number | undefined) ?? 10
+  const iteration = (result?.iteration as number | undefined) ?? null
+  const iterations = (result?.iterations as number | undefined) ?? null
+
+  const doneSearchCount = traces.filter(t => t.kind === 'search' && t.status === 'done').length
 
   return (
     <div className="ktc ktc--reflect">
-      <div className="ktc-header">
+      {/* 1. Header */}
+      <div className="ktc-reflect-header">
         <span className="ktc-indicator">
           {inFlight ? <span className="ktc-running-dot" /> : <CheckSvg />}
         </span>
-        <span className="ktc-label">Reflecting</span>
-        {iterations != null && (
-          <span className="ktc-meta">{iterations} search{iterations === 1 ? '' : 'es'}</span>
-        )}
+        <span className="ktc-reflect-eyebrow">{inFlight ? 'Reflecting' : 'Reflection'}</span>
+        <span className="ktc-reflect-iter">
+          {inFlight
+            ? `turn ${iteration ?? 1} of ${maxIterations}`
+            : `${iterations ?? doneSearchCount} search${(iterations ?? doneSearchCount) === 1 ? '' : 'es'}`}
+        </span>
+        {model && <span className="ktc-reflect-model">{model}</span>}
       </div>
-      <div className="ktc-question">{question}</div>
-      {context && <div className="ktc-context">{context}</div>}
+
+      {/* 2. Question */}
+      {question && <div className="ktc-reflect-question">{question}</div>}
+
+      {/* 3. Trace stream */}
+      {traces.length > 0 && (
+        <div className="ktc-reflect-trace">
+          {traces.map((t, i) => {
+            if (t.kind === 'thinking') {
+              return (
+                <div key={i} className="ktc-reflect-thinking">
+                  <span className="ktc-reflect-thinking-dot" />
+                  <span className="ktc-reflect-thinking-label">Thinking...</span>
+                </div>
+              )
+            }
+            if (t.kind === 'search') {
+              const done = t.status === 'done'
+              return (
+                <div key={i} className={`ktc-reflect-search${done ? '' : ' ktc-reflect-search--running'}`}>
+                  <span className="ktc-indicator">
+                    {done ? <CheckSvg /> : <span className="ktc-running-dot" />}
+                  </span>
+                  <span className="ktc-reflect-search-type">search</span>
+                  <span className="ktc-reflect-search-query">{t.query ?? ''}</span>
+                  <span className={`ktc-reflect-search-metric${done ? '' : ' ktc-reflect-search-metric--running'}`}>
+                    {done ? `${t.resultCount ?? 0} results` : 'retrieving...'}
+                  </span>
+                </div>
+              )
+            }
+            return null
+          })}
+        </div>
+      )}
+
+      {/* 4. Briefing (streaming or complete) */}
       {answer && (
-        <div className="ktc-answer">
+        <div className="ktc-reflect-briefing">
           <Md>{answer}</Md>
-          {citations.length > 0 && (
-            <div className="ktc-citations">
-              {citations.map((c, i) => (
-                <span key={i} className="ktc-cite">{c.title}</span>
-              ))}
-            </div>
-          )}
+          {inFlight && <span className="ktc-reflect-cursor" />}
+        </div>
+      )}
+
+      {/* 5. Citations strip */}
+      {!inFlight && citations.length > 0 && (
+        <div className="ktc-reflect-citations">
+          <div className="ktc-reflect-citations-label">Cited memories</div>
+          <div className="ktc-reflect-citations-badges">
+            {citations.map(c => {
+              const s = CITE_STYLES[c.type] ?? CITE_STYLES.context
+              return (
+                <span
+                  key={c.id}
+                  className="ktc-cite-badge"
+                  style={{
+                    background: s.bg,
+                    border: `0.5px solid ${s.border}`,
+                  }}
+                >
+                  <span className="ktc-cite-dot" style={{ background: s.colorVar }} />
+                  <span className="ktc-cite-seq" style={{ color: s.colorVar }}>#{String(c.id).padStart(4, '0')}</span>
+                  <span className="ktc-cite-title">{c.title}</span>
+                </span>
+              )
+            })}
+          </div>
         </div>
       )}
     </div>

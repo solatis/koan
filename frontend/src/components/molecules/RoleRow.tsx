@@ -6,6 +6,9 @@
  * Layout follows dependency order; the cascade disables each control until its
  * dependency is set. Presentational: auto-save, validation, and error toasts
  * live in the parent.
+ *
+ * RoleSlot is now 'strong' | 'standard' | 'cheap' | 'embedding';
+ * 'memory-llm' and 'reflect-llm' were removed.
  */
 
 import './RoleRow.css'
@@ -19,8 +22,6 @@ export type RoleSlot =
   | 'standard'
   | 'cheap'
   | 'embedding'
-  | 'memory-llm'
-  | 'reflect-llm'
 
 export type RoleRowState = 'assigned' | 'unassigned' | 'broken' | 'no-thinking'
 
@@ -31,8 +32,6 @@ const ROLE_META: Record<RoleSlot, { marker: MarkerRole; name: string; desc: stri
   standard: { marker: 'standard', name: 'Standard', desc: 'Writing code' },
   cheap: { marker: 'cheap', name: 'Cheap', desc: 'Exploration sub-agents' },
   embedding: { marker: 'memory', name: 'Embedding', desc: 'Indexes memory & docs' },
-  'memory-llm': { marker: 'memory', name: 'Memory LLM', desc: 'Memory summarization' },
-  'reflect-llm': { marker: 'memory', name: 'Reflect LLM', desc: 'koan_reflect loop' },
 }
 
 const CONN_PLACEHOLDER = '— select connection —'

@@ -66,6 +66,10 @@
   padding-left: 12px;
 }
 
+/* Family-variant metric tones (parity with ToolLogRow) */
+.tcr-metric--fail { color: var(--status-failed); }
+.tcr-metric--zero { font-style: italic; } /* stays muted — zero matches is informative, not an error */
+
 /* ---- Status variants ---- */
 .tcr--running {
   opacity: 0.8;

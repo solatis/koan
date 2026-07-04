@@ -30,6 +30,10 @@ interface FeedbackInputProps {
  *   "The user wishes to switch to workflow `plan` ..."
  *
  * Non-slash text passes through unchanged.
+ *
+ * Suggestion clicks no longer produce slash-command drafts (phase suggestions
+ * POST to /api/phase mechanically); this transform now serves only manually
+ * typed palette commands, which remain LLM-interpreted via chat.
  */
 function transformCommand(text: string): string {
   if (!text.startsWith('/')) return text

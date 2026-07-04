@@ -9,6 +9,13 @@
   line-height: 1.7;
 }
 
+/* Historical viewing mode: teal accent replaces orange to indicate
+   the content is from a completed phase. One-off token reuse, not a
+   new token -- --color-teal already exists in variables.css. */
+.prose-card--historical {
+  border-left-color: var(--color-teal);
+}
+
 /* Paragraph spacing within prose */
 .prose-card p {
   margin: 0 0 12px 0;

@@ -1,45 +1,53 @@
-.tsb {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
+/* ToolStatBlock — navy stat cell for one family group.
+ * Spec: docs/design-system.md — Molecules → ToolStatBlock. */
+
+.tsb-cell {
+  background: var(--color-navy);
+  padding: 9px 16px;
+  font-family: var(--font-mono);
+  font-size: 12px;
 }
 
-/* ---- Header row (dot + name + op count) ---- */
-.tsb-header {
+/* Separator between adjacent stat cells. Navy-specific divider —
+ * --text-on-dark (#f0e8d8) at 10% alpha; there is no on-navy divider
+ * token, so it is hardcoded here. First cell has none. */
+.tsb-cell--not-first {
+  border-top: 1px solid rgba(240, 232, 216, 0.10);
+}
+
+/* ---- Header row (family dot + family id + op count) ---- */
+.tsb-cell-header {
+  height: var(--tool-op-row-height);
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.tsb-name {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--text-primary);
+.tsb-cell-name {
+  color: var(--text-on-dark);
   font-weight: 500;
 }
 
-.tsb-opcount {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-muted);
-  margin-left: auto;
-}
-
-/* ---- Meta lines (aligned under the tool name, past the dot) ---- */
-.tsb-meta {
-  display: flex;
-  flex-direction: column;
-  padding-left: 16px;
-}
-
-.tsb-meta-line {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-muted);
-  line-height: 1.4;
-}
-
-/* ---- Active variant ---- */
-.tsb--active .tsb-name {
+.tsb-cell--active .tsb-cell-name {
   color: var(--color-orange);
+}
+
+.tsb-cell-opcount {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-on-dark-muted);
+}
+
+/* ---- Meta lines (rollups, aligned under the family name) ---- */
+.tsb-cell-meta-line {
+  padding-left: 14px;
+  font-size: 11px;
+  color: var(--text-on-dark-muted);
+  line-height: var(--tool-op-row-height);
+}
+
+/* On-navy failure red — --status-failed (#c44) lacks contrast on navy,
+ * so this navy-specific value is hardcoded. */
+.tsb-cell-meta-line--failed {
+  color: #e8a0a0;
 }

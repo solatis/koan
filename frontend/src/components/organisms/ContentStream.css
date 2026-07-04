@@ -48,6 +48,27 @@
 /* .cs-feedback-footer-wrap: no opacity rule -- remains fully visible
    when palette is open so the user can type in the feedback input. */
 
+/* Historical viewing mode: dim committed entries to 0.75 opacity.
+   One-off value (not a token) — per AGENTS.md, single-use opacity
+   values are hardcoded with a comment. */
+.content-stream--historical .cs-item {
+  opacity: 0.75;
+}
+
+/* Hide the streaming leaf in historical viewing mode. StreamingLeaf
+   subscribes to selectIsThinking/selectPendingThinking/selectPendingText
+   which read from the active (focused) agent's conversation, NOT the
+   viewed phase. Without this rule, active-phase streaming content would
+   leak into the historical view at full opacity. display:none is the
+   correct treatment — in historical mode there is no streaming content
+   to show for the viewed (completed) phase. */
+.content-stream--historical .cs-streaming-leaf-wrap {
+  display: none;
+}
+
+/* .cs-feedback-footer-wrap: no rule needed — FeedbackFooter is suppressed
+   via footerContext.showFeedback (set to false when isHistorical). */
+
 /* Phase header (PhaseTitleBar + ContextCard) at the top of the content column.
    Scrolls with the content for now; a fixed/sticky treatment is a follow-up. */
 .cs-phase-header {

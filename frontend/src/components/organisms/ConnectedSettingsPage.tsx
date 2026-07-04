@@ -103,16 +103,12 @@ export function ConnectedSettingsPage() {
       }
     }
 
-    const memLlmSlot = resolveSlot(mem?.memory_llm?.configured_model_id, mem?.memory_llm?.thinking ?? null)
-    const reflectLlmSlot = resolveSlot(mem?.reflect_llm?.configured_model_id, mem?.reflect_llm?.thinking ?? null)
 
     return {
       strong: tierSlots.strong!,
       standard: tierSlots.standard!,
       cheap: tierSlots.cheap!,
       embedding: embeddingSlot,
-      'memory-llm': memLlmSlot,
-      'reflect-llm': reflectLlmSlot,
     }
   }, [settings])
 
@@ -346,7 +342,7 @@ export function ConnectedSettingsPage() {
       // requires an already-persisted configured model id.
       const cmId = isTierSlot
         ? settings.presets['$last']?.slots[slot]?.configuredModelId
-        : settings.memoryBindings?.[slotToMemoryKind(slot) as 'embedding' | 'memory_llm' | 'reflect_llm']?.configured_model_id
+        : settings.memoryBindings?.[slotToMemoryKind(slot) as 'embedding']?.configured_model_id
       if (!cmId) return
       const body = { configured_model_id: cmId, thinking: value }
       const res = isTierSlot

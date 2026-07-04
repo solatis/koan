@@ -1,0 +1,62 @@
+/* ToolCommandText — per-family command text primitive.
+ * Spec: docs/design-system.md — Atoms → ToolCommandText. */
+
+.tct {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* Primary spans: basename, pattern, command, query, host */
+.tct-primary { color: var(--text-body); }
+.tct--running .tct-primary { color: var(--text-subtle); }
+.tct--error .tct-primary { color: var(--status-failed); }
+
+/* Shared right-ellipsis truncation (pattern, command, query, url path) */
+.tct-truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* read — directory prefix left-truncates so the basename survives.
+ * direction: rtl puts the ellipsis on the left edge; the inner <bdi>
+ * isolates the LTR path text so slashes do not reorder. The spec's
+ * `unicode-bidi: plaintext` on this span makes Chrome place the ellipsis
+ * on the right (content-resolved LTR direction), so <bdi> is used
+ * instead to achieve the specced left truncation. */
+.tct-dir {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  min-width: 0;
+  flex-shrink: 1;
+}
+.tct-base { flex-shrink: 0; }
+.tct-range {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+/* grep / glob — preformatted scope after the pattern */
+.tct-scope {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  padding-left: 8px;
+}
+
+/* bash — leading sigil */
+.tct-sigil {
+  color: var(--text-muted);
+  padding-right: 6px;
+  flex-shrink: 0;
+}
+
+/* web_fetch — host stays, path right-truncates */
+.tct-host { flex-shrink: 0; }
+.tct-urlpath { color: var(--text-muted); }

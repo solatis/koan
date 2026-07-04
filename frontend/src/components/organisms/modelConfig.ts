@@ -116,8 +116,7 @@ export function buildConnectionViews(
 // ---------------------------------------------------------------------------
 
 // Map UI slot names to API memory kind strings.
+// Now only 'embedding' maps to a memory kind; 'memory-llm' and 'reflect-llm' were removed.
 export function slotToMemoryKind(slot: RoleSlot): string {
-  if (slot === 'memory-llm') return 'memory_llm'
-  if (slot === 'reflect-llm') return 'reflect_llm'
   return slot  // 'embedding'
 }

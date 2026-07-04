@@ -28,8 +28,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 
 import { useStore, ConversationEntry } from '../../store/index'
-import type { AggregateChild, AggregateReadChild, AggregateGrepChild,
-              AggregateLsChild, ToolAggregateEntry } from '../../store/index'
+import type { ExplorationChild, ToolAggregateEntry } from '../../store/index'
 import {
   selectFocusedEntries,
   selectPendingThinking,
@@ -40,6 +39,7 @@ import {
   selectFeedbackCommands,
   selectCompletionPresent,
   selectPhase,
+  selectArtifacts,
   formatPhaseName,
 } from '../../store/selectors'
 import { entrySearchText, entriesToTranscript } from '../../store/transcript'
@@ -51,17 +51,16 @@ import * as api from '../../api/client'
 import { ThinkingBlock } from '../molecules/ThinkingBlock'
 import { ProseCard } from '../molecules/ProseCard'
 import { ToolCallRow } from '../molecules/ToolCallRow'
-import { ToolLogRow } from '../molecules/ToolLogRow'
-import { ToolStatBlock } from '../molecules/ToolStatBlock'
-import { ToolAggregateCard } from '../molecules/ToolAggregateCard'
+import { ToolAggregateCard } from './ToolAggregateCard'
+import { groupExplorationOps, type ExplorationOp } from './toolAggregateGrouping'
 import { StepGuidancePill } from '../molecules/StepGuidancePill'
 import { FeedbackInput } from '../molecules/FeedbackInput'
 import { UserBubble } from '../molecules/UserBubble'
-import { PhaseMarker } from '../molecules/PhaseMarker'
 import { YieldPanel } from '../molecules/YieldPanel'
 import { StepHeader } from '../molecules/StepHeader'
 import { PhaseTitleBar } from '../molecules/PhaseTitleBar'
 import { ContextCard } from '../molecules/ContextCard'
+import { ReturnBanner } from '../molecules/ReturnBanner'
 import { SteeringBar } from '../molecules/SteeringBar'
 import { KoanToolCard } from '../molecules/KoanToolCard'
 import { FindBar } from '../molecules/FindBar'
@@ -73,132 +72,109 @@ import './ContentStream.css'
 
 // ---------------------------------------------------------------------------
 // Aggregate rendering helpers -- pure functions, next to renderEntry so the
-// data flow stays readable. Each maps AggregateChild state to display strings
-// or further structured pieces consumed by the card / row components.
+// data flow stays readable. toExplorationOp maps store children to the
+// ExplorationOp view model consumed by groupExplorationOps + ToolAggregateCard.
 // ---------------------------------------------------------------------------
 
-function pluralizeOps(n: number): string {
-  return n === 1 ? '1 op' : `${n} ops`
-}
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`
-  const kb = n / 1024
-  if (kb < 1024) return `${kb.toFixed(1)} KB`
-  return `${(kb / 1024).toFixed(1)} MB`
-}
-
-function childCommand(child: AggregateChild): string {
-  switch (child.tool) {
-    case 'read': return child.lines ? `${child.file}:${child.lines}` : child.file
-    case 'grep': return child.pattern
-    case 'ls':   return child.path
-  }
-}
-
-function childMetric(child: AggregateChild): string | undefined {
-  switch (child.tool) {
-    case 'read': {
-      if (child.linesRead != null && child.bytesRead != null) {
-        return `${child.linesRead} lines · ${formatBytes(child.bytesRead)}`
+/** Map an ExplorationChild store entry to an ExplorationOp view model. */
+function toExplorationOp(child: ExplorationChild, seq: number): ExplorationOp {
+  const status: 'done' | 'running' | 'error' = child.inFlight ? 'running' : 'done'
+  switch (child.type) {
+    case 'tool_read': {
+      const range = child.limit != null && child.limit > 0
+        ? `${child.offset + 1}–${child.offset + child.limit}`
+        : undefined
+      return {
+        family: 'read',
+        command: { path: child.file, range },
+        metric: child.linesRead != null
+          ? child.bytesRead != null
+            ? `${child.linesRead} lines`
+            : `${child.linesRead} lines`
+          : undefined,
+        status,
+        seq,
+        stats: child.linesRead != null ? { lines: child.linesRead, bytes: child.bytesRead ?? 0 } : undefined,
       }
-      if (child.linesRead != null) return `${child.linesRead} lines`
-      return undefined
     }
-    case 'grep': {
-      if (child.matches != null && child.filesMatched != null) {
-        return `${child.matches} matches · ${child.filesMatched} files`
+    case 'tool_grep': {
+      const zero = child.matches === 0
+      return {
+        family: 'grep',
+        command: { pattern: child.pattern },
+        metric: child.matches != null
+          ? `${child.matches} matches`
+          : undefined,
+        status,
+        metricTone: zero ? 'zero' : 'default',
+        seq,
+        stats: child.matches != null
+          ? { matches: child.matches, matchedLines: child.matchedLines ?? 0 }
+          : undefined,
       }
-      if (child.matches != null) return `${child.matches} matches`
-      return undefined
     }
-    case 'ls': {
-      if (child.entries != null) return `${child.entries} entries`
-      return undefined
+    case 'tool_glob': {
+      return {
+        family: 'glob',
+        command: { pattern: child.pattern },
+        metric: child.matches != null ? `${child.matches} files` : undefined,
+        status,
+        seq,
+        stats: child.matches != null ? { files: child.matches } : undefined,
+      }
+    }
+    case 'tool_bash': {
+      const fail = child.exitCode != null && child.exitCode !== 0
+      return {
+        family: 'bash',
+        command: { command: child.command },
+        metric: child.exitCode != null
+          ? `exit ${child.exitCode}${child.outputLines != null ? ` · ${child.outputLines} lines` : ''}`
+          : undefined,
+        status: fail ? 'error' : status,
+        metricTone: fail ? 'fail' : 'default',
+        seq,
+      }
+    }
+    case 'tool_web_search': {
+      return {
+        family: 'web_search',
+        command: { query: child.query },
+        metric: child.resultCount != null ? `${child.resultCount} results` : undefined,
+        status,
+        seq,
+        stats: child.resultCount != null ? { results: child.resultCount } : undefined,
+      }
+    }
+    case 'tool_web_fetch': {
+      return {
+        family: 'web_fetch',
+        command: { url: child.url },
+        metric: child.contentSizeBytes != null
+          ? `${(child.contentSizeBytes / 1024).toFixed(1)} KB`
+          : undefined,
+        status,
+        seq,
+        stats: child.contentSizeBytes != null ? { bytes: child.contentSizeBytes } : undefined,
+      }
     }
   }
 }
 
-function shortBasename(path: string): string {
-  const slash = path.lastIndexOf('/')
-  return slash >= 0 ? path.slice(slash + 1) : path
-}
-
-function runningLabelFor(child: AggregateChild): string {
-  switch (child.tool) {
-    case 'read': return `reading ${shortBasename(child.file)}`
-    case 'grep': return 'grepping'
-    case 'ls':   return `listing ${shortBasename(child.path)}`
+/** Derive a running label for a single in-flight child. */
+function runningLabelFor(child: ExplorationChild): string {
+  switch (child.type) {
+    case 'tool_read': return `reading ${child.file.split('/').pop() || child.file}`
+    case 'tool_grep': return 'grepping'
+    case 'tool_glob': return 'globbing'
+    case 'tool_bash': return 'running bash'
+    case 'tool_web_search': return 'searching web'
+    case 'tool_web_fetch': return 'fetching'
   }
 }
 
-function findRunningChild(children: AggregateChild[]): AggregateChild | undefined {
+function findRunningChild(children: ExplorationChild[]): ExplorationChild | undefined {
   return children.find(c => c.inFlight)
-}
-
-function groupChildrenByTool(children: AggregateChild[]): {
-  read: AggregateReadChild[]; grep: AggregateGrepChild[]; ls: AggregateLsChild[]
-} {
-  const read: AggregateReadChild[] = []
-  const grep: AggregateGrepChild[] = []
-  const ls: AggregateLsChild[] = []
-  for (const c of children) {
-    if (c.tool === 'read') read.push(c)
-    else if (c.tool === 'grep') grep.push(c)
-    else ls.push(c)
-  }
-  return { read, grep, ls }
-}
-
-function readMetaLines(children: AggregateReadChild[]): string[] {
-  let totalLines = 0
-  let totalBytes = 0
-  let anyLineMetric = false
-  const files = new Set<string>()
-  for (const c of children) {
-    if (c.linesRead != null) { totalLines += c.linesRead; anyLineMetric = true }
-    if (c.bytesRead != null) { totalBytes += c.bytesRead }
-    files.add(c.file)
-  }
-  const lines: string[] = []
-  if (anyLineMetric) {
-    lines.push(totalBytes > 0
-      ? `${totalLines} lines · ${formatBytes(totalBytes)}`
-      : `${totalLines} lines`)
-  }
-  if (files.size !== children.length) {
-    // More than one read hit the same file -- worth mentioning file count.
-    lines.push(`${files.size} ${files.size === 1 ? 'file' : 'files'} touched`)
-  }
-  return lines
-}
-
-function grepMetaLines(children: AggregateGrepChild[]): string[] {
-  let totalMatches = 0
-  let totalFiles = 0
-  let anyMetric = false
-  for (const c of children) {
-    if (c.matches != null) { totalMatches += c.matches; anyMetric = true }
-    if (c.filesMatched != null) { totalFiles += c.filesMatched }
-  }
-  const lines: string[] = []
-  if (anyMetric) lines.push(`${totalMatches} matches`)
-  if (totalFiles > 0) lines.push(`${totalFiles} ${totalFiles === 1 ? 'file' : 'files'} searched`)
-  return lines
-}
-
-function lsMetaLines(children: AggregateLsChild[]): string[] {
-  let totalEntries = 0
-  let totalDirs = 0
-  let anyMetric = false
-  for (const c of children) {
-    if (c.entries != null) { totalEntries += c.entries; anyMetric = true }
-    if (c.directories != null) totalDirs += c.directories
-  }
-  const lines: string[] = []
-  if (anyMetric) lines.push(`${totalEntries} entries`)
-  if (totalDirs > 0) lines.push(`${totalDirs} ${totalDirs === 1 ? 'directory' : 'directories'}`)
-  return lines
 }
 
 function aggregateElapsedMs(agg: ToolAggregateEntry, nowMs: number): number {
@@ -217,78 +193,19 @@ function renderAggregate(entry: ToolAggregateEntry) {
   const children = entry.children
   if (children.length === 0) return null
 
-  // Single-child aggregates render as a standalone ToolCallRow, matching the
-  // pre-aggregation visual for the common case where no grouping has happened
-  // yet. The row upgrades to a card on the next consecutive exploration tool.
-  if (children.length === 1) {
-    const c = children[0]
-    return (
-      <ToolCallRow
-        tool={c.tool}
-        command={childCommand(c)}
-        status={c.inFlight ? 'running' : 'done'}
-        metric={childMetric(c)}
-      />
-    )
-  }
-
-  // Two or more children: render the full two-pane aggregate card.
-  const groups = groupChildrenByTool(children)
+  // Map children to ExplorationOp[] and group by family.
+  const ops = children.map((c, i) => toExplorationOp(c, i))
+  const groups = groupExplorationOps(ops)
   const running = findRunningChild(children)
   const runningLabel = running ? runningLabelFor(running) : undefined
   const elapsedMs = aggregateElapsedMs(entry, Date.now())
 
-  const stats = [
-    groups.read.length > 0 && (
-      <ToolStatBlock
-        key="read"
-        type="read"
-        name="read"
-        opCount={pluralizeOps(groups.read.length)}
-        metaLines={readMetaLines(groups.read)}
-        active={running?.tool === 'read'}
-      />
-    ),
-    groups.grep.length > 0 && (
-      <ToolStatBlock
-        key="grep"
-        type="grep"
-        name="grep"
-        opCount={pluralizeOps(groups.grep.length)}
-        metaLines={grepMetaLines(groups.grep)}
-        active={running?.tool === 'grep'}
-      />
-    ),
-    groups.ls.length > 0 && (
-      <ToolStatBlock
-        key="ls"
-        type="ls"
-        name="ls"
-        opCount={pluralizeOps(groups.ls.length)}
-        metaLines={lsMetaLines(groups.ls)}
-        active={running?.tool === 'ls'}
-      />
-    ),
-  ].filter(Boolean)
-
-  const logRows = children.map((c, j) => (
-    <ToolLogRow
-      key={j}
-      status={c.inFlight ? 'running' : c.tool}
-      command={childCommand(c)}
-      metric={c.inFlight
-        ? (c.tool === 'read' ? 'reading...' : c.tool === 'grep' ? 'grepping...' : 'listing...')
-        : childMetric(c)}
-    />
-  ))
-
   return (
     <ToolAggregateCard
+      groups={groups}
       operationCount={children.length}
       runningLabel={runningLabel}
       elapsed={elapsedMs > 0 ? formatElapsed(elapsedMs) : undefined}
-      statsPane={stats}
-      logPane={logRows}
     />
   )
 }
@@ -298,23 +215,113 @@ function renderAggregate(entry: ToolAggregateEntry) {
  *
  * Converts a single ConversationEntry to its display elements. No index
  * parameter: keys for array reconciliation live on EntryRow, not here.
+ * The historical flag, when true, suppresses interactive entries (yield)
+ * and passes teal-accent styling through to ProseCard and StepHeader.
  * The yield case uses the imperative useStore.getState() (not a hook) to
  * read transient state at render time without subscribing to it.
  */
-function renderEntryBody(entry: ConversationEntry) {
+function renderEntryBody(entry: ConversationEntry, historical: boolean) {
   switch (entry.type) {
     case 'thinking':
       return <ThinkingBlock><Md>{entry.content}</Md></ThinkingBlock>
     case 'text':
-      return <ProseCard><Md>{entry.text}</Md></ProseCard>
+      return <ProseCard historical={historical}><Md>{entry.text}</Md></ProseCard>
     case 'tool_aggregate':
       return renderAggregate(entry)
     case 'tool_write':
       return <ToolCallRow tool="write" command={entry.file} status={entry.inFlight ? 'running' : 'done'} attachments={entry.attachments} />
     case 'tool_edit':
       return <ToolCallRow tool="edit" command={entry.file} status={entry.inFlight ? 'running' : 'done'} attachments={entry.attachments} />
-    case 'tool_bash':
+    case 'tool_bash': {
+      // Bash as a top-level entry uses the family variant when it has
+      // aggregate-child fields (startedAtMs populated by the exploration path).
+      const isExploration = entry.startedAtMs !== undefined && entry.startedAtMs > 0
+      if (isExploration) {
+        const fail = entry.exitCode != null && entry.exitCode !== 0
+        return (
+          <ToolCallRow
+            tool="bash"
+            command={entry.command}
+            status={entry.inFlight ? 'running' : fail ? 'error' : 'done'}
+            family="bash"
+            commandData={{ command: entry.command }}
+            metric={entry.exitCode != null
+              ? `exit ${entry.exitCode}${entry.outputLines != null ? ` · ${entry.outputLines} lines` : ''}`
+              : undefined}
+            metricTone={fail ? 'fail' : 'default'}
+            attachments={entry.attachments}
+          />
+        )
+      }
       return <ToolCallRow tool="bash" command={entry.command} status={entry.inFlight ? 'running' : 'done'} attachments={entry.attachments} />
+    }
+    case 'tool_read': {
+      const range = entry.limit != null && entry.limit > 0
+        ? `${entry.offset + 1}–${entry.offset + entry.limit}`
+        : undefined
+      return (
+        <ToolCallRow
+          tool="read"
+          command={entry.file}
+          status={entry.inFlight ? 'running' : 'done'}
+          family="read"
+          commandData={{ path: entry.file, range }}
+          metric={entry.linesRead != null ? `${entry.linesRead} lines` : undefined}
+          attachments={entry.attachments}
+        />
+      )
+    }
+    case 'tool_grep':
+      return (
+        <ToolCallRow
+          tool="grep"
+          command={entry.pattern}
+          status={entry.inFlight ? 'running' : 'done'}
+          family="grep"
+          commandData={{ pattern: entry.pattern }}
+          metric={entry.matches != null ? `${entry.matches} matches` : undefined}
+          metricTone={entry.matches === 0 ? 'zero' : 'default'}
+          attachments={entry.attachments}
+        />
+      )
+    case 'tool_glob':
+      return (
+        <ToolCallRow
+          tool="glob"
+          command={entry.pattern}
+          status={entry.inFlight ? 'running' : 'done'}
+          family="glob"
+          commandData={{ pattern: entry.pattern }}
+          metric={entry.matches != null ? `${entry.matches} files` : undefined}
+          attachments={entry.attachments}
+        />
+      )
+    case 'tool_web_search':
+      return (
+        <ToolCallRow
+          tool="web_search"
+          command={entry.query}
+          status={entry.inFlight ? 'running' : 'done'}
+          family="web_search"
+          commandData={{ query: entry.query }}
+          metric={entry.resultCount != null ? `${entry.resultCount} results` : undefined}
+          attachments={entry.attachments}
+        />
+      )
+    case 'tool_web_fetch':
+      return (
+        <ToolCallRow
+          tool="web_fetch"
+          command={entry.url}
+          status={entry.inFlight ? 'running' : 'done'}
+          family="web_fetch"
+          commandData={{ url: entry.url }}
+          metric={entry.contentSizeBytes != null
+            ? `${(entry.contentSizeBytes / 1024).toFixed(1)} KB`
+            : undefined}
+          attachments={entry.attachments}
+        />
+      )
     // tool_generic is reached only by non-koan custom tools post-M1;
     // koan MCP tools now create ToolKoanEntry via the broadened KOAN_MCP_TOOLS set.
     case 'tool_generic':
@@ -333,7 +340,7 @@ function renderEntryBody(entry: ConversationEntry) {
         />
       )
     case 'step':
-      return <StepHeader stepNumber={entry.step} totalSteps={entry.totalSteps ?? 0} stepName={entry.stepName} />
+      return <StepHeader historical={historical} stepNumber={entry.step} totalSteps={entry.totalSteps ?? 0} stepName={entry.stepName} />
     case 'debug_step_guidance':
       return <StepGuidancePill status="active" defaultExpanded={false}><Md>{entry.content}</Md></StepGuidancePill>
     case 'user_message': {
@@ -341,8 +348,12 @@ function renderEntryBody(entry: ConversationEntry) {
       return <UserBubble timestamp={ts}><Md>{entry.content}</Md></UserBubble>
     }
     case 'phase_boundary':
-      return <PhaseMarker name={entry.phase} description={entry.description || entry.message} />
+      // Suppressed: redundant when only one phase's entries are visible.
+      // The PhaseTitleBar already identifies the current phase.
+      // If "all phases" mode is ever reintroduced, remove the early return.
+      return null
     case 'yield': {
+      if (historical) return null
       const state = useStore.getState()
       const setChatDraft = state.setChatDraft
       // Compute changed artifacts at render time using the imperative store API.
@@ -357,7 +368,30 @@ function renderEntryBody(entry: ConversationEntry) {
           prompt={entry.prompt || 'What would you like to do next?'}
           suggestions={entry.suggestions}
           changedArtifacts={changedArtifacts}
-          onSelect={s => setChatDraft(s.command ? `/${s.id} ${s.command}` : `/${s.id} `)}
+          // Phase metadata -> mechanical POST to /api/phase (no chat draft, no
+          // model turn in the old phase). Free-text -> draft the raw command
+          // (no /${s.id} prefix -- the slash form would be misrewritten by
+          // transformCommand as a phase transition).
+          onSelect={s => {
+            if (s.phase) {
+              useStore.getState().setLastTouchpointMs(Date.now())
+              api.setPhase(s.phase).then(res => {
+                if (!res.ok) {
+                  useStore.getState().pushToast(
+                    'Phase transition rejected -- the agent may no longer be awaiting input.',
+                    'warning',
+                  )
+                }
+              }).catch(() => {
+                useStore.getState().pushToast(
+                  'Phase transition failed -- network error.',
+                  'warning',
+                )
+              })
+            } else {
+              setChatDraft(s.command || '')
+            }
+          }}
         />
       )
     }
@@ -376,9 +410,11 @@ function renderEntryBody(entry: ConversationEntry) {
  *
  * Keyed by entryId (M1 stable server-assigned key) in Virtuoso computeItemKey,
  * with index fallback for defensive correctness.
+ * The historical prop threads through to renderEntryBody for phase-scoped
+ * styling (teal accents) and yield suppression.
  */
-const EntryRow = React.memo(function EntryRow({ entry }: { entry: ConversationEntry }) {
-  return renderEntryBody(entry)
+const EntryRow = React.memo(function EntryRow({ entry, historical }: { entry: ConversationEntry; historical: boolean }) {
+  return renderEntryBody(entry, historical)
 })
 
 // ---------------------------------------------------------------------------
@@ -583,20 +619,51 @@ export function ContentStream() {
   const showFeedback = useStore(selectShowFeedback)
   const entries = useStore(selectFocusedEntries)
 
-  // Phase header: current phase title + handoff context card. Derived from the
-  // existing phase + availablePhases state; content switching is not wired yet.
+  // Phase header: title bar + handoff context card for the displayed phase.
+  // displayedPhase is viewingPhaseId ?? phase so historical viewing reflects
+  // the viewed phase, not the active one.
   const phase = useStore(selectPhase)
+  const viewingPhaseId = useStore(s => s.viewingPhaseId)
+  const artifacts = useStore(selectArtifacts)
+  const isHistorical = viewingPhaseId !== null && viewingPhaseId !== phase
   const availablePhases = useStore(s => s.run?.availablePhases ?? EMPTY_PHASES)
-  const { phaseTitle, isFirstPhase, prevPhaseName } = useMemo(() => {
-    const idx = availablePhases.findIndex(p => p.id === phase)
+  const displayedPhase = viewingPhaseId ?? phase
+  // Derive the viewed phase's title, handoff artifacts, and subtitle from
+  // the previous phase's artifacts (filtered by producedPhaseId).
+  const { phaseTitle, isFirstPhase, prevPhaseName, handoffArtifacts, subtitle } = useMemo(() => {
+    const idx = availablePhases.findIndex(p => p.id === displayedPhase)
     const prev = idx > 0 ? availablePhases[idx - 1] : null
+    const prevId = prev?.id ?? null
+    const handoff = prevId
+      ? Object.values(artifacts)
+        .filter(a => a.producedPhaseId === prevId)
+        .map(a => ({ name: a.path.split('/').pop() ?? a.path, role: 'handoff' as const }))
+      : []
+    const subtitleText = handoff.length > 0
+      ? `from ${handoff.map(a => a.name).join(', ')}`
+      : undefined
     return {
-      phaseTitle: phase ? formatPhaseName(phase) : '',
-      // idx <= 0 covers both the first phase and "phase not found" -- no handoff.
+      phaseTitle: displayedPhase ? formatPhaseName(displayedPhase) : '',
       isFirstPhase: idx <= 0,
       prevPhaseName: prev ? formatPhaseName(prev.id) : '',
+      handoffArtifacts: handoff,
+      subtitle: subtitleText,
     }
-  }, [phase, availablePhases])
+  }, [displayedPhase, availablePhases, artifacts])
+
+  // When the active phase changes (koan_set_phase fires and run.phase updates
+  // via SSE patch), reset viewingPhaseId to null so the view follows the new
+  // phase. Under the null = "follow active phase" semantics, null filters
+  // entries to run.phase. The ref guard ensures the reset fires only on an
+  // actual phase change, NOT on ContentStream remount (which happens when an
+  // elicitation or completion view temporarily unmounts ContentStream).
+  const prevPhaseRef = useRef(phase)
+  useEffect(() => {
+    if (prevPhaseRef.current !== phase) {
+      prevPhaseRef.current = phase
+      useStore.getState().setViewingPhaseId(null)
+    }
+  }, [phase])
 
   const [paletteOpen, setPaletteOpen] = useState(false)
 
@@ -690,20 +757,31 @@ export function ContentStream() {
   const footerContext: FooterContext = {
     paletteOpen,
     onPaletteToggle: setPaletteOpen,
-    showFeedback,
+    showFeedback: showFeedback && !isHistorical,
   }
 
   // -------------------------------------------------------------------------
 
   return (
     <div className="content-column" ref={setScrollParent}>
-      {/* Phase header: title bar (always) + handoff context card (when there is
-          a previous phase). Sits at the top of the content column; phase-scoped
-          content switching is a later task. */}
+      {isHistorical && (
+        <ReturnBanner
+          activePhase={formatPhaseName(phase)}
+          // Null = "follow active phase" (live mode); returns to the current
+          // phase's entries.
+          onClick={() => useStore.getState().setViewingPhaseId(null)}
+        />
+      )}
       {phaseTitle && (
         <div className="cs-phase-header">
-          <PhaseTitleBar status="active" name={phaseTitle} />
-          {!isFirstPhase && <ContextCard fromPhase={prevPhaseName} artifacts={[]} />}
+          <PhaseTitleBar
+            status={isHistorical ? 'completed' : 'active'}
+            name={phaseTitle}
+            subtitle={isHistorical ? undefined : subtitle}
+          />
+          {!isFirstPhase && (
+            <ContextCard fromPhase={prevPhaseName} artifacts={handoffArtifacts} />
+          )}
         </div>
       )}
       {/* FindBar sticky anchor: position:sticky keeps the find bar visible as the
@@ -729,7 +807,11 @@ export function ContentStream() {
         // internal flex layout. CSS descendant selectors target .cs-item and
         // .cs-streaming-leaf-wrap to dim them; .cs-feedback-footer-wrap is omitted
         // so the feedback input stays crisp. See ContentStream.css.
-        <div className={paletteOpen ? 'content-stream content-stream--faded' : 'content-stream'}>
+        <div className={
+          paletteOpen ? 'content-stream content-stream--faded'
+          : isHistorical ? 'content-stream content-stream--historical'
+          : 'content-stream'
+        }>
           <Virtuoso<ConversationEntry, FooterContext>
             ref={virtuosoRef}
             customScrollParent={scrollParent}
@@ -741,7 +823,7 @@ export function ContentStream() {
               // per-item height measurement and causes scroll jitter.
               // Value: var(--gap-content) = 20px (variables.css line 153).
               <div className="cs-item">
-                <EntryRow entry={e} />
+                <EntryRow entry={e} historical={isHistorical} />
               </div>
             )}
             followOutput="auto"

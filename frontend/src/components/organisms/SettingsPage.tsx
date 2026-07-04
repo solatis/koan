@@ -1,7 +1,8 @@
 /**
  * SettingsPage — single-column settings view: Connections → Model roles →
- * Memory → Runtime. Connections come first because the two sections below
- * reference them. Presentational; the parent owns fetching, saving, toasts.
+ * Runtime. Connections come first because the section below references them.
+ * The embedding model row lives inside the Model roles section.
+ * Presentational; the parent owns fetching, saving, toasts.
  */
 
 import './SettingsPage.css'
@@ -253,12 +254,6 @@ export function SettingsPage({
             {roleRow('strong')}
             {roleRow('standard')}
             {roleRow('cheap')}
-          </div>
-        </SectionCard>
-
-        {/* === MEMORY === */}
-        <SectionCard title="Memory" description="Models used by the memory subsystem.">
-          <div className="settings-roles">
             {roleRow('embedding', false)}
             {embeddingDimOptions.length > 0 && (
               <div className="mol-role-row-wrap">
@@ -291,8 +286,6 @@ export function SettingsPage({
                 )}
               </div>
             )}
-            {roleRow('memory-llm')}
-            {roleRow('reflect-llm')}
           </div>
         </SectionCard>
 

@@ -20,6 +20,20 @@
   width: fit-content;
 }
 
+/* Connecting-line segment — bridges the gap between adjacent phase lines.
+   Inset 4px matches the badge's negative margins so the segment abuts
+   (but never overlaps) the phase lines on either side. */
+.tl-handoff::after {
+  content: '';
+  position: absolute;
+  left: -18px; /* 21px container-relative (39px margin - 18px = 21px) */
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  background: rgba(255, 255, 255, 0.08); /* connecting line on navy */
+  z-index: -1;
+}
+
 .tl-handoff__name {
   font-family: var(--font-mono);
   font-size: 10px;
