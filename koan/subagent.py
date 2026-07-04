@@ -336,7 +336,11 @@ async def spawn_subagent(
                     call_id_by_tool_use_id[ev.tool_use_id] = call_id
                 store.push_event(
                     "tool_request",
-                    build_tool_request(call_id, tool_name, ev.tool_use_id or ""),
+                    build_tool_request(
+                        call_id, tool_name, ev.tool_use_id or "",
+                        ts_ms=int(time.time() * 1000),
+                        tool_args=ev.tool_args,
+                    ),
                     agent_id=agent_id,
                 )
             elif ev.type == "tool_input_delta":

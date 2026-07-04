@@ -114,15 +114,22 @@ def build_step_advanced(
 # before these builders were deleted.
 
 
-def build_tool_request(call_id: str, tool: str, tool_use_id: str = "") -> dict:
+def build_tool_request(call_id: str, tool: str, tool_use_id: str = "", ts_ms: int = 0, tool_args: dict | None = None) -> dict:
     """Build a tool_request event payload.
 
     Emitted when the streaming path first sees a tool invocation. tool_use_id is
     the LLM-assigned identifier used later to correlate with tool_result events.
+    ts_ms is the epoch-millisecond timestamp stamped at tool_start time.
+    tool_args is the complete args dict when the provider sends it at part
+    start (e.g. Anthropic); the fold uses it to populate command fields early.
     """
     payload: dict = {"call_id": call_id, "tool": tool}
     if tool_use_id:
         payload["tool_use_id"] = tool_use_id
+    if ts_ms:
+        payload["ts_ms"] = ts_ms
+    if tool_args is not None:
+        payload["args"] = tool_args
     return payload
 
 

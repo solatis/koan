@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import json
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
 if TYPE_CHECKING:
@@ -248,6 +249,39 @@ async def resolve_turn_outcome(
 
 
 # -- Retry helper -------------------------------------------------------------
+
+
+def _normalize_tool_args(raw_args: Any) -> dict | None:
+    """Normalize ``ToolCallPart.args`` to the ``StreamEvent.tool_args`` contract.
+
+    PydanticAI types ``ToolCallPart.args`` as ``str | dict[str, Any] | None``:
+    Anthropic sends a pre-parsed dict at part start, while Ollama/DeepSeek/Gemini
+    send a JSON string. ``StreamEvent.tool_args`` is typed ``dict | None``, so we
+    enforce that boundary here rather than defensively at each downstream consumer
+    (projection fold, subagent fan-out).
+
+    - ``None`` -> ``None`` (preserves the skip behavior in ``build_tool_request``).
+    - ``dict`` -> pass-through unchanged.
+    - ``str`` -> ``json.loads``; on parse failure fall back to ``{"raw": raw_args}``
+      (matches the proven ``koan_reflect`` pattern at projections.py:1531-1535).
+    - any other type -> ``{"raw": str(raw_args)}`` (defensive: guards against a
+      future PydanticAI variant without a silent type error downstream).
+    """
+    if raw_args is None:
+        return None
+    if isinstance(raw_args, dict):
+        return raw_args
+    if isinstance(raw_args, str):
+        try:
+            parsed = json.loads(raw_args)
+        except (json.JSONDecodeError, TypeError):
+            return {"raw": raw_args}
+        # A valid JSON string that parses to a non-dict (e.g. a bare list or
+        # scalar) still violates the dict contract; wrap it to stay type-safe.
+        if isinstance(parsed, dict):
+            return parsed
+        return {"raw": raw_args}
+    return {"raw": str(raw_args)}
 
 
 async def _stream_model_request_with_retry(
@@ -540,6 +574,13 @@ async def run_agent_loop(
                                     tool_name=part.tool_name,
                                     tool_use_id=part.tool_call_id,
                                     block_index=ev.index,
+                                    # Complete args when the provider sends them at
+                                    # part start (e.g. Anthropic). Populates command
+                                    # fields immediately for these providers.
+                                    # Normalize at the StreamEvent boundary so
+                                    # downstream consumers always see dict|None
+                                    # (Ollama/DeepSeek/Gemini send a JSON str).
+                                    tool_args=_normalize_tool_args(part.args),
                                 )
                             # Gemini delivers the first text/thinking chunk
                             # inside the PartStartEvent rather than a follow-up
@@ -585,6 +626,16 @@ async def run_agent_loop(
                         elif isinstance(ev, PartEndEvent):
                             part = ev.part
                             if isinstance(part, ToolCallPart):
+                                # Emit tool_input_delta BEFORE tool_stop so the
+                                # subagent can still look up block_index (tool_stop
+                                # pops it from call_ids_by_block).
+                                if part.args:
+                                    yield StreamEvent(
+                                        type="tool_input_delta",
+                                        content=None,
+                                        tool_args=_normalize_tool_args(part.args),
+                                        block_index=ev.index,
+                                    )
                                 yield StreamEvent(
                                     type="tool_stop",
                                     block_index=ev.index,
