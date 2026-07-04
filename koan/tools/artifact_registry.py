@@ -102,7 +102,7 @@ class ValidationError:
                     type so they flow through _permission_error_result.
                     tool_unavailable_in_phase is constructed in
                     koan_tools._tool_phase_gate_result for call-time phase-gate
-                    denials (bash, koan_request_scouts, koan_request_executor
+                    denials (koan_request_scouts, koan_request_executor
                     invoked outside their allowed phases).
     message:        human-readable explanation for the orchestrator.
     allowed:        when/where the call IS legal -- the self-correction hint shown to
