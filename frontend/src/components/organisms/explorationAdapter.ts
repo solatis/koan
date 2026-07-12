@@ -182,6 +182,13 @@ export function toExplorationOp(child: ExplorationChild, seq: number): Explorati
   // While in flight, the metric shows the running verb (with ellipsis) in
   // place of the completed figure, per the ToolLogRow running-state spec.
   if (child.inFlight) op.metric = RUNNING_VERB[child.type]
+  // A validation-failed child (tool_failed fold) never ran: force the error
+  // status and fail-toned metric regardless of family.
+  if (child.failed) {
+    op.status = 'error'
+    op.metric = 'invalid arguments'
+    op.metricTone = 'fail'
+  }
   return op
 }
 

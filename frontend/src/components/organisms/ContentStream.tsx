@@ -9,6 +9,7 @@
  * tool_koan            -> KoanToolCard (dispatches by toolName;
  *                          koan_complete_step and koan_set_phase
  *                          suppressed inside the card)
+ * tool_failed          -> ToolFailedRow (validation-rejected call)
  * step                 -> StepHeader
  * debug_step_guidance  -> StepGuidancePill + Md
  * user_message         -> UserBubble + Md
@@ -63,6 +64,7 @@ import { ContextCard } from '../molecules/ContextCard'
 import { ReturnBanner } from '../molecules/ReturnBanner'
 import { SteeringBar } from '../molecules/SteeringBar'
 import { KoanToolCard } from '../molecules/KoanToolCard'
+import { ToolFailedRow } from '../molecules/ToolFailedRow'
 import { FindBar } from '../molecules/FindBar'
 
 import { Md } from '../Md'
@@ -235,6 +237,14 @@ function renderEntryBody(entry: ConversationEntry, historical: boolean) {
           toolInput={entry.toolInput ?? null}
           result={entry.result}
           inFlight={entry.inFlight}
+        />
+      )
+    case 'tool_failed':
+      return (
+        <ToolFailedRow
+          toolName={entry.toolName}
+          error={entry.error}
+          rawInput={entry.rawInput}
         />
       )
     case 'step':

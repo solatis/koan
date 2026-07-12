@@ -93,6 +93,9 @@ function _extractText(entry: ConversationEntry): string {
       return parts.join(' ')
     }
 
+    case 'tool_failed':
+      return [entry.toolName, entry.error].filter(Boolean).join(' ')
+
     case 'tool_aggregate': {
       // Extract commands from all children so the user can search for
       // filenames, patterns, or paths involved in aggregated exploration.
@@ -184,6 +187,9 @@ function serializeEntry(entry: ConversationEntry): string {
       const result = entry.result != null ? '\n' + JSON.stringify(entry.result, null, 2) : ''
       return `[koan:${entry.toolName}]${result}`
     }
+
+    case 'tool_failed':
+      return `[failed:${entry.toolName}] ${entry.error}`
 
     case 'tool_aggregate': {
       const lines = [`[explore ${entry.children.length} ops]`]

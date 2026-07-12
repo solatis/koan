@@ -1,0 +1,77 @@
+/* ToolFailedRow -- compact error row for a validation-failed tool call.
+   Mirrors the ExecutorCard failed state (KoanToolCard.css): card surface,
+   --status-failed left accent, mono/muted raw-input disclosure. */
+
+.tfr {
+  background: var(--bg-card);
+  border: 0.5px solid var(--border-card);
+  border-left: 3px solid var(--status-failed);
+  border-radius: var(--radius-xl);
+  padding: var(--padding-card);
+}
+
+.tfr-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tfr-x {
+  width: 13px;
+  flex-shrink: 0;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--status-failed);
+}
+
+.tfr-label {
+  font-size: var(--type-tool-type);
+  font-weight: 600;
+  color: var(--status-failed);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.tfr-tool {
+  font-family: var(--font-mono);
+  font-size: var(--type-tool-path);
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+.tfr-error {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--bg-thinking);
+  border-radius: var(--radius-md);
+  font-size: var(--type-prose);
+  color: var(--text-primary);
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.tfr-raw {
+  margin-top: 8px;
+}
+
+.tfr-raw-summary {
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--type-tool-path);
+  color: var(--text-muted);
+}
+
+.tfr-raw-pre {
+  margin: 4px 0 0;
+  padding: 10px 12px;
+  background: var(--bg-thinking);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: var(--type-tool-path);
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 240px;
+  overflow-y: auto;
+}

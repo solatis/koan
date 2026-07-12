@@ -214,12 +214,20 @@ interface BaseToolEntry {
   entryId?: string
   // Phase this entry belongs to (camelCase wire of phase_id); inherited by all tool entries.
   phaseId?: string
+  // Set by the tool_failed fold for aggregate children: argument validation
+  // rejected the call and the tool body never ran. Top-level entries are
+  // instead replaced wholesale by ToolFailedEntry.
+  failed?: boolean
 }
 export interface ToolWriteEntry   extends BaseToolEntry { type: 'tool_write';   file: string }
 export interface ToolEditEntry    extends BaseToolEntry { type: 'tool_edit';    file: string }
 export interface ToolBashEntry    extends BaseToolEntry { type: 'tool_bash';    command: string; startedAtMs: number; completedAtMs: number | null; exitCode: number | null; outputLines: number | null }
 export interface ToolGenericEntry extends BaseToolEntry { type: 'tool_generic'; toolName: string; summary: string }
 export interface ToolKoanEntry   extends BaseToolEntry { type: 'tool_koan';    toolName: string; args: Record<string, unknown>; result: Record<string, unknown> | null }
+// Terminal entry for a call whose arguments failed validation; replaces the
+// in-flight entry in the fold. rawInput is the JSON-dumped last-known input --
+// an opaque string, never a structured payload.
+export interface ToolFailedEntry  extends BaseToolEntry { type: 'tool_failed';  toolName: string; error: string; rawInput?: string }
 
 // Exploration entry types — the six exploration tools (read, grep, glob, bash,
 // web_search, web_fetch) are valid both as top-level ConversationEntry values
@@ -286,7 +294,7 @@ export interface YieldEntry { type: 'yield'; prompt: string; suggestions: Sugges
 export type ConversationEntry =
   | ThinkingEntry | TextEntry | StepEntry | UserMessageEntry
   | ToolWriteEntry | ToolEditEntry | ToolBashEntry | ToolGenericEntry
-  | ToolKoanEntry | ToolAggregateEntry
+  | ToolKoanEntry | ToolFailedEntry | ToolAggregateEntry
   | ToolReadEntry | ToolGrepEntry | ToolGlobEntry | ToolWebSearchEntry | ToolWebFetchEntry
   | DebugStepGuidanceEntry | PhaseBoundaryEntry | YieldEntry
 
