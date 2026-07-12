@@ -1,15 +1,22 @@
 ---
-title: koan_reflect synthesis tool -- single-conversation LLM tool-calling loop with
-  driver-resolved citations
+title: "cite(memory_ids) replaces done(answer, memory_ids) in koan_reflect \u2014\
+  \ prose moves from tool channel to terminal text output"
 type: decision
 created: '2026-04-20T08:43:52Z'
-modified: '2026-07-01T01:22:39Z'
+modified: '2026-07-04T15:21:58Z'
 related:
-- 0020-memory-retrieval-static-directive-mechanical.md
+- 0064-structured-tool-arguments-over-text-parsing.md
+- 0078-pydantic-ai-integration-traps-in-koan-agent-loops.md
 ---
 
-This entry documents the architecture of `koan_reflect`, an agent-invoked retrieval tool in the koan memory system implemented in `koan/memory/retrieval/reflect.py`. Leon approved the implementation on 2026-04-20 as a single-conversation LLM tool-calling loop. The LLM itself drives the loop: it plans 3-5 query angles, calls an internal `search` tool as many times as it needs, reviews accumulated evidence, and calls an internal `done` tool with the final briefing. The `done` tool accepts `answer: str` and `memory_ids: list[int]`; the driver validates each id against the set of entries returned by `search` calls during the loop, drops unmatched ids with a log entry, and resolves surviving ids to `{id, title}` pairs via the retrieved-set dict. The MCP response shape is `{answer, citations, iterations}`.
+The `koan_reflect` synthesis tool in `koan/memory/retrieval/reflect.py` — Leon replaced the internal `done(answer: str, memory_ids: list[int])` tool with `cite(memory_ids: list[int])`. The model now calls `cite` with backing entry ids, then writes the briefing as terminal text output, which ends the loop via PydanticAI's native End condition. The `_resolve_citations` function and its hallucination guard (validate ids against the `retrieved` dict, drop and log unknowns) are retained unchanged.
 
-Leon rejected four alternatives on 2026-04-20: (1) separately orchestrated single-turn prompts for query planning, sufficiency evaluation, and synthesis -- this moves control flow outside the LLM and prevents adaptive search decisions; (2) cheap-tier model per the original koan spec -- Leon agreed multi-turn tool-calling reliability degrades sharply on small models that echo the full question as a single query and produce malformed tool calls; (3) `forced=true` best-effort partial briefing on iteration cap -- Leon specified fail-fast with `ToolError("iteration_cap_exceeded")` at `MAX_ITERATIONS=10`; (4) a sibling Gemini wrapper module for the reflect client separate from the summarization client.
+Rationale: a 300–500 token markdown briefing inside a JSON string argument inherits per-model structural-output reliability variance — the STED benchmark shows structural consistency varies substantially across models and temperatures — and the reflect loop runs on whatever model the user assigned to the `standard` tier. Keeping prose out of the tool channel and in the terminal text output avoids this variance.
 
-The model-resolution path has changed twice since the original implementation. Originally `reflect.py` held module-local `_api_key()` / `_model()` helpers and a `KOAN_REFLECT_MODEL` constant defaulting to `gemini-2.5-pro`, constructing its own strong-tier client independently of `koan/memory/llm.py` (the cheap-tier summarization path). On 2026-06-12 the module-global model/credential resolution was removed and `koan_reflect` began receiving a resolved `ModelSpec` from the per-run `MemoryModels` bundle's `reflect_llm` field (see the memory-subsystem model-resolution decision). On 2026-07-01 the dedicated `reflect_llm` field was removed; `koan_reflect` now resolves its model from the standard tier through the same frozen-model discovery as execution agents and scouts (cheap for summarization, standard for reflection), eliminating the module-local model construction entirely. The loop architecture (single conversation, internal `search`/`done` tools, driver-resolved citations) is unchanged across these model-resolution changes.
+Alternatives rejected: keeping `done(answer, memory_ids)` with prose in the tool channel — structural-output reliability varies by model, and the streaming pipeline (`text` → `reflect_delta` → `result.answer`) was structurally dead because `TextOutput(_reject_text)` rejected every text emission.
+
+The citation-selection guidance (an entry backs a claim only if removing it would force dropping the claim; citing seen-but-unused entries is the primary failure mode) carries over verbatim into the `cite` tool docstring and `SYSTEM_PROMPT`. The `SYSTEM_PROMPT` workflow steps 3–4 and Termination section were rewritten for the new sequence: searches → cite → briefing text → end.
+
+The original architecture — single-conversation LLM tool-calling loop, driver-resolved citations, `MAX_ITERATIONS = 10` cap with fail-fast on exhaustion — is unchanged. The four alternatives Leon rejected on 2026-04-20 (separately orchestrated prompts, cheap-tier model, best-effort partial briefing on cap, sibling Gemini wrapper) remain rejected. The model-resolution path (originally module-local helpers, then per-run `MemoryModels.reflect_llm` on 2026-06-12, then standard-tier resolution on 2026-07-01) is unchanged by this decision.
+
+Decision surfaced when the `TextOutput(_reject_text)` pattern in `_build_agent` was identified as the root cause of the dead streaming pipeline — the reject pattern was necessary when prose lived in the `done` tool argument, and removing prose from the tool channel eliminated the need for the reject pattern.
