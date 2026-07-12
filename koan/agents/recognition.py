@@ -1,9 +1,7 @@
 # Thin model-recognition layer for koan.
 #
-# Three purposes ONLY (brief D5):
+# One purpose ONLY (brief D5):
 #   1. Version ordering (newest-in-family resolution, Milestone 3)
-#   2. Display grouping (family / tier_hint for UI)
-#   3. Per-tier defaults (capability resolver falls back to tier_hint)
 #
 # This is NOT a capability table.  Capability facts (thinking budget limits,
 # web-search availability, etc.) live in the PydanticAI model profiles and in
@@ -14,32 +12,28 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-
-from ..types import ModelTier
-
-
-# Mapping from canonical family key to (tier_hint, display_group).
-_FAMILY_TABLE: dict[str, tuple[ModelTier | None, str]] = {
+# Recognized model family keys (membership test for the `recognized` flag).
+_RECOGNIZED_FAMILIES: frozenset[str] = frozenset({
     # Anthropic
-    "claude-opus":        ("strong",   "Claude Opus"),
-    "claude-sonnet":      ("standard", "Claude Sonnet"),
-    "claude-haiku":       ("cheap",    "Claude Haiku"),
-    "claude-fable":       ("strong",   "Claude Fable"),
+    "claude-opus",
+    "claude-sonnet",
+    "claude-haiku",
+    "claude-fable",
     # Google
-    "gemini-flash-lite":  ("cheap",    "Gemini Flash Lite"),
-    "gemini-flash":       ("standard", "Gemini Flash"),
-    "gemini-pro":         ("strong",   "Gemini Pro"),
+    "gemini-flash-lite",
+    "gemini-flash",
+    "gemini-pro",
     # OpenAI
-    "gpt-4o-mini":        ("standard", "GPT-4o Mini"),
-    "gpt-4o":             ("strong",   "GPT-4o"),
-    "gpt-4.1-nano":       ("cheap",    "GPT-4.1 Nano"),
-    "gpt-4.1-mini":       ("standard", "GPT-4.1 Mini"),
-    "gpt-4.1":            ("standard", "GPT-4.1"),
+    "gpt-4o-mini",
+    "gpt-4o",
+    "gpt-4.1-nano",
+    "gpt-4.1-mini",
+    "gpt-4.1",
     # Amazon Bedrock native
-    "amazon-nova-pro":    ("strong",   "Amazon Nova Pro"),
-    "amazon-nova-lite":   ("standard", "Amazon Nova Lite"),
-    "amazon-nova-micro":  ("cheap",    "Amazon Nova Micro"),
-}
+    "amazon-nova-pro",
+    "amazon-nova-lite",
+    "amazon-nova-micro",
+})
 
 # Override sort keys for model ids whose numeric-segment extraction would produce
 # wrong ordering.  The override tuple must beat any realistic extracted value;
@@ -96,7 +90,7 @@ _RE_AMAZON = re.compile(
 
 @dataclass(frozen=True)
 class ParsedModel:
-    """Output of parse_model_id: structured family/tier/version parse.
+    """Output of parse_model_id: structured family/version parse.
 
     recognized=False means the model id was not found in the family table and
     the other fields are best-effort inferences (or None).  The caller must not
@@ -104,29 +98,21 @@ class ParsedModel:
     """
 
     family: str | None
-    tier_hint: ModelTier | None
     version: str | None
     recognized: bool
 
 
-def _lookup_family(family_key: str) -> tuple[ModelTier | None, str]:
-    """Look up a family key in _FAMILY_TABLE; return (None, '') if absent."""
-    return _FAMILY_TABLE.get(family_key, (None, ""))
-
-
 def _make_parsed(family_key: str, version: str | None) -> ParsedModel:
     """Build a ParsedModel for a known family_key."""
-    tier, _ = _lookup_family(family_key)
     return ParsedModel(
         family=family_key,
-        tier_hint=tier,
         version=version or None,
-        recognized=family_key in _FAMILY_TABLE,
+        recognized=family_key in _RECOGNIZED_FAMILIES,
     )
 
 
 def parse_model_id(model_id: str) -> ParsedModel:
-    """Parse a model id into its family, tier_hint, and version.
+    """Parse a model id into its family and version.
 
     Handles three main naming conventions:
       - Anthropic new: "claude-{family}-{version}"
@@ -141,7 +127,7 @@ def parse_model_id(model_id: str) -> ParsedModel:
     Returns recognized=False for ids not matching any pattern -- never raises.
     """
     if not model_id:
-        return ParsedModel(family=None, tier_hint=None, version=None, recognized=False)
+        return ParsedModel(family=None, version=None, recognized=False)
 
     norm = model_id.lower()
 
@@ -187,7 +173,7 @@ def parse_model_id(model_id: str) -> ParsedModel:
         pass
 
     # Unrecognized -- return best-effort None fields without raising.
-    return ParsedModel(family=None, tier_hint=None, version=None, recognized=False)
+    return ParsedModel(family=None, version=None, recognized=False)
 
 
 def _parse_version_segments(model_id: str) -> tuple[int, ...]:

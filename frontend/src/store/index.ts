@@ -82,7 +82,6 @@ export interface ModelCapabilityInfo {
   supportsWebSearch: boolean
   supportsTools: boolean
   supportsPromptCaching: boolean
-  tierHint: string | null
   recognized: boolean
 }
 
@@ -105,12 +104,11 @@ export interface ModelRegistryEntry {
   model: string
   displayName: string
   thinkingModes: string[]
-  tierHint: string | null
 }
 
 /**
  * One entry in the per-connection dynamic model overlay (Settings.providerModels).
- * Lighter sibling of ModelRegistryEntry: no thinkingModes or tierHint.
+ * Lighter sibling of ModelRegistryEntry: no thinkingModes.
  * Populated by provider_models_listed events (eager startup + Test/save refresh).
  * connectionId scopes the entry to its originating connection so two connections
  * of the same provider type keep independent model lists.

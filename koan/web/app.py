@@ -1395,7 +1395,6 @@ def _serialize_model_info(m) -> dict:
         "alias": m.alias,
         "display_name": m.display_name,
         "thinking_modes": sorted(m.thinking_modes),
-        "tier_hint": m.tier_hint,
     }
 
 
@@ -1419,7 +1418,6 @@ def _serialize_model_registry_entry(e: ModelRegistryEntry) -> dict:
         "model": e.model,
         "display_name": e.display_name,
         "thinking_modes": e.thinking_modes,
-        "tier_hint": e.tier_hint,
     }
 
 
@@ -1618,7 +1616,6 @@ def _serialize_model_capabilities(st: "AppState") -> list[dict]:
             "supports_web_search": caps.supports_web_search,
             "supports_tools": caps.supports_tools,
             "supports_prompt_caching": caps.supports_prompt_caching,
-            "tier_hint": caps.tier_hint,
             "recognized": caps.recognized,
         })
     return result

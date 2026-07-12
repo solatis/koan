@@ -2,7 +2,7 @@
 #
 # Design:
 #   - MODEL_CAPABILITIES is the koan-owned source of which models are offered and their
-#     thinking modes / tier hints. Every entry must resolve in the genai-prices bundled
+#     thinking modes. Every entry must resolve in the genai-prices bundled
 #     snapshot (the validating test enforces this).
 #   - build_model_registry() joins MODEL_CAPABILITIES with the genai-prices bundled
 #     snapshot to get display_name. It never triggers network access or UpdatePrices;
@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     pass
 
-from ..types import ModelRegistryEntry, ModelTier, ThinkingMode
+from ..types import ModelRegistryEntry, ThinkingMode
 from .recognition import parse_model_id
 
 # koan provider id -> genai-prices provider id.
@@ -35,7 +35,7 @@ PROVIDER_ID_MAP: dict[str, str] = {
     "openrouter":  "openrouter",
 }
 
-# Capability table: (provider, model) -> (thinking_modes, tier_hint, fallback_display_name).
+# Capability table: (provider, model) -> (thinking_modes, fallback_display_name).
 #
 # Every entry here MUST resolve in the genai-prices bundled snapshot; the test in
 # tests/test_model_catalog.py enforces this. If a model does not resolve, replace it
@@ -46,28 +46,28 @@ PROVIDER_ID_MAP: dict[str, str] = {
 #
 MODEL_CAPABILITIES: dict[
     tuple[str, str],
-    tuple[list[ThinkingMode], "ModelTier | None", str],
+    tuple[list[ThinkingMode], str],
 ] = {
     # Google -- model IDs here must be genai-prices-resolvable (versioned form).
-    ("google", "gemini-3.1-pro-preview"): (["medium", "high"], "strong",   "Gemini 3.1 Pro Preview"),
-    ("google", "gemini-3.5-flash"):       (["low", "medium"],  "standard", "Gemini 3.5 Flash"),
-    ("google", "gemini-3.1-flash-lite"):  ([],                 "cheap",    "Gemini 3.1 Flash Lite"),
+    ("google", "gemini-3.1-pro-preview"): (["medium", "high"], "Gemini 3.1 Pro Preview"),
+    ("google", "gemini-3.5-flash"):       (["low", "medium"],  "Gemini 3.5 Flash"),
+    ("google", "gemini-3.1-flash-lite"):  ([],                 "Gemini 3.1 Flash Lite"),
     # Anthropic -- extended thinking supported on Opus and Sonnet tiers.
-    ("anthropic", "claude-opus-4-0"):         (["medium", "high"], "strong",   "Claude Opus 4"),
-    ("anthropic", "claude-sonnet-4-5"):       (["low", "medium"],  "standard", "Claude Sonnet 4.5"),
+    ("anthropic", "claude-opus-4-0"):         (["medium", "high"], "Claude Opus 4"),
+    ("anthropic", "claude-sonnet-4-5"):       (["low", "medium"],  "Claude Sonnet 4.5"),
     # Sonnet 5: budget-based thinking (same shape as 4.5); intro pricing $2/$10 per M tokens.
-    ("anthropic", "claude-sonnet-5"):         (["low", "medium"],  "standard", "Claude Sonnet 5"),
+    ("anthropic", "claude-sonnet-5"):         (["low", "medium"],  "Claude Sonnet 5"),
     # Fable 5: adaptive thinking only (effort/xhigh in profile); $10/$50 per M tokens.
-    ("anthropic", "claude-fable-5"):          (["low", "medium", "high", "xhigh"], "strong", "Claude Fable 5"),
-    ("anthropic", "claude-3-5-haiku-latest"): ([],                 "cheap",    "Claude Haiku 3.5"),
+    ("anthropic", "claude-fable-5"):          (["low", "medium", "high", "xhigh"], "Claude Fable 5"),
+    ("anthropic", "claude-3-5-haiku-latest"): ([],                 "Claude Haiku 3.5"),
     # OpenAI -- no koan thinking modes (o-series reasoning is opaque to the adapter).
-    ("openai", "gpt-4o"):      ([], "strong",   "GPT-4o"),
-    ("openai", "gpt-4o-mini"): ([], "standard", "GPT-4o Mini"),
-    ("openai", "gpt-4.1-nano"):([], "cheap",    "GPT-4.1 Nano"),
+    ("openai", "gpt-4o"):      ([], "GPT-4o"),
+    ("openai", "gpt-4o-mini"): ([], "GPT-4o Mini"),
+    ("openai", "gpt-4.1-nano"):([], "GPT-4.1 Nano"),
     # Bedrock (AWS) -- thinking is profile-driven per underlying model; no koan modes.
-    ("bedrock", "amazon.nova-pro-v1:0"):   ([], "strong",   "Amazon Nova Pro"),
-    ("bedrock", "amazon.nova-lite-v1:0"):  ([], "standard", "Amazon Nova Lite"),
-    ("bedrock", "amazon.nova-micro-v1:0"): ([], "cheap",    "Amazon Nova Micro"),
+    ("bedrock", "amazon.nova-pro-v1:0"):   ([], "Amazon Nova Pro"),
+    ("bedrock", "amazon.nova-lite-v1:0"):  ([], "Amazon Nova Lite"),
+    ("bedrock", "amazon.nova-micro-v1:0"): ([], "Amazon Nova Micro"),
 }
 
 
@@ -136,7 +136,7 @@ def build_model_registry() -> list[ModelRegistryEntry]:
     Returns one ModelRegistryEntry per capability entry; never silently skips entries.
     """
     entries: list[ModelRegistryEntry] = []
-    for (provider, model), (thinking_modes, tier_hint, display_fallback) in MODEL_CAPABILITIES.items():
+    for (provider, model), (thinking_modes, display_fallback) in MODEL_CAPABILITIES.items():
         snap_name = _snapshot_model_info(provider, model)
 
         # Prefer snapshot display name; fall back to koan-authoritative fallback.
@@ -147,7 +147,6 @@ def build_model_registry() -> list[ModelRegistryEntry]:
             model=model,
             display_name=display_name,
             thinking_modes=list(thinking_modes),
-            tier_hint=tier_hint,
         ))
     return entries
 

@@ -49,7 +49,6 @@ def _make_model_registry() -> list[ModelRegistryEntry]:
             display_name="Gemini 2.5 Pro",
             context_window=1_000_000,
             thinking_modes=["low", "medium"],
-            tier_hint="strong",
         ),
         ModelRegistryEntry(
             provider="google",
@@ -57,7 +56,6 @@ def _make_model_registry() -> list[ModelRegistryEntry]:
             display_name="Gemini 2.5 Flash",
             context_window=1_000_000,
             thinking_modes=["low"],
-            tier_hint="standard",
         ),
         ModelRegistryEntry(
             provider="google",
@@ -65,7 +63,6 @@ def _make_model_registry() -> list[ModelRegistryEntry]:
             display_name="Gemini 2.5 Flash Lite",
             context_window=1_000_000,
             thinking_modes=[],
-            tier_hint="cheap",
         ),
     ]
 

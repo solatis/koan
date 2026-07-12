@@ -3,7 +3,7 @@
 # Split of responsibility:
 #   - PydanticAI profile    -> thinking-shape, web-search, tool/json support
 #   - koan bundled catalog  -> prompt-caching
-#   - koan recognition      -> family / tier_hint / version
+#   - koan recognition      -> family / version
 #
 # resolve_capabilities is a pure function over (provider_type, model_id).  It is
 # called once at flatten time (build_resolved_model) and for the Settings capability
@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Literal
 
 from ..logger import get_logger
-from ..types import ModelTier, ResolvedCapabilities, ThinkingMode
+from ..types import ResolvedCapabilities, ThinkingMode
 
 log = get_logger("capability_resolver")
 
@@ -170,7 +170,7 @@ def resolve_capabilities(provider_type: str, model_id: str) -> ResolvedCapabilit
     Joins three sources (brief D4/D5):
       1. PydanticAI model profile -- thinking-shape, web-search, tool/json
       2. koan bundled knowledge   -- prompt-caching
-      3. koan recognition parse   -- family / tier_hint / version
+      3. koan recognition parse   -- family / version
 
     Called once per model at flatten time and for the Settings capability display.
 
@@ -226,7 +226,6 @@ def resolve_capabilities(provider_type: str, model_id: str) -> ResolvedCapabilit
         supports_tools=bool(profile.get("supports_tools", True)),
         supports_prompt_caching=caching,
         family=parsed.family,
-        tier_hint=parsed.tier_hint,
         version=parsed.version,
         recognized=parsed.recognized,
     )

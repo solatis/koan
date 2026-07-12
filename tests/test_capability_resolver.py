@@ -19,7 +19,6 @@ class TestResolveCapabilitiesAnthropic:
         assert caps.supports_prompt_caching is True
         assert caps.recognized is True
         assert caps.family == "claude-sonnet"
-        assert caps.tier_hint == "standard"
 
     def test_anthropic_claude_opus_thinking_modes_from_catalog(self):
         """thinking_modes for claude-opus-4-0 come from MODEL_CAPABILITIES = ['medium', 'high']."""

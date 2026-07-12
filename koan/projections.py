@@ -577,7 +577,6 @@ class ResolvedCapabilitiesWire(KoanBaseModel):
     supports_web_search: bool = False
     supports_tools: bool = True
     supports_prompt_caching: bool = False
-    tier_hint: str | None = None
     recognized: bool = True
 
 
@@ -600,15 +599,13 @@ class PresetWire(KoanBaseModel):
 class ModelRegistryEntryWire(KoanBaseModel):
     """Wire representation of ModelRegistryEntry pushed by the model_registry_listed event.
 
-    Payload shape: {models: [{provider, model, display_name, thinking_modes,
-    tier_hint}, ...]}.  Fold sets Settings.model_registry from the models list.
+    Payload shape: {models: [{provider, model, display_name, thinking_modes}, ...]}.  Fold sets Settings.model_registry from the models list.
     """
 
     provider: str
     model: str
     display_name: str
     thinking_modes: list[str] = []
-    tier_hint: str | None = None
 
 
 class EmbeddingModelWire(KoanBaseModel):
@@ -2538,8 +2535,7 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 return projection.model_copy(update={"settings": new_settings})
 
             case "model_registry_listed":
-                # Payload: {models: [{provider, model, display_name, thinking_modes,
-                # tier_hint}, ...]}.
+                # Payload: {models: [{provider, model, display_name, thinking_modes}, ...]}.
                 # Populates the all-providers model catalog in the Settings projection.
                 raw_models = payload.get("models", [])
                 new_mr = [
@@ -2548,7 +2544,6 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                         model=m.get("model", ""),
                         display_name=m.get("display_name", ""),
                         thinking_modes=m.get("thinking_modes", []),
-                        tier_hint=m.get("tier_hint"),
                     )
                     for m in raw_models
                 ]
@@ -2594,7 +2589,7 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
             case "model_capabilities_listed":
                 # Replace-all: {capabilities: [{configured_model_id, thinking_supported,
                 # thinking_modes, thinking_shape, supports_web_search, supports_tools,
-                # supports_prompt_caching, tier_hint, recognized}, ...]}.
+                # supports_prompt_caching, recognized}, ...]}.
                 # Recomputed on startup and on any connection/configured-model mutation.
                 raw_caps = payload.get("capabilities", [])
                 new_caps = [
@@ -2606,7 +2601,6 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                         supports_web_search=c.get("supports_web_search", False),
                         supports_tools=c.get("supports_tools", True),
                         supports_prompt_caching=c.get("supports_prompt_caching", False),
-                        tier_hint=c.get("tier_hint"),
                         recognized=c.get("recognized", True),
                     )
                     for c in raw_caps

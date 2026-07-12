@@ -18,7 +18,6 @@ from ..types import (
     CacheTier,
     CachingPolicy,
     ModelSpec,
-    ModelTier,
     ThinkingMode,
     cache_tier_for_role,
 )
@@ -32,13 +31,7 @@ if TYPE_CHECKING:
 log = get_logger("agent_registry")
 
 
-# -- Thinking-mode helpers preserved for M2 use --------------------------------
-
-_TIER_DEFAULT_THINKING: dict[ModelTier, ThinkingMode] = {
-    "strong": "high",
-    "standard": "medium",
-    "cheap": "disabled",
-}
+# -- Thinking-mode helpers ------------------------------------------------------
 
 _THINKING_RANK: list[ThinkingMode] = ["disabled", "low", "medium", "high", "xhigh", "max"]
 

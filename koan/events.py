@@ -282,7 +282,7 @@ def build_model_registry_listed(models: list[dict]) -> dict:
     """Build model_registry_listed payload.
 
     Args:
-        models: list of {provider, model, display_name, thinking_modes, tier_hint}
+        models: list of {provider, model, display_name, thinking_modes}
                 dicts -- one per MODEL_CAPABILITIES entry.
     """
     return {"models": models}
@@ -373,7 +373,7 @@ def build_model_capabilities_listed(capabilities: list[dict]) -> dict:
     Args:
         capabilities: list of {configured_model_id, thinking_supported, thinking_modes,
                       thinking_shape, supports_web_search, supports_tools,
-                      supports_prompt_caching, tier_hint, recognized} dicts.
+                      supports_prompt_caching, recognized} dicts.
     """
     return {"capabilities": capabilities}
 

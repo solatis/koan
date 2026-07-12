@@ -11,59 +11,51 @@ from koan.agents.recognition import order_by_version, parse_model_id, version_ke
 
 class TestParseModelId:
     def test_known_anthropic_opus_returns_family_and_tier(self):
-        """claude-opus-4-0 parses to family=claude-opus, tier_hint=strong, recognized=True."""
+        """claude-opus-4-0 parses to family=claude-opus, recognized=True."""
         p = parse_model_id("claude-opus-4-0")
         assert p.family == "claude-opus"
-        assert p.tier_hint == "strong"
         assert p.recognized is True
 
     def test_known_anthropic_sonnet(self):
-        """claude-sonnet-4-5 parses to family=claude-sonnet, tier_hint=standard."""
+        """claude-sonnet-4-5 parses to family=claude-sonnet."""
         p = parse_model_id("claude-sonnet-4-5")
         assert p.family == "claude-sonnet"
-        assert p.tier_hint == "standard"
         assert p.recognized is True
 
     def test_known_anthropic_haiku(self):
         """claude-3-5-haiku-latest parses to family=claude-haiku."""
         p = parse_model_id("claude-3-5-haiku-latest")
         assert p.family == "claude-haiku"
-        assert p.tier_hint == "cheap"
         assert p.recognized is True
 
     def test_known_google_flash_lite_beats_flash_prefix(self):
         """gemini-3.1-flash-lite resolves to flash-lite (longer prefix wins over flash)."""
         p = parse_model_id("gemini-3.1-flash-lite")
         assert p.family == "gemini-flash-lite"
-        assert p.tier_hint == "cheap"
         assert p.recognized is True
 
     def test_known_google_flash(self):
         """gemini-3.5-flash parses to family=gemini-flash."""
         p = parse_model_id("gemini-3.5-flash")
         assert p.family == "gemini-flash"
-        assert p.tier_hint == "standard"
         assert p.recognized is True
 
     def test_known_google_pro(self):
         """gemini-3.1-pro-preview parses to family=gemini-pro."""
         p = parse_model_id("gemini-3.1-pro-preview")
         assert p.family == "gemini-pro"
-        assert p.tier_hint == "strong"
         assert p.recognized is True
 
     def test_known_openai_gpt4o(self):
-        """gpt-4o parses to family=gpt-4o, tier_hint=strong."""
+        """gpt-4o parses to family=gpt-4o."""
         p = parse_model_id("gpt-4o")
         assert p.family == "gpt-4o"
-        assert p.tier_hint == "strong"
         assert p.recognized is True
 
     def test_known_openai_gpt4o_mini_beats_gpt4o_prefix(self):
         """gpt-4o-mini resolves to gpt-4o-mini (longer prefix wins)."""
         p = parse_model_id("gpt-4o-mini")
         assert p.family == "gpt-4o-mini"
-        assert p.tier_hint == "standard"
         assert p.recognized is True
 
     def test_bedrock_anthropic_prefix_stripped(self):
@@ -77,7 +69,6 @@ class TestParseModelId:
         p = parse_model_id("some-totally-unknown-llm-xyz-9000")
         assert p.recognized is False
         assert p.family is None
-        assert p.tier_hint is None
 
     def test_unknown_does_not_raise(self):
         """parse_model_id never raises for any input (brief D5 graceful fallthrough)."""

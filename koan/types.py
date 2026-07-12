@@ -84,22 +84,21 @@ class ModelRegistryEntry:
     """One entry in the all-providers model catalog, surfaced via Settings projection.
 
     Describes a curated (provider, model) pair with capability annotations.
-    Sources: model lists from genai-prices bundled snapshot; thinking_modes and
-    tier_hint from the koan capability table in model_catalog.py.
+    Sources: model lists from genai-prices bundled snapshot; thinking_modes
+    from the koan capability table in model_catalog.py.
     """
 
     provider: str
     model: str
     display_name: str
     thinking_modes: list[ThinkingMode] = field(default_factory=list)
-    tier_hint: ModelTier | None = None
 
 
 @dataclass
 class ProviderModel:
     """One entry in the per-provider dynamic model overlay, retrieved live.
 
-    Lighter sibling of ModelRegistryEntry: no thinking_modes or tier_hint because
+    Lighter sibling of ModelRegistryEntry: no thinking_modes because
     these models are not in the static catalog. Surfaced via Settings.provider_models
     (projection channel), distinct from the static model_registry.
     """
@@ -165,7 +164,7 @@ class ResolvedCapabilities:
 
     Assembled from three sources: PydanticAI model profile (thinking-shape, web-search,
     tool/json), koan's bundled knowledge (prompt-caching), and the thin recognition parse
-    (family/tier/version). Computed on demand; never stored.
+    (family/version). Computed on demand; never stored.
     """
 
     thinking_supported: bool
@@ -180,7 +179,6 @@ class ResolvedCapabilities:
     supports_prompt_caching: bool
     # From the recognition parse (recognition.py).
     family: str | None = None
-    tier_hint: ModelTier | None = None
     version: str | None = None
     # False when the model id is not in the recognition table -- capabilities
     # are still populated but may be less precise (brief D5 graceful fallthrough).
