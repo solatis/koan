@@ -15,10 +15,11 @@ The single source of truth for koan's visual design. `src/styles/variables.css` 
 
 ### Text colors
 
-| Token                | Hex       | Usage                                               |
-| -------------------- | --------- | --------------------------------------------------- |
-| `--text-danger`      | `#791f1f` | Destructive confirmation heading text. Darkest red. |
-| `--text-danger-body` | `#a03030` | Destructive confirmation body text.                 |
+| Token                | Hex       | Usage                                                                                                                                            |
+| -------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--text-danger`      | `#791f1f` | Destructive confirmation heading text. Darkest red.                                                                                              |
+| `--text-danger-body` | `#a03030` | Destructive confirmation body text.                                                                                                              |
+| `--text-explore`     | `#3d6e60` | EXPLORE eyebrow label on `--bg-surface` (ToolAggregateCard header). Deepened teal — raw `--color-teal` at 11px on `--bg-surface` fails contrast. |
 
 ### Border colors
 
@@ -706,41 +707,42 @@ Props: `family`, command data (forwarded to `ToolCommandText`),
 
 #### ToolStatBlock
 
-The navy stat cell for one family group in `ToolAggregateCard`. Renders **on
-`--color-navy`** — all text uses the on-dark palette.
+The stat cell for one family group in `ToolAggregateCard`. Renders on
+`--bg-surface` — standard light-surface text tokens throughout.
 
-Container: `background: var(--color-navy)`, `padding: 9px 16px`,
+Container: `background: var(--bg-surface)`, `padding: 9px 16px`,
+`border-right: 1px solid var(--border-divider)`,
 `font-family: var(--font-mono)`, `font-size: 12px`. Adjacent group-stat cells
-separated by `border-top: 1px solid rgba(240,232,216,0.10)` (navy-specific,
-hardcoded with comment; first cell has none).
+separated by `border-top: 1px solid var(--border-divider)` (first cell has
+none; the same separator token is applied to the sibling group-ops cell so the
+band divider spans the card's full width).
 
 Header row: `height: var(--tool-op-row-height)`, `display: flex`,
 `align-items: center`, `gap: 8px`. Contains `StatusDot size="sm"
 status={family}` (web tools pass `web`), family name
-(`color: var(--text-on-dark)`, `font-weight: 500`), op count
-(`margin-left: auto`, `font-size: 11px`, `color: var(--text-on-dark-muted)`,
+(`color: var(--text-primary)`, `font-weight: 500`), op count
+(`margin-left: auto`, `font-size: 11px`, `color: var(--text-muted)`,
 e.g. `4 ops`).
 
 Meta lines: `padding-left: 14px`, `font-size: 11px`,
-`color: var(--text-on-dark-muted)`, `line-height: var(--tool-op-row-height)`.
+`color: var(--text-muted)`, `line-height: var(--tool-op-row-height)`.
 Rollup content by family:
 
-| Family       | Rollup lines                                                                                         |
-| ------------ | ---------------------------------------------------------------------------------------------------- |
-| `read`       | `{Σlines} lines · {ΣKB} KB`; `{distinct} files`; `{k} failed` (line only when k>0, `color: #e8a0a0`) |
-| `grep`       | `{Σmatches} matches · {Σlines} lines` (no file counts — see rationale)                               |
-| `glob`       | `{Σfiles} files`                                                                                     |
-| `bash`       | `{k} failed` (only when k>0, `#e8a0a0`)                                                              |
-| `web_search` | `{Σresults} results`                                                                                 |
-| `web_fetch`  | `{ΣKB} KB`                                                                                           |
+| Family       | Rollup lines                                                                                                      |
+| ------------ | ----------------------------------------------------------------------------------------------------------------- |
+| `read`       | `{Σlines} lines · {ΣKB} KB`; `{distinct} files`; `{k} failed` (line only when k>0, `color: var(--status-failed)`) |
+| `grep`       | `{Σmatches} matches · {Σlines} lines` (no file counts — see rationale)                                            |
+| `glob`       | `{Σfiles} files`                                                                                                  |
+| `bash`       | `{k} failed` (only when k>0, `var(--status-failed)`)                                                              |
+| `web_search` | `{Σresults} results`                                                                                              |
+| `web_fetch`  | `{ΣKB} KB`                                                                                                        |
 
 Single-op groups render the header row only — no meta lines (the row's own
 metric already carries the numbers; restating them is noise).
 
 Active variant: family name `color: var(--color-orange)` when the in-flight op
 belongs to this group. Only one `ToolStatBlock` in a card can be active at a
-time. `#e8a0a0` is the on-navy failure red (`--status-failed` lacks contrast
-on navy); hardcoded with comment, navy-specific.
+time.
 
 Props: `family`, `opCount: number`, `metaLines: string[]`, `active?: boolean`,
 `failedCount?: number`.
@@ -1393,41 +1395,50 @@ union on `status`), `sidebar: MemorySidebarProps`.
 ### ToolAggregateCard
 
 Container: `background: var(--bg-card)`, `0.5px solid var(--border-card)`,
-`border-radius: var(--radius-xl)`, `overflow: hidden`. **No orange left
-border** — the navy header band carries the card's identity; doubling it with
-the content-source accent over-decorated the card. (Deliberate deviation from
-"left border = content source"; the navy band is a stronger, unambiguous marker
-of agent tool activity.)
+`border-left: 3px solid var(--color-teal)`,
+`border-radius: var(--radius-xl)`, `overflow: hidden`.
 
-Header band: `background: var(--color-navy)`, `display: flex`,
+The teal left border encodes content source per the "left border = content
+source" convention: teal = read-only exploration, matching the tool-family
+indicator palette (teal family = local read-only filesystem exploration).
+While any operation in the card is in flight, the left border is
+`var(--status-running)` instead; it returns to teal on completion. (This
+supersedes the Direction-E deviation note — the navy header band no longer
+exists, so the left border resumes carrying the card's identity.)
+
+Header band: `background: var(--bg-surface)`,
+`border-bottom: 1px solid var(--border-divider)`, `display: flex`,
 `align-items: baseline`, `gap: 10px`, `padding: 10px 18px 9px`. Contains:
 
-1. Label "explore": `font-size: 11px`, `color: var(--text-on-dark-muted)`,
-   `letter-spacing: 1px`, uppercase.
-2. Op count: `font-size: 14px`, `color: var(--text-on-dark)`,
+1. Label "explore": `font-size: 11px`, `color: var(--text-explore)`,
+   `letter-spacing: 1px`, uppercase, `font-weight: 500`.
+2. Op count: `font-size: 14px`, `color: var(--text-primary)`,
    `font-weight: 500`. E.g. "10 operations".
 3. Spacer (`flex: 1`).
 4. Running indicator (when in-flight): pulsing orange dot + label,
    `--font-mono`, 11px, `color: var(--color-orange)` — unchanged semantics.
-5. Elapsed: `--font-mono`, 11px, `color: var(--text-on-dark-subtle)`,
+5. Elapsed: `--font-mono`, 11px, `color: var(--text-muted)`,
    `padding-left: 8px`. Computed from the first child's `started_at_ms` (which
    the backend must stamp correctly — see the backend data contract).
 
 Body: `display: grid`, `grid-template-columns: 208px 1fr`. One **pair of grid
 cells per family group**, in first-occurrence order:
 
-- Group-stat cell: a `ToolStatBlock`. The navy column is formed by the stacked
-  stat cells — there is no separate pane element.
+- Group-stat cell: a `ToolStatBlock`. The surface column is formed by the
+  stacked stat cells — there is no separate pane element.
 - Group-ops cell: `padding: 9px 18px`, `min-width: 0`; a stack of
-  `ToolLogRow`s in chronological order within the family. Adjacent group-ops
-  cells separated by `border-top: 1px solid var(--border-divider-light)`
-  (first has none).
+  `ToolLogRow`s in chronological order within the family. No separators
+  between rows within a group. Adjacent group-ops cells separated by
+  `border-top: 1px solid var(--border-divider)` (first has none) — the same
+  token as the stat-cell separator, so each band divider is one continuous
+  line across the card.
 
 Because stat cell and ops cell are cells of the same grid row, the stat header
 top-aligns with the group's first op row by construction.
 
-Active state: unchanged three-signal rationale — header running indicator,
-owning `ToolStatBlock` `active`, in-flight `ToolLogRow` `running`.
+Active state: header running indicator, owning `ToolStatBlock` `active`,
+in-flight `ToolLogRow` `running`, **plus** the card-level left-border flip to
+`var(--status-running)` (see rationale: Tool aggregation active state).
 
 Props: `groups: FamilyGroup[]` (ordered; each `{ family, ops, metaLines }`),
 `operationCount: number`, `runningLabel?: string`, `elapsed?: string`. The
@@ -1498,6 +1509,10 @@ The `1.5px` weight is never used for cards or panels. The `0.5px` weight is neve
 Orange is used at three weight tiers, each with a distinct meaning:
 
 - **`3px solid` left accent** — "suggested default." Applied to the recommended option in RadioOption/CheckboxOption and the recommended command row in YieldPanel. Draws the eye without demanding action. Paired with `--bg-selected` background tint. This is the weakest orange signal.
+  On `ToolAggregateCard` only, a 3px orange left border is a transient
+  activity signal (in-flight), not "suggested default"; it reverts to teal on
+  completion. The aggregate card is never a selectable option, so the two
+  meanings cannot co-occur.
 - **`1.5px solid` full border** — "user input expected." Applied to selected RadioOption/CheckboxOption cards and InlineForm active regions. Signals an active editing surface. When an option is both recommended and selected, the `1.5px` full border takes precedence over the `3px` left accent (uniform border wins).
 - **`3px solid` top accent** — "panel-level attention." Applied to ElicitationPanel decision panel. The strongest orange signal, used at the organism level.
 
@@ -1515,7 +1530,11 @@ Left-border color on stream cards encodes content origin:
 
 - **Orange** — agent prose (ProseCard).
 - **Gray (`--text-muted`)** — user content: messages (UserBubble), review comments (ReviewComment).
-- **Teal** — system events (PhaseMarker label uses teal text rather than a border, but the principle holds).
+- **Teal** — system events (PhaseMarker label uses teal text rather than a
+  border, but the principle holds) and read-only exploration activity
+  (ContextCard handoffs, ToolAggregateCard). On ToolAggregateCard the border
+  is transiently `--status-running` orange while an operation is in flight —
+  an activity signal layered on the source color, not a source change.
 
 ### Save model
 
@@ -1621,8 +1640,8 @@ op's count is exact.
 ### Tool aggregation active state
 
 Active state on `ToolAggregateCard` is communicated through three in-card
-signals, not through a border color change. When an operation inside the
-card is in-flight:
+signals plus one card-level signal. When an operation inside the card is
+in-flight:
 
 1. The card header renders a pulsing orange dot plus a short label
    (e.g., "reading projections.py").
@@ -1631,13 +1650,16 @@ card is in-flight:
 3. The in-flight log row in its group-ops cell renders with
    `status="running"`, gaining a pulsing orange dot and dimming its command
    text.
+4. The card's left border renders `var(--status-running)` instead of
+   `var(--color-teal)`.
 
-The card's outer chrome does not change with activity — the navy header band
-is constant (the card carries no content-source left border; see the
-`ToolAggregateCard` spec). Keeping the chrome static avoids conflating "this
-is agent content" with "this is happening right now." The three in-card
-signals are enough: the user always has a clear "something is still
-happening" indicator without ambiguity in the outer chrome.
+The border flip supersedes the earlier "chrome does not change with activity"
+rule, which was written for the navy-band treatment: there, the band was the
+card's constant identity marker and changing it would have conflated identity
+with activity. In the light treatment the teal left border carries identity,
+and orange is already reserved system-wide for active state — the flip makes
+in-flight cards findable when scrolled such that the header is off-screen,
+which the three in-card signals alone do not.
 
 The signal is qualitative and textual (label + pulsing dot) rather than
 quantitative and spatial (a progress bar), because the total number of
