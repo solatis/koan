@@ -28,7 +28,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 
 import { useStore, ConversationEntry } from '../../store/index'
-import type { ExplorationChild, ToolAggregateEntry } from '../../store/index'
+import type { ToolAggregateEntry } from '../../store/index'
 import {
   selectFocusedEntries,
   selectPendingThinking,
@@ -52,7 +52,7 @@ import { ThinkingBlock } from '../molecules/ThinkingBlock'
 import { ProseCard } from '../molecules/ProseCard'
 import { ToolCallRow } from '../molecules/ToolCallRow'
 import { ToolAggregateCard } from './ToolAggregateCard'
-import { groupExplorationOps, type ExplorationOp } from './toolAggregateGrouping'
+import { groupExplorationOps } from './toolAggregateGrouping'
 import { StepGuidancePill } from '../molecules/StepGuidancePill'
 import { FeedbackInput } from '../molecules/FeedbackInput'
 import { UserBubble } from '../molecules/UserBubble'
@@ -66,130 +66,24 @@ import { KoanToolCard } from '../molecules/KoanToolCard'
 import { FindBar } from '../molecules/FindBar'
 
 import { Md } from '../Md'
-import { formatElapsed } from '../../hooks/useElapsed'
+import { useElapsed } from '../../hooks/useElapsed'
+import { toExplorationOp, runningLabelFor, findRunningChild } from './explorationAdapter'
 
 import './ContentStream.css'
 
-// ---------------------------------------------------------------------------
-// Aggregate rendering helpers -- pure functions, next to renderEntry so the
-// data flow stays readable. toExplorationOp maps store children to the
-// ExplorationOp view model consumed by groupExplorationOps + ToolAggregateCard.
-// ---------------------------------------------------------------------------
-
-/** Map an ExplorationChild store entry to an ExplorationOp view model. */
-function toExplorationOp(child: ExplorationChild, seq: number): ExplorationOp {
-  const status: 'done' | 'running' | 'error' = child.inFlight ? 'running' : 'done'
-  switch (child.type) {
-    case 'tool_read': {
-      const range = child.limit != null && child.limit > 0
-        ? `${child.offset + 1}–${child.offset + child.limit}`
-        : undefined
-      return {
-        family: 'read',
-        command: { path: child.file, range },
-        metric: child.linesRead != null
-          ? child.bytesRead != null
-            ? `${child.linesRead} lines`
-            : `${child.linesRead} lines`
-          : undefined,
-        status,
-        seq,
-        stats: child.linesRead != null ? { lines: child.linesRead, bytes: child.bytesRead ?? 0 } : undefined,
-      }
-    }
-    case 'tool_grep': {
-      const zero = child.matches === 0
-      return {
-        family: 'grep',
-        command: { pattern: child.pattern },
-        metric: child.matches != null
-          ? `${child.matches} matches`
-          : undefined,
-        status,
-        metricTone: zero ? 'zero' : 'default',
-        seq,
-        stats: child.matches != null
-          ? { matches: child.matches, matchedLines: child.matchedLines ?? 0 }
-          : undefined,
-      }
-    }
-    case 'tool_glob': {
-      return {
-        family: 'glob',
-        command: { pattern: child.pattern },
-        metric: child.matches != null ? `${child.matches} files` : undefined,
-        status,
-        seq,
-        stats: child.matches != null ? { files: child.matches } : undefined,
-      }
-    }
-    case 'tool_bash': {
-      const fail = child.exitCode != null && child.exitCode !== 0
-      return {
-        family: 'bash',
-        command: { command: child.command },
-        metric: child.exitCode != null
-          ? `exit ${child.exitCode}${child.outputLines != null ? ` · ${child.outputLines} lines` : ''}`
-          : undefined,
-        status: fail ? 'error' : status,
-        metricTone: fail ? 'fail' : 'default',
-        seq,
-      }
-    }
-    case 'tool_web_search': {
-      return {
-        family: 'web_search',
-        command: { query: child.query },
-        metric: child.resultCount != null ? `${child.resultCount} results` : undefined,
-        status,
-        seq,
-        stats: child.resultCount != null ? { results: child.resultCount } : undefined,
-      }
-    }
-    case 'tool_web_fetch': {
-      return {
-        family: 'web_fetch',
-        command: { url: child.url },
-        metric: child.contentSizeBytes != null
-          ? `${(child.contentSizeBytes / 1024).toFixed(1)} KB`
-          : undefined,
-        status,
-        seq,
-        stats: child.contentSizeBytes != null ? { bytes: child.contentSizeBytes } : undefined,
-      }
-    }
-  }
-}
-
-/** Derive a running label for a single in-flight child. */
-function runningLabelFor(child: ExplorationChild): string {
-  switch (child.type) {
-    case 'tool_read': return `reading ${child.file.split('/').pop() || child.file}`
-    case 'tool_grep': return 'grepping'
-    case 'tool_glob': return 'globbing'
-    case 'tool_bash': return 'running bash'
-    case 'tool_web_search': return 'searching web'
-    case 'tool_web_fetch': return 'fetching'
-  }
-}
-
-function findRunningChild(children: ExplorationChild[]): ExplorationChild | undefined {
-  return children.find(c => c.inFlight)
-}
-
-function aggregateElapsedMs(agg: ToolAggregateEntry, nowMs: number): number {
-  const running = findRunningChild(agg.children)
-  if (running) {
-    return Math.max(0, nowMs - agg.startedAtMs)
-  }
-  let latest = agg.startedAtMs
-  for (const c of agg.children) {
-    if (c.completedAtMs != null && c.completedAtMs > latest) latest = c.completedAtMs
-  }
-  return Math.max(0, latest - agg.startedAtMs)
-}
-
-function renderAggregate(entry: ToolAggregateEntry) {
+/**
+ * RenderAggregateCard — the live aggregate card for a run of 2+ consecutive
+ * exploration operations.
+ *
+ * A React component (not a plain function) so it can call `useElapsed` for a
+ * live-ticking elapsed string. The old plain-function `renderAggregate`
+ * computed a frozen `Date.now()` snapshot; `useElapsed` re-renders every
+ * second while the card is mounted, which is the correct behaviour for an
+ * in-flight card (it ticks from "0m 00s"). Elapsed is always passed —
+ * suppression at 0ms is intentionally dropped so the header shows the timer
+ * from the start.
+ */
+function RenderAggregateCard({ entry }: { entry: ToolAggregateEntry }) {
   const children = entry.children
   if (children.length === 0) return null
 
@@ -198,14 +92,14 @@ function renderAggregate(entry: ToolAggregateEntry) {
   const groups = groupExplorationOps(ops)
   const running = findRunningChild(children)
   const runningLabel = running ? runningLabelFor(running) : undefined
-  const elapsedMs = aggregateElapsedMs(entry, Date.now())
+  const elapsed = useElapsed(entry.startedAtMs)
 
   return (
     <ToolAggregateCard
       groups={groups}
       operationCount={children.length}
       runningLabel={runningLabel}
-      elapsed={elapsedMs > 0 ? formatElapsed(elapsedMs) : undefined}
+      elapsed={elapsed}
     />
   )
 }
@@ -227,28 +121,27 @@ function renderEntryBody(entry: ConversationEntry, historical: boolean) {
     case 'text':
       return <ProseCard historical={historical}><Md>{entry.text}</Md></ProseCard>
     case 'tool_aggregate':
-      return renderAggregate(entry)
+      return <RenderAggregateCard entry={entry} />
     case 'tool_write':
       return <ToolCallRow tool="write" command={entry.file} status={entry.inFlight ? 'running' : 'done'} attachments={entry.attachments} />
     case 'tool_edit':
       return <ToolCallRow tool="edit" command={entry.file} status={entry.inFlight ? 'running' : 'done'} attachments={entry.attachments} />
     case 'tool_bash': {
       // Bash as a top-level entry uses the family variant when it has
-      // aggregate-child fields (startedAtMs populated by the exploration path).
+      // aggregate-child fields (startedAtMs populated by the exploration path);
+      // the non-exploration legacy path renders the plain ToolCallRow.
       const isExploration = entry.startedAtMs !== undefined && entry.startedAtMs > 0
       if (isExploration) {
-        const fail = entry.exitCode != null && entry.exitCode !== 0
+        const op = toExplorationOp(entry, 0)
         return (
           <ToolCallRow
             tool="bash"
             command={entry.command}
-            status={entry.inFlight ? 'running' : fail ? 'error' : 'done'}
+            status={op.status}
             family="bash"
-            commandData={{ command: entry.command }}
-            metric={entry.exitCode != null
-              ? `exit ${entry.exitCode}${entry.outputLines != null ? ` · ${entry.outputLines} lines` : ''}`
-              : undefined}
-            metricTone={fail ? 'fail' : 'default'}
+            commandData={op.command}
+            metric={op.metric}
+            metricTone={op.metricTone}
             attachments={entry.attachments}
           />
         )
@@ -256,72 +149,77 @@ function renderEntryBody(entry: ConversationEntry, historical: boolean) {
       return <ToolCallRow tool="bash" command={entry.command} status={entry.inFlight ? 'running' : 'done'} attachments={entry.attachments} />
     }
     case 'tool_read': {
-      const range = entry.limit != null && entry.limit > 0
-        ? `${entry.offset + 1}–${entry.offset + entry.limit}`
-        : undefined
+      const op = toExplorationOp(entry, 0)
       return (
         <ToolCallRow
           tool="read"
           command={entry.file}
-          status={entry.inFlight ? 'running' : 'done'}
+          status={op.status}
           family="read"
-          commandData={{ path: entry.file, range }}
-          metric={entry.linesRead != null ? `${entry.linesRead} lines` : undefined}
+          commandData={op.command}
+          metric={op.metric}
+          metricTone={op.metricTone}
           attachments={entry.attachments}
         />
       )
     }
-    case 'tool_grep':
+    case 'tool_grep': {
+      const op = toExplorationOp(entry, 0)
       return (
         <ToolCallRow
           tool="grep"
           command={entry.pattern}
-          status={entry.inFlight ? 'running' : 'done'}
+          status={op.status}
           family="grep"
-          commandData={{ pattern: entry.pattern }}
-          metric={entry.matches != null ? `${entry.matches} matches` : undefined}
-          metricTone={entry.matches === 0 ? 'zero' : 'default'}
+          commandData={op.command}
+          metric={op.metric}
+          metricTone={op.metricTone}
           attachments={entry.attachments}
         />
       )
-    case 'tool_glob':
+    }
+    case 'tool_glob': {
+      const op = toExplorationOp(entry, 0)
       return (
         <ToolCallRow
           tool="glob"
           command={entry.pattern}
-          status={entry.inFlight ? 'running' : 'done'}
+          status={op.status}
           family="glob"
-          commandData={{ pattern: entry.pattern }}
-          metric={entry.matches != null ? `${entry.matches} files` : undefined}
+          commandData={op.command}
+          metric={op.metric}
           attachments={entry.attachments}
         />
       )
-    case 'tool_web_search':
+    }
+    case 'tool_web_search': {
+      const op = toExplorationOp(entry, 0)
       return (
         <ToolCallRow
           tool="web_search"
           command={entry.query}
-          status={entry.inFlight ? 'running' : 'done'}
+          status={op.status}
           family="web_search"
-          commandData={{ query: entry.query }}
-          metric={entry.resultCount != null ? `${entry.resultCount} results` : undefined}
+          commandData={op.command}
+          metric={op.metric}
           attachments={entry.attachments}
         />
       )
-    case 'tool_web_fetch':
+    }
+    case 'tool_web_fetch': {
+      const op = toExplorationOp(entry, 0)
       return (
         <ToolCallRow
           tool="web_fetch"
           command={entry.url}
-          status={entry.inFlight ? 'running' : 'done'}
+          status={op.status}
           family="web_fetch"
-          commandData={{ url: entry.url }}
-          metric={entry.contentSizeBytes != null
-            ? `${(entry.contentSizeBytes / 1024).toFixed(1)} KB`
-            : undefined}
+          commandData={op.command}
+          metric={op.metric}
           attachments={entry.attachments}
         />
       )
+    }
     // tool_generic is reached only by non-koan custom tools post-M1;
     // koan MCP tools now create ToolKoanEntry via the broadened KOAN_MCP_TOOLS set.
     case 'tool_generic':
