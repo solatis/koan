@@ -34,29 +34,43 @@ answer depends on who controls the producer.
 The bound koan applies depends on whether koan controls the content's size and
 shape. This splits the tool vocabulary into two classes.
 
-### Untrusted results -- reject on breach
+### Untrusted results -- cap at limit
 
 Tools that surface content koan neither produces nor shapes: `read`, `grep`,
 `glob`, `bash`. The size and structure are opaque -- koan cannot meaningfully
 summarize arbitrary file bytes or command output, because it does not know what
 in them matters to the caller.
 
-**Rule:** enforce a content-agnostic hard ceiling _after_ producing the result;
-on breach, **reject** with a narrowing hint. Never truncate-and-pass.
+**Rule:** cap each tool's output _pre-emptively_ via a `limit` parameter
+(default `DEFAULT_LIMIT = 500` in `koan/tools/builtin_tools.py`) that stops
+processing as soon as `limit` output records are collected. Capped results are
+returned with a truncation note; no total count is computed (computing totals
+requires processing everything, which defeats both context-window protection
+and execution-time limiting). The model can override `limit` via the tool
+parameter.
 
-- Ceiling (`koan/tools/builtin_tools.py`, `_enforce_output_limits`):
-  **> 500 lines OR >= 10 KB (UTF-8) -> error.** Conservative by default.
-- **Why reject, not truncate:** a truncated prefix still deposits up to the
-  ceiling on _every_ call, and a few of those compound straight back to the
-  blowup. Worse, a partial result silently misleads the model into believing it
-  saw the whole file.
-- **Why rejection is safe here:** the model always has a narrowing lever --
-  `read` with `offset`/`limit`, a tighter `grep` pattern or `glob`, a scoped
-  `bash` (`head`, specific paths). The error names the limit and the levers, so
-  it is actionable, not a dead end.
+- **Generator-style processing:** `grep` iterates files and lines and stops
+  when `limit` match lines are collected -- remaining files are not read.
+  `glob` iterates the filesystem and stops when `limit` paths are found.
+  `bash` streams output via `subprocess.Popen` and kills the process when
+  `limit` lines are read.
+- **`read` is a special case:** anchors must be computed over the whole file
+  (collision disambiguation via `~N` ordinals depends on file order), so the
+  full file is read internally even when only `limit` lines are returned. The
+  output is sliced to `limit` lines via `render_anchored`; there is no second
+  size check.
+- **`glob` results come in filesystem traversal order** (not sorted), because
+  sorting requires collecting all matches before capping, which defeats the
+  early-stop goal.
+- **`grep` candidate enumeration (discovery + sort) is eager** -- file
+  discovery is not bounded by `limit`; only file reads and line scans are. The
+  dominant cost (reading files and searching line-by-line) is bounded.
+- **Truncation notes:** capped results append a note indicating capping and
+  suggesting how to narrow (e.g. "Results capped at 500 match lines -- narrow
+  the pattern or path to see more."). No total count is reported.
 - **Ignored directories:** `glob` and `grep` additionally skip `_IGNORED_DIRS`
   (`.git`, `node_modules`, `__pycache__`, `.venv`, `.env`, `build`, `cache`),
-  so a repo-root search is scoped to source files and does not trip the ceiling
+  so a repo-root search is scoped to source files and does not trip the cap
   on dependency trees before the model even sees a result.
 
 ### Trusted results -- bound by construction
@@ -68,10 +82,10 @@ the control-ack tools (`koan_set_phase`, `koan_suggest_next`, ...).
 `koan_artifact_read/write/edit` are also in this class. They are **trusted,
 run-dir-scoped wrappers** over the built-in `read`/`write`/`edit`: koan authored
 the run-dir artifact, so its content is bounded by construction and prompting.
-`koan_artifact_read` calls `read_tool(..., enforce_limits=False)` -- it is
-**exempt** from the untrusted reject ceiling. A large artifact is returned in
+`koan_artifact_read` calls `read_tool(..., limit=None)` -- it is
+**exempt** from the untrusted output cap. A large artifact is returned in
 full; `offset`/`limit` are available for paging convenience but impose no hard
-reject. See [tools.md](./tools.md).
+cap. See [tools.md](./tools.md).
 
 **Rule:** bound the output **at the source**, deterministically and
 structure-aware. **Never reject** -- koan caused the size and owns the schema,
@@ -96,7 +110,7 @@ Bounding techniques, by output kind:
 budget up front** via a parameter (`max_chars`, default 20000; `max_results`,
 default 5). Truncate-to-budget is acceptable here because the model opted into
 the size and the truncation point is its own choice. These do **not** route
-through the reject ceiling -- the request parameter _is_ the bound.
+through the pre-emptive cap -- the request parameter _is_ the bound.
 
 ---
 
@@ -105,18 +119,17 @@ through the reject ceiling -- the request parameter _is_ the bound.
 1. **No tool result enters history unbounded.** Every result is either under an
    enforced ceiling, shaped to a bounded schema, or truncated to a
    caller-declared budget.
-2. **Untrusted = reject; trusted = shape; never the reverse.** Do not truncate
-   an untrusted result (it hides loss and still costs budget); do not reject a
-   trusted result (the model cannot narrow it).
-3. **Single source of truth for limits.** Untrusted ceilings live as named
-   constants in `koan/tools/builtin_tools.py`
-   (`_MAX_TOOL_OUTPUT_LINES`, `_MAX_TOOL_OUTPUT_BYTES`). Trusted caps live with
-   their producer in `koan/tools/koan_tools.py`. No magic numbers scattered at
-   call sites.
-4. **Breaches are observable.** A rejection returns a visible error to the model
-   (and the projection feed shows the tool_result). Trusted-side caps should
-   note in the result when they elided content, so a debugged blowup can be
-   traced to its source.
+2. **Untrusted = cap at limit; trusted = shape; never the reverse.** Untrusted
+   tools cap at the pre-emptive `limit` and return partial results; trusted
+   tools bound by construction and never cap (the model cannot narrow them).
+3. **Single source of truth for limits.** The untrusted default cap lives as
+   `DEFAULT_LIMIT` in `koan/tools/builtin_tools.py`, applied via the per-tool
+   `limit` parameter. Trusted caps live with their producer in
+   `koan/tools/koan_tools.py`. No magic numbers scattered at call sites.
+4. **Capping is observable.** When an untrusted tool caps its output it appends a
+   truncation note to the result (and the projection feed shows the
+   tool_result). Trusted-side caps should note in the result when they elided
+   content, so a debugged blowup can be traced to its source.
 5. **Conservative by default.** Ceilings start low and are raised only with
    evidence. A too-tight ceiling costs an extra narrowing round-trip; a too-loose
    one costs the whole run.
@@ -125,13 +138,14 @@ through the reject ceiling -- the request parameter _is_ the bound.
 
 ## Known gaps (as of 2026-06-06)
 
-The untrusted side is enforced (`_enforce_output_limits`). The trusted side is
-**not yet uniformly bounded by construction** -- these are the open items:
+The untrusted side is bounded by the pre-emptive `limit` parameter. The
+trusted side is **not yet uniformly bounded by construction** -- these are the
+open items:
 
 - ~~The artifact reader had no bound and no pagination.~~ **Fixed:** now
-  `koan_artifact_read`, a trusted wrapper that bypasses the untrusted ceiling
-  (`enforce_limits=False`); `offset`/`limit` page for convenience with no hard
-  reject. See [tools.md](./tools.md).
+  `koan_artifact_read`, a trusted wrapper that bypasses the untrusted cap
+  (`limit=None`); `offset`/`limit` page for convenience with no hard cap. See
+  [tools.md](./tools.md).
 - **`koan_search` returns the full `body` of each of `k` entries.** `k` is
   bounded but per-entry `body` is not. Should field-bound `body` (first N chars +
   `entry_id`), so the count cap is also a size cap.
@@ -143,8 +157,8 @@ The untrusted side is enforced (`_enforce_output_limits`). The trusted side is
 
 ## Reference
 
-- Untrusted ceiling + enforcement: `koan/tools/builtin_tools.py`
-  (`_enforce_output_limits`, `_MAX_TOOL_OUTPUT_LINES`, `_MAX_TOOL_OUTPUT_BYTES`)
+- Untrusted pre-emptive cap: `koan/tools/builtin_tools.py`
+  (`DEFAULT_LIMIT`, applied via the per-tool `limit` parameter)
 - Trusted tool cores: `koan/tools/koan_tools.py`
 - How results accumulate in history: [token-streaming.md](./token-streaming.md),
   [state.md](./state.md) (the driver/LLM boundary owns `message_history`)

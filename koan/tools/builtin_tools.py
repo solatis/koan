@@ -50,6 +50,12 @@ _PLANNING_ROLES: frozenset[str] = frozenset({
     "scout",
 })
 
+# Default output record cap for untrusted tools. The LLM can override via the
+# limit parameter. The pre-emptive limit is the only bound; there is no
+# post-hoc size check. Defined here (above the tool implementations) so the
+# tool signatures can use it as a default value.
+DEFAULT_LIMIT: int = 500
+
 
 # -- Path helpers ------------------------------------------------------------- #
 
@@ -146,8 +152,9 @@ async def read_tool(
     ctx: Any,
     file_path: str,
     offset: int = 0,
-    limit: int = 2000,
-    enforce_limits: bool = True,
+    # limit=None returns all lines -- used only by trusted wrappers
+    # (koan_artifact_read) that are exempt from the output cap.
+    limit: int | None = DEFAULT_LIMIT,
 ) -> str:
     """Read a file and return its contents in anchored line format.
 
@@ -165,11 +172,11 @@ async def read_tool(
         ctx: PydanticAI RunContext with ToolDeps as deps.
         file_path: Absolute or relative path to read.
         offset: 0-based line offset to start reading from (default 0).
-        limit: Maximum number of lines to return (default 2000).
-        enforce_limits: When True (default), reject results exceeding the size
-            ceiling. Set to False only by trusted wrappers (e.g. koan_artifact_read
-            in Milestone 3) that are exempt from the untrusted-tool reject ceiling.
-            Never expose this parameter to the model-facing registered read tool.
+        limit: Maximum number of lines to return (default DEFAULT_LIMIT). None
+            returns all lines -- used only by trusted wrappers
+            (koan_artifact_read) that are exempt from the output cap. The output
+            is sliced to `limit` lines via render_anchored; there is no second
+            size check.
     """
     deps = getattr(ctx, "deps", None)
     resolved = _resolve_path(file_path, deps)
@@ -193,7 +200,7 @@ async def read_tool(
             "lines_read": len(rendered.splitlines()),
             "bytes_read": len(rendered.encode('utf-8')),
         }
-    return _enforce_output_limits(rendered) if enforce_limits else rendered
+    return rendered
 
 
 async def write_tool(ctx: Any, file_path: str, content: str) -> str:
@@ -299,14 +306,12 @@ _IGNORED_DIRS: frozenset[str] = frozenset({
     "dist", "build", ".next", ".cache", ".idea", ".vscode",
 })
 
-# Hard ceilings on a single tool result. A read/grep/glob/bash result that
-# exceeds either limit is REJECTED with an error rather than truncated, so no
-# single call can inflate the conversation history toward the provider's
-# input-token ceiling. Erroring forces the model to narrow the call (tighter
-# grep pattern, read offset/limit, scoped bash) before any content lands in
-# history. Conservative by default.
-_MAX_TOOL_OUTPUT_LINES: int = 500
-_MAX_TOOL_OUTPUT_BYTES: int = 10_000
+# Pre-emptive output cap for untrusted tools. read/grep/glob/bash stop
+# processing as soon as `limit` output records are collected. Capped
+# results are returned with a truncation note; no total count is computed.
+# The pre-emptive limit is the only bound -- no second check. The constant
+# DEFAULT_LIMIT lives with the path helpers near the top of the module so the
+# tool signatures below can use it as a default value.
 
 
 def _is_ignored(path: Path, root: Path) -> bool:
@@ -324,49 +329,31 @@ def _is_ignored(path: Path, root: Path) -> bool:
     return any(part in _IGNORED_DIRS for part in rel.parts)
 
 
-def _enforce_output_limits(text: str) -> str:
-    """Return *text* unchanged, or an error message when it is too large to inject.
-
-    A tool result is rejected (not truncated) when it exceeds either ceiling:
-      - more than _MAX_TOOL_OUTPUT_LINES lines, or
-      - _MAX_TOOL_OUTPUT_BYTES bytes or more (UTF-8 encoded).
-
-    Returning an error -- rather than a truncated prefix -- keeps the running
-    history small: no partial content lands, and the model gets an actionable
-    message telling it how to narrow the call so the retry fits.
-    """
-    n_bytes = len(text.encode("utf-8"))
-    n_lines = len(text.splitlines())
-    if n_lines <= _MAX_TOOL_OUTPUT_LINES and n_bytes < _MAX_TOOL_OUTPUT_BYTES:
-        return text
-    reasons: list[str] = []
-    if n_lines > _MAX_TOOL_OUTPUT_LINES:
-        reasons.append(f"{n_lines} lines (limit {_MAX_TOOL_OUTPUT_LINES})")
-    if n_bytes >= _MAX_TOOL_OUTPUT_BYTES:
-        reasons.append(f"{n_bytes} bytes (limit {_MAX_TOOL_OUTPUT_BYTES})")
-    return (
-        f"Error: tool result too large -- {', '.join(reasons)}. The result was "
-        "not returned, to keep the context budget intact. Narrow the call and "
-        "retry: use a tighter grep pattern or glob, read a slice with "
-        "offset/limit, or scope the bash command (e.g. head, specific paths)."
-    )
+# Untrusted tool output is capped pre-emptively via the `limit` parameter on
+# each tool (read/grep/glob/bash). There is no post-hoc size check -- the
+# pre-emptive limit is the only bound.
 
 
-async def glob_tool(ctx: Any, pattern: str, path: str | None = None) -> str:
+async def glob_tool(ctx: Any, pattern: str, path: str | None = None, limit: int = DEFAULT_LIMIT) -> str:
     """Find files matching a glob pattern.
 
     Returns a "Found N files" header followed by one matching path per line.
-    The header format lets _parse_grep_result in koan/agents/claude.py derive
-    {matches, files_matched} metrics -- glob matches are file-per-match since
-    each path IS the match. Ignored directories (e.g. .git, node_modules, .venv)
-    are excluded to keep results focused on source. Results are rejected with an
-    error when they exceed the size ceiling. After listing, the search root is
-    recorded for context-file injection.
+    glob matches are file-per-match since each path IS the match. Ignored
+    directories (e.g. .git, node_modules, .venv) are excluded to keep results
+    focused on source. Processing is generator-style: iteration stops as soon
+    as `limit` paths are collected, so remaining matches are not enumerated and
+    results come in filesystem traversal order (not sorted -- sorting would
+    require collecting all matches before capping). Capped results are returned
+    with a truncation note; no total count is computed. After listing, the search
+    root is recorded for context-file injection.
 
     Args:
         ctx: PydanticAI RunContext with ToolDeps as deps.
         pattern: Glob pattern to match, e.g. "**/*.py".
         path: Optional directory to search in (defaults to run_dir or cwd).
+        limit: Maximum number of file paths to return (default DEFAULT_LIMIT).
+            Stops iterating as soon as `limit` paths are collected; remaining
+            matches are not enumerated.
     """
     deps = getattr(ctx, "deps", None)
     if path is not None:
@@ -375,33 +362,40 @@ async def glob_tool(ctx: Any, pattern: str, path: str | None = None) -> str:
         run_dir = getattr(getattr(deps, "agent", None), "run_dir", None) if deps else None
         search_root = Path(run_dir) if run_dir else Path.cwd()
 
+    # Generator-style: iterate the glob lazily and stop as soon as `limit`
+    # paths are collected. No sorted() -- sorting requires collecting all
+    # matches first, defeating the early-stop goal; results come in
+    # filesystem traversal order.
     try:
-        matches = sorted(
-            str(p) for p in search_root.glob(pattern)
-            if not _is_ignored(p, search_root)
-        )
+        matches: list[str] = []
+        for p in search_root.glob(pattern):
+            if _is_ignored(p, search_root):
+                continue
+            matches.append(str(p))
+            if len(matches) >= limit:
+                break
     except Exception as e:
         return f"Error running glob {pattern!r} in {search_root}: {e}"
 
     n = len(matches)
-    # Format: "Found N files" header that _parse_grep_result recognises.
-    # Each file is its own match, so files_matched == matches.
+    truncated = len(matches) >= limit
     header = f"Found {n} files"
-    if n == 0:
-        result = header
-    else:
-        result = header + "\n" + "\n".join(matches)
+    result = header
+    if n > 0:
+        result += "\n" + "\n".join(matches)
+    if truncated:
+        result += f"\nResults capped at {limit} files — narrow the pattern or path to see more."
 
     if deps is not None:
         _record_path_for_context_injection(deps, search_root)
 
-    # Native metrics: glob matches are file-per-match.
+    # Native metrics: glob matches are file-per-match (capped count).
     if deps is not None and getattr(deps, 'agent', None) is not None:
         deps.agent._pending_tool_metrics = {
             "matches": n,
             "files_matched": n,
         }
-    return _enforce_output_limits(result)
+    return result
 
 
 async def grep_tool(
@@ -409,21 +403,28 @@ async def grep_tool(
     pattern: str,
     path: str | None = None,
     glob: str | None = None,
+    limit: int = DEFAULT_LIMIT,
 ) -> str:
     """Search file contents for a regex pattern.
 
     Emits a "Found N matches in M files" header followed by matching lines in
-    "file:line_number:content" format. The header is what _parse_grep_result in
-    koan/agents/claude.py expects to derive {matches, files_matched} metrics.
-    Ignored directories (e.g. .git, node_modules, .venv) are excluded from the
-    candidate file set. Results are rejected with an error when they exceed the
-    size ceiling.
+    "file:line_number:content" format. Ignored directories (e.g. .git,
+    node_modules, .venv) are excluded from the candidate file set. Searching is
+    generator-style: file reads and line scans stop as soon as `limit` match
+    lines are collected -- remaining files are not read or searched. Capped
+    results are returned with a truncation note; no total count is computed.
+    Candidate file enumeration (discovery + sort) is eager, but the dominant
+    cost (reading files and searching line-by-line) is bounded by the early
+    stop.
 
     Args:
         ctx: PydanticAI RunContext with ToolDeps as deps.
         pattern: Regular-expression pattern to search for.
         path: Directory or file to search in (defaults to run_dir or cwd).
         glob: Optional glob pattern to filter which files are searched.
+        limit: Maximum number of match lines to return (default DEFAULT_LIMIT).
+            Stops searching as soon as `limit` match lines are collected --
+            remaining files are not read or searched.
     """
     deps = getattr(ctx, "deps", None)
     if path is not None:
@@ -454,7 +455,15 @@ async def grep_tool(
     match_lines: list[str] = []
     files_with_matches: set[str] = set()
 
+    # Generator-style: break out of both the file loop and the line loop as
+    # soon as `limit` match lines are collected, so remaining files are not
+    # read. Candidate enumeration + sort stays eager (a larger refactor for
+    # lazy discovery is out of scope); only reads and line scans are bounded.
+    truncated = False
     for candidate in sorted(candidates):
+        if len(match_lines) >= limit:
+            truncated = True
+            break
         try:
             text = candidate.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -463,81 +472,150 @@ async def grep_tool(
             if compiled.search(line):
                 match_lines.append(f"{candidate}:{lineno}:{line}")
                 files_with_matches.add(str(candidate))
+                if len(match_lines) >= limit:
+                    truncated = True
+                    break
+        if truncated:
+            break
 
     n_matches = len(match_lines)
     n_files = len(files_with_matches)
     header = f"Found {n_matches} matches in {n_files} files"
-
-    if n_matches == 0:
-        result = header
-    else:
-        result = header + "\n" + "\n".join(match_lines)
+    result = header
+    if n_matches > 0:
+        result += "\n" + "\n".join(match_lines)
+    if truncated:
+        result += f"\nResults capped at {limit} match lines — narrow the pattern or path to see more."
 
     if deps is not None:
         _record_path_for_context_injection(deps, search_root)
 
-    # Native metrics: matched_lines equals n_matches (one line per match).
+    # Native metrics reflect the capped counts (no total is computed).
     if deps is not None and getattr(deps, 'agent', None) is not None:
         deps.agent._pending_tool_metrics = {
             "matches": n_matches,
             "files_matched": n_files,
             "matched_lines": n_matches,
         }
-    return _enforce_output_limits(result)
+    return result
 
 
 async def bash_tool(
     ctx: Any,
     command: str,
     timeout: int | None = None,
+    limit: int = DEFAULT_LIMIT,
 ) -> str:
     """Execute a shell command and return stdout + stderr combined.
 
     No sandbox is applied -- keep the current permission posture. Bash is
     exempt from context-file injection (no single canonical path argument).
-    Results are rejected with an error when they exceed the size ceiling.
+    Output is streamed line-by-line via Popen with stderr merged into stdout
+    (stderr=STDOUT interleaves the two streams into one). The process is killed
+    when `limit` output lines are read or when the timeout expires (whichever
+    fires first). Capped results are returned with a truncation note; no total
+    count is computed. The deadline-aware read uses select.select so the timeout
+    fires even when the process produces no output.
 
     Args:
         ctx: PydanticAI RunContext with ToolDeps as deps.
         command: Shell command to execute.
-        timeout: Optional timeout in seconds (default None = no limit).
+        timeout: Optional timeout in seconds (default None = no limit). The
+            timeout and limit coexist: whichever fires first terminates
+            processing.
+        limit: Maximum number of output lines to return (default DEFAULT_LIMIT).
+            Streams output line-by-line; the process is killed when `limit`
+            lines are read.
     """
     deps = getattr(ctx, "deps", None)
     run_dir = getattr(getattr(deps, "agent", None), "run_dir", None) if deps else None
     cwd = run_dir or None
 
+    import select
+    import time
+
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             command,
             shell=True,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
-            timeout=timeout,
             cwd=cwd,
         )
-        combined = result.stdout
-        if result.stderr:
-            combined = combined + result.stderr if combined else result.stderr
-        if result.returncode != 0:
-            combined = f"Exit code: {result.returncode}\n{combined}"
-        # Native metrics: exit_code + output line count.
-        if deps is not None and getattr(deps, 'agent', None) is not None:
-            output_lines = len(combined.splitlines()) if combined else 0
-            deps.agent._pending_tool_metrics = {
-                "exit_code": result.returncode,
-                "output_lines": output_lines,
-            }
-        return _enforce_output_limits(combined) if combined else ""
-    except subprocess.TimeoutExpired:
-        # Native metrics: timeout has no output lines.
-        if deps is not None and getattr(deps, 'agent', None) is not None:
-            deps.agent._pending_tool_metrics = {"exit_code": -1}
-        return f"Error: command timed out after {timeout}s: {command}"
     except Exception as e:
-        # Native metrics: generic failure has no output lines.
         if deps is not None and getattr(deps, 'agent', None) is not None:
             deps.agent._pending_tool_metrics = {"exit_code": -1}
         return f"Error running command: {e}"
+
+    output_lines: list[str] = []
+    truncated = False
+    deadline = (time.monotonic() + timeout) if timeout else None
+
+    try:
+        assert proc.stdout is not None
+        fd = proc.stdout.fileno()
+        while True:
+            if len(output_lines) >= limit:
+                truncated = True
+                break
+            # Compute the remaining time budget for this read.
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+            else:
+                remaining = None
+            # Wait for data with a deadline; if no data arrives within the
+            # remaining budget, break out and check whether the process is
+            # still running (timeout) or has exited.
+            ready, _, _ = select.select([fd], [], [], remaining)
+            if not ready:
+                # No data within the remaining time budget.
+                break
+            line = proc.stdout.readline()
+            if not line:
+                # EOF -- process closed stdout (normally because it exited).
+                break
+            output_lines.append(line.rstrip("\n"))
+
+        if truncated:
+            proc.kill()
+            proc.wait()
+        elif proc.poll() is None:
+            # The read loop exited due to timeout (no data within budget),
+            # but the process is still running -- report a timeout.
+            proc.kill()
+            proc.wait()
+            if deps is not None and getattr(deps, 'agent', None) is not None:
+                deps.agent._pending_tool_metrics = {"exit_code": -1}
+            return f"Error: command timed out after {timeout}s: {command}"
+    except Exception as e:
+        proc.kill()
+        proc.wait()
+        if deps is not None and getattr(deps, 'agent', None) is not None:
+            deps.agent._pending_tool_metrics = {"exit_code": -1}
+        return f"Error running command: {e}"
+
+    returncode = proc.returncode
+    combined = "\n".join(output_lines)
+    # A limit-kill is not a meaningful command failure the model should act on;
+    # the truncation note already explains it, so the Exit code: prefix is only
+    # added when the process exited on its own with a nonzero status.
+    if not truncated and returncode != 0:
+        combined = f"Exit code: {returncode}\n{combined}" if combined else f"Exit code: {returncode}"
+    if truncated:
+        combined += f"\nOutput capped at {limit} lines — scope the command (e.g. head, specific paths) to see more."
+
+    # output_lines counts only collected process output (excluding the Exit
+    # code: prefix and the truncation note) -- it reflects what the process
+    # actually emitted.
+    if deps is not None and getattr(deps, 'agent', None) is not None:
+        deps.agent._pending_tool_metrics = {
+            "exit_code": returncode,
+            "output_lines": len(output_lines),
+        }
+    return combined if combined else ""
 
 
 # -- web tools (M7) ----------------------------------------------------------- #
@@ -644,10 +722,10 @@ def build_builtin_toolset() -> Any:
     ts: FunctionToolset[Any] = FunctionToolset()
 
     # -- read ------------------------------------------------------------------
-    # enforce_limits is intentionally absent from _read's signature -- the model-
-    # facing built-in read ALWAYS enforces the ceiling. Only trusted wrappers
-    # (e.g. koan_artifact_read in M3) call read_tool directly with enforce_limits=False.
-    async def _read(ctx, file_path: str, offset: int = 0, limit: int = 2000) -> str:
+    # _read exposes limit (default DEFAULT_LIMIT) to the model. The trusted
+    # koan_artifact_read wrapper calls read_tool directly with limit=None to
+    # return full content (trusted exemption for koan-authored artifacts).
+    async def _read(ctx, file_path: str, offset: int = 0, limit: int = DEFAULT_LIMIT) -> str:
         """Read a file and return anchored, line-numbered content for precise editing."""
         return await read_tool(ctx, file_path, offset, limit)
 
@@ -706,9 +784,9 @@ def build_builtin_toolset() -> Any:
     )
 
     # -- glob ------------------------------------------------------------------
-    async def _glob(ctx, pattern: str, path: str | None = None) -> str:
+    async def _glob(ctx, pattern: str, path: str | None = None, limit: int = DEFAULT_LIMIT) -> str:
         """Find files matching a glob pattern in a directory."""
-        return await glob_tool(ctx, pattern, path)
+        return await glob_tool(ctx, pattern, path, limit)
 
     ts.add_function(
         _glob,
@@ -716,7 +794,8 @@ def build_builtin_toolset() -> Any:
         name="glob",
         description=(
             "Find files matching a glob pattern (e.g. '**/*.py'). "
-            "Returns a summary header and the list of matching paths."
+            "Returns a summary header and the list of matching paths. "
+            "Use the limit parameter to cap the number of results (default 500)."
         ),
     )
 
@@ -726,9 +805,10 @@ def build_builtin_toolset() -> Any:
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        limit: int = DEFAULT_LIMIT,
     ) -> str:
         """Search file contents for a regular-expression pattern."""
-        return await grep_tool(ctx, pattern, path, glob)
+        return await grep_tool(ctx, pattern, path, glob, limit)
 
     ts.add_function(
         _grep,
@@ -737,14 +817,15 @@ def build_builtin_toolset() -> Any:
         description=(
             "Search file contents for a regular-expression pattern. "
             "Returns a 'Found N matches in M files' summary plus matching lines. "
-            "Use the glob parameter to filter which files are searched."
+            "Use the glob parameter to filter which files are searched. "
+            "Use the limit parameter to cap the number of match lines (default 500)."
         ),
     )
 
     # -- bash ------------------------------------------------------------------
-    async def _bash(ctx, command: str, timeout: int | None = None) -> str:
+    async def _bash(ctx, command: str, timeout: int | None = None, limit: int = DEFAULT_LIMIT) -> str:
         """Execute a shell command and return stdout + stderr combined."""
-        return await bash_tool(ctx, command, timeout)
+        return await bash_tool(ctx, command, timeout, limit)
 
     ts.add_function(
         _bash,
@@ -752,7 +833,8 @@ def build_builtin_toolset() -> Any:
         name="bash",
         description=(
             "Execute a shell command and return combined stdout + stderr. "
-            "No sandbox is applied. Optionally specify a timeout in seconds."
+            "No sandbox is applied. Optionally specify a timeout in seconds. "
+            "Use the limit parameter to cap output lines (default 500)."
         ),
     )
 

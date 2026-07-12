@@ -361,8 +361,8 @@ can self-correct; only infrastructure faults (`no_run_dir`, `invalid_path`,
 line-numbered content (`{lineno}\t{anchor}§{line}`). Copy an anchor into
 `koan_artifact_edit`; page large artifacts with `offset`/`limit` for
 convenience. `koan_artifact_read` is **trusted and exempt** from the untrusted
-reject ceiling: it calls `read_tool(..., enforce_limits=False)` and returns
-large artifacts in full with no hard reject. Error: `not_found`.
+output cap: it calls `read_tool(..., limit=None)` and returns large artifacts
+in full with no hard cap. Error: `not_found`.
 
 **`koan_artifact_edit(filename, anchor, text, end_anchor?, edit_type?)`** --
 anchored line edit (see the hash-anchored protocol in [tools.md](./tools.md)).

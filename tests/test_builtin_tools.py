@@ -23,9 +23,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from koan.tools.builtin_tools import (
-    _MAX_TOOL_OUTPUT_BYTES,
-    _MAX_TOOL_OUTPUT_LINES,
-    _enforce_output_limits,
+    DEFAULT_LIMIT,
     _path_scope_violation,
     bash_tool,
     edit_tool,
@@ -478,53 +476,39 @@ async def test_bash_tool_nonzero_exit_code_included(tmp_path):
     assert "42" in result
 
 
-# -- output limits (_enforce_output_limits) ---------------------------------- #
+# -- output limits (pre-emptive cap) ----------------------------------------- #
 
 
-def test_enforce_output_limits_within_bounds_unchanged():
-    """A small result passes through _enforce_output_limits verbatim."""
-    text = "line one\nline two\nline three"
-    assert _enforce_output_limits(text) == text
-
-
-def test_enforce_output_limits_rejects_over_line_cap():
-    """More than _MAX_TOOL_OUTPUT_LINES lines is rejected with an error (not truncated)."""
-    # Short lines so the byte cap is not the trigger -- isolate the line cap.
-    text = "\n".join("x" for _ in range(_MAX_TOOL_OUTPUT_LINES + 1))
-    out = _enforce_output_limits(text)
-    assert out.startswith("Error: tool result too large")
-    assert "lines" in out
-    assert f"limit {_MAX_TOOL_OUTPUT_LINES}" in out
-
-
-def test_enforce_output_limits_rejects_over_byte_cap():
-    """A result >= _MAX_TOOL_OUTPUT_BYTES bytes on few lines is rejected by the byte cap."""
-    # One long line: under the line cap, over the byte cap.
-    text = "y" * (_MAX_TOOL_OUTPUT_BYTES + 1)
-    out = _enforce_output_limits(text)
-    assert out.startswith("Error: tool result too large")
-    assert "bytes" in out
+def test_enforce_output_limits_removed():
+    """The post-hoc reject ceiling is replaced by pre-emptive limiting."""
+    import koan.tools.builtin_tools as m
+    assert not hasattr(m, "_enforce_output_limits")
+    assert not hasattr(m, "_MAX_TOOL_OUTPUT_LINES")
+    assert not hasattr(m, "_MAX_TOOL_OUTPUT_BYTES")
+    assert hasattr(m, "DEFAULT_LIMIT")
 
 
 @pytest.mark.anyio
-async def test_read_tool_rejects_large_file(tmp_path):
-    """read_tool errors on a file whose default-limit slice exceeds the line cap."""
+async def test_read_tool_caps_large_file(tmp_path):
+    """read_tool caps output at DEFAULT_LIMIT lines (no rejection, no error)."""
     target = tmp_path / "big.txt"
-    target.write_text("".join(f"line {i}\n" for i in range(_MAX_TOOL_OUTPUT_LINES + 50)))
+    target.write_text("".join(f"line {i}\n" for i in range(DEFAULT_LIMIT + 50)))
     ctx = _make_ctx(run_dir=str(tmp_path))
     result = await read_tool(ctx, str(target))
-    assert result.startswith("Error: tool result too large")
+    assert not result.startswith("Error:")
+    # Exactly DEFAULT_LIMIT lines returned.
+    assert len(result.splitlines()) == DEFAULT_LIMIT
 
 
 @pytest.mark.anyio
 async def test_read_tool_slice_under_cap_succeeds(tmp_path):
     """read_tool with an offset/limit slice under the cap returns content normally.
 
-    This is the escape hatch the error message points the model to: paging a
+    This is the escape hatch the truncation note points the model to: paging a
     large file with offset/limit keeps each result within the budget.
     """
     target = tmp_path / "big.txt"
-    target.write_text("".join(f"line {i}\n" for i in range(_MAX_TOOL_OUTPUT_LINES + 50)))
+    target.write_text("".join(f"line {i}\n" for i in range(DEFAULT_LIMIT + 50)))
     ctx = _make_ctx(run_dir=str(tmp_path))
     result = await read_tool(ctx, str(target), offset=0, limit=100)
     assert not result.startswith("Error:")
@@ -532,27 +516,75 @@ async def test_read_tool_slice_under_cap_succeeds(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_read_tool_enforce_limits_false_bypasses_ceiling(tmp_path):
-    """read_tool with enforce_limits=False returns full content without rejection.
-
-    This is the M2 seam that Milestone 3's koan_artifact_read uses to bypass
-    the untrusted-tool ceiling while still delegating to the same read_tool.
-    """
+async def test_read_tool_limit_none_returns_full_content(tmp_path):
+    """read_tool with limit=None returns full content without capping (trusted bypass)."""
     target = tmp_path / "big.txt"
-    target.write_text("".join(f"line {i}\n" for i in range(_MAX_TOOL_OUTPUT_LINES + 50)))
+    target.write_text("".join(f"line {i}\n" for i in range(DEFAULT_LIMIT + 50)))
     ctx = _make_ctx(run_dir=str(tmp_path))
-    result = await read_tool(ctx, str(target), enforce_limits=False)
-    # Full anchored content returned without an error.
+    result = await read_tool(ctx, str(target), limit=None)
     assert not result.startswith("Error:")
+    # All DEFAULT_LIMIT + 50 lines returned.
+    assert len(result.splitlines()) == DEFAULT_LIMIT + 50
     assert result.splitlines()[0].startswith("1\t")
 
 
 @pytest.mark.anyio
-async def test_bash_tool_rejects_large_output(tmp_path):
-    """bash_tool errors when a command's output exceeds the line cap."""
+async def test_bash_tool_caps_large_output(tmp_path):
+    """bash_tool caps output at limit lines and appends a truncation note."""
     ctx = _make_ctx(run_dir=str(tmp_path))
-    result = await bash_tool(ctx, f"seq 1 {_MAX_TOOL_OUTPUT_LINES + 100}")
-    assert result.startswith("Error: tool result too large")
+    result = await bash_tool(ctx, f"seq 1 {DEFAULT_LIMIT + 100}", limit=DEFAULT_LIMIT)
+    assert not result.startswith("Error:")
+    assert "Output capped at" in result
+    # Exactly DEFAULT_LIMIT output lines (excluding the truncation note).
+    output = [l for l in result.splitlines() if not l.startswith("Output capped at")]
+    assert len(output) == DEFAULT_LIMIT
+
+
+@pytest.mark.anyio
+async def test_grep_tool_caps_at_limit(tmp_path):
+    """grep_tool stops after `limit` match lines and appends a truncation note."""
+    for i in range(20):
+        (tmp_path / f"f{i}.py").write_text("match\n" * 50)
+    ctx = _make_ctx(run_dir=str(tmp_path))
+    result = await grep_tool(ctx, "match", str(tmp_path), limit=100)
+    lines = result.splitlines()
+    match_lines = [l for l in lines if l.count(":") >= 2 and not l.startswith("Results")]
+    assert len(match_lines) == 100
+    assert "Results capped at 100 match lines" in result
+
+
+@pytest.mark.anyio
+async def test_glob_tool_caps_at_limit(tmp_path):
+    """glob_tool stops after `limit` paths and appends a truncation note."""
+    for i in range(200):
+        (tmp_path / f"file{i}.py").touch()
+    ctx = _make_ctx(run_dir=str(tmp_path))
+    result = await glob_tool(ctx, "*.py", str(tmp_path), limit=50)
+    lines = result.splitlines()
+    assert lines[0] == "Found 50 files"
+    path_lines = [l for l in lines[1:] if not l.startswith("Results capped")]
+    assert len(path_lines) == 50
+    assert "Results capped at 50 files" in result
+
+
+@pytest.mark.anyio
+async def test_grep_generator_stops_early(tmp_path):
+    """grep_tool does not read all files when limit is reached early."""
+    for i in range(100):
+        (tmp_path / f"f{i:03d}.py").write_text("match\n")
+    ctx = _make_ctx(run_dir=str(tmp_path))
+    result = await grep_tool(ctx, "match", str(tmp_path), limit=10)
+    assert "Results capped at 10 match lines" in result
+    match_lines = [l for l in result.splitlines() if l.count(":") >= 2 and not l.startswith("Results")]
+    assert len(match_lines) == 10
+
+
+@pytest.mark.anyio
+async def test_bash_tool_timeout_no_output(tmp_path):
+    """bash_tool returns a timeout error when the command produces no output within timeout."""
+    ctx = _make_ctx(run_dir=str(tmp_path))
+    result = await bash_tool(ctx, "sleep 10", timeout=1)
+    assert "timed out" in result.lower() or "timeout" in result.lower()
 
 
 # -- _is_ignored (glob/grep filter) ------------------------------------------ #

@@ -1391,7 +1391,7 @@ async def artifact_read_core(
     deps: ToolDeps,
     filename: str,
     offset: int = 0,
-    limit: int = 2000,
+    limit: int | None = None,
 ) -> str:
     """Core logic for koan_artifact_read -- run-dir-scoped wrapper over read_tool.
 
@@ -1401,9 +1401,9 @@ async def artifact_read_core(
     line; offset/limit page large artifacts.
 
     koan_artifact_read is a TRUSTED command (Decision 6) -- exempt from the
-    Milestone-2 reject ceiling. enforce_limits=False bypasses _enforce_output_limits
-    so large artifacts are not rejected; the reject ceiling only applies to untrusted
-    built-in tool calls.
+    output cap. limit=None (default) returns the full artifact; offset/limit
+    are available for paging convenience but the trusted path applies no hard
+    cap. read_tool passes None to render_anchored which returns all lines.
 
     Raises ValueError("invalid_filename"/"no_run_dir"/"invalid_path"/"not_found").
     """
@@ -1413,9 +1413,10 @@ async def artifact_read_core(
     if not target.is_file():
         raise ValueError(f"not_found: {filename} not found")
 
-    # enforce_limits=False is load-bearing: artifact reads are trusted and must
-    # not be rejected for size (brief.md Decision 6).
-    return await read_tool(_DepsCtx(deps), str(target), offset, limit, enforce_limits=False)
+    # limit=None is load-bearing: artifact reads are trusted and return full
+    # content (brief.md Decision 6). read_tool passes None to render_anchored
+    # which returns all lines.
+    return await read_tool(_DepsCtx(deps), str(target), offset, limit)
 
 
 # -- Interaction tool cores ----------------------------------------------------
@@ -1853,7 +1854,7 @@ def build_koan_toolset(allowed_names: "frozenset[str] | None" = None) -> Any:
         """List artifacts in the run directory."""
         return await artifact_list_core(ctx.deps)
 
-    async def _koan_artifact_read(ctx, filename: str, offset: int = 0, limit: int = 2000) -> str:
+    async def _koan_artifact_read(ctx, filename: str, offset: int = 0, limit: int | None = None) -> str:
         """Return anchored, line-numbered artifact content (run-dir scoped read)."""
         return await artifact_read_core(ctx.deps, filename, offset, limit)
 

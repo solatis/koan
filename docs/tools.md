@@ -5,7 +5,7 @@ their results are formatted and bounded, and how edits are anchored. This is the
 parent doc; sizing detail lives in its spoke.
 
 > Spoke: [tool-output-limits.md](./tool-output-limits.md) -- result-size strategy
-> (untrusted reject vs trusted bound-by-construction).
+> (untrusted cap at limit vs trusted bound-by-construction).
 
 ---
 
@@ -31,12 +31,13 @@ Two ideas drive the design:
 
 | Class          | Tools                              | koan controls...           | Bound strategy                    |
 | -------------- | ---------------------------------- | -------------------------- | --------------------------------- |
-| **Untrusted**  | `read`, `grep`, `glob`, `bash`     | nothing about the bytes    | reject on breach (hard ceiling)   |
+| **Untrusted**  | `read`, `grep`, `glob`, `bash`     | nothing about the bytes    | cap at limit (pre-emptive)         |
 | **Trusted**    | `koan_search`, `koan_reflect`, ... | producer + schema          | bound by construction (at source) |
 | Web (sub-case) | `web_fetch`, `web_search`          | nothing; model sets budget | truncate to caller's `max_*`      |
 
-The full reasoning and the enforced ceilings (currently > 500 lines OR >= 10 KB
-for the untrusted class) live in [tool-output-limits.md](./tool-output-limits.md).
+The full reasoning and the pre-emptive cap (capped at 500 records by default,
+override via the `limit` parameter) for the untrusted class live in
+[tool-output-limits.md](./tool-output-limits.md).
 
 ### Scoped wrappers (`koan_artifact_read/write/edit`)
 
@@ -48,12 +49,12 @@ artifact read/write/edit confined to its run directory's artifacts, but not raw
 validation, run-dir containment, and (for write/edit) the `artifact_diff`
 projection event.
 
-`koan_artifact_read` is **trusted and exempt** from the untrusted reject ceiling.
-It calls `read_tool(..., enforce_limits=False)` -- artifacts are koan-authored
-run-dir content, bounded by prompting, so they are known-size by construction.
+`koan_artifact_read` is **trusted and exempt** from the untrusted output cap.
+It calls `read_tool(..., limit=None)` -- artifacts are koan-authored run-dir
+content, bounded by prompting, so they are known-size by construction.
 `offset`/`limit` are available for paging convenience, but there is **no hard
-reject**: a large artifact is returned in full. `koan_artifact_write`/`edit`
-similarly bypass the ceiling; artifacts are plain markdown with no frontmatter.
+cap**: a large artifact is returned in full. `koan_artifact_write`/`edit`
+similarly bypass the cap; artifacts are plain markdown with no frontmatter.
 
 ---
 
@@ -101,12 +102,12 @@ location grep found, the model reads it first (which mints the anchor).
 
 `glob` -> `Found N files` header + one path per line. `bash` -> combined
 stdout/stderr, exit-code prefixed on failure. Neither is line-addressable for
-editing; both are subject to the untrusted ceiling.
+editing; both are subject to the untrusted cap.
 
 `glob` and `grep` additionally skip ignored directories (`_IGNORED_DIRS` in
 `koan/tools/builtin_tools.py`: `.git`, `node_modules`, `__pycache__`, `.venv`,
 `.env`, `build`, `cache`) so a repo-root search is scoped to source and does
-not trip the reject ceiling on dependency trees.
+not trip the cap on dependency trees.
 
 ---
 

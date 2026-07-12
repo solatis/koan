@@ -955,11 +955,11 @@ async def test_artifact_read_rejects_path_traversal(tmp_path):
 
 @pytest.mark.anyio
 async def test_artifact_read_large_artifact_no_rejection(tmp_path):
-    """koan_artifact_read is trusted and exempt from the M2 reject ceiling.
+    """koan_artifact_read is trusted and exempt from the output cap.
 
     Writes an artifact whose body exceeds 500 lines, then reads it via
     artifact_read_core and asserts the full content is returned (no
-    'tool result too large' error). Guards Decision 6 / enforce_limits=False.
+    'tool result too large' error). Guards Decision 6 / limit=None trusted bypass.
 
     The file is written directly (bypassing artifact_write_core) because the
     filename "large.md" is not in the M3 artifact grammar; this test exercises
@@ -970,7 +970,7 @@ async def test_artifact_read_large_artifact_no_rejection(tmp_path):
     app_state, agent = _make_orchestrator_agent(tmp_path, "test-read-large")
     deps = ToolDeps(app_state=app_state, agent=agent)
 
-    # 600 lines -- well over the 500-line reject ceiling for untrusted tools.
+    # 600 lines -- well over the 500-line default cap for untrusted tools.
     body = "\n".join(f"line {i}" for i in range(600)) + "\n"
     # Write directly so we test read mechanics with arbitrary content, not the
     # M3 write-once validation (which only allows grammar-conformant names).
