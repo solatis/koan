@@ -26,6 +26,7 @@ from koan.projections import (
     ToolAggregateEntry,
     ToolBashEntry,
     ToolEditEntry,
+    ToolFailedEntry,
     ToolGenericEntry,
     ToolGlobEntry,
     ToolGrepEntry,
@@ -1784,3 +1785,84 @@ class TestProviderModelsListedFold:
 
         assert len(r.settings.provider_families) == 1
         assert r.settings.provider_families[0].connection_id == "openai-work"
+
+
+# ---------------------------------------------------------------------------
+# fold: tool_failed -- validation-rejected calls become ToolFailedEntry
+# ---------------------------------------------------------------------------
+
+class TestToolFailedFold:
+
+    def test_tool_failed_replaces_koan_entry_retaining_ids(self):
+        p = _proj_with_primary("a1")
+        p = fold(p, _e("tool_request", {
+            "call_id": "c1", "tool": "koan_ask_question", "ts_ms": 1000,
+        }, agent_id="a1"))
+        p = fold(p, _e("tool_input_delta", {
+            "call_id": "c1", "tool": "koan_ask_question",
+            "tool_input": {"x": 1}, "delta": '{"x": 1}',
+        }, agent_id="a1"))
+        before = p.run.agents["a1"].conversation.entries[0]
+        assert isinstance(before, ToolKoanEntry)
+        assert before.entry_id != ""
+        r = fold(p, _e("tool_failed", {
+            "call_id": "c1", "tool": "koan_ask_question",
+            "error": "1 validation error: questions must be a list",
+            "ts_ms": 2000,
+        }, agent_id="a1"))
+        entries = r.run.agents["a1"].conversation.entries
+        assert len(entries) == 1
+        entry = entries[0]
+        assert isinstance(entry, ToolFailedEntry)
+        assert entry.entry_id == before.entry_id
+        assert entry.phase_id == before.phase_id
+        assert entry.in_flight is False
+        assert entry.failed is True
+        assert entry.tool_name == "koan_ask_question"
+        assert entry.error == "1 validation error: questions must be a list"
+        # The malformed structured payload survives only as an opaque string.
+        assert entry.raw_input == '{"x": 1}'
+        assert not hasattr(entry, "args") or not getattr(entry, "args", None)
+
+    def test_tool_failed_marks_aggregate_child_in_place(self):
+        p = _proj_with_primary("a1")
+        p = fold(p, _e("tool_request", {"call_id": "c1", "tool": "read", "ts_ms": 1}, agent_id="a1"))
+        p = fold(p, _e("tool_request", {"call_id": "c2", "tool": "grep", "ts_ms": 2}, agent_id="a1"))
+        r = fold(p, _e("tool_failed", {
+            "call_id": "c2", "tool": "grep", "error": "bad args", "ts_ms": 3,
+        }, agent_id="a1"))
+        entries = r.run.agents["a1"].conversation.entries
+        assert len(entries) == 1
+        agg = entries[0]
+        assert isinstance(agg, ToolAggregateEntry)
+        assert len(agg.children) == 2
+        failed_child = agg.children[1]
+        assert failed_child.call_id == "c2"
+        assert failed_child.failed is True
+        assert failed_child.in_flight is False
+        assert failed_child.completed_at_ms == 3
+        # Sibling untouched.
+        assert agg.children[0].failed is False
+        assert agg.children[0].in_flight is True
+
+    def test_tool_failed_top_level_exploration_then_no_promotion(self):
+        p = _proj_with_primary("a1")
+        p = fold(p, _e("tool_request", {"call_id": "c1", "tool": "read", "ts_ms": 1}, agent_id="a1"))
+        p = fold(p, _e("tool_failed", {
+            "call_id": "c1", "tool": "read", "error": "bad args", "ts_ms": 2,
+        }, agent_id="a1"))
+        r = fold(p, _e("tool_request", {"call_id": "c2", "tool": "grep", "ts_ms": 3}, agent_id="a1"))
+        entries = r.run.agents["a1"].conversation.entries
+        assert len(entries) == 2
+        assert isinstance(entries[0], ToolFailedEntry)
+        assert isinstance(entries[1], ToolGrepEntry)
+
+    def test_tool_failed_unknown_call_id_is_noop(self):
+        p = _proj_with_primary("a1")
+        r = fold(p, _e("tool_failed", {
+            "call_id": "nope", "tool": "read", "error": "x", "ts_ms": 1,
+        }, agent_id="a1"))
+        assert r is p
+
+
+# ---------------------------------------------------------------------------

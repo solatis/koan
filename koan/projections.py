@@ -56,6 +56,7 @@ EventType = Literal[
     "tool_request",
     "tool_input_delta",
     "tool_result",
+    "tool_failed",
     "tool_result_captured",
     "tool_aggregate",
     # Domain events correlated by agent_id (not call_id): target the in-flight
@@ -250,6 +251,12 @@ class BaseToolEntry(KoanBaseModel):
     # parsed dict. tool_input (the aggregate) is always a dict when present.
     tool_input: dict | None = None
     tool_input_delta: str | None = None
+    # Set by the tool_failed fold for aggregate children: the call's arguments
+    # failed validation and the tool body never ran. Top-level entries are
+    # instead replaced wholesale by ToolFailedEntry; the flag exists on the
+    # base so children can be marked in place without breaking the
+    # len(children) >= 2 aggregate invariant.
+    failed: bool = False
 
 class ToolWriteEntry(BaseToolEntry):
     type: Literal["tool_write"] = "tool_write"
@@ -286,6 +293,19 @@ class ToolKoanEntry(BaseToolEntry):
     tool_name: str
     args: dict = {}
     result: dict | None = None
+
+class ToolFailedEntry(BaseToolEntry):
+    """Terminal entry for a tool call whose arguments failed validation.
+
+    Replaces the in-flight entry (retaining entry_id/phase_id for stable
+    list keys). raw_input is the JSON-dumped last-known tool_input -- an
+    opaque string; the malformed structured payload never survives in the
+    projection.
+    """
+    type: Literal["tool_failed"] = "tool_failed"
+    tool_name: str
+    error: str = ""
+    raw_input: str = ""
 
 # ---------------------------------------------------------------------------
 # Exploration entry types — the six exploration tools (read, grep, glob, bash,
@@ -428,7 +448,7 @@ class ActiveYield(KoanBaseModel):
 ConversationEntry = Annotated[
     ThinkingEntry | TextEntry | StepEntry | UserMessageEntry |
     ToolWriteEntry | ToolEditEntry | ToolBashEntry | ToolGenericEntry |
-    ToolKoanEntry | ToolAggregateEntry |
+    ToolKoanEntry | ToolFailedEntry | ToolAggregateEntry |
     ToolReadEntry | ToolGrepEntry | ToolGlobEntry |
     ToolWebSearchEntry | ToolWebFetchEntry |
     DebugStepGuidanceEntry | PhaseBoundaryEntry | YieldEntry,
@@ -2087,6 +2107,75 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 if not found:
                     log.warning(
                         "fold: tool_result for unknown call_id=%r agent=%r",
+                        call_id, agent_id,
+                    )
+                    return projection
+                new_conv = agent.conversation.model_copy(update={"entries": new_entries})
+                return projection.model_copy(update={
+                    "run": _update_agent_conversation(projection.run, agent_id, new_conv),
+                })
+
+
+            case "tool_failed":
+                # Argument validation rejected the call; the tool body never
+                # ran. Top-level entries are REPLACED by ToolFailedEntry (the
+                # malformed model-authored input survives only as the opaque
+                # raw_input JSON string). Aggregate children are marked failed
+                # in place: extraction would break the len(children) >= 2
+                # invariant and reorder list keys.
+                if projection.run is None or not agent_id:
+                    return projection
+                agent = projection.run.agents.get(agent_id)
+                if agent is None:
+                    return projection
+                call_id = payload.get("call_id", "")
+                new_entries = []
+                found = False
+                for entry in agent.conversation.entries:
+                    if isinstance(entry, ToolAggregateEntry):
+                        new_children = []
+                        child_found = False
+                        for child in entry.children:
+                            if child.call_id == call_id:
+                                new_children.append(child.model_copy(update={
+                                    "in_flight": False,
+                                    "failed": True,
+                                    "completed_at_ms": payload.get("ts_ms", 0) or None,
+                                }))
+                                child_found = True
+                            else:
+                                new_children.append(child)
+                        if child_found:
+                            found = True
+                            new_entries.append(entry.model_copy(update={"children": new_children}))
+                        else:
+                            new_entries.append(entry)
+                    elif isinstance(entry, BaseToolEntry) and entry.call_id == call_id:
+                        raw = ""
+                        if entry.tool_input:
+                            try:
+                                raw = json.dumps(entry.tool_input, ensure_ascii=False, default=str)
+                            except (TypeError, ValueError):
+                                raw = str(entry.tool_input)
+                        # Retain entry_id/phase_id so the frontend list key is
+                        # stable across the replacement.
+                        new_entries.append(ToolFailedEntry(
+                            call_id=call_id,
+                            in_flight=False,
+                            failed=True,
+                            entry_id=entry.entry_id,
+                            phase_id=entry.phase_id,
+                            tool_name=payload.get("tool", "")
+                                or getattr(entry, "tool_name", "") or entry.type,
+                            error=payload.get("error", ""),
+                            raw_input=raw,
+                        ))
+                        found = True
+                    else:
+                        new_entries.append(entry)
+                if not found:
+                    log.warning(
+                        "fold: tool_failed for unknown call_id=%r agent=%r",
                         call_id, agent_id,
                     )
                     return projection
