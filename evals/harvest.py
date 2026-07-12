@@ -190,9 +190,11 @@ def _bucket_tool_calls(events: list) -> dict[str, list[dict]]:
                 ti = ev.payload.get("tool_input")
                 if isinstance(ti, dict):
                     in_flight[cid]["args"] = ti
-        elif ev.event_type == "tool_result":
+        elif ev.event_type in ("tool_result", "tool_failed"):
             rec = in_flight.pop(cid, None)
             if rec is not None:
+                if ev.event_type == "tool_failed":
+                    rec["failed"] = True
                 phase = rec.pop("phase", current_phase)
                 buckets.setdefault(phase, []).append(rec)
     return buckets
