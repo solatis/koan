@@ -19,6 +19,7 @@
 import React, { type ReactElement } from 'react'
 import './KoanToolCard.css'
 import { Md } from '../Md'
+import ThinkingBlock from './ThinkingBlock'
 
 interface KoanToolCardProps {
   toolName: string
@@ -70,10 +71,12 @@ function CheckSvg() {
 // -- Tool renderers -----------------------------------------------------------
 
 interface ReflectTrace {
-  kind: 'thinking' | 'search' | 'text'
+  kind: 'search' | 'thinking' | 'text'
   query?: string
   resultCount?: number
   status?: 'done' | 'running'
+  delta?: string
+  type_filter?: string
 }
 
 interface ReflectCitation {
@@ -128,12 +131,19 @@ function ReflectCard({ toolInput, result, inFlight }: Omit<KoanToolCardProps, 't
         <div className="ktc-reflect-trace">
           {traces.map((t, i) => {
             if (t.kind === 'thinking') {
+              const isRunning = t.status === 'running'
               return (
-                <div key={i} className="ktc-reflect-thinking">
-                  <span className="ktc-reflect-thinking-dot" />
-                  <span className="ktc-reflect-thinking-label">Thinking...</span>
+                <div key={i} style={{ marginBottom: 8 }}>
+                  <ThinkingBlock defaultExpanded={false}>
+                    {t.delta || (isRunning ? 'Thinking…' : '')}
+                  </ThinkingBlock>
                 </div>
               )
+            }
+            if (t.kind === 'text') {
+              // Text deltas are redundant with the briefing section --
+              // skip them in the trace stream to avoid duplication.
+              return null
             }
             if (t.kind === 'search') {
               const done = t.status === 'done'

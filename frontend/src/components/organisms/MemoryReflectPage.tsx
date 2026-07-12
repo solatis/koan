@@ -26,7 +26,7 @@ interface SidebarEntry {
 // Unified arrival-ordered trace entries for both in-progress and done states.
 // Replaces the prior tools: ReflectToolCall[] field.
 type ReflectTraceRender =
-  | { kind: 'thinking'; delta: string }
+  | { kind: 'thinking'; delta: string; status?: 'running' | 'done' }
   | { kind: 'text'; delta: string }
   | { kind: 'search'; query: string; status: 'done' | 'running'; resultCount?: number }
 

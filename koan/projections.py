@@ -59,10 +59,9 @@ EventType = Literal[
     "tool_result_captured",
     "tool_aggregate",
     # Domain events correlated by agent_id (not call_id): target the in-flight
-    # tool entry for the agent. reflect_delta streams internal-LLM text output;
-    # tool_attachments carries koan-side upload manifests from MCP handlers.
-    "reflect_delta",
-    "reflect_delta",
+    # tool entry for the agent. reflect_inline_trace carries thinking deltas,
+    # text streaming, search lifecycle, and metadata; tool_attachments
+    # carries koan-side upload manifests from MCP handlers.
     "reflect_inline_trace",
     "tool_attachments",
     "thinking",
@@ -739,17 +738,22 @@ class ReflectCitation(KoanBaseModel):
     modified_ms: int
 
 class ReflectTrace(KoanBaseModel):
+    """A single trace event for the standalone reflect page.
+
+    The web app's on_trace callback filters out internal lifecycle events
+    (search_start, thinking_delta) and only forwards final-form events
+    (search, text) to this model.
+    """
     iteration: int
-    # Discriminator: "search"/"done" are tool calls; "thinking"/"text" are
-    # streaming model output deltas. All ride in the same "reflect_trace" event
-    # so the frontend receives one ordered list without separate event types.
-    kind: Literal["search", "done", "thinking", "text"]
+    kind: Literal["search", "thinking", "text"]
     # search-only fields
     query: str = ""
     type_filter: str = ""
     result_count: int | None = None
     # thinking / text delta
     delta: str = ""
+    # lifecycle status for search (running/done) and thinking (running/done)
+    status: Literal["running", "done"] | None = None
 
 class ReflectRun(KoanBaseModel):
     session_id: str
@@ -1676,23 +1680,19 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                                 existing = entry.result or {}
                                 # Merge to preserve fields accumulated by domain events
                                 # (reflect_inline_trace sets traces/model/maxIterations/
-                                #  iteration; reflect_delta sets answer). tool_completed
-                                #  adds citations and the final iterations count.
+                                #  iteration; reflect_inline_trace with kind 'text' sets
+                                #  answer). tool_completed adds citations and the final
+                                #  iterations count.
                                 update["result"] = {**existing, **parsed}
-                                # If the last trace is a thinking_start without a matching
-                                # thinking_end, append one. The reflect loop can terminate
-                                # while the model is still in thinking state.
+                                # If the last trace is a running thinking entry, close
+                                # it. The reflect loop can terminate while the model is
+                                # still in thinking state (no explicit thinking_end).
                                 result = update["result"]
                                 traces = result.get("traces", [])
                                 if traces and isinstance(traces, list):
                                     last = traces[-1]
-                                    if isinstance(last, dict) and last.get("kind") == "thinking_start":
-                                        has_end = any(
-                                            isinstance(t, dict) and t.get("kind") == "thinking_end"
-                                            for t in traces
-                                        )
-                                        if not has_end:
-                                            result["traces"] = list(traces) + [{"kind": "thinking_end"}]
+                                    if isinstance(last, dict) and last.get("kind") == "thinking" and last.get("status") == "running":
+                                        result["traces"] = list(traces[:-1]) + [{**last, "status": "done"}]
                         if parsed_attachments:
                             update["attachments"] = parsed_attachments
                         new_entries.append(entry.model_copy(update=update))
@@ -2069,48 +2069,12 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                     "run": _update_agent_conversation(projection.run, agent_id, new_conv),
                 })
 
-            case "reflect_delta":
-                # Domain event: forward internal-LLM text fragments to the in-flight
-                # ToolKoanEntry for this agent. Correlated by agent_id only per
-                # intake decision 4 -- koan MCP tools block, so at most one in-flight
-                # koan entry per agent. Other ReflectTraceEvent kinds (search, done,
-                # thinking) stay on the project-scoped reflect projection; they do not
-                # flow into the agent's conversation (M3 decision 3).
-                if projection.run is None or not agent_id:
-                    return projection
-                agent = projection.run.agents.get(agent_id)
-                if agent is None:
-                    return projection
-                delta = payload.get("delta", "")
-                if not delta:
-                    return projection
-                new_entries = list(agent.conversation.entries)
-                target_idx: int | None = None
-                for i, entry in enumerate(new_entries):
-                    if isinstance(entry, ToolKoanEntry) and entry.in_flight:
-                        target_idx = i
-                        break
-                if target_idx is None:
-                    log.warning(
-                        "fold reflect_delta: no in-flight ToolKoanEntry for agent=%r",
-                        agent_id,
-                    )
-                    return projection
-                target = new_entries[target_idx]
-                existing_result = target.result or {}
-                existing_answer = existing_result.get("answer", "") or ""
-                new_result = {**existing_result, "answer": existing_answer + delta}
-                new_entries[target_idx] = target.model_copy(update={"result": new_result})
-                new_conv = agent.conversation.model_copy(update={"entries": new_entries})
-                return projection.model_copy(update={
-                    "run": _update_agent_conversation(projection.run, agent_id, new_conv),
-                })
 
             case "reflect_inline_trace":
                 # Domain event: forward reflect subagent trace events (thinking
-                # transitions, search lifecycle, metadata) to the in-flight
-                # ToolKoanEntry's result.traces array. Correlated by agent_id
-                # only -- same uniqueness invariant as reflect_delta.
+                # deltas, text streaming, search lifecycle, metadata) to the
+                # in-flight ToolKoanEntry's result.traces array. Correlated by
+                # agent_id only -- same uniqueness invariant as reflect_inline_trace.
                 if projection.run is None or not agent_id:
                     return projection
                 agent = projection.run.agents.get(agent_id)
@@ -2158,8 +2122,56 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                         "traces": traces,
                         "iteration": trace.get("iteration", existing_result.get("iteration")),
                     }
+                elif trace_kind == "thinking_start":
+                    traces: list = list(existing_result.get("traces", []))
+                    traces.append({"kind": "thinking", "status": "running", "delta": ""})
+                    new_result = {
+                        **existing_result,
+                        "traces": traces,
+                        "iteration": trace.get("iteration", existing_result.get("iteration")),
+                    }
+                elif trace_kind == "thinking_delta":
+                    traces: list = list(existing_result.get("traces", []))
+                    # Accumulate delta into the last running thinking entry.
+                    for j in range(len(traces) - 1, -1, -1):
+                        t = traces[j]
+                        if isinstance(t, dict) and t.get("kind") == "thinking" and t.get("status") == "running":
+                            traces[j] = {**t, "delta": t.get("delta", "") + trace.get("delta", "")}
+                            break
+                    else:
+                        # No running thinking entry found -- create one.
+                        log.warning("fold reflect_inline_trace: thinking_delta without running thinking entry")
+                        traces.append({"kind": "thinking", "status": "running", "delta": trace.get("delta", "")})
+                    new_result = {
+                        **existing_result,
+                        "traces": traces,
+                        "iteration": trace.get("iteration", existing_result.get("iteration")),
+                    }
+                elif trace_kind == "thinking_end":
+                    traces: list = list(existing_result.get("traces", []))
+                    for j in range(len(traces) - 1, -1, -1):
+                        t = traces[j]
+                        if isinstance(t, dict) and t.get("kind") == "thinking" and t.get("status") == "running":
+                            traces[j] = {**t, "status": "done"}
+                            break
+                    new_result = {
+                        **existing_result,
+                        "traces": traces,
+                        "iteration": trace.get("iteration", existing_result.get("iteration")),
+                    }
+                elif trace_kind == "text":
+                    # Append delta to answer AND append a trace entry.
+                    existing_answer = existing_result.get("answer", "") or ""
+                    traces: list = list(existing_result.get("traces", []))
+                    traces.append({"kind": "text", "delta": trace.get("delta", "")})
+                    new_result = {
+                        **existing_result,
+                        "answer": existing_answer + trace.get("delta", ""),
+                        "traces": traces,
+                        "iteration": trace.get("iteration", existing_result.get("iteration")),
+                    }
                 else:
-                    # thinking_start, thinking_end, search (running) -- append.
+                    # search (running) -- append.
                     traces: list = list(existing_result.get("traces", []))
                     traces.append(trace)
                     new_result = {
@@ -2178,7 +2190,7 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                 # Domain event: overwrite the in-flight tool entry's attachments with
                 # a koan-side manifest carrying full upload_id and path fields. Emitted
                 # by MCP handlers that have committed uploads. Correlated by agent_id
-                # only -- same uniqueness invariant as reflect_delta.
+                # only -- same uniqueness invariant as reflect_inline_trace.
                 if projection.run is None or not agent_id:
                     return projection
                 agent = projection.run.agents.get(agent_id)

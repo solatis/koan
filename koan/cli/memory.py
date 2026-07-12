@@ -258,8 +258,9 @@ def cmd_reflect(args: argparse.Namespace, embed_spec: "ModelSpec", standard_spec
                 f"[iter {event.iteration}] search({q!r}{tag}) -> {rc} results",
                 file=sys.stderr,
             )
-        elif event.kind == "done":
-            print(f"[iter {event.iteration}] done", file=sys.stderr)
+        # thinking_delta and text are not rendered in the CLI; the
+        # final answer is printed at the end via result.answer.
+        # kind == "search_start" is skipped (search gives result_count).
 
     try:
         result = asyncio.run(run_reflect_agent(

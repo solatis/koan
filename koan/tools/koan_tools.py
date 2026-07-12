@@ -858,16 +858,18 @@ async def reflect_core(
     """Core logic for koan_reflect.
 
     Runs run_reflect_agent with a state-machine trace callback that emits
-    reflect_delta projection events for text streaming and reflect_inline_trace
-    events for thinking transitions, search lifecycle, and metadata. Returns
-    a JSON string with answer, citations, and iterations.
+    reflect_inline_trace projection events for thinking deltas, text
+    streaming, search lifecycle, and metadata. The answer is streamed to
+    the frontend via reflect_inline_trace text deltas (accumulated in the
+    projection fold); it is NOT included in the tool return JSON. Returns
+    a JSON string with citations and iterations only.
 
     Re-raises IterationCapExceeded and RuntimeError so callers can map them
     to their error shapes.
     """
     import json
 
-    from ..events import build_reflect_delta, build_reflect_inline_trace
+    from ..events import build_reflect_inline_trace
     from ..memory.retrieval import ReflectTraceEvent, run_reflect_agent
     from ..memory.retrieval.reflect import MAX_ITERATIONS
 
@@ -892,20 +894,21 @@ async def reflect_core(
             ),
         ))
 
-    # State-machine callback: emits reflect_delta for text streaming (unchanged)
-    # and reflect_inline_trace for traces/metadata (new). The callback is defined
-    # after `standard` is resolved so it can capture the model name for the meta
-    # event. All state-machine logic lives in the projection fold; this callback
-    # only translates ReflectTraceEvent kinds into projection events.
+    # State-machine callback: emits reflect_inline_trace for text streaming,
+    # thinking deltas, search lifecycle, and metadata. The callback is
+    # defined after `standard` is resolved so it can capture the model name
+    # for the meta event. All state-machine logic lives in the projection
+    # fold; this callback only translates ReflectTraceEvent kinds into
+    # projection events.
     is_thinking = False
     started = False
 
     def _on_trace(ev: ReflectTraceEvent) -> None:
         """State-machine callback for reflect subagent traces.
 
-        Tracks thinking state to emit start/end transitions rather than
-        raw deltas. Emits reflect_delta for text streaming (unchanged) and
-        reflect_inline_trace for traces/metadata (new). On first call,
+        Tracks thinking state to emit start/end transitions and forwards
+        full thinking deltas. Emits reflect_inline_trace for text streaming,
+        thinking deltas, search lifecycle, and metadata. On first call,
         emits a meta event with model and maxIterations.
         """
         nonlocal is_thinking, started
@@ -923,7 +926,9 @@ async def reflect_core(
             )
 
         # Flush thinking state when a non-thinking event arrives.
-        if ev.kind != "thinking" and is_thinking:
+        # Must check "thinking_delta" (not "thinking") so each delta
+        # doesn't prematurely trigger the flush.
+        if ev.kind != "thinking_delta" and is_thinking:
             is_thinking = False
             app_state.projection_store.push_event(
                 "reflect_inline_trace",
@@ -933,17 +938,33 @@ async def reflect_core(
 
         if ev.kind == "text":
             if ev.delta:
+                # Text deltas flow through reflect_inline_trace (not
+                # reflect_inline_trace) -- the fold appends to result.answer.
                 app_state.projection_store.push_event(
-                    "reflect_delta",
-                    build_reflect_delta(ev.delta),
+                    "reflect_inline_trace",
+                    build_reflect_inline_trace({
+                        "kind": "text",
+                        "delta": ev.delta,
+                        "iteration": ev.iteration,
+                    }),
                     agent_id=agent.agent_id,
                 )
-        elif ev.kind == "thinking":
+        elif ev.kind == "thinking_delta":
             if not is_thinking:
                 is_thinking = True
                 app_state.projection_store.push_event(
                     "reflect_inline_trace",
                     build_reflect_inline_trace({"kind": "thinking_start"}),
+                    agent_id=agent.agent_id,
+                )
+            if ev.delta:
+                app_state.projection_store.push_event(
+                    "reflect_inline_trace",
+                    build_reflect_inline_trace({
+                        "kind": "thinking_delta",
+                        "delta": ev.delta,
+                        "iteration": ev.iteration,
+                    }),
                     agent_id=agent.agent_id,
                 )
         elif ev.kind == "search_start":
@@ -969,8 +990,6 @@ async def reflect_core(
                 }),
                 agent_id=agent.agent_id,
             )
-        # kind == "done" is intentionally ignored (dead path: done_tool sets
-        # deps.done_result and the loop breaks without emitting a trace).
     result = await run_reflect_agent(
         index,
         model=standard,
@@ -979,8 +998,10 @@ async def reflect_core(
         context=context,
         on_trace=_on_trace,
     )
+    # Answer is NOT included in the tool return JSON -- it arrives
+    # exclusively via streamed reflect_inline_trace text deltas in the
+    # projection fold. The calling agent gets citations + iterations only.
     out = {
-        "answer": result.answer,
         "citations": [
             {"id": c.id, "title": c.title, "type": c.type, "modifiedMs": c.modified_ms}
             for c in result.citations

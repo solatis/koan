@@ -518,17 +518,6 @@ def build_reflect_cleared() -> dict:
 
 # -- Domain event builders (agent-conversation channel) -----------------------
 
-def build_reflect_delta(delta: str) -> dict:
-    """Build reflect_delta event payload.
-
-    Carries a single text fragment from the pydantic-ai reflection loop's
-    text-output stream. The fold appends it to the in-flight ToolKoanEntry's
-    result.answer for the agent. Correlated by agent_id only -- koan MCP tools
-    block, so at most one in-flight koan entry per agent.
-    """
-    return {"delta": delta}
-
-
 def build_reflect_inline_trace(trace: dict) -> dict:
     """Build reflect_inline_trace event payload.
 

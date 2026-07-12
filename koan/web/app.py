@@ -1122,8 +1122,14 @@ async def _run_reflect_background(
     )
 
     def on_trace(ev) -> None:
-        # Dispatch every kind (search, done, thinking, text) so the frontend
-        # receives a unified arrival-ordered trace without separate event types.
+        # Skip internal lifecycle events that the standalone page doesn't
+        # need: search_start (the search event with result_count is
+        # sufficient) and thinking_delta (thinking content is only surfaced
+        # in the inline KoanToolCard path, not the standalone page).
+        if ev.kind in ("search_start", "thinking_delta"):
+            return
+        # Forward final-form events (search, text) to the frontend as a
+        # unified arrival-ordered trace.
         trace = {
             "iteration": ev.iteration,
             "kind": ev.kind,

@@ -1347,79 +1347,6 @@ class TestBuildArtifactDiff:
 
 
 # ---------------------------------------------------------------------------
-# fold: reflect_delta domain event
-# ---------------------------------------------------------------------------
-
-class TestFoldReflectDelta:
-    """reflect_delta appends to the in-flight ToolKoanEntry's result.answer.
-
-    Correlated by agent_id only (koan MCP tools block, so at most one
-    in-flight koan entry per agent at any time). Fold case is pure.
-    """
-
-    def _with_inflight_koan_entry(self, tool_name: str = "koan_reflect") -> tuple:
-        """Return (projection, agent_id) with an in-flight ToolKoanEntry."""
-        p = _proj_with_primary("a1")
-        p = fold(p, _e("tool_request", {
-            "call_id": "c1", "tool": tool_name,
-        }, agent_id="a1"))
-        return p, "a1"
-
-    def test_reflect_delta_appends_to_result_answer(self):
-        p, aid = self._with_inflight_koan_entry()
-        r = fold(p, _e("reflect_delta", {"delta": "hello"}, agent_id=aid))
-        entry = r.run.agents[aid].conversation.entries[0]
-        assert isinstance(entry, ToolKoanEntry)
-        assert entry.result == {"answer": "hello"}
-        # in_flight must remain True -- domain events do not close the lifecycle
-        assert entry.in_flight is True
-
-    def test_reflect_delta_accumulates_across_multiple_events(self):
-        p, aid = self._with_inflight_koan_entry()
-        p = fold(p, _e("reflect_delta", {"delta": "hello"}, agent_id=aid))
-        r = fold(p, _e("reflect_delta", {"delta": " there"}, agent_id=aid))
-        entry = r.run.agents[aid].conversation.entries[0]
-        assert entry.result == {"answer": "hello there"}
-
-    def test_reflect_delta_no_inflight_entry_is_noop(self):
-        """When there is no in-flight ToolKoanEntry the event is dropped silently."""
-        p = _proj_with_primary("a1")
-        r = fold(p, _e("reflect_delta", {"delta": "hello"}, agent_id="a1"))
-        # Projection unchanged: no entries created
-        assert r.run.agents["a1"].conversation.entries == []
-
-    def test_reflect_delta_completed_entry_not_targeted(self):
-        """A ToolKoanEntry with in_flight=False is not updated by reflect_delta."""
-        p, aid = self._with_inflight_koan_entry()
-        # Complete the entry via tool_result
-        p = fold(p, _e("tool_result", {"call_id": "c1", "tool": "koan_reflect"}, agent_id=aid))
-        entry_before = p.run.agents[aid].conversation.entries[0]
-        assert entry_before.in_flight is False
-        # reflect_delta should be a no-op (no in-flight entry)
-        r = fold(p, _e("reflect_delta", {"delta": "late"}, agent_id=aid))
-        entry_after = r.run.agents[aid].conversation.entries[0]
-        assert entry_after.result == entry_before.result
-
-    def test_reflect_delta_empty_delta_is_noop(self):
-        p, aid = self._with_inflight_koan_entry()
-        r = fold(p, _e("reflect_delta", {"delta": ""}, agent_id=aid))
-        entry = r.run.agents[aid].conversation.entries[0]
-        # result stays None when delta is empty
-        assert entry.result is None
-
-    def test_reflect_delta_preserves_existing_result_fields(self):
-        """Accumulation merges into existing result dict without clobbering other keys."""
-        p, aid = self._with_inflight_koan_entry()
-        # Seed a result with extra keys (simulates partial pre-population)
-        p = fold(p, _e("reflect_delta", {"delta": "A"}, agent_id=aid))
-        # Manually inject an extra key via another delta pass (the fold always
-        # does a {**existing_result, "answer": ...} merge, so this is implicit)
-        p = fold(p, _e("reflect_delta", {"delta": "B"}, agent_id=aid))
-        entry = p.run.agents[aid].conversation.entries[0]
-        assert entry.result["answer"] == "AB"
-
-
-# ---------------------------------------------------------------------------
 # fold: reflect_inline_trace domain event
 # ---------------------------------------------------------------------------
 
@@ -1461,14 +1388,14 @@ class TestFoldReflectInlineTrace:
         p, aid = self._with_inflight_koan_entry()
         r = fold(p, self._trace({"kind": "thinking_start"}, aid))
         entry = r.run.agents[aid].conversation.entries[0]
-        assert entry.result["traces"] == [{"kind": "thinking_start"}]
+        assert entry.result["traces"] == [{"kind": "thinking", "status": "running", "delta": ""}]
 
     def test_thinking_end_appends_to_traces(self):
-        """thinking_end trace is appended to result.traces."""
+        """thinking_end without a running thinking entry is a no-op (traces empty)."""
         p, aid = self._with_inflight_koan_entry()
         r = fold(p, self._trace({"kind": "thinking_end"}, aid))
         entry = r.run.agents[aid].conversation.entries[0]
-        assert entry.result["traces"] == [{"kind": "thinking_end"}]
+        assert entry.result.get("traces", []) == []
 
     def test_search_running_appends_to_traces(self):
         """search (running) trace is appended with all fields."""
@@ -1529,13 +1456,12 @@ class TestFoldReflectInlineTrace:
         r = fold(p, self._trace({"kind": "thinking_end"}, aid))
         entry = r.run.agents[aid].conversation.entries[0]
         traces = entry.result["traces"]
-        assert traces[0] == {"kind": "thinking_start"}
+        assert traces[0] == {"kind": "thinking", "status": "done", "delta": ""}
         assert traces[1]["kind"] == "search"
         assert traces[1]["status"] == "done"
         assert traces[1]["resultCount"] == 2
         assert traces[1]["query"] == "auth"
-        assert traces[2] == {"kind": "thinking_end"}
-        assert len(traces) == 3
+        assert len(traces) == 2
 
     def test_iteration_updates_on_trace(self):
         """iteration field is updated from the trace's iteration field when present."""
@@ -1564,13 +1490,16 @@ class TestFoldReflectInlineTrace:
         assert entry.in_flight is True
 
     def test_preserves_existing_result_fields(self):
-        """reflect_inline_trace preserves answer set by reflect_delta."""
+        """reflect_inline_trace preserves answer set by a prior text trace."""
         p, aid = self._with_inflight_koan_entry()
-        p = fold(p, _e("reflect_delta", {"delta": "hello"}, agent_id=aid))
-        r = fold(p, self._trace({"kind": "thinking_start"}, aid))
+        p = fold(p, self._trace({"kind": "text", "delta": "hello", "iteration": 1}, aid))
+        r = fold(p, self._trace({"kind": "thinking_start", "iteration": 1}, aid))
         entry = r.run.agents[aid].conversation.entries[0]
         assert entry.result["answer"] == "hello"
-        assert entry.result["traces"] == [{"kind": "thinking_start"}]
+        assert entry.result["traces"] == [
+            {"kind": "text", "delta": "hello"},
+            {"kind": "thinking", "status": "running", "delta": ""},
+        ]
 
     def test_tool_completed_merges_not_replaces_result(self):
         """tool_completed merges parsed result into existing result, preserving traces/model."""
@@ -1589,11 +1518,11 @@ class TestFoldReflectInlineTrace:
         assert entry.in_flight is False
         assert entry.result["answer"] == "final"
         assert entry.result["model"] == "opus"
-        assert entry.result["traces"] == [{"kind": "thinking_start"}, {"kind": "thinking_end"}]
+        assert entry.result["traces"] == [{"kind": "thinking", "status": "done", "delta": ""}]
         assert entry.result["iterations"] == 3
 
     def test_tool_completed_cleans_up_dangling_thinking(self):
-        """tool_completed appends thinking_end if the last trace is thinking_start."""
+        """tool_completed closes a dangling running thinking entry by setting status to done."""
         p, aid = self._with_inflight_koan_entry()
         p = fold(p, self._trace({"kind": "thinking_start"}, aid))
         result_json = '{"answer": "done", "iterations": 1}'
@@ -1602,8 +1531,8 @@ class TestFoldReflectInlineTrace:
         }, agent_id=aid))
         entry = r.run.agents[aid].conversation.entries[0]
         traces = entry.result["traces"]
-        assert traces[-1] == {"kind": "thinking_end"}
-        assert traces[0] == {"kind": "thinking_start"}
+        assert traces[-1] == {"kind": "thinking", "status": "done", "delta": ""}
+        assert traces[0] == {"kind": "thinking", "status": "done", "delta": ""}
 
 
 # ---------------------------------------------------------------------------

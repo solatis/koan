@@ -13,7 +13,6 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Literal
 
 from pydantic_ai import Agent, RunContext
-from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.messages import (
     PartStartEvent,
     PartDeltaEvent,
@@ -22,7 +21,6 @@ from pydantic_ai.messages import (
     TextPartDelta,
     ThinkingPartDelta,
 )
-from pydantic_ai.output import TextOutput
 
 from ..types import MemoryEntry
 from ..timestamps import iso_to_ms
@@ -88,12 +86,18 @@ Leave `type` unset to scan everything.
    2026-04-10"), not vague paraphrases. Close by naming what the
    memory does NOT cover about the question -- omissions are data.
 
-4. Select citations, then call `done`. For EACH claim in your draft,
+4. Select citations, then call `cite`. For EACH claim in your draft,
    name which retrieved entry backs it. An entry backs a claim only
    if removing that entry would force you to drop the claim. Entries
    you saw in search results but did not rely on are NOT citations --
    exclude them from `memory_ids`. Citing seen-but-unused entries is
-   the most common failure mode of this agent; actively filter.
+   the most common failure mode of this agent; actively filter. Then
+   call `cite(memory_ids)` with the backing entry ids.
+
+5. Write the briefing as your final output. 300-500 tokens of markdown
+   prose. Open with the most load-bearing finding. Use concrete names
+   and dates from the entries. Close by naming what the memory does
+   NOT cover about the question -- omissions are data.
 
 ## Worked example
 
@@ -121,7 +125,8 @@ Draft claims mapped to backing entries:
 Memory entries #21 (auth DB migration) and #31 (ruff config) were
 retrieved but do not back any claim in this briefing. Correct
 citation list is [12, 18, 24]. A drifted list would be
-[12, 18, 21, 24, 31] -- do not do this.
+[12, 18, 21, 24, 31] -- do not do this. Call `cite([12, 18, 24])`,
+then write the briefing as your final text output.
 
 ## Sparse results
 
@@ -133,10 +138,11 @@ finding; inventing X is not.
 ## Termination
 
 Single-turn, non-conversational. Do not ask follow-up questions; no
-one will answer. Do not offer alternatives or next steps. Call `done`
-as soon as you have enough to write the briefing. The loop is capped
-at 10 tool calls total -- exceeding the cap returns no answer at
-all, so spend calls on evidence, not deliberation.
+one will answer. Do not offer alternatives or next steps. Call `cite`
+with your backing entry ids, then write the briefing as your final
+text output. The loop is capped at 10 tool calls total -- exceeding
+the cap returns no answer at all, so spend calls on evidence, not
+deliberation.
 """
 
 # ---------------------------------------------------------------------------
@@ -149,23 +155,22 @@ class ReflectTraceEvent:
     """A single trace event from the reflect subagent's internal loop.
 
     Kinds:
-        search_start -- emitted before _dispatch_search; signals a search
+        search_start   -- emitted before _dispatch_search; signals a search
             is running (two-phase lifecycle with ``search``).
-        search       -- emitted after _dispatch_search completes; carries
+        search         -- emitted after _dispatch_search completes; carries
             result_count. The inline projection fold matches this to the
             last ``search_start``-derived running entry.
-        done         -- never emitted by the loop (done_tool sets
-            deps.done_result and breaks); retained for the standalone
-            reflect page's passthrough callback.
-        thinking     -- raw thinking content delta from PartStart/PartDelta
-            events. The inline callback consumes these internally and
-            emits thinking_start/thinking_end transitions instead.
-        text         -- raw text content delta; the inline callback
-            forwards these as reflect_delta events for answer streaming.
+        thinking_delta -- raw thinking content delta from PartStart/PartDelta
+            events. The inline callback forwards these as
+            ``reflect_inline_trace`` events with kind ``thinking_delta`` for
+            accumulation in the fold.
+        text           -- raw text content delta; the inline callback
+            forwards these as ``reflect_inline_trace`` events with kind
+            ``text`` for answer streaming.
     """
 
     iteration: int
-    kind: Literal["search_start", "search", "done", "thinking", "text"]
+    kind: Literal["search_start", "search", "thinking_delta", "text"]
     query: str = ""
     type_filter: str = ""
     result_count: int | None = None   # populated for search after dispatch
@@ -190,15 +195,11 @@ class ReflectResult:
 class IterationCapExceeded(Exception):
     def __init__(self, iterations: int) -> None:
         super().__init__(
-            f"reflect loop exceeded {iterations} iterations without calling done"
+            f"reflect loop exceeded {iterations} iterations without producing a briefing"
         )
         self.iterations = iterations
 
 
-@dataclass
-class _DoneResult:
-    answer: str
-    memory_ids: list[int]
 
 
 # ---------------------------------------------------------------------------
@@ -207,11 +208,28 @@ class _DoneResult:
 
 @dataclass
 class _Deps:
+    """Dependencies injected into the reflect agent's tools and loop.
+
+    Fields:
+        index: The retrieval index backing search calls.
+        retrieved: Accumulates entries from all search calls; used by
+            _resolve_citations to validate cited ids.
+        on_trace: Optional callback for streaming trace events to the
+            projection layer (inline reflect path).
+        iteration: Current model-request count, incremented per turn.
+        cited_ids: Set by the ``cite`` tool call; the backing entry ids
+            for the forthcoming briefing. None if ``cite`` was never
+            called (citations default to empty).
+        accumulated_answer: Text deltas from the model's terminal text
+            output, accumulated during streaming for ReflectResult.answer.
+        embedding: Embedding ModelSpec for retrieval vector search.
+    """
     index: RetrievalIndex
     retrieved: dict[int, MemoryEntry] = field(default_factory=dict)
     on_trace: Callable[[ReflectTraceEvent], None] | None = None
     iteration: int = 0
-    done_result: _DoneResult | None = None
+    cited_ids: list[int] | None = None
+    accumulated_answer: str = ""
     embedding: "ModelSpec | None" = None
 
 
@@ -235,15 +253,14 @@ def _build_agent(model: "ModelSpec") -> Agent[_Deps, None]:
     # at call time (same pattern used throughout the agent layer).
     from ...agents.adapter import build_model, build_model_settings
 
-    def _reject_text(text: str) -> str:
-        raise ModelRetry("Do not produce text output. Call the `done` tool instead.")
-
+    # Terminal text output IS the briefing -- no TextOutput wrapper.
+    # The model writes the briefing as plain text after calling `cite`.
     built_model = build_model(model, api_key=model.api_key, region=model.region, base_url=model.base_url)
     agent: Agent[_Deps, str] = Agent(
         model=built_model,
         system_prompt=SYSTEM_PROMPT,
         model_settings=build_model_settings(model),
-        output_type=TextOutput(_reject_text),
+        output_type=str,
     )
 
     @agent.tool(name="search")
@@ -296,33 +313,27 @@ def _build_agent(model: "ModelSpec") -> Agent[_Deps, None]:
             ))
         return payload
 
-    @agent.tool(name="done")
-    async def done_tool(
+    @agent.tool(name="cite")
+    async def cite_tool(
         ctx: RunContext[_Deps],
-        answer: str,
         memory_ids: list[int],
     ) -> str:
-        """Emit the final cited briefing and terminate the loop.
+        """Record which retrieved entries back the forthcoming briefing.
 
-        Call this only when every claim in your drafted answer is backed by a
-        specific entry returned by a prior search call in this conversation.
+        Call this immediately before writing the briefing text. Every
+        claim in your briefing must be backed by a specific entry returned
+        by a prior search call in this conversation.
 
         Args:
-            answer: Markdown briefing, 300-500 tokens. Open with the most
-                load-bearing finding. Use concrete entity names and dates from
-                the entries, not vague paraphrases. Close by naming what the
-                memory does NOT cover about the question. Do NOT include entry
-                IDs, filenames, or UUIDs in this text -- citations go in
-                memory_ids, not in the prose.
-            memory_ids: Entry IDs that back specific claims in answer. Include
-                an id iff removing that entry from your evidence would force you
-                to drop some claim. Do NOT include entries that appeared in
-                search results but were not relied on -- that mistake (citing
-                seen entries rather than used entries) is the primary failure
-                mode. Dedupe; order does not matter.
+            memory_ids: Entry IDs that back specific claims in the briefing.
+                Include an id iff removing that entry from your evidence
+                would force you to drop some claim. Do NOT include entries
+                that appeared in search results but were not relied on --
+                that mistake (citing seen entries rather than used entries)
+                is the primary failure mode. Dedupe; order does not matter.
         """
-        ctx.deps.done_result = _DoneResult(answer=answer, memory_ids=memory_ids)
-        return "done"
+        ctx.deps.cited_ids = memory_ids
+        return "cited"
 
     return agent
 
@@ -428,11 +439,17 @@ async def run_reflect_agent(
 ) -> ReflectResult:
     """Run the pydantic-ai tool-calling reflection loop and return a cited briefing.
 
+    The agent searches memory, calls `cite(memory_ids)` to record backing
+    entry ids, then writes the briefing as terminal text output. The loop
+    exhausts naturally when the model produces text without tool calls
+    (PydanticAI's native End condition). Text deltas are accumulated into
+    ``deps.accumulated_answer`` for the returned ``ReflectResult.answer``.
+
     model (reflect LLM) and embed (embedding) ModelSpecs arrive via explicit
     parameters; the caller is responsible for resolving them before calling.
-    Raises IterationCapExceeded if the model does not call "done" within
-    max_iterations model-request turns. No partial/best-effort answer is
-    synthesized on overflow.
+    Raises IterationCapExceeded if the model does not produce terminal text
+    within max_iterations model-request turns. No partial/best-effort answer
+    is synthesized on overflow.
     """
     from ...agents.adapter import build_usage_limits
 
@@ -465,10 +482,13 @@ async def run_reflect_agent(
                             if isinstance(ev.part, ThinkingPart) and ev.part.content:
                                 on_trace(ReflectTraceEvent(
                                     iteration=model_request_count,
-                                    kind="thinking",
+                                    kind="thinking_delta",
                                     delta=ev.part.content,
                                 ))
                             elif isinstance(ev.part, TextPart) and ev.part.content:
+                                # Terminal text output IS the briefing --
+                                # accumulate for ReflectResult.answer.
+                                deps.accumulated_answer += ev.part.content
                                 on_trace(ReflectTraceEvent(
                                     iteration=model_request_count,
                                     kind="text",
@@ -478,10 +498,13 @@ async def run_reflect_agent(
                             if isinstance(ev.delta, ThinkingPartDelta) and ev.delta.content_delta:
                                 on_trace(ReflectTraceEvent(
                                     iteration=model_request_count,
-                                    kind="thinking",
+                                    kind="thinking_delta",
                                     delta=ev.delta.content_delta,
                                 ))
                             elif isinstance(ev.delta, TextPartDelta) and ev.delta.content_delta:
+                                # Terminal text output IS the briefing --
+                                # accumulate for ReflectResult.answer.
+                                deps.accumulated_answer += ev.delta.content_delta
                                 on_trace(ReflectTraceEvent(
                                     iteration=model_request_count,
                                     kind="text",
@@ -489,17 +512,38 @@ async def run_reflect_agent(
                                 ))
                 if model_request_count >= max_iterations:
                     raise IterationCapExceeded(iterations=max_iterations)
-            if deps.done_result is not None:
-                break
 
-    if deps.done_result is not None:
-        r = deps.done_result
-        memory_ids = [int(x) for x in r.memory_ids]
-        citations = _resolve_citations(memory_ids, deps.retrieved)
-        return ReflectResult(
-            answer=r.answer,
-            citations=citations,
-            iterations=model_request_count,
-        )
+    # The loop exhausts naturally when the model produces terminal text
+    # output (no tool calls). No explicit End-node check needed.
 
-    raise IterationCapExceeded(iterations=model_request_count)
+    # Extract cited_ids from deps (set by cite_tool); fall back to
+    # extracting from run.all_messages() if cite was called but deps
+    # wasn't set (defensive -- shouldn't happen in practice).
+    memory_ids: list[int] = []
+    if deps.cited_ids is not None:
+        memory_ids = [int(x) for x in deps.cited_ids]
+    else:
+        try:
+            for msg in run.all_messages():
+                for part in getattr(msg, "parts", []):
+                    tool_name = getattr(part, "tool_name", None)
+                    if tool_name == "cite":
+                        args = getattr(part, "args", None)
+                        if isinstance(args, str):
+                            import json as _json
+                            args = _json.loads(args)
+                        if isinstance(args, dict):
+                            ids = args.get("memory_ids", [])
+                            if ids:
+                                memory_ids = [int(x) for x in ids]
+        except Exception:
+            # run.all_messages() may be inaccessible after the async
+            # with block exits; default to empty citations.
+            pass
+
+    citations = _resolve_citations(memory_ids, deps.retrieved)
+    return ReflectResult(
+        answer=deps.accumulated_answer,
+        citations=citations,
+        iterations=model_request_count,
+    )

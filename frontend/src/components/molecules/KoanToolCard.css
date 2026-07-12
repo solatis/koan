@@ -103,30 +103,8 @@
   gap: 6px;
 }
 
-.ktc-reflect-thinking {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 10px;
-  background: var(--bg-thinking);
-  border-radius: var(--radius-md);
-}
-
-.ktc-reflect-thinking-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: var(--radius-circle);
-  background: var(--text-thinking-label);
-  animation: ktc-pulse 1.5s ease-in-out infinite;
-  flex-shrink: 0;
-}
-
-.ktc-reflect-thinking-label {
-  font-size: var(--type-tool-type);
-  color: var(--text-thinking-label);
-  font-weight: 500;
-}
-
+/* ThinkingBlock molecule provides its own styles; the wrapper div in
+   ReflectCard uses inline marginBottom for spacing. */
 .ktc-reflect-search {
   display: flex;
   align-items: center;
