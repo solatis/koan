@@ -94,6 +94,7 @@ not carry `is_primary` — the fold looks up the agent in `run.agents`.
 | `tool_grep`      | `{call_id, pattern}`             | set        |
 | `tool_ls`        | `{call_id, path}`                | set        |
 | `tool_completed` | `{call_id, tool, result?}`       | set        |
+| `tool_failed`    | `{call_id, tool, error, ts_ms}`  | set        |
 | `thinking`       | `{delta}`                        | set        |
 | `stream_delta`   | `{delta}`                        | set        |
 | `stream_cleared` | `{}`                             | set        |
@@ -428,6 +429,17 @@ class ToolKoanEntry(BaseToolEntry):
     args: dict = {}
     result: dict | None = None
 
+class ToolFailedEntry(BaseToolEntry):
+    # Terminal entry for a call whose arguments failed validation (the tool
+    # body never ran). The tool_failed fold case REPLACES the in-flight entry
+    # with this one, retaining entry_id/phase_id for stable list keys.
+    # raw_input is the JSON-dumped last-known tool_input -- an opaque string;
+    # the malformed model-authored payload never survives as structured data.
+    type: Literal["tool_failed"] = "tool_failed"
+    tool_name: str
+    error: str = ""
+    raw_input: str = ""
+
 class ToolAggregateEntry(KoanBaseModel):
     type: Literal["tool_aggregate"] = "tool_aggregate"
     children: list[AggregateChild] = []
@@ -454,7 +466,7 @@ class YieldEntry(KoanBaseModel):
 ConversationEntry = Annotated[
     ThinkingEntry | TextEntry | StepEntry | UserMessageEntry |
     ToolWriteEntry | ToolEditEntry | ToolBashEntry | ToolGenericEntry |
-    ToolKoanEntry | ToolAggregateEntry |
+    ToolKoanEntry | ToolFailedEntry | ToolAggregateEntry |
     DebugStepGuidanceEntry | PhaseBoundaryEntry | YieldEntry,
     Field(discriminator="type"),
 ]
@@ -583,16 +595,26 @@ primary-agent filtering in the fold — every agent has its own conversation and
 the fold appends unconditionally. The frontend chooses which conversation to
 render via `focus`.
 
-| Event                                                                       | Action                                                                                                                                                                                                                       |
-| --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `thinking`                                                                  | Flush `pending_text` → TextEntry. Append delta to `pending_thinking`. Set `is_thinking = True`.                                                                                                                              |
-| `stream_delta`                                                              | Flush `pending_thinking` → ThinkingEntry. Append delta to `pending_text`. Set `is_thinking = False`.                                                                                                                         |
-| `tool_read`, `tool_write`, `tool_edit`, `tool_bash`, `tool_grep`, `tool_ls` | Flush both pending fields. Append typed entry with `in_flight=True`. Set `is_thinking = False`. Update `agent.last_tool`.                                                                                                    |
-| `tool_called` (non-koan)                                                    | Flush both pending fields. Append `ToolGenericEntry` with `in_flight=True`. Set `is_thinking = False`. Update `agent.last_tool`.                                                                                             |
-| `tool_called` (tool name starts with `koan_`)                               | Skip. koan MCP tools are infrastructure; their effects arrive via `agent_step_advanced`, `questions_asked`, etc.                                                                                                             |
-| `tool_completed`                                                            | Find entry by `call_id`, set `in_flight = False`.                                                                                                                                                                            |
-| `agent_step_advanced`                                                       | Flush both pending fields. Append `StepEntry` if `step >= 1`. Set `is_thinking = False`. **Also** update `agent.step`, `agent.step_name`; accumulate `usage` into `conversation.input_tokens`, `conversation.output_tokens`. |
-| `stream_cleared`                                                            | Flush both pending fields. Set `is_thinking = False`.                                                                                                                                                                        |
+| Event                                                                       | Action                                                                                                                                                                                                                                                                                                                                    |
+| --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `thinking`                                                                  | Flush `pending_text` → TextEntry. Append delta to `pending_thinking`. Set `is_thinking = True`.                                                                                                                                                                                                                                           |
+| `stream_delta`                                                              | Flush `pending_thinking` → ThinkingEntry. Append delta to `pending_text`. Set `is_thinking = False`.                                                                                                                                                                                                                                      |
+| `tool_read`, `tool_write`, `tool_edit`, `tool_bash`, `tool_grep`, `tool_ls` | Flush both pending fields. Append typed entry with `in_flight=True`. Set `is_thinking = False`. Update `agent.last_tool`.                                                                                                                                                                                                                 |
+| `tool_called` (non-koan)                                                    | Flush both pending fields. Append `ToolGenericEntry` with `in_flight=True`. Set `is_thinking = False`. Update `agent.last_tool`.                                                                                                                                                                                                          |
+| `tool_called` (tool name starts with `koan_`)                               | Skip. koan MCP tools are infrastructure; their effects arrive via `agent_step_advanced`, `questions_asked`, etc.                                                                                                                                                                                                                          |
+| `tool_completed`                                                            | Find entry by `call_id`, set `in_flight = False`.                                                                                                                                                                                                                                                                                         |
+| `tool_failed`                                                               | Argument validation rejected the call (tool body never ran). Top-level entry: REPLACE with `ToolFailedEntry` (retains `entry_id`/`phase_id`; malformed input kept only as the opaque `raw_input` JSON string). Aggregate child: mark `failed=True, in_flight=False` in place (extraction would break the `len(children) >= 2` invariant). |
+| `agent_step_advanced`                                                       | Flush both pending fields. Append `StepEntry` if `step >= 1`. Set `is_thinking = False`. **Also** update `agent.step`, `agent.step_name`; accumulate `usage` into `conversation.input_tokens`, `conversation.output_tokens`.                                                                                                              |
+| `stream_cleared`                                                            | Flush both pending fields. Set `is_thinking = False`.                                                                                                                                                                                                                                                                                     |
+
+**Koan tool input sanitization:** the `tool_input_delta` fold sanitizes the
+streaming input aggregate for koan tools before storing it (`_sanitize_koan_input`
+with the explicit `_KOAN_INPUT_SHAPES` table in `koan/projections.py`). Fields
+whose container shape does not match what the frontend cards index into (e.g.
+`koan_ask_question.questions` must be a list of dicts) are dropped from both
+`tool_input` and `args`; mid-stream partials self-heal on the next delta. This
+is the trust boundary: model-authored payloads never reach the frontend
+unvalidated, even while a call is still streaming.
 
 ### Agent lifecycle
 
@@ -747,6 +769,7 @@ def build_tool_read(call_id, file, lines="") -> dict
 def build_tool_bash(call_id, command) -> dict
 # ... other typed tool builders ...
 def build_tool_completed(call_id, tool, result=None) -> dict
+def build_tool_failed(call_id, tool, error="", ts_ms=0) -> dict
 def build_artifact_diff(old, new_artifacts) -> list[tuple[str, dict]]
 # ... interaction and settings builders ...
 ```

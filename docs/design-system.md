@@ -747,6 +747,36 @@ time.
 Props: `family`, `opCount: number`, `metaLines: string[]`, `active?: boolean`,
 `failedCount?: number`.
 
+#### ToolFailedRow
+
+Compact error row for a tool call whose arguments failed validation (the
+`tool_failed` fold replaced the in-flight entry with a `ToolFailedEntry`; the
+tool body never ran and the model retried). Keeps the stumble visible as
+model-quality signal.
+
+Container: `--bg-card` surface, `0.5px solid --border-card`, left accent
+`3px solid var(--status-failed)`, `--radius-xl`, `--padding-card` -- the
+KoanToolCard failed-state treatment (see ExecutorCard failed).
+
+Header row (flex, 8px gap): ASCII `x` indicator (13px column, `--font-mono`,
+700, `--status-failed`), label "INVALID CALL -- MODEL RETRIED"
+(`--type-tool-type`, 600, uppercase, `--status-failed`), tool name right-aligned
+(`--font-mono`, `--type-tool-path`, `--text-muted`).
+
+Error body: `--bg-thinking` block, `--radius-md`, `--type-prose`,
+`--text-primary`, `pre-wrap` -- the human-readable validation error.
+
+Raw input: native `<details>` disclosure, collapsed by default. Summary "raw
+input" (`--font-mono`, `--type-tool-path`, `--text-muted`); body is a
+scroll-capped (`max-height: 240px`) mono `<pre>` of the JSON-dumped last-known
+input. Opaque string only -- never parsed or rendered as structure.
+
+The per-entry error boundary in ContentStream (`EntryErrorBoundary`) reuses
+the `.tfr` container + header classes for its "Entry failed to render"
+fallback row.
+
+Props: `toolName: string`, `error: string`, `rawInput?: string`.
+
 ### Memory Molecules
 
 #### RelationsCard
@@ -2255,7 +2285,11 @@ All items are implemented:
    command fields, filled by `tool_input_delta` for all six families
    (read, grep, glob, bash, web_search, web_fetch). Providers that send
    complete args at tool_start (e.g. Anthropic) populate fields immediately
-   via the `args` payload key.
+   via the `args` payload key. For koan tools, the `tool_input_delta` fold
+   shape-sanitizes the stored aggregate (`_KOAN_INPUT_SHAPES` in
+   `koan/projections.py`): fields whose container shape does not match what
+   the cards index into are dropped, so renderers never receive a
+   non-conforming model-authored payload, even mid-stream.
 2. **Timestamps.** `tool_request` carries real epoch-ms `ts_ms`; children
    and the aggregate entry carry real timestamps.
 3. **Read ranges.** The display range is derived from `offset`/`limit` in

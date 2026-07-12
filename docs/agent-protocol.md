@@ -40,10 +40,13 @@ Contract per primitive:
 
 - `name` -- the agent type identifier; `"pydantic_ai"` in production,
   `"fake"` in tests.
-- `run(options)` -- async generator; yields `StreamEvent`s in the 8-type
+- `run(options)` -- async generator; yields `StreamEvent`s in the 9-type
   vocabulary defined in `koan/agents/events.py` (`tool_start`,
   `tool_input_delta`, `tool_stop`, `token_delta`, `thinking`,
-  `assistant_text`, `tool_result`, `turn_complete`); terminates when the
+  `assistant_text`, `tool_result`, `tool_failed`, `turn_complete`);
+  `tool_failed` fires when a call's arguments fail validation
+  (pydantic-ai `RetryPromptPart`) -- the tool body never ran and the model
+  is retrying; terminates when the
   PydanticAI graph reaches its end node. The consumer (`run_agent_loop`) drives
   one turn per `agent.iter()` call; the loop itself manages the multi-turn
   conversation.
@@ -194,7 +197,7 @@ request-count budget.
 - `koan/agents/base.py` -- `Agent` Protocol, `AgentOptions`, `AgentDiagnostic`,
   `AgentError`.
 - `koan/agents/pydantic_ai.py` -- `PydanticAIAgent` (sole production impl).
-- `koan/agents/events.py` -- `StreamEvent` (8-type vocabulary),
+- `koan/agents/events.py` -- `StreamEvent` (9-type vocabulary),
   `KOAN_MCP_TOOLS` (projection fold classifier).
 - `koan/agents/adapter.py` -- `build_model` (provider fan-out, caching,
   thinking mode mapping); `build_usage_limits` (shared usage-limits policy gate

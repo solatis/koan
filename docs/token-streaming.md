@@ -10,7 +10,7 @@ in realtime.
 ## Overview
 
 `PydanticAIAgent.run(options)` (`koan/agents/pydantic_ai.py`) yields
-`StreamEvent` objects in the 8-type vocabulary defined in
+`StreamEvent` objects in the 9-type vocabulary defined in
 `koan/agents/events.py`. The `spawn_subagent` event fan-out in `koan/subagent.py`
 consumes these events and routes token deltas to connected browsers via SSE
 through the projection system.
@@ -21,18 +21,19 @@ SSE Path section for details.
 
 ---
 
-## The 8-Type StreamEvent Vocabulary
+## The 9-Type StreamEvent Vocabulary
 
-| Event type        | Emitted when                                                       | Carries                     |
-| ----------------- | ------------------------------------------------------------------ | --------------------------- |
-| `token_delta`     | Model emits a text delta mid-stream                                | `content: str`              |
-| `turn_complete`   | A turn ends (graph reaches End node)                               | `usage: RequestUsage`       |
-| `thinking`        | Model emits a thinking delta                                       | `content: str, is_thinking` |
-| `assistant_text`  | A complete assistant text block is available                       | `content: str`              |
-| `tool_start`      | A tool call begins                                                 | `tool_name, tool_use_id`    |
-| `tool_input_delta`| A tool call's input is streaming                                   | `content: str`              |
-| `tool_stop`       | A tool call's input stream ends                                    | `tool_use_id`               |
-| `tool_result`     | A tool call's result is available                                  | `tool_name, content, metrics, attachments` |
+| Event type         | Emitted when                                                                         | Carries                                                  |
+| ------------------ | ------------------------------------------------------------------------------------ | -------------------------------------------------------- |
+| `token_delta`      | Model emits a text delta mid-stream                                                  | `content: str`                                           |
+| `turn_complete`    | A turn ends (graph reaches End node)                                                 | `usage: RequestUsage`                                    |
+| `thinking`         | Model emits a thinking delta                                                         | `content: str, is_thinking`                              |
+| `assistant_text`   | A complete assistant text block is available                                         | `content: str`                                           |
+| `tool_start`       | A tool call begins                                                                   | `tool_name, tool_use_id`                                 |
+| `tool_input_delta` | A tool call's input is streaming                                                     | `content: str`                                           |
+| `tool_stop`        | A tool call's input stream ends                                                      | `tool_use_id`                                            |
+| `tool_result`      | A tool call's result is available                                                    | `tool_name, content, metrics, attachments`               |
+| `tool_failed`      | A tool call's arguments failed validation (RetryPromptPart); the tool body never ran | `tool_name, tool_use_id, content` (human-readable error) |
 
 `turn_complete` carries the `RequestUsage` (input_tokens, output_tokens,
 cache_read_tokens, cache_write_tokens) from pydantic-ai. This is the usage
@@ -107,8 +108,8 @@ Patches received from the server:
 ```typescript
 // patch event for a stream_delta:
 // [{op: "replace", path: "/run/agents/abc/conversation/pendingText", value: "accumulated..."}]
-storeState = applyPatch(storeState, patch, false, false).newDocument
-set({ ...storeState })
+storeState = applyPatch(storeState, patch, false, false).newDocument;
+set({ ...storeState });
 ```
 
 The `ActivityFeed` component reads `conversation.pendingText` from the focused
@@ -120,9 +121,9 @@ that: `pendingText` becomes `""` and a new entry appears in `entries`.
 
 ## What Is Not Streamed
 
-| Signal                 | Why excluded from pendingText                                             |
-| ---------------------- | ------------------------------------------------------------------------- |
+| Signal                 | Why excluded from pendingText                                                       |
+| ---------------------- | ----------------------------------------------------------------------------------- |
 | Thinking tokens        | Go through `thinking` events into `conversation.pendingThinking`, not `pendingText` |
-| Tool execution updates | Handled via `tool_called`/`tool_completed` projection events              |
-| Scout output           | Scouts push their own audit events; no token streaming needed             |
-| Usage figures          | Accumulated on `AgentState`; emitted once via `agent_exited`              |
+| Tool execution updates | Handled via `tool_called`/`tool_completed` projection events                        |
+| Scout output           | Scouts push their own audit events; no token streaming needed                       |
+| Usage figures          | Accumulated on `AgentState`; emitted once via `agent_exited`                        |
