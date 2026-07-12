@@ -1,18 +1,19 @@
-/* ToolStatBlock — navy stat cell for one family group.
+/* ToolStatBlock — --bg-surface stat cell for one family group.
  * Spec: docs/design-system.md — Molecules → ToolStatBlock. */
 
 .tsb-cell {
-  background: var(--color-navy);
+  background: var(--bg-surface);
   padding: 9px 16px;
+  border-right: 1px solid var(--border-divider);
   font-family: var(--font-mono);
   font-size: 12px;
 }
 
-/* Separator between adjacent stat cells. Navy-specific divider —
- * --text-on-dark (#f0e8d8) at 10% alpha; there is no on-navy divider
- * token, so it is hardcoded here. First cell has none. */
+/* Band separator between adjacent stat cells — the same token is applied
+ * to the sibling group-ops cell (.tagg-ops--not-first) so each band
+ * divider is one continuous line across the card. First cell has none. */
 .tsb-cell--not-first {
-  border-top: 1px solid rgba(240, 232, 216, 0.10);
+  border-top: 1px solid var(--border-divider);
 }
 
 /* ---- Header row (family dot + family id + op count) ---- */
@@ -24,7 +25,7 @@
 }
 
 .tsb-cell-name {
-  color: var(--text-on-dark);
+  color: var(--text-primary);
   font-weight: 500;
 }
 
@@ -35,19 +36,17 @@
 .tsb-cell-opcount {
   margin-left: auto;
   font-size: 11px;
-  color: var(--text-on-dark-muted);
+  color: var(--text-muted);
 }
 
 /* ---- Meta lines (rollups, aligned under the family name) ---- */
 .tsb-cell-meta-line {
   padding-left: 14px;
   font-size: 11px;
-  color: var(--text-on-dark-muted);
+  color: var(--text-muted);
   line-height: var(--tool-op-row-height);
 }
 
-/* On-navy failure red — --status-failed (#c44) lacks contrast on navy,
- * so this navy-specific value is hardcoded. */
 .tsb-cell-meta-line--failed {
-  color: #e8a0a0;
+  color: var(--status-failed);
 }

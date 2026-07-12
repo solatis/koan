@@ -3,14 +3,13 @@
  * of 2+ consecutive exploration operations.
  *
  * The body is one grid: each FamilyGroup contributes a pair of cells —
- * its navy ToolStatBlock and its stack of ToolLogRows. Because both are
+ * its ToolStatBlock and its stack of ToolLogRows. Because both are
  * cells of the same grid row, the stat header top-aligns with the
  * group's first op row by construction, and the stacked stat cells form
- * the navy column (no wrapper pane element).
+ * the surface column (no wrapper pane element).
  *
- * No orange left border — deliberate, documented deviation from the
- * "left border = content source" convention; the navy header band is
- * the card's identity (see design rationale).
+ * The teal left border encodes exploration content source and flips to
+ * --status-running while an operation is in flight, per the spec.
  *
  * Grouping lives outside the card (groupExplorationOps), keeping the
  * organism pure layout. Not yet wired into ContentStream — the live
@@ -43,7 +42,7 @@ export function ToolAggregateCard({
   elapsed,
 }: ToolAggregateCardProps) {
   return (
-    <div className="tagg">
+    <div className={`tagg${runningLabel ? ' tagg--running' : ''}`}>
       <div className="tagg-header">
         <span className="tagg-label">explore</span>
         <span className="tagg-opcount">

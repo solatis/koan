@@ -79,6 +79,7 @@
   --text-artifact-time:        #a89888;
   --text-danger:               #791f1f;
   --text-danger-body:          #a03030;
+  --text-explore:              #3d6e60;  /* EXPLORE eyebrow on --bg-surface — deepened teal for contrast at 11px */
 
 
   /* ===== Text Colors (dark backgrounds — header, scout bar) ===== */

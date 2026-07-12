@@ -64,6 +64,10 @@ export const ToolCallRow = React.memo(function ToolCallRow({ tool, command, stat
   const isFamily = family !== undefined
   const metricClass = [
     'tcr-metric',
+    // Running verb renders orange, matching ToolLogRow's --running tone —
+    // the family variant's metric formats come from the ToolLogRow table.
+    isFamily && status === 'running' && 'tcr-metric--running',
+    isFamily && metricTone === 'fail' && 'tcr-metric--fail',
     isFamily && metricTone === 'fail' && 'tcr-metric--fail',
     isFamily && metricTone === 'zero' && 'tcr-metric--zero',
   ]

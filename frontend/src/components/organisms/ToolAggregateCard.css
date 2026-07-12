@@ -1,19 +1,27 @@
 /* ToolAggregateCard (organism) — family-grouped two-pane exploration card.
  * Spec: docs/design-system.md — Organisms → ToolAggregateCard.
  *
- * No orange left border — deliberate deviation from "left border =
- * content source"; the navy header band carries the card's identity. */
+ * Teal left border = exploration content source; it flips to
+ * --status-running while an operation is in flight (.tagg--running).
+ * Band separator (--border-divider) is applied to both cells of a band
+ * (stat cell and ops cell) so the divider is one continuous line. */
 
 .tagg {
   background: var(--bg-card);
   border: 0.5px solid var(--border-card);
+  border-left: 3px solid var(--color-teal);
   border-radius: var(--radius-xl);
   overflow: hidden;
 }
 
-/* ---- Header band (navy) ---- */
+.tagg--running {
+  border-left-color: var(--status-running);
+}
+
+/* ---- Header band ---- */
 .tagg-header {
-  background: var(--color-navy);
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-divider);
   display: flex;
   align-items: baseline;
   gap: 10px;
@@ -22,14 +30,15 @@
 
 .tagg-label {
   font-size: 11px;
-  color: var(--text-on-dark-muted);
+  color: var(--text-explore);
   letter-spacing: 1px;
   text-transform: uppercase;
+  font-weight: 500;
 }
 
 .tagg-opcount {
   font-size: 14px;
-  color: var(--text-on-dark);
+  color: var(--text-primary);
   font-weight: 500;
 }
 
@@ -63,13 +72,13 @@
 .tagg-elapsed {
   font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--text-on-dark-subtle);
+  color: var(--text-muted);
   padding-left: 8px;
 }
 
 /* ---- Body: one grid row per family group ---- */
 /* Stat cells stretch to their row height (default align stretch), so the
- * stacked navy cells form a continuous column with no white gaps. */
+ * stacked surface cells form a continuous column with no gaps. */
 .tagg-body {
   display: grid;
   grid-template-columns: 208px 1fr;
@@ -81,5 +90,5 @@
 }
 
 .tagg-ops--not-first {
-  border-top: 1px solid var(--border-divider-light);
+  border-top: 1px solid var(--border-divider);
 }

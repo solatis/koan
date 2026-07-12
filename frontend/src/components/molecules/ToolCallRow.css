@@ -69,6 +69,7 @@
 /* Family-variant metric tones (parity with ToolLogRow) */
 .tcr-metric--fail { color: var(--status-failed); }
 .tcr-metric--zero { font-style: italic; } /* stays muted — zero matches is informative, not an error */
+.tcr-metric--running { color: var(--color-orange); }
 
 /* ---- Status variants ---- */
 .tcr--running {

@@ -1,8 +1,8 @@
 /**
- * ToolStatBlock — the navy stat cell for one family group inside the
+ * ToolStatBlock — the stat cell for one family group inside the
  * ToolAggregateCard organism.
  *
- * Renders on --color-navy; all text uses the on-dark palette. The header
+ * Renders on --bg-surface with standard light-surface tokens. The header
  * row (family dot + family id + op count) shares its height with
  * ToolLogRow rows (--tool-op-row-height) so the stat cell and its
  * group-ops cell keep one vertical rhythm. Meta lines are
@@ -29,8 +29,8 @@ export interface ToolStatBlockProps {
    *  Not rendered when opCount === 1 (single-op rule). */
   metaLines?: string[]
   /** When > 0, "{n} failed" renders as the last meta line in the
-   *  on-navy failure red. Subject to the single-op rule like any other
-   *  meta line. */
+   *  var(--status-failed) on --bg-surface. Subject to the single-op
+   *  rule like any other meta line. */
   failedCount?: number
   active?: boolean
   /** Parent-applied: adjacent stat cells get a top separator; the first
