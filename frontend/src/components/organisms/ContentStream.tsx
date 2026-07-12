@@ -321,8 +321,42 @@ function renderEntryBody(entry: ConversationEntry, historical: boolean) {
  * The historical prop threads through to renderEntryBody for phase-scoped
  * styling (teal accents) and yield suppression.
  */
+/**
+ * EntryErrorBoundary -- per-entry render containment.
+ *
+ * The backend sanitizes model-authored payloads before they reach the
+ * projection, so this boundary should never trigger; it exists so that any
+ * future render bug degrades to one broken row instead of unmounting the
+ * whole app (the feed's correct failure mode). Scoped per entry: siblings
+ * keep rendering.
+ */
+class EntryErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean }
+> {
+  state = { hasError: false }
+
+  static getDerivedStateFromError() {
+    return { hasError: true }
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="tfr">
+          <div className="tfr-header">
+            <span className="tfr-x">x</span>
+            <span className="tfr-label">Entry failed to render</span>
+          </div>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
 const EntryRow = React.memo(function EntryRow({ entry, historical }: { entry: ConversationEntry; historical: boolean }) {
-  return renderEntryBody(entry, historical)
+  return <EntryErrorBoundary>{renderEntryBody(entry, historical)}</EntryErrorBoundary>
 })
 
 // ---------------------------------------------------------------------------
