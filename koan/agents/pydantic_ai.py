@@ -2,7 +2,7 @@
 #
 # Drives one pydantic-ai agent.iter() run on a provider model (Gemini in M2,
 # all four providers in M7) and translates the streamed graph events into koan's
-# unchanged 8-type StreamEvent vocabulary. The translation layer is the
+# 9-type StreamEvent vocabulary. The translation layer is the
 # highest-risk seam in the migration -- see the StreamEvent fidelity constraint
 # in brief.md.
 #
@@ -31,6 +31,9 @@
 #    FunctionToolCallEvent            -> (already emitted via PartStartEvent above)
 #    FunctionToolResultEvent          -> tool_result (tool_name, tool_use_id,
 #                                                     content, metrics for read)
+#      .part is RetryPromptPart       -> tool_failed (tool_name, tool_use_id,
+#                                        content = human-readable validation error;
+#                                        the tool body never ran)
 #
 #  End node                           -> turn_complete (with RunUsage on usage field)
 #
@@ -151,7 +154,7 @@ class PydanticAIAgent:
         config snapshot (app_state.run.frozen_config / frozen_credential_store),
         not live global config, so the run is immune to mid-run settings changes.
 
-        Translates pydantic-ai's graph-node / stream events into koan's 8-type
+        Translates pydantic-ai's graph-node / stream events into koan's 9-type
         StreamEvent vocabulary so spawn_subagent's existing fan-out is unchanged.
         M2 scope: one turn (one agent.iter() run). Multi-turn loop lands in M5.
 
@@ -284,7 +287,7 @@ class PydanticAIAgent:
             # -- and returns only when koan_set_phase("done") sets workflow_done.
             # Scouts/executors (is_primary=False) run exactly one turn and return.
             # run_agent_loop owns agent_state.message_history across turns and emits
-            # the same 8-type StreamEvent vocabulary documented above.
+            # the same 9-type StreamEvent vocabulary documented above.
             from .loop import run_agent_loop
             async for ev in run_agent_loop(
                 pai_agent, deps, options, self._app_state, agent_state, self._model_spec,

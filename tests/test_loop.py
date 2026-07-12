@@ -407,6 +407,59 @@ async def test_partstart_first_chunk_emitted(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_retry_prompt_part_emits_tool_failed_event(tmp_path):
+    """A tool call whose args fail validation emits tool_failed, not tool_result.
+
+    Drives a FunctionModel that first calls koan_ask_question with questions as
+    a JSON string (the production glm-5.2 payload; list[dict] expected), which
+    pydantic-ai rejects with a RetryPromptPart, then answers with plain text on
+    the retry request. The loop must translate the RetryPromptPart into a
+    tool_failed StreamEvent carrying the human-readable validation error.
+    """
+    from pydantic_ai.messages import RetryPromptPart
+    from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+    import koan.agents.adapter as adapter_mod
+    from koan.agents.events import StreamEvent
+
+    async def stream_func(messages, info):
+        has_retry = any(
+            isinstance(part, RetryPromptPart)
+            for msg in messages for part in getattr(msg, "parts", [])
+        )
+        if has_retry:
+            yield "recovered"
+        else:
+            yield {0: DeltaToolCall(
+                name="koan_ask_question",
+                json_args='{"questions": "not a list"}',
+                tool_call_id="bad1",
+            )}
+
+    app_state, _ = _make("tool-failed-test", str(tmp_path), is_primary=False)
+
+    orig_bm = adapter_mod.build_model
+    orig_bms = adapter_mod.build_model_settings
+    adapter_mod.build_model = lambda s, api_key=None, **_: FunctionModel(stream_function=stream_func)
+    adapter_mod.build_model_settings = lambda s: {}
+    try:
+        events: list[StreamEvent] = [
+            ev async for ev in _agent(app_state, tmp_path).run(_options("tool-failed-test"))
+        ]
+    finally:
+        adapter_mod.build_model = orig_bm
+        adapter_mod.build_model_settings = orig_bms
+
+    failed = [e for e in events if e.type == "tool_failed"]
+    assert len(failed) == 1
+    assert failed[0].tool_name == "koan_ask_question"
+    assert failed[0].tool_use_id == "bad1"
+    assert "validation error" in (failed[0].content or "")
+    # The failed call must NOT also surface as tool_result.
+    assert not [e for e in events if e.type == "tool_result" and e.tool_use_id == "bad1"]
+    assert any(e.type == "turn_complete" for e in events)
+
+
+@pytest.mark.anyio
 async def test_yolo_primary_synthesizes_without_parking(tmp_path, monkeypatch):
     """Under yolo, a primary agent never parks -- it synthesizes the next prompt.
     The yolo helper is patched to set workflow_done so the loop terminates after

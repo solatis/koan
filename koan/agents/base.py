@@ -114,8 +114,9 @@ class Agent(Protocol):
     async def run(self, options: AgentOptions) -> AsyncIterator[StreamEvent]:
         """Run the agent and stream events until the terminal signal.
 
-        Yields StreamEvents in the 8-type vocabulary (tool_start, tool_input_delta,
-        tool_stop, token_delta, thinking, assistant_text, tool_result, turn_complete).
+        Yields StreamEvents in the 9-type vocabulary (tool_start, tool_input_delta,
+        tool_stop, token_delta, thinking, assistant_text, tool_result, tool_failed,
+        turn_complete).
         Downstream consumers (spawn_subagent's event fan-out) do not care which agent
         class produced the event.
         """

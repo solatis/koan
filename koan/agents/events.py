@@ -23,6 +23,7 @@ class StreamEvent:
     type: Literal[
         "token_delta", "turn_complete", "thinking", "assistant_text",
         "tool_start", "tool_input_delta", "tool_stop", "tool_result",
+        "tool_failed",
     ]
     content: str | None = None
     is_thinking: bool = False

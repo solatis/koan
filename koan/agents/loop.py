@@ -518,7 +518,7 @@ async def run_agent_loop(
         model_spec: Resolved ModelSpec carrying provider, model, and caching
                     policy. Used by the cache-effectiveness guard.
 
-    Yields StreamEvents using the same 8-type vocabulary as PydanticAIAgent.run().
+    Yields StreamEvents using the same 9-type vocabulary as PydanticAIAgent.run().
     """
     from pydantic_ai._agent_graph import CallToolsNode, End, ModelRequestNode
     from pydantic_ai.messages import (
@@ -526,6 +526,7 @@ async def run_agent_loop(
         PartDeltaEvent,
         PartEndEvent,
         PartStartEvent,
+        RetryPromptPart,
         TextPart,
         TextPartDelta,
         ThinkingPart,
@@ -703,6 +704,19 @@ async def run_agent_loop(
                         async for tool_ev in events_iter:
                             if isinstance(tool_ev, FunctionToolResultEvent):
                                 result_part = tool_ev.part
+                                if isinstance(result_part, RetryPromptPart):
+                                    # Argument validation failed; the tool body
+                                    # never ran. pydantic-ai feeds model_response()
+                                    # back to the model as the retry prompt; we
+                                    # surface the same human-readable text to the
+                                    # projection.
+                                    yield StreamEvent(
+                                        type="tool_failed",
+                                        tool_name=result_part.tool_name or "",
+                                        tool_use_id=result_part.tool_call_id,
+                                        content=result_part.model_response()[:2000],
+                                    )
+                                    continue
                                 tool_name = result_part.tool_name
                                 tool_use_id = result_part.tool_call_id
                                 raw_content = result_part.content
