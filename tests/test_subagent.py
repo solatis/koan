@@ -351,6 +351,82 @@ class TestSpawnSubagent:
         state = json.loads((Path(subagent_dir) / "state.json").read_text())
         assert state["status"] == "completed"
 
+    @pytest.mark.anyio
+    async def test_tool_failed_stream_event_pushes_projection_event_and_cleans_maps(self, tmp_path):
+        """A tool_failed StreamEvent bridges to a tool_failed projection event.
+
+        Both correlation maps must be cleaned: EOF cleanup would otherwise
+        synthesize a tool_result for a call whose entry the fold has already
+        replaced with a ToolFailedEntry.
+        """
+        app_state = FakeAppState(port=9999)
+        subagent_dir = str(tmp_path / "sub")
+        Path(subagent_dir).mkdir()
+
+        task = {
+            "role": "intake",
+            "run_dir": str(tmp_path),
+            "subagent_dir": subagent_dir,
+        }
+
+        class _FailingToolAgent:
+            name = "fake"
+
+            async def run(self, options):
+                for ag in app_state.agents.values():
+                    ag.first_turn_completed = True
+                yield StreamEvent(
+                    type="tool_start",
+                    tool_name="koan_ask_question",
+                    tool_use_id="tu1",
+                    block_index=0,
+                )
+                yield StreamEvent(
+                    type="tool_failed",
+                    tool_name="koan_ask_question",
+                    tool_use_id="tu1",
+                    content="1 validation error: questions must be a list",
+                )
+
+            def register_process(self, registry, agent_id):
+                pass
+
+            @property
+            def exit_code(self):
+                return 0
+
+            @property
+            def stderr_output(self):
+                return ""
+
+            async def interrupt(self):
+                raise NotImplementedError
+
+            async def compact(self):
+                raise NotImplementedError
+
+        with patch("koan.subagent.PHASE_MODULE_MAP", {"intake": _fake_phase_module()}):
+            from koan.subagent import spawn_subagent
+
+            result = await spawn_subagent(task, app_state, agent_impl=_FailingToolAgent())
+
+        assert result.exit_code == 0
+        events = app_state.projection_store.events
+        requests = [e for e in events if e.event_type == "tool_request"]
+        failed = [e for e in events if e.event_type == "tool_failed"]
+        assert len(requests) == 1
+        assert len(failed) == 1
+        cid = requests[0].payload["call_id"]
+        assert failed[0].payload["call_id"] == cid
+        assert failed[0].payload["tool"] == "koan_ask_question"
+        assert "validation error" in failed[0].payload["error"]
+        # No EOF-synthesized tool_result for the failed call (maps cleaned).
+        results = [
+            e for e in events
+            if e.event_type == "tool_result" and e.payload.get("call_id") == cid
+        ]
+        assert results == []
+
     # test_model_field_propagated_to_agent_state removed in M4: tested legacy
     # AgentInstallation/runner_type spawn path which is deleted.
 

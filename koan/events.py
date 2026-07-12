@@ -177,6 +177,17 @@ def build_tool_result(
     return payload
 
 
+def build_tool_failed(call_id: str, tool: str, error: str = "", ts_ms: int = 0) -> dict:
+    """Build a tool_failed event payload (argument validation rejected the call).
+
+    The failed event closes the lifecycle for a tool invocation whose arguments
+    never passed validation -- the tool body did not run. The fold replaces the
+    in-flight entry with a ToolFailedEntry; the malformed model-authored input
+    survives only as an opaque JSON string on that entry.
+    """
+    return {"call_id": call_id, "tool": tool, "error": error, "ts_ms": ts_ms}
+
+
 def build_tool_result_captured(
     call_id: str,
     tool: str,

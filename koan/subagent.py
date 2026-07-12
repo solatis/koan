@@ -22,6 +22,7 @@ from .events import (
     build_agent_spawn_failed,
     build_agent_spawned,
     build_questions_answered,
+    build_tool_failed,
     build_tool_input_delta,
     build_tool_request,
     build_tool_result,
@@ -41,7 +42,8 @@ log = get_logger("subagent")
 
 # _emit_exploration_tool_completion removed in M1: exploration tool lifecycle
 # is now handled uniformly by the tool_request / tool_input_delta / tool_result
-# events emitted by the streaming loop. No per-tool-type emission path remains.
+# (or tool_failed, when argument validation rejects the call) events emitted by
+# the streaming loop. No per-tool-type emission path remains.
 #
 # CLAUDE_TOOL_WHITELISTS and _build_claude_tool_lists removed in M4: the HTTP
 # MCP transport and the CLI Claude agent are deleted; the in-process PydanticAI
@@ -404,6 +406,27 @@ async def spawn_subagent(
                     # Remove from call_ids_by_block too (batch path: Codex/Gemini
                     # synthesize tool_result without a preceding tool_stop, so
                     # the block entry persists otherwise and EOF cleanup re-emits).
+                    to_remove = [k for k, (v, _) in call_ids_by_block.items() if v == cid]
+                    for k in to_remove:
+                        del call_ids_by_block[k]
+            elif ev.type == "tool_failed":
+                # Argument validation rejected the call; the tool body never ran.
+                # Same correlation as tool_result; both maps must be cleaned or
+                # EOF cleanup re-emits a synthetic tool_result for a call whose
+                # entry the fold has already replaced with a ToolFailedEntry.
+                tool_use_id = ev.tool_use_id or ""
+                cid = call_id_by_tool_use_id.pop(tool_use_id, None)
+                if cid is not None:
+                    store.push_event(
+                        "tool_failed",
+                        build_tool_failed(
+                            cid,
+                            ev.tool_name or "",
+                            error=ev.content or "",
+                            ts_ms=int(time.time() * 1000),
+                        ),
+                        agent_id=agent_id,
+                    )
                     to_remove = [k for k, (v, _) in call_ids_by_block.items() if v == cid]
                     for k in to_remove:
                         del call_ids_by_block[k]
