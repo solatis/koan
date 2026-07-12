@@ -539,3 +539,33 @@ def build_tool_attachments(manifest: list[dict]) -> dict:
     partial manifest on tool_result content blocks, which lacks koan-side fields.
     """
     return {"attachments": manifest}
+
+
+def build_token_telemetry(
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int,
+    cache_write_tokens: int,
+    context_size: int,
+) -> dict:
+    """Build token_telemetry event payload.
+
+    Carries per-turn usage facts from the just-completed turn plus the
+    measured context size. The projection fold accumulates these into
+    running totals on Conversation and computes per-turn deltas on
+    Conversation.telemetry.
+
+    Args:
+        input_tokens: Input tokens from this turn's RunUsage.
+        output_tokens: Output tokens from this turn's RunUsage.
+        cache_read_tokens: Cache read tokens from this turn's RunUsage.
+        cache_write_tokens: Cache write tokens from this turn's RunUsage.
+        context_size: Total context size in tokens from Model.count_tokens().
+    """
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_read_tokens": cache_read_tokens,
+        "cache_write_tokens": cache_write_tokens,
+        "context_size": context_size,
+    }

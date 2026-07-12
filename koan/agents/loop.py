@@ -499,6 +499,15 @@ async def run_agent_loop(
     (brief Decision 2): raises AgentError(code="prompt_cache_ineffective") when
     a caching-capable route shows zero cache reads past the warmup threshold.
 
+    Token telemetry: after each turn's cache guard, the loop measures context
+    size via Model.count_tokens() on the full message history and emits a
+    token_telemetry projection event carrying per-turn usage facts plus the
+    measured context size. A single DEBUG-level log line on the "loop" logger
+    carries the same data. On count_tokens() failure (any exception) or when
+    last_model_request_parameters is None, a warning is logged and the
+    projection event is skipped for that turn; the debug log line still fires
+    with context_size=-1.
+
     Args:
         pai_agent: The pydantic-ai Agent instance (already constructed with
                    toolsets, capabilities, and model settings).
@@ -557,6 +566,12 @@ async def run_agent_loop(
     cache_input_total: int = 0
     cache_read_total: int = 0
     cache_requests_total: int = 0
+    # Per-agent token telemetry accumulators (debug log line only; cumulative
+    # totals for the projection live on Conversation and are folded from the
+    # token_telemetry event). Tracked here so the single debug log line can
+    # report running totals per turn without recomputing from history.
+    cache_write_total: int = 0
+    output_total: int = 0
 
     while True:
         # Pre-seed any queued handover artifacts then the artifact listing into
@@ -741,6 +756,8 @@ async def run_agent_loop(
             cache_input_total += run_usage.input_tokens
             cache_read_total += run_usage.cache_read_tokens
             cache_requests_total += run_usage.requests
+            cache_write_total += run_usage.cache_write_tokens
+            output_total += run_usage.output_tokens
             check_cache_effectiveness(
                 provider=model_spec.provider,
                 model=model_spec.model,
@@ -748,6 +765,71 @@ async def run_agent_loop(
                 cumulative_input_tokens=cache_input_total,
                 cumulative_cache_read_tokens=cache_read_total,
                 cumulative_requests=cache_requests_total,
+            )
+
+            # -- Per-agent token telemetry: context size + debug log -----------------
+            # Measure context size via Model.count_tokens() on the full message
+            # history. This is one extra API call per turn -- accepted cost for an
+            # accurate context-size reading (run_usage.input_tokens overcounts on
+            # tool-call turns and ignores history trimming).
+            # Fail-open: on any exception (incl. NotImplementedError from test
+            # models), or when last_model_request_parameters is None, log a warning
+            # and skip the projection event for this turn. The debug log line still
+            # fires with context_size=-1 so the data is never silently lost.
+            from ..logger import get_logger
+
+            context_size = -1
+            model_params = agent_run.ctx.state.last_model_request_parameters
+            if model_params is not None:
+                try:
+                    count_usage = await pai_agent.model.count_tokens(
+                        messages=agent_state.message_history,
+                        model_settings=pai_agent.model_settings,
+                        model_request_parameters=model_params,
+                    )
+                    context_size = count_usage.input_tokens
+                except Exception:
+                    # TestModel/FunctionModel raise NotImplementedError; real
+                    # providers may fail transiently. Skip the event, keep the log.
+                    get_logger("loop").warning(
+                        "token_telemetry: count_tokens() failed for agent=%s model=%s -- skipping event",
+                        agent_state.label,
+                        model_spec.model,
+                    )
+            else:
+                # End node reached without a model request (shouldn't happen in
+                # practice); guard explicitly since count_tokens() requires it.
+                get_logger("loop").warning(
+                    "token_telemetry: last_model_request_parameters is None for agent=%s -- skipping event",
+                    agent_state.label,
+                )
+
+            if context_size >= 0:
+                from ..events import build_token_telemetry
+                app_state.projection_store.push_event(
+                    "token_telemetry",
+                    build_token_telemetry(
+                        input_tokens=run_usage.input_tokens,
+                        output_tokens=run_usage.output_tokens,
+                        cache_read_tokens=run_usage.cache_read_tokens,
+                        cache_write_tokens=run_usage.cache_write_tokens,
+                        context_size=context_size,
+                    ),
+                    agent_id=agent_state.agent_id,
+                )
+
+            # Single DEBUG-level log line on the existing "loop" logger so the
+            # telemetry is visible without a new logger name (silent by default).
+            get_logger("loop").debug(
+                "token_telemetry | label=%s provider=%s model=%s context_size=%d "
+                "cache_write_total=%d cache_read_total=%d output_total=%d",
+                agent_state.label,
+                model_spec.provider,
+                model_spec.model,
+                context_size,
+                cache_write_total,
+                cache_read_total,
+                output_total,
             )
 
         # Mark first turn completed -- idempotent; the bootstrap-failure signal

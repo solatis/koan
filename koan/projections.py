@@ -67,6 +67,8 @@ EventType = Literal[
     "thinking",
     "stream_delta",
     "stream_cleared",
+    # Telemetry
+    "token_telemetry",
     "debug_step_guidance",
     # User chat
     "user_message",
@@ -438,6 +440,25 @@ ConversationEntry = Annotated[
 # Conversation — per agent
 # ---------------------------------------------------------------------------
 
+class Telemetry(KoanBaseModel):
+    """Per-agent token telemetry, updated by the token_telemetry fold case.
+
+    context_size is the latest measured context size in tokens (from
+    Model.count_tokens() on the full message history). Delta fields are
+    per-turn deltas computed by the fold: new cumulative minus old cumulative
+    from the parent Conversation's cumulative token fields.
+
+    Cumulative totals live on Conversation (input_tokens etc.) and are NOT
+    duplicated here -- the fold updates both in a single model_copy so they
+    cannot diverge.
+    """
+    context_size: int = 0
+    delta_input_tokens: int = 0
+    delta_output_tokens: int = 0
+    delta_cache_read_tokens: int = 0
+    delta_cache_write_tokens: int = 0
+
+
 class Conversation(KoanBaseModel):
     entries: list[ConversationEntry] = []
     pending_thinking: str = ""             # in-progress reasoning, not yet flushed to ThinkingEntry
@@ -451,6 +472,11 @@ class Conversation(KoanBaseModel):
     # M5: derived field -- computed in the fold, not recorded as event facts.
     # total_cost_usd: genai-prices bundled snapshot via price_for_usage (cumulative tokens).
     total_cost_usd: float = 0.0
+    # Per-agent token telemetry (context size + per-turn deltas). Cumulative
+    # totals stay on the Conversation fields above; Telemetry holds only the
+    # latest context_size and the deltas from the most recent token_telemetry
+    # fold. Grouped under a namespace to stay extensible for future metrics.
+    telemetry: Telemetry = Field(default_factory=Telemetry)
     # Monotonic counter for entry_id assignment; in-memory only (exclude=True keeps it off
     # the wire), rebuilt deterministically on restart by re-folding the event log.
     next_entry_id: int = Field(default=0, exclude=True)
@@ -2347,6 +2373,65 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                                                       step=step, step_name=step_name),
                 })
 
+            # ── Telemetry ─────────────────────────────────────────────────
+
+            case "token_telemetry":
+                if projection.run is None or not agent_id:
+                    return projection
+                agent = projection.run.agents.get(agent_id)
+                if agent is None:
+                    log.warning("fold token_telemetry: unknown agent_id=%s", agent_id)
+                    return projection
+
+                conv = agent.conversation
+                tel = conv.telemetry
+
+                # Per-turn facts from the event payload.
+                turn_input = payload.get("input_tokens", 0)
+                turn_output = payload.get("output_tokens", 0)
+                turn_cache_read = payload.get("cache_read_tokens", 0)
+                turn_cache_write = payload.get("cache_write_tokens", 0)
+                context_size = payload.get("context_size", 0)
+
+                # Compute per-turn deltas: new cumulative minus old cumulative.
+                # The event carries per-turn (not cumulative) values, so the delta
+                # equals the turn value -- but deriving it from the cumulative totals
+                # keeps the result correct if the event format ever changes.
+                new_cumulative_input = conv.input_tokens + turn_input
+                new_cumulative_output = conv.output_tokens + turn_output
+                new_cumulative_cache_read = conv.cache_read_tokens + turn_cache_read
+                new_cumulative_cache_write = conv.cache_write_tokens + turn_cache_write
+
+                delta_input = new_cumulative_input - conv.input_tokens
+                delta_output = new_cumulative_output - conv.output_tokens
+                delta_cache_read = new_cumulative_cache_read - conv.cache_read_tokens
+                delta_cache_write = new_cumulative_cache_write - conv.cache_write_tokens
+
+                # Update Telemetry with the measured context_size and computed deltas.
+                new_telemetry = tel.model_copy(update={
+                    "context_size": context_size,
+                    "delta_input_tokens": delta_input,
+                    "delta_output_tokens": delta_output,
+                    "delta_cache_read_tokens": delta_cache_read,
+                    "delta_cache_write_tokens": delta_cache_write,
+                })
+
+                # Update Conversation cumulative fields and telemetry in one copy so
+                # they cannot diverge (cumulative totals stay on Conversation, derived
+                # deltas/context_size stay on Telemetry).
+                new_conv = conv.model_copy(update={
+                    "input_tokens": new_cumulative_input,
+                    "output_tokens": new_cumulative_output,
+                    "cache_read_tokens": new_cumulative_cache_read,
+                    "cache_write_tokens": new_cumulative_cache_write,
+                    "telemetry": new_telemetry,
+                })
+
+                return projection.model_copy(update={
+                    "run": _update_agent_conversation(projection.run, agent_id, new_conv),
+                })
+
+            # ── Focus transitions ──────────────────────────────────────────
             # ── Focus transitions ──────────────────────────────────────────
 
             case "questions_asked":
