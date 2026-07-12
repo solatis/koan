@@ -1866,3 +1866,56 @@ class TestToolFailedFold:
 
 
 # ---------------------------------------------------------------------------
+# fold: koan tool input sanitization (tool_input_delta)
+# ---------------------------------------------------------------------------
+
+class TestKoanInputSanitize:
+
+    def _ask_entry_after_delta(self, tool_input: dict):
+        p = _proj_with_primary("a1")
+        p = fold(p, _e("tool_request", {
+            "call_id": "c1", "tool": "koan_ask_question", "ts_ms": 1,
+        }, agent_id="a1"))
+        r = fold(p, _e("tool_input_delta", {
+            "call_id": "c1", "tool": "koan_ask_question",
+            "tool_input": tool_input, "delta": "",
+        }, agent_id="a1"))
+        return r.run.agents["a1"].conversation.entries[0]
+
+    def test_sanitize_ask_question_string_questions_dropped(self):
+        # The production payload: the model sent questions as a JSON string.
+        entry = self._ask_entry_after_delta(
+            {"questions": '[{"question": "which approach?"}]'}
+        )
+        assert "questions" not in (entry.tool_input or {})
+        assert "questions" not in entry.args
+
+    def test_sanitize_ask_question_bad_options_dropped_item_kept(self):
+        entry = self._ask_entry_after_delta(
+            {"questions": [{"question": "q?", "options": "a,b"}]}
+        )
+        qs = entry.tool_input["questions"]
+        assert qs == [{"question": "q?"}]
+        assert entry.args["questions"] == [{"question": "q?"}]
+
+    def test_sanitize_valid_input_passthrough(self):
+        ti = {"questions": [
+            {"question": "q?", "context": "ctx", "options": [{"label": "a"}]},
+        ]}
+        entry = self._ask_entry_after_delta(ti)
+        assert entry.tool_input == ti
+        assert entry.args == ti
+
+    def test_sanitize_non_tabled_tool_passthrough(self):
+        p = _proj_with_primary("a1")
+        p = fold(p, _e("tool_request", {
+            "call_id": "c1", "tool": "koan_memorize", "ts_ms": 1,
+        }, agent_id="a1"))
+        ti = {"anything": {"goes": ["here", 1, None]}}
+        r = fold(p, _e("tool_input_delta", {
+            "call_id": "c1", "tool": "koan_memorize",
+            "tool_input": ti, "delta": "",
+        }, agent_id="a1"))
+        entry = r.run.agents["a1"].conversation.entries[0]
+        assert entry.tool_input == ti
+        assert entry.args == ti

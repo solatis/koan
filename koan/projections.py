@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timezone
-from typing import Annotated, Literal
+from typing import Annotated, Callable, Literal
 
 import jsonpatch
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
@@ -1198,6 +1198,74 @@ def _make_exploration_entry(
     raise ValueError(f"not an exploration tool: {tool_name}")
 
 
+def _as_str(v: object) -> object | None:
+    return v if isinstance(v, str) else None
+
+
+def _as_list(v: object) -> object | None:
+    return v if isinstance(v, list) else None
+
+
+def _as_item_list(
+    v: object,
+    str_fields: tuple[str, ...] = (),
+    list_fields: tuple[str, ...] = (),
+) -> list | None:
+    """Accept only a list whose elements are all dicts.
+
+    Per-item fields of the wrong shape are dropped (mid-stream partial values
+    self-heal on the next delta). Returns None (drop the whole field) when the
+    value is not a list of dicts.
+    """
+    if not isinstance(v, list) or not all(isinstance(x, dict) for x in v):
+        return None
+    out = []
+    for item in v:
+        item = dict(item)
+        for f in str_fields:
+            if f in item and not isinstance(item[f], str):
+                item.pop(f)
+        for f in list_fields:
+            if f in item and not isinstance(item[f], list):
+                item.pop(f)
+        out.append(item)
+    return out
+
+
+# Expected container shapes for koan tool input fields the frontend indexes
+# into (.map/.length/item property access). Model-authored streaming input is
+# untrusted; fields that do not conform are dropped from the stored aggregate
+# so no card ever renders a non-conforming shape, even mid-call. The table is
+# the koan-tool analogue of the typed scalar derivation the exploration tools
+# get (file/command/pattern below).
+_KOAN_INPUT_SHAPES: dict[str, dict[str, Callable[[object], object | None]]] = {
+    "koan_reflect": {"question": _as_str},
+    "koan_artifact_write": {"filename": _as_str, "content": _as_str},
+    "koan_artifact_edit": {"filename": _as_str},
+    "koan_ask_question": {"questions": lambda v: _as_item_list(
+        v, str_fields=("question", "context"), list_fields=("options",))},
+    "koan_yield": {"suggestions": lambda v: _as_item_list(
+        v, str_fields=("label", "command"))},
+    "koan_request_executor": {"artifacts": _as_list},
+}
+
+
+def _sanitize_koan_input(tool_name: str, ti: dict) -> dict:
+    """Drop non-conforming fields from a koan tool's streaming input aggregate."""
+    spec = _KOAN_INPUT_SHAPES.get(tool_name)
+    if not spec or not ti:
+        return ti
+    out = dict(ti)
+    for field, clean in spec.items():
+        if field in out:
+            cleaned = clean(out[field])
+            if cleaned is None:
+                out.pop(field)
+            else:
+                out[field] = cleaned
+    return out
+
+
 def _read_args_update(ti: dict) -> dict:
     """Derive ToolReadEntry update dict from tool_input args."""
     upd: dict = {"file": ti.get("file_path", "") or ti.get("path", "")}
@@ -1996,7 +2064,11 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                         elif isinstance(entry, ToolWebFetchEntry):
                             upd["url"] = ti.get("url", "")
                         elif isinstance(entry, ToolKoanEntry):
-                            # args is the canonical "latest known input" for koan tools
+                            # Sanitize BOTH stored copies: cards bind toolInput
+                            # (ContentStream passes entry.toolInput); args is
+                            # the canonical "latest known input" for koan tools.
+                            ti = _sanitize_koan_input(entry.tool_name, ti)
+                            upd["tool_input"] = ti
                             upd["args"] = ti
                         new_entries.append(entry.model_copy(update=upd))
                         found = True
