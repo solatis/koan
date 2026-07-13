@@ -1,14 +1,11 @@
 # Tests for the M6 config mutation API and capability-surfacing projection.
 #
-# Coverage:
-#   - Connection upsert/delete: credential set/remove, connections_listed pushed
-#   - Configured-model upsert/delete: configured_models_listed pushed
-#   - Slot assignment: thinking validation (422 on unsupported), presets_listed pushed
-#   - Memory binding set: memory_bindings_listed pushed
-#   - List-models: success pushes provider_models; no-credential returns {ok: False}
-#   - Newest-in-family: pins + provenance; ModelListingError -> 409;
-#     NewestInFamilyUnavailable -> 422
-#   - model_capabilities projection: populated at startup; refreshed on mutation
+# Coverage (M2: 13 settings events consolidated into one settings_listed snapshot):
+#   - Connection upsert/delete: credential set/remove, settings_listed pushed
+#   - Configured-model upsert/delete: settings_listed pushed (with identity + caps)
+#   - Slot assignment: thinking validation (422 on unsupported), settings_listed pushed
+#   - Memory binding set: settings_listed pushed
+#   - List-models: success returns {ok: true, count}; no-credential returns {ok: False}
 #   - Secret hygiene: secrets never echoed in responses
 
 from __future__ import annotations
@@ -139,8 +136,8 @@ def _last_event_of_type(app_state: AppState, event_type: str) -> dict | None:
 
 # -- Connection upsert --------------------------------------------------------
 
-def test_connection_set_post_creates_connection(client, app_state, config_path):
-    """POST /api/config/connections creates a new connection and pushes connections_listed."""
+def test_connection_set_post_creates_connection_and_pushes_settings_listed(client, app_state, config_path):
+    """POST /api/config/connections creates a new connection and pushes settings_listed."""
     resp = client.post("/api/config/connections", json={
         "id": "openai-1",
         "type": "openai",
@@ -152,7 +149,7 @@ def test_connection_set_post_creates_connection(client, app_state, config_path):
     ids = [c.id for c in cfg.connections]
     assert "openai-1" in ids
 
-    ev = _last_event_of_type(app_state, "connections_listed")
+    ev = _last_event_of_type(app_state, "settings_listed")
     assert ev is not None
     conn_ids = [c["id"] for c in ev["connections"]]
     assert "openai-1" in conn_ids
@@ -229,10 +226,10 @@ def test_connection_delete_removes_connection_and_credential(client, app_state, 
     assert not app_state.provider_config.credential_store.has("anthropic-1")
 
 
-def test_connection_delete_pushes_connections_listed(client, app_state, config_path):
-    """DELETE /api/config/connections/{id} pushes connections_listed."""
+def test_connection_delete_pushes_settings_listed(client, app_state, config_path):
+    """DELETE /api/config/connections/{id} pushes settings_listed."""
     client.delete("/api/config/connections/anthropic-1")
-    ev = _last_event_of_type(app_state, "connections_listed")
+    ev = _last_event_of_type(app_state, "settings_listed")
     assert ev is not None
     ids = [c["id"] for c in ev["connections"]]
     assert "anthropic-1" not in ids
@@ -258,14 +255,14 @@ def test_model_set_creates_configured_model(client, app_state, config_path):
     assert "cm-new" in ids
 
 
-def test_model_set_pushes_configured_models_listed(client, app_state, config_path):
-    """POST /api/config/models pushes configured_models_listed."""
+def test_model_set_pushes_settings_listed(client, app_state, config_path):
+    """POST /api/config/models pushes settings_listed."""
     client.post("/api/config/models", json={
         "id": "cm-push-test",
         "connection_id": "anthropic-1",
         "model_id": "claude-opus-4-0",
     })
-    ev = _last_event_of_type(app_state, "configured_models_listed")
+    ev = _last_event_of_type(app_state, "settings_listed")
     assert ev is not None
     ids = [m["id"] for m in ev["configured_models"]]
     assert "cm-push-test" in ids
@@ -340,7 +337,7 @@ def client_with_thinking_model(app_state_with_thinking_model, monkeypatch):
 
 
 def test_slot_set_assigns_model_to_slot(client_with_thinking_model):
-    """PUT /api/config/slots/{slot} writes a SlotAssignment and pushes presets_listed."""
+    """PUT /api/config/slots/{slot} writes a SlotAssignment and pushes settings_listed."""
     c, st = client_with_thinking_model
     resp = c.put("/api/config/slots/strong", json={
         "configured_model_id": "cm-opus",
@@ -351,7 +348,7 @@ def test_slot_set_assigns_model_to_slot(client_with_thinking_model):
     assert preset is not None
     assert preset.slots["strong"].configured_model_id == "cm-opus"
 
-    ev = _last_event_of_type(st, "presets_listed")
+    ev = _last_event_of_type(st, "settings_listed")
     assert ev is not None
     assert "$last" in ev["presets"]
 
@@ -391,7 +388,7 @@ def test_slot_set_rejects_missing_model(client, app_state, config_path):
 # -- Memory binding -----------------------------------------------------------
 
 def test_memory_set_stores_binding(client_with_voyage, app_state_with_voyage):
-    """PUT /api/config/memory/embedding stores a MemoryBinding and pushes memory_bindings_listed.
+    """PUT /api/config/memory/embedding stores a MemoryBinding and pushes settings_listed.
 
     Uses the embedding kind with a voyage connection + recognized Voyage model
     (cm-voyage -> voyage-4-large), the only valid memory binding kind.
@@ -404,7 +401,7 @@ def test_memory_set_stores_binding(client_with_voyage, app_state_with_voyage):
     assert app_state_with_voyage.provider_config.config.memory.embedding is not None
     assert app_state_with_voyage.provider_config.config.memory.embedding.configured_model_id == "cm-voyage"
 
-    ev = _last_event_of_type(app_state_with_voyage, "memory_bindings_listed")
+    ev = _last_event_of_type(app_state_with_voyage, "settings_listed")
     assert ev is not None
     assert ev["memory_bindings"]["embedding"]["configured_model_id"] == "cm-voyage"
 
@@ -446,7 +443,7 @@ def test_list_models_not_found(client, app_state, config_path):
     assert resp.status_code == 404
 
 
-def test_list_models_success_pushes_provider_models(client, app_state, config_path):
+def test_list_models_success_returns_count(client, app_state, config_path):
     """Successful list-models call returns {ok: true, count: N}.
 
     The mock returns a 3-tuple (ok, msg, count); the endpoint unpacks it and
@@ -463,191 +460,14 @@ def test_list_models_success_pushes_provider_models(client, app_state, config_pa
     mock_refresh.assert_called_once()
 
 
-def test_push_provider_models_emits_families(app_state, config_path):
-    """_push_provider_models includes connection_id in models and families.
-
-    Seeds the provider_models overlay under a connection-id key (not a bare
-    provider-type key) and asserts:
-    - the emitted families carry connection_id == the seeded key;
-    - the resolved id is the newest member of the family;
-    - the provider field is derived from models[0].provider (fallback path when
-      the connection is not present in config).
-    """
-    from koan.types import ProviderModel
-    from koan.web.app import _push_provider_models
-
-    # Seed two models in the same family under a connection-id key.
-    app_state.provider_config.provider_models["anthropic-1"] = [
-        ProviderModel(provider="anthropic", model="claude-sonnet-4-5", display_name="Sonnet 4.5"),
-        ProviderModel(provider="anthropic", model="claude-sonnet-4-0", display_name="Sonnet 4.0"),
-    ]
-
-    _push_provider_models(app_state)
-
-    ev = _last_event_of_type(app_state, "provider_models_listed")
-    assert ev is not None
-    families = ev.get("families", [])
-    assert len(families) >= 1
-
-    sonnet_pins = [f for f in families if f.get("family") == "claude-sonnet"]
-    assert len(sonnet_pins) == 1
-    assert sonnet_pins[0]["resolved"] == "claude-sonnet-4-5"
-    assert sonnet_pins[0]["provider"] == "anthropic"
-    assert "claude-sonnet-4-5" in sonnet_pins[0]["resolved_from"]
-    # connection_id must be stamped on families (D4: per-connection overlay keying).
-    assert sonnet_pins[0]["connection_id"] == "anthropic-1"
-
-    # Models in the flat list must also carry connection_id.
-    models = ev.get("models", [])
-    assert all(m.get("connection_id") == "anthropic-1" for m in models)
-
-
-def test_connection_save_schedules_background_refresh(app_state, config_path, monkeypatch):
-    """Saving a listing-capable connection schedules a background provider_models refresh.
-
-    The save handler calls asyncio.create_task(_refresh_one_provider_models(...))
-    for listing-capable connection types when a credential is present.  The task
-    is non-blocking (the response returns before listing completes).  This test
-    patches _refresh_one_provider_models, stores the POST, runs the event loop
-    once to allow the created task to execute, and asserts the patch was called.
-    """
-    from koan.web.app import create_app
-
-    # Ensure a credential exists so the save handler schedules the refresh.
-    app_state.provider_config.credential_store.set("anthropic-1", "sk-ant-test")
-
-    app = create_app(app_state)
-    client = TestClient(app, raise_server_exceptions=True)
-
-    with patch("koan.web.app._refresh_one_provider_models", new_callable=AsyncMock) as mock_refresh:
-        mock_refresh.return_value = (True, "", 5)
-        resp = client.post("/api/config/connections", json={
-            "id": "anthropic-1",
-            "type": "anthropic",
-            "secret": "sk-ant-test",
-        })
-
-    assert resp.status_code == 200
-    assert resp.json()["ok"] is True
-    # The background task must have been scheduled (create_task calls the coroutine).
-    mock_refresh.assert_called_once()
-
-
-# -- Newest-in-family ---------------------------------------------------------
-
-def test_model_newest_pins_and_records_provenance(client, app_state, config_path):
-    """newest endpoint upserts a ConfiguredModel with model_id + resolved_from."""
-    from koan.agents.newest_in_family import NewestResolution
-
-    fake_res = NewestResolution(
-        model_id="claude-opus-4-0",
-        resolved_from="newest(claude-opus)@2026-06-09 -> claude-opus-4-0",
-    )
-
-    with patch("koan.agents.newest_in_family.resolve_newest_in_family", new_callable=AsyncMock) as mock_newest:
-        mock_newest.return_value = fake_res
-        resp = client.post("/api/config/models/newest", json={
-            "connection_id": "anthropic-1",
-            "family": "claude-opus",
-            "id": "cm-opus-pinned",
-        })
-
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["ok"] is True
-    assert data["model_id"] == "claude-opus-4-0"
-    assert "resolved_from" in data
-
-    cfg = app_state.provider_config.config
-    cm = next(m for m in cfg.configured_models if m.id == "cm-opus-pinned")
-    assert cm.model_id == "claude-opus-4-0"
-    assert cm.resolved_from == fake_res.resolved_from
-
-
-def test_model_newest_listing_error_returns_409(client, app_state, config_path):
-    """newest endpoint with a non-listing connection type returns 409."""
-    from koan.agents.model_listing import ModelListingError
-
-    with patch("koan.agents.newest_in_family.resolve_newest_in_family", new_callable=AsyncMock) as mock_newest:
-        mock_newest.side_effect = ModelListingError("listing not supported for this type")
-        resp = client.post("/api/config/models/newest", json={
-            "connection_id": "anthropic-1",
-            "family": "claude-opus",
-        })
-
-    assert resp.status_code == 409
-    assert resp.json()["error"] == "unavailable"
-
-
-def test_model_newest_family_unavailable_returns_422(client, app_state, config_path):
-    """newest endpoint when no models of the family exist returns 422."""
-    from koan.agents.newest_in_family import NewestInFamilyUnavailable
-
-    with patch("koan.agents.newest_in_family.resolve_newest_in_family", new_callable=AsyncMock) as mock_newest:
-        mock_newest.side_effect = NewestInFamilyUnavailable("no models in family")
-        resp = client.post("/api/config/models/newest", json={
-            "connection_id": "anthropic-1",
-            "family": "unknown-family",
-        })
-
-    assert resp.status_code == 422
-    assert resp.json()["error"] == "not_found"
-
-
-def test_model_newest_requires_connection_id(client, app_state, config_path):
-    """newest endpoint without connection_id returns 422."""
-    resp = client.post("/api/config/models/newest", json={"family": "claude-opus"})
-    assert resp.status_code == 422
-
-
-def test_model_newest_connection_not_found(client, app_state, config_path):
-    """newest endpoint with a non-existent connection_id returns 404."""
-    with patch("koan.agents.newest_in_family.resolve_newest_in_family", new_callable=AsyncMock):
-        resp = client.post("/api/config/models/newest", json={
-            "connection_id": "no-such",
-            "family": "claude-opus",
-        })
-    assert resp.status_code == 404
-
-
-# -- Model capabilities projection --------------------------------------------
-
-def test_model_capabilities_populated_at_startup(app_state, config_path):
-    """_push_initial_config_events populates Settings.model_capabilities for configured models."""
-    from koan.web.app import _push_initial_config_events
-
-    _push_initial_config_events(app_state)
-
-    caps = app_state.projection_store.projection.settings.model_capabilities
-    assert len(caps) == 1
-    cap = caps[0]
-    assert cap.configured_model_id == "cm-haiku"
-    # Capabilities are populated: thinking_modes is a list.
-    assert isinstance(cap.thinking_modes, list)
-
-
-def test_model_capabilities_refreshed_after_model_set(client, app_state, config_path):
-    """model_capabilities_listed is pushed after a configured-model upsert (M6)."""
-    # Add a new configured model and verify capabilities are refreshed.
-    resp = client.post("/api/config/models", json={
-        "id": "cm-opus",
-        "connection_id": "anthropic-1",
-        "model_id": "claude-opus-4-0",
-    })
-    assert resp.status_code == 200
-
-    ev = _last_event_of_type(app_state, "model_capabilities_listed")
-    assert ev is not None
-    cap_ids = [c["configured_model_id"] for c in ev["capabilities"]]
-    assert "cm-haiku" in cap_ids
-    assert "cm-opus" in cap_ids
-
-
-def test_model_capabilities_refreshed_after_connection_set(client, app_state, config_path):
-    """model_capabilities_listed is pushed after a connection mutation (M6)."""
-    client.post("/api/config/connections", json={"id": "openai-x", "type": "openai"})
-    ev = _last_event_of_type(app_state, "model_capabilities_listed")
-    assert ev is not None
-    # Existing configured model still appears.
-    cap_ids = [c["configured_model_id"] for c in ev["capabilities"]]
-    assert "cm-haiku" in cap_ids
+# test_push_provider_models_emits_families removed in M2: _push_provider_models
+# is deleted (offerings come from the curated catalog via settings_listed).
+# test_connection_save_schedules_background_refresh removed in M2: the
+# post-save background model-list refresh is deleted.
+# -- Newest-in-family section removed in M2: the /api/config/models/newest
+# endpoint and async resolve_newest_in_family are deleted. Family grouping
+# data now lives in offerings_by_connection identity fields.
+# -- Model capabilities projection section removed in M2: the
+# model_capabilities_listed event and Settings.model_capabilities field are
+# deleted. Configured-model caps now travel inside settings_listed's
+# configured_models entries (identity + caps).

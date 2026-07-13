@@ -31,33 +31,23 @@ from ..run_state import atomic_write_json
 from ..lib.task_json import current_workflow, make_initial_workflow_history
 from ..projections import _primary_agent_id
 from ..state import ChatMessage
-from ..types import ModelSpec, ConnectionStatus, ModelRegistryEntry, ProviderModel
+from ..types import ModelSpec, ConnectionStatus, ProviderModel
 from .interactions import activate_next_interaction
 from ..events import (
     build_questions_answered,
     # build_probe_completed removed in M4: CLI binary probe deleted.
     # build_installation_created/modified/removed removed in M4: installation concept deleted.
     # build_profile_*/build_default_profile_changed removed in M5: profile types deleted.
-    build_provider_status_listed,
-    build_model_registry_listed,
-    build_provider_models_listed,
+    # M2: 13 individual settings builders deleted; consolidated into build_settings_listed.
+    build_settings_listed,
     build_run_started,
     build_steering_queued,
-    build_connections_listed,
-    build_configured_models_listed,
-    build_presets_listed,
-    build_active_changed,
-    build_memory_bindings_listed,
-    build_model_capabilities_listed,
-    build_default_scout_concurrency_changed,
-    build_retry_settings_changed,
-    build_workflows_listed,
+    build_steering_delivered,
     build_reflect_started,
     build_reflect_trace,
     build_reflect_done,
     build_reflect_cancelled,
     build_reflect_failed,
-    build_embedding_models_listed,
 )
 from ..memory.timestamps import iso_to_ms as _iso_to_ms
 from ..memory import MEMORY_TYPES
@@ -407,10 +397,7 @@ async def api_start_run(r: Request) -> Response:
         cfg.scout_concurrency = scout_concurrency
         from ..config import save_koan_config
         await save_koan_config(cfg, Path(st.server.koan_home))
-        st.projection_store.push_event(
-            "default_scout_concurrency_changed",
-            build_default_scout_concurrency_changed(scout_concurrency),
-        )
+        _push_settings_listed(st)
 
     # Emit run_started to create the Run object in the projection.
     # M5: carries active_preset instead of profile name (plan-milestone-5.md).
@@ -1404,83 +1391,6 @@ def _serialize_model_info(m) -> dict:
     }
 
 
-def _serialize_connection_status(cs: ConnectionStatus) -> dict:
-    """Serialize ConnectionStatus to a wire dict for the provider_status_listed event.
-
-    M5: replaces _serialize_provider_status (per-type) with per-connection status.
-    connection_id and connection_type are non-secret; available is credential-derived.
-    """
-    return {
-        "connection_id": cs.connection_id,
-        "connection_type": cs.connection_type,
-        "available": cs.available,
-    }
-
-
-def _serialize_model_registry_entry(e: ModelRegistryEntry) -> dict:
-    """Serialize ModelRegistryEntry to a wire dict for the model_registry_listed event."""
-    return {
-        "provider": e.provider,
-        "model": e.model,
-        "display_name": e.display_name,
-        "thinking_modes": e.thinking_modes,
-    }
-
-
-def _serialize_provider_model(pm: ProviderModel, connection_id: str) -> dict:
-    """Serialize ProviderModel to a wire dict for the provider_models_listed event.
-
-    Stamps connection_id onto the wire dict so the frontend can join by
-    connection rather than by provider type, avoiding collision when two
-    connections of the same provider type have different model lists.
-    """
-    return {
-        "provider": pm.provider,
-        "model": pm.model,
-        "display_name": pm.display_name,
-        "connection_id": connection_id,
-    }
-
-
-def _push_provider_models(st: "AppState") -> None:
-    """Push the current provider_models overlay as a provider_models_listed event.
-
-    Flattens st.provider_config.provider_models (dict connection_id -> list)
-    into a single cross-connection list, derives per-connection newest-in-family
-    pins from resolve_families, and pushes a replace-all provider_models_listed
-    event to the projection store.  The overlay is keyed by connection id so
-    same-type connections keep independent model lists.  Called on save, Test,
-    and eager-refresh.
-    """
-    from ..agents.newest_in_family import resolve_families
-
-    cfg = st.provider_config.config
-    # Build a connection_id -> provider_type map so families carry the correct
-    # provider even though the overlay is keyed by connection id.
-    type_by_conn = {c.id: c.type for c in (cfg.connections if cfg else [])}
-
-    flat: list[dict] = []
-    families: list[dict] = []
-    for connection_id, models in st.provider_config.provider_models.items():
-        # Fall back to models[0].provider when the connection is not in config
-        # (e.g. during tests that seed the overlay directly without a full config).
-        provider = type_by_conn.get(connection_id) or (models[0].provider if models else "")
-        for pm in models:
-            flat.append(_serialize_provider_model(pm, connection_id))
-        for pin in resolve_families([pm.model for pm in models]):
-            families.append({
-                "provider": provider,
-                "family": pin.family,
-                "resolved": pin.resolved,
-                "resolved_from": pin.resolved_from,
-                "connection_id": connection_id,
-            })
-    st.projection_store.push_event(
-        "provider_models_listed",
-        build_provider_models_listed(flat, families),
-    )
-
-
 def _provider_probe_results(st: AppState) -> list[ConnectionStatus]:
     """Build per-connection availability from the connections-based config (M5).
 
@@ -1510,55 +1420,230 @@ def _provider_probe_results(st: AppState) -> list[ConnectionStatus]:
 
 
 async def _refresh_probe_state(st: AppState, broadcast: bool = True) -> None:
-    """Refresh per-connection availability and model registry.
+    """Refresh per-connection availability.
 
-    M5: builtin_profiles removed; provider_status is now per-connection
-    ConnectionStatus.  model_registry is built from MODEL_CAPABILITIES +
-    genai-prices bundled snapshot.  No config mutation.
+    M2: model_registry build deleted (the model_registry_listed event was
+    absorbed into settings_listed; offerings_by_connection is computed from
+    the curated catalog, not from a registry). No config mutation. When
+    broadcast is True, push a settings_listed snapshot so availability stays
+    consistent with the projection (the only startup caller passes
+    broadcast=False, so the broadcast path is effectively dead but kept for
+    robustness).
     """
-    from ..agents.model_catalog import build_model_registry
-
     st.provider_config.provider_status = _provider_probe_results(st)
-    st.provider_config.model_registry = build_model_registry()
-
     if broadcast:
-        # Push per-connection availability and model registry.
-        st.projection_store.push_event(
-            "provider_status_listed",
-            build_provider_status_listed([_serialize_connection_status(cs) for cs in st.provider_config.provider_status]),
-        )
-        st.projection_store.push_event(
-            "model_registry_listed",
-            build_model_registry_listed([_serialize_model_registry_entry(e) for e in st.provider_config.model_registry]),
-        )
+        _push_settings_listed(st)
 
 
-def _serialize_connection(conn) -> dict:
-    """Serialize a Connection to a wire dict for connections_listed."""
+def _serialize_connection(conn, available: bool) -> dict:
+    """Serialize a Connection to a settings_listed wire dict.
+
+    `route` replaces the old `connection_type` (same value -- conn.type IS the
+    route id). `base_url` is dropped (adapter-internal). `available` is
+    credential-derived from ProviderConfigState.provider_status.
+    """
+    return {
+        "id": conn.id,
+        "route": conn.type,
+        "locality": conn.locality,
+        "available": available,
+    }
+    """Serialize a Connection to a settings_listed wire dict."""
     return {
         "id": conn.id,
         "connection_type": conn.type,
         "base_url": conn.base_url,
-        "region": conn.region,
+        "locality": conn.locality,
     }
 
 
-def _serialize_configured_model(cm) -> dict:
-    """Serialize a ConfiguredModel to a wire dict for configured_models_listed.
+def _serialize_identity(ident) -> dict:
+    """Map a ModelIdentity to a wire dict for IdentityWire construction.
 
-    Carries embedding_dim (optional) so the Settings form can pre-fill it.
+    Returns {vendor, family, version, snapshot, kind}. The kind comes from the
+    identity (chat/embedding); snapshot is None when absent.
     """
+    return {
+        "vendor": ident.vendor,
+        "family": ident.family,
+        "version": ident.version,
+        "snapshot": ident.snapshot,
+        "kind": ident.kind,
+    }
+
+
+def _serialize_caps(caps) -> dict:
+    """Map a Capabilities dataclass to a wire dict for CapsWire construction.
+
+    kind is "embedding" when caps.embedding_dims is non-empty, else "chat".
+    thinking_levels mirrors caps.thinking.modes. native_tools is a sorted list.
+    supports_tools is always True (matching the prior _serialize_model_capabilities
+    behavior -- the projection does not yet model a false-tools capability).
+    provenance is flattened per-field to {source, date, detail} entries.
+    """
+    kind = "embedding" if caps.embedding_dims else "chat"
+    prov = {}
+    for k, p in caps.provenance.items():
+        prov[k] = {"source": p.source, "date": p.date, "detail": p.detail}
+    return {
+        "kind": kind,
+        "thinking_levels": [str(m) for m in caps.thinking.modes],
+        "prompt_caching": caps.prompt_caching,
+        "native_tools": sorted(caps.native_tools),
+        "supports_tools": True,
+        "embedding_dims": list(caps.embedding_dims) if caps.embedding_dims else None,
+        "resolved": caps.resolved,
+        "provenance": prov,
+    }
+
+
+def _compute_offerings_by_connection(st: "AppState") -> dict[str, list[dict]]:
+    """Compute offerings for each available connection.
+
+    For each available connection, iterate _BASE_CATALOG entries, build a
+    ModelIdentity, call codec.render(ident, conn.locality). Entries where render
+    returns None are excluded (the codec is the vendor filter). For each rendered
+    wire_id, call resolve_offering(conn.type, wire_id) to get route-aware caps
+    (base -> overlay -> profile merge). Kind filtering: the voyage route only
+    gets embedding entries; chat routes only get chat entries. Kind is determined
+    from caps.embedding_dims (non-empty tuple -> embedding). Only connections with
+    a stored credential get entries; unavailable connections are absent from the
+    result dict (per Decision 2).
+    """
+    from koan.models.capabilities import _BASE_CATALOG
+    from koan.models.codecs import CODECS
+    from koan.models.identity import ModelIdentity, canonical
+    from koan.models.offering import resolve_offering
+    from koan.models.routes import get_route
+
+    cfg = st.provider_config.config
+    if not cfg:
+        return {}
+    available_by_conn = {cs.connection_id: cs.available for cs in st.provider_config.provider_status}
+    result: dict[str, list[dict]] = {}
+    for conn in cfg.connections:
+        if not available_by_conn.get(conn.id, False):
+            continue
+        route = get_route(conn.type)
+        codec = CODECS.get(route.naming)
+        if codec is None:
+            continue
+        is_embedding_route = route.naming == "voyage"
+        offerings: list[dict] = []
+        for (vendor, family, version), caps in _BASE_CATALOG.items():
+            kind = "embedding" if caps.embedding_dims else "chat"
+            # Kind filter: embedding route gets only embedding entries; chat
+            # routes get only chat entries.
+            if is_embedding_route != (kind == "embedding"):
+                continue
+            ident = ModelIdentity(vendor=vendor, family=family, version=version, kind=kind)
+            wire_id = codec.render(ident, conn.locality)
+            if wire_id is None:
+                continue
+            # resolve_offering round-trips the wire_id through codec.parse then
+            # applies the route overlay + profile merge, yielding route-aware caps
+            # (e.g. anthropic -> prompt_caching="explicit" with web tools).
+            offering = resolve_offering(conn.type, wire_id)
+            ref_ident = offering.ref if isinstance(offering.ref, ModelIdentity) else None
+            offerings.append({
+                "wire_id": wire_id,
+                "identity": _serialize_identity(ref_ident) if ref_ident is not None else None,
+                "display_name": canonical(ref_ident) if ref_ident is not None else wire_id,
+                "caps": _serialize_caps(offering.caps),
+            })
+        if offerings:
+            result[conn.id] = offerings
+    return result
+
+
+def _serialize_configured_model(cm, conn) -> dict:
+    """Serialize a ConfiguredModel with resolved identity and caps.
+
+    Resolves the offering via resolve_offering(conn.type, cm.model_id) so the
+    wire entry carries identity (or null when unresolved), resolved (bool), and
+    route-aware caps. A missing connection should be filtered by the caller
+    (the assembler skips configured_models whose connection_id is not in config).
+    """
+    from koan.models.offering import resolve_offering
+    from koan.models.identity import ModelIdentity, canonical
+
+    offering = resolve_offering(conn.type, cm.model_id)
+    ref_ident = offering.ref if isinstance(offering.ref, ModelIdentity) else None
     return {
         "id": cm.id,
         "connection_id": cm.connection_id,
         "model_id": cm.model_id,
         "resolved_from": getattr(cm, "resolved_from", None),
         "embedding_dim": getattr(cm, "embedding_dim", None),
+        "identity": _serialize_identity(ref_ident) if ref_ident is not None else None,
+        "resolved": isinstance(offering.ref, ModelIdentity),
+        "caps": _serialize_caps(offering.caps),
     }
 
 
+def _serialize_workflows() -> list[dict]:
+    """Serialize the static workflow registry into settings_listed-shaped dicts.
+
+    Returns one dict per workflow: {id, description, phases, initial_phase}.
+    Static for the process lifetime; populated once at startup.
+    """
+    from ..lib.workflows import WORKFLOWS as _WORKFLOWS
+    out: list[dict] = []
+    for wf in _WORKFLOWS.values():
+        out.append({
+            "id": wf.name,
+            "description": wf.description,
+            "phases": [
+                {"id": p, "description": wf.phase_descriptions.get(p, "")}
+                for p in wf.available_phases
+            ],
+            "initial_phase": wf.initial_phase,
+        })
+    return out
+
+
+def _push_settings_listed(st: "AppState") -> None:
+    """Push a full settings_listed snapshot to the projection store.
+
+    Assembles the complete Settings state: connections (with available),
+    configured_models (with identity + caps), offerings_by_connection (rendered
+    from the curated catalog with route-aware caps), presets, active,
+    memory_bindings, scout/retry settings, workflows, embedding_models. Called
+    at startup and after every config mutation. Replace-all semantics: the fold
+    replaces the entire Settings object.
+    """
+    from koan.models.identity import ModelIdentity, canonical
+
+    cfg = st.provider_config.config
+    if not cfg:
+        return
+    avail_by_conn = {cs.connection_id: cs.available for cs in st.provider_config.provider_status}
+    conn_by_id = {c.id: c for c in cfg.connections}
+    st.projection_store.push_event(
+        "settings_listed",
+        build_settings_listed(
+            connections=[_serialize_connection(c, avail_by_conn.get(c.id, False)) for c in cfg.connections],
+            configured_models=[
+                _serialize_configured_model(cm, conn_by_id[cm.connection_id])
+                for cm in cfg.configured_models
+                if cm.connection_id in conn_by_id
+            ],
+            offerings_by_connection=_compute_offerings_by_connection(st),
+            presets={name: _serialize_preset(p) for name, p in cfg.presets.items()},
+            active=cfg.active,
+            memory_bindings=_serialize_memory_bindings(cfg.memory),
+            default_scout_concurrency=cfg.scout_concurrency,
+            max_retry_attempts=cfg.max_retry_attempts,
+            max_retry_wait_seconds=cfg.max_retry_wait_seconds,
+            workflows=_serialize_workflows(),
+            embedding_models=_serialize_embedding_models(),
+        ),
+    )
+
+
 def _serialize_preset(preset) -> dict:
-    """Serialize a Preset to a wire dict for presets_listed."""
+    """Serialize a Preset to a wire dict for the settings_listed snapshot."""
+    """Serialize a Preset to a settings_listed wire dict."""
     slots = {}
     for slot_name, slot in preset.slots.items():
         slots[slot_name] = {
@@ -1569,7 +1654,13 @@ def _serialize_preset(preset) -> dict:
 
 
 def _serialize_memory_bindings(bindings) -> dict | None:
-    """Serialize MemoryBindings to a wire dict for memory_bindings_listed.
+    """Serialize MemoryBindings to a wire dict for the settings_listed snapshot.
+
+    Only the embedding binding is serialized; memory_llm and reflect_llm were
+    removed. Each entry carries only 'configured_model_id'. Returns None when
+    bindings is None or has no binding configured.
+    """
+    """Serialize MemoryBindings to a wire dict for the settings_listed snapshot.
 
     Only the embedding binding is serialized; memory_llm and reflect_llm were
     removed. Each entry carries only 'configured_model_id'. Returns None when
@@ -1587,66 +1678,12 @@ def _serialize_memory_bindings(bindings) -> dict | None:
     return result or None
 
 
-def _serialize_model_capabilities(st: "AppState") -> list[dict]:
-    """Build a ResolvedCapabilitiesWire-shaped dict for each configured model (M6).
-
-    Calls resolve_capabilities(conn.type, cm.model_id) for each entry in
-    cfg.configured_models.  A missing connection (misconfigured config) logs a
-    warning and skips the entry rather than crashing -- callers must tolerate
-    partial results.  Secrets are never read here; only the connection type is
-    needed for capability resolution.
-    """
-    from ..agents.capability_resolver import resolve_capabilities
-
-    cfg = st.provider_config.config
-    if not cfg:
-        return []
-
-    conn_by_id = {c.id: c for c in cfg.connections}
-    result: list[dict] = []
-    for cm in cfg.configured_models:
-        conn = conn_by_id.get(cm.connection_id)
-        if conn is None:
-            log.warning(
-                "_serialize_model_capabilities: configured_model %r references unknown connection %r; skipping",
-                cm.id,
-                cm.connection_id,
-            )
-            continue
-        caps = resolve_capabilities(conn.type, cm.model_id)
-        result.append({
-            "configured_model_id": cm.id,
-            "thinking_supported": caps.thinking_supported,
-            "thinking_modes": [str(m) for m in caps.thinking_modes],
-            "thinking_shape": caps.thinking_shape,
-            "supports_web_search": caps.supports_web_search,
-            "supports_tools": caps.supports_tools,
-            "supports_prompt_caching": caps.supports_prompt_caching,
-            "recognized": caps.recognized,
-        })
-    return result
-
-
-def _push_model_capabilities(st: "AppState") -> None:
-    """Push model_capabilities_listed for all configured models (M6).
-
-    Called on startup and on any mutation that touches connections or
-    configured_models -- a connection's type determines the resolved capabilities
-    of all models attached to it (brief D4).
-    """
-    caps = _serialize_model_capabilities(st)
-    st.projection_store.push_event(
-        "model_capabilities_listed",
-        build_model_capabilities_listed(caps),
-    )
-
-
 def _serialize_embedding_models() -> list[dict]:
-    """Build the embedding_models_listed payload from the static Voyage catalog.
+    """Build the embedding_models payload for the settings_listed snapshot.
 
     Returns one dict per recognized Voyage embedding model, shaped as the
     EmbeddingModelWire wire type.  The list is static for the process lifetime
-    and is pushed once at startup.
+    and is pushed once at startup inside the settings_listed snapshot.
     """
     from ..memory.bindings import voyage_embedding_models
     return [
@@ -1712,86 +1749,14 @@ async def _rebuild_embedding_index(st: "AppState") -> dict:
 
 
 def _push_initial_config_events(st: AppState) -> None:
-    """Push full config state into the projection on startup.
+    """Push the full settings_listed snapshot into the projection on startup.
 
-    M5: replaces profile/active_profile events with connections/configured_models/
-    presets/active/memory_bindings events.  Called after _refresh_probe_state
-    (broadcast=False) so all state is ready.
-    M6: also pushes model_capabilities_listed.
+    M2: replaces the 13 individual settings events with one consolidated
+    settings_listed full snapshot (replace-all semantics). Called after
+    _refresh_probe_state (broadcast=False) so provider_status (availability) is
+    ready for the connections' `available` flag and offerings_by_connection.
     """
-    store = st.projection_store
-    cfg = st.provider_config.config
-
-    # M5: connections, configured_models, presets, active, memory_bindings.
-    store.push_event(
-        "connections_listed",
-        build_connections_listed([_serialize_connection(c) for c in cfg.connections]),
-    )
-    store.push_event(
-        "configured_models_listed",
-        build_configured_models_listed([_serialize_configured_model(cm) for cm in cfg.configured_models]),
-    )
-    store.push_event(
-        "presets_listed",
-        build_presets_listed({
-            name: _serialize_preset(p)
-            for name, p in cfg.presets.items()
-        }),
-    )
-    store.push_event("active_changed", build_active_changed(cfg.active))
-    store.push_event(
-        "memory_bindings_listed",
-        build_memory_bindings_listed(_serialize_memory_bindings(cfg.memory)),
-    )
-
-    # Per-connection availability (replaces per-type ProviderStatus).
-    store.push_event(
-        "provider_status_listed",
-        build_provider_status_listed([_serialize_connection_status(cs) for cs in st.provider_config.provider_status]),
-    )
-
-    # Model registry and dynamic overlay (overlay empty at boot; eager task fills it).
-    store.push_event(
-        "model_registry_listed",
-        build_model_registry_listed([_serialize_model_registry_entry(e) for e in st.provider_config.model_registry]),
-    )
-    _push_provider_models(st)
-
-    # Scout concurrency.
-    store.push_event(
-        "default_scout_concurrency_changed",
-        build_default_scout_concurrency_changed(cfg.scout_concurrency),
-    )
-
-    # Retry settings.
-    store.push_event(
-        "retry_settings_changed",
-        build_retry_settings_changed(cfg.max_retry_attempts, cfg.max_retry_wait_seconds),
-    )
-
-    # Workflows registry: static for the process lifetime.
-    from ..lib.workflows import WORKFLOWS as _WORKFLOWS
-    workflows_payload: list[dict] = []
-    for wf in _WORKFLOWS.values():
-        workflows_payload.append({
-            "id": wf.name,
-            "description": wf.description,
-            "phases": [
-                {"id": p, "description": wf.phase_descriptions.get(p, "")}
-                for p in wf.available_phases
-            ],
-            "initial_phase": wf.initial_phase,
-        })
-    store.push_event("workflows_listed", build_workflows_listed(workflows_payload))
-
-    # M6: per-configured-model read-only capabilities snapshot.
-    _push_model_capabilities(st)
-
-    # Static Voyage embedding model catalog (pushed once; static for the lifetime).
-    store.push_event(
-        "embedding_models_listed",
-        build_embedding_models_listed(_serialize_embedding_models()),
-    )
+    _push_settings_listed(st)
 
 
 async def api_eval_harvest(r: Request) -> Response:
@@ -1816,19 +1781,9 @@ async def api_run_status(r: Request) -> Response:
     })
 
 
-async def api_probe(r: Request) -> Response:
-    """Return per-connection availability; refresh on request.
-
-    M5: response is {connections: [{connection_id, connection_type, available}]}.
-    Callers that previously consumed the 'runners' and 'balanced_profile' fields
-    should migrate to the new shape.
-    """
-    st = _app_state(r)
-    if r.query_params.get("refresh", "") in ("1", "true"):
-        await _refresh_probe_state(st)
-    return JSONResponse({
-        "connections": [_serialize_connection_status(cs) for cs in st.provider_config.provider_status],
-    })
+# api_probe removed in M2: per-connection availability now lives on the
+# connections in the settings_listed snapshot. The eval runner health-checks
+# via /api/run-status instead.
 
 
 # api_profiles_list/create/update/delete removed in M5: profile CRUD endpoints
@@ -1842,7 +1797,9 @@ async def api_probe(r: Request) -> Response:
 # Connection types that expose a live list-models endpoint.
 # Hoisted here (not inside the eager task) so the save handler and eager task
 # share the same authoritative set without duplicating a literal.
-LISTING_CAPABLE: frozenset[str] = frozenset({"openai", "anthropic", "google", "openrouter", "ollama-cloud"})
+# M2: derived from the route registry -- routes with a non-None listing strategy.
+from koan.models.routes import ROUTES as _ROUTES_FOR_LISTING
+LISTING_CAPABLE: frozenset[str] = frozenset(r.id for r in _ROUTES_FOR_LISTING if r.listing is not None)
 
 async def _refresh_one_provider_models(
     st: "AppState",
@@ -1855,13 +1812,14 @@ async def _refresh_one_provider_models(
 ) -> tuple[bool, str, int]:
     """List models for one connection and update the overlay on success.
 
-    On success: updates st.provider_config.provider_models[connection_id],
-    calls _push_provider_models(st), logs the fetched count (diagnostic for
-    empty live-API returns), and returns (True, "", count). On ModelListingError
-    or any exception: returns (False, message, 0) without touching the overlay.
-    Each connection is isolated so a single failure cannot abort the others.
-    The overlay is keyed by connection_id, not provider type, so two connections
-    of the same type keep independent model lists.
+    On success: updates st.provider_config.provider_models[connection_id] and
+    returns (True, "", count). M2: no longer pushes a projection event -- the
+    overlay is Test-endpoint storage only, not projected (offerings come from
+    the curated catalog). On ModelListingError or any exception: returns
+    (False, message, 0) without touching the overlay. Each connection is
+    isolated so a single failure cannot abort the others. The overlay is keyed
+    by connection_id, not provider type, so two connections of the same type
+    keep independent model lists.
     """
     from ..agents.model_listing import list_provider_models, ModelListingError
     try:
@@ -1872,7 +1830,6 @@ async def _refresh_one_provider_models(
             region=region,
         )
         st.provider_config.provider_models[connection_id] = models
-        _push_provider_models(st)
         log.info(
             "listed %d models for connection %s (type %s)",
             len(models), connection_id, provider,
@@ -1884,49 +1841,10 @@ async def _refresh_one_provider_models(
         return (False, str(exc), 0)
 
 
-async def _refresh_provider_models_eager(st: "AppState") -> None:
-    """Populate the provider model overlay at startup for all configured connections.
-
-    M5: iterates config.connections instead of config.provider_auth.  For keyed
-    providers a credential must exist in the store; for keyless providers
-    (KEYLESS_PROVIDER_TYPES) a non-empty base_url is required.  Each connection
-    is wrapped in its own
-    try/except so one failure cannot abort others.  Runs as a non-blocking asyncio
-    background task -- never called from within _refresh_probe_state.
-    The overlay is keyed by connection id (LISTING_CAPABLE hoisted to module level).
-    """
-    from ..types import KEYLESS_PROVIDER_TYPES
-
-    cfg = st.provider_config.config
-    if not cfg:
-        return
-    store = st.provider_config.credential_store
-
-    for conn in cfg.connections:
-        if conn.type not in LISTING_CAPABLE:
-            continue
-        if conn.type in KEYLESS_PROVIDER_TYPES:
-            if not conn.base_url:
-                continue
-            api_key = None
-            base_url = conn.base_url
-            region = None
-        else:
-            if not (store and store.has(conn.id)):
-                continue  # no credential -- skip silently
-            api_key = store.resolve(conn.id)
-            base_url = conn.base_url
-            region = conn.region
-        try:
-            await _refresh_one_provider_models(
-                st, conn.id, conn.type,
-                api_key=api_key,
-                base_url=base_url,
-                region=region,
-            )
-        except Exception:
-            pass  # per-connection isolation
-
+# _refresh_provider_models_eager removed in M2: the eager startup task fed the
+# now-deleted provider_models Settings event. Offerings are computed from the
+# curated catalog in settings_listed, so there is no Settings need for a
+# boot-time live listing. model_listing survives as the Test endpoint helper.
 
 # api_settings_provider/api_settings_provider_delete/api_settings_provider_test
 # removed in M5: provider settings mutation endpoints deleted; mutation is M6 scope.
@@ -1938,24 +1856,8 @@ async def _refresh_provider_models_eager(st: "AppState") -> None:
 
 # -- Settings JSON endpoints --------------------------------------------------
 
-async def api_settings_body(r: Request) -> Response:
-    """Return the settings page payload.
-
-    M5: response is {connections, configured_models, presets, active, scoutConcurrency}.
-    Profile fields removed (plan-milestone-5.md).
-    """
-    st = _app_state(r)
-    cfg = st.provider_config.config
-
-    return JSONResponse({
-        "connections": [_serialize_connection(c) for c in cfg.connections],
-        "configured_models": [_serialize_configured_model(cm) for cm in cfg.configured_models],
-        "presets": {name: _serialize_preset(p) for name, p in cfg.presets.items()},
-        "active": cfg.active,
-        "scoutConcurrency": cfg.scout_concurrency,
-        "maxRetryAttempts": cfg.max_retry_attempts,
-        "maxRetryWaitSeconds": cfg.max_retry_wait_seconds,
-    })
+# api_settings_body removed in M2: the frontend consumes the settings_listed
+# SSE snapshot, not this HTTP endpoint. No non-frontend callers remained.
 
 
 # api_settings_profile_form removed in M5: profile form endpoints deleted;
@@ -1977,7 +1879,7 @@ async def api_settings_scout_concurrency(r: Request) -> Response:
     st.provider_config.config.scout_concurrency = value
     from ..config import save_koan_config
     await save_koan_config(st.provider_config.config, Path(st.server.koan_home))
-    st.projection_store.push_event("default_scout_concurrency_changed", build_default_scout_concurrency_changed(value))
+    _push_settings_listed(st)
     return JSONResponse({"ok": True})
 
 
@@ -2000,10 +1902,7 @@ async def api_settings_retry(r: Request) -> Response:
     st.provider_config.config.max_retry_wait_seconds = float(max_retry_wait_seconds)
     from ..config import save_koan_config
     await save_koan_config(st.provider_config.config, Path(st.server.koan_home))
-    st.projection_store.push_event(
-        "retry_settings_changed",
-        build_retry_settings_changed(int(max_retry_attempts), float(max_retry_wait_seconds)),
-    )
+    _push_settings_listed(st)
     return JSONResponse({"ok": True})
 
 
@@ -2018,7 +1917,9 @@ async def api_settings_retry(r: Request) -> Response:
 #   return JSONResponse({"ok": True}), 422 on validation error.
 # Secrets are never echoed in responses or the projection (brief D3).
 
-_VALID_CONNECTION_TYPES = {"google", "anthropic", "openai", "bedrock", "openrouter", "ollama-cloud", "voyage"}
+# M2: route ids are canonical; the registry is the sole validation source.
+from koan.models.routes import route_ids as _route_ids_fn
+_VALID_CONNECTION_TYPES = set(_route_ids_fn())
 _VALID_SLOT_NAMES = {"strong", "standard", "cheap"}
 # memory_llm and reflect_llm removed — LLM tiers now derive from preset cheap/standard slots.
 _VALID_MEMORY_KINDS = {"embedding"}
@@ -2064,36 +1965,27 @@ def _build_frozen_run_config(cfg: "KoanConfig", overrides: dict) -> "KoanConfig"
 
 
 def _push_connection_events(st: "AppState") -> None:
-    """Push connections_listed + provider_status_listed + model_capabilities (M6).
+    """Push a settings_listed snapshot after a connection mutation.
 
-    Called after any connection mutation so the projection stays consistent with
-    the mutated config.  Provider availability is recomputed from the credential
-    store rather than the old cached st.provider_config.provider_status so that
-    a newly-credentialed connection becomes available immediately.
+    Recomputes provider availability from the credential store so a
+    newly-credentialed connection becomes available immediately, then pushes one
+    settings_listed snapshot (replace-all semantics) carrying the reshaped
+    connections, offerings_by_connection, and configured-model caps.
     """
-    cfg = st.provider_config.config
     st.provider_config.provider_status = _provider_probe_results(st)
-    st.projection_store.push_event(
-        "connections_listed",
-        build_connections_listed([_serialize_connection(c) for c in cfg.connections]),
-    )
-    st.projection_store.push_event(
-        "provider_status_listed",
-        build_provider_status_listed([_serialize_connection_status(cs) for cs in st.provider_config.provider_status]),
-    )
-    _push_model_capabilities(st)
+    _push_settings_listed(st)
 
 
 async def api_config_connection_set(r: Request) -> Response:
     """Upsert a connection (POST/PUT /api/config/connections[/{id}]).
 
-    Body: {id, type, base_url?, region?, azure_deployment?, api_version?,
-           timeout?, secret?}.  The id may be provided in the body or the path.
+    Body: {id, type, base_url?, locality?, secret?}.  The id may be provided
+           in the body or the path.
     If a 'secret' field is present it is stored encrypted in the credential store
-    and never echoed back.  Pushes connections_listed + provider_status_listed +
-    model_capabilities_listed after saving.  For listing-capable connection types,
-    schedules a best-effort background provider_models refresh so the model
-    dropdown populates without requiring an explicit Test action.
+    and never echoed back.  Pushes settings_listed after saving.  When the
+    body omits base_url on edit, the existing connection's base_url is
+    preserved (the Settings wire dropped it in M2, so the frontend cannot
+    round-trip it).
 
     Returns 422 on validation error.
     """
@@ -2120,15 +2012,19 @@ async def api_config_connection_set(r: Request) -> Response:
 
     # Build the Connection object from the body.  Endpoint settings only; the
     # secret lives in the credential store, never on the Connection.
-    timeout_raw = body.get("timeout")
+    # M2: dead fields (azure_deployment, api_version, timeout) removed; locality replaces region.
+    # Preserve base_url from the existing connection when the body omits it.
+    # base_url was dropped from the Settings wire (M2); the frontend cannot
+    # round-trip it, so the save handler must not wipe it on edit.
+    existing_conn = next((c for c in cfg.connections if c.id == conn_id), None)
+    base_url = body.get("base_url") or None
+    if base_url is None and existing_conn is not None:
+        base_url = existing_conn.base_url
     conn = Connection(
         id=conn_id,
         type=conn_type,
-        base_url=body.get("base_url") or None,
-        region=body.get("region") or None,
-        azure_deployment=body.get("azure_deployment") or None,
-        api_version=body.get("api_version") or None,
-        timeout=float(timeout_raw) if timeout_raw is not None else None,
+        base_url=base_url,
+        locality=body.get("locality") or None,
     )
 
     # Upsert: replace an existing connection by id or append a new one.
@@ -2148,30 +2044,9 @@ async def api_config_connection_set(r: Request) -> Response:
     await save_koan_config(cfg, Path(st.server.koan_home))
     _push_connection_events(st)
 
-    # Schedule a best-effort background model-list refresh for listing-capable
-    # connections.  Non-blocking (create_task): save stays fast and any listing
-    # error is swallowed silently here; the explicit Test action still surfaces
-    # errors to the user.  Mirrors the eager startup task pattern.
-    if conn.type in LISTING_CAPABLE:
-        from ..types import KEYLESS_PROVIDER_TYPES
-        store = st.provider_config.credential_store
-        if conn.type in KEYLESS_PROVIDER_TYPES:
-            if conn.base_url:
-                asyncio.create_task(_refresh_one_provider_models(
-                    st, conn.id, conn.type,
-                    api_key=None,
-                    base_url=conn.base_url,
-                    region=None,
-                ))
-        else:
-            if store and store.has(conn.id):
-                asyncio.create_task(_refresh_one_provider_models(
-                    st, conn.id, conn.type,
-                    api_key=store.resolve(conn.id),
-                    base_url=conn.base_url,
-                    region=conn.region,
-                ))
-
+    # M2: post-save background model-list refresh deleted. Offerings are now
+    # computed from the curated catalog (not live listings) in settings_listed,
+    # so there is no Settings need for a background refresh on save.
     return JSONResponse({"ok": True})
 
 
@@ -2179,8 +2054,7 @@ async def api_config_connection_delete(r: Request) -> Response:
     """Delete a connection (DELETE /api/config/connections/{id}).
 
     Removes the connection from cfg.connections and its credential from the
-    store.  Pushes connections_listed + provider_status_listed +
-    model_capabilities_listed after saving.
+    store.  Pushes settings_listed after saving.
 
     Returns 404 when the connection id is not found.
     """
@@ -2207,7 +2081,7 @@ async def api_config_model_set(r: Request) -> Response:
 
     Body: {id, connection_id, model_id, resolved_from?, embedding_dim?}.
     id may be in the path (PUT) or the body (POST).  Pushes
-    configured_models_listed + model_capabilities_listed after saving.
+    settings_listed after saving.
 
     embedding_dim: integer from the model's recognized dimension options, or
     absent/null to use the catalog default.  For voyage connections only; 422
@@ -2300,11 +2174,7 @@ async def api_config_model_set(r: Request) -> Response:
         cfg.configured_models.append(cm)
 
     await save_koan_config(cfg, Path(st.server.koan_home))
-    st.projection_store.push_event(
-        "configured_models_listed",
-        build_configured_models_listed([_serialize_configured_model(m) for m in cfg.configured_models]),
-    )
-    _push_model_capabilities(st)
+    _push_settings_listed(st)
 
     # Rebuild the vector index when the embedding identity changed.
     response_body: dict = {"ok": True}
@@ -2320,8 +2190,8 @@ async def api_config_model_set(r: Request) -> Response:
 async def api_config_model_delete(r: Request) -> Response:
     """Delete a configured model (DELETE /api/config/models/{id}).
 
-    Returns 404 when the model id is not found.  Pushes configured_models_listed +
-    model_capabilities_listed after saving.
+    Returns 404 when the model id is not found.  Pushes
+    settings_listed after saving.
     """
     from ..config import save_koan_config
 
@@ -2335,11 +2205,7 @@ async def api_config_model_delete(r: Request) -> Response:
     cfg.configured_models = [m for m in cfg.configured_models if m.id != cm_id]
 
     await save_koan_config(cfg, Path(st.server.koan_home))
-    st.projection_store.push_event(
-        "configured_models_listed",
-        build_configured_models_listed([_serialize_configured_model(m) for m in cfg.configured_models]),
-    )
-    _push_model_capabilities(st)
+    _push_settings_listed(st)
     return JSONResponse({"ok": True})
 
 
@@ -2351,13 +2217,13 @@ async def api_config_slot_set(r: Request) -> Response:
       - configured_model_id exists
       - the chosen thinking mode is in resolve_capabilities(...).thinking_modes (422 otherwise)
     Only mutates the reserved $last preset (brief D7 / Out-of-scope: named presets).
-    Pushes presets_listed after saving.
+    Pushes settings_listed after saving.
 
     Returns 422 on validation error.
     """
     from ..config import save_koan_config
     from ..types import SlotAssignment, Preset
-    from ..agents.capability_resolver import resolve_capabilities
+    from koan.models.offering import resolve_offering
 
     slot = r.path_params.get("slot", "")
     if slot not in _VALID_SLOT_NAMES:
@@ -2394,8 +2260,9 @@ async def api_config_slot_set(r: Request) -> Response:
     # Validate that the chosen thinking mode is supported by the model.
     # resolve_capabilities is a pure function; 422 is deterministic and observable
     # (brief D4 -- capabilities are resolved, never asked).
-    caps = resolve_capabilities(conn.type, cm.model_id)
-    supported_modes = ["disabled", *[str(m) for m in caps.thinking_modes]]
+    offering = resolve_offering(conn.type, cm.model_id)
+    caps = offering.caps
+    supported_modes = ["disabled", *[str(m) for m in caps.thinking.modes]]
     if thinking not in supported_modes:
         return JSONResponse(
             {
@@ -2418,10 +2285,7 @@ async def api_config_slot_set(r: Request) -> Response:
     )
 
     await save_koan_config(cfg, Path(st.server.koan_home))
-    st.projection_store.push_event(
-        "presets_listed",
-        build_presets_listed({name: _serialize_preset(p) for name, p in cfg.presets.items()}),
-    )
+    _push_settings_listed(st)
     return JSONResponse({"ok": True})
 
 
@@ -2430,7 +2294,7 @@ async def api_config_memory_set(r: Request) -> Response:
 
     kind must be 'embedding'.
     Body: {configured_model_id}.  Validates that configured_model_id
-    exists.  Pushes memory_bindings_listed after saving.
+    exists.  Pushes settings_listed after saving.
 
     For kind == 'embedding': validates that the referenced configured model's
     connection is of type 'voyage' and that its model_id is in the recognized
@@ -2505,10 +2369,7 @@ async def api_config_memory_set(r: Request) -> Response:
     setattr(cfg.memory, kind, MemoryBinding(configured_model_id=cm_id))
 
     await save_koan_config(cfg, Path(st.server.koan_home))
-    st.projection_store.push_event(
-        "memory_bindings_listed",
-        build_memory_bindings_listed(_serialize_memory_bindings(cfg.memory)),
-    )
+    _push_settings_listed(st)
 
     # Rebuild the vector index when the embedding identity changed.
     response_body: dict = {"ok": True}
@@ -2526,8 +2387,8 @@ async def api_config_connection_list_models(r: Request) -> Response:
     """Trigger a live model listing for a connection (POST /api/config/connections/{id}/list-models).
 
     Resolves the connection, obtains its credential (or base_url for keyless
-    types), calls _refresh_one_provider_models, and pushes provider_models_listed
-    on success.  Returns {ok: true, count: N} on success so the Test badge can
+    types), calls _refresh_one_provider_models, and returns {ok: true, count: N}
+    on success so the Test badge can
     display the real model count.  Returns {ok: false, message: ...} on
     ModelListingError or for non-listing types so the caller can offer a
     free-text fallback (brief D7).  Never raises to the client.
@@ -2554,7 +2415,7 @@ async def api_config_connection_list_models(r: Request) -> Response:
             return JSONResponse({"ok": False, "message": f"no credential available for connection '{conn_id}'"})
         api_key = store.resolve(conn_id)
         base_url = conn.base_url
-        region = conn.region
+        region = conn.locality
 
     ok, msg, count = await _refresh_one_provider_models(
         st,
@@ -2569,85 +2430,10 @@ async def api_config_connection_list_models(r: Request) -> Response:
     return JSONResponse({"ok": False, "message": msg})
 
 
-async def api_config_model_newest(r: Request) -> Response:
-    """Resolve and pin the newest model in a family (POST /api/config/models/newest).
-
-    Body: {connection_id, family, id?}.  Resolves the connection, calls
-    resolve_newest_in_family, upserts a ConfiguredModel with the pinned model_id +
-    resolved_from provenance, saves, and pushes configured_models_listed +
-    model_capabilities_listed.
-
-    On ModelListingError (non-listing connection type or fetch failure) returns 409
-    with message "unavailable for this connection type" so the caller knows to
-    require an explicit pin.  On NewestInFamilyUnavailable returns 422 "no models
-    in that family" so the caller can suggest a different family or explicit pin
-    (M3 pattern: two distinct unavailability signals, brief D11).
-    """
-    from ..config import save_koan_config
-    from ..agents.model_listing import ModelListingError
-    from ..agents.newest_in_family import (
-        NewestInFamilyUnavailable,
-        resolve_newest_in_family,
-    )
-    from ..types import ConfiguredModel
-
-    body = await r.json()
-    conn_id = body.get("connection_id", "")
-    family = body.get("family", "")
-    cm_id = body.get("id") or None  # caller may supply an id; otherwise auto-generate
-
-    if not conn_id or not isinstance(conn_id, str):
-        return JSONResponse({"error": "validation_error", "message": "connection_id is required"}, status_code=422)
-    if not family or not isinstance(family, str):
-        return JSONResponse({"error": "validation_error", "message": "family is required"}, status_code=422)
-
-    st = _app_state(r)
-    cfg = st.provider_config.config
-
-    conn = next((c for c in cfg.connections if c.id == conn_id), None)
-    if conn is None:
-        return JSONResponse({"error": "not_found", "message": f"connection '{conn_id}' not found"}, status_code=404)
-
-    try:
-        resolution = await resolve_newest_in_family(conn, family, st.provider_config.credential_store)
-    except ModelListingError as exc:
-        return JSONResponse(
-            {"error": "unavailable", "message": f"model listing unavailable for this connection type: {exc}"},
-            status_code=409,
-        )
-    except NewestInFamilyUnavailable as exc:
-        return JSONResponse(
-            {"error": "not_found", "message": f"no models in family '{family}': {exc}"},
-            status_code=422,
-        )
-
-    # Auto-generate an id when the caller does not supply one.  Use a
-    # deterministic slug so repeated calls for the same (connection, family)
-    # upsert rather than accumulate duplicates.
-    if not cm_id:
-        import uuid as _uuid
-        cm_id = str(_uuid.uuid4())
-
-    cm = ConfiguredModel(
-        id=cm_id,
-        connection_id=conn_id,
-        model_id=resolution.model_id,
-        resolved_from=resolution.resolved_from,
-    )
-
-    existing_idx = next((i for i, m in enumerate(cfg.configured_models) if m.id == cm_id), None)
-    if existing_idx is not None:
-        cfg.configured_models[existing_idx] = cm
-    else:
-        cfg.configured_models.append(cm)
-
-    await save_koan_config(cfg, Path(st.server.koan_home))
-    st.projection_store.push_event(
-        "configured_models_listed",
-        build_configured_models_listed([_serialize_configured_model(m) for m in cfg.configured_models]),
-    )
-    _push_model_capabilities(st)
-    return JSONResponse({"ok": True, "model_id": resolution.model_id, "resolved_from": resolution.resolved_from})
+# api_config_model_newest removed in M2: the newest-in-family endpoint and
+# async resolver are deleted. Family grouping data now lives in
+# offerings_by_connection identity fields (the frontend derives pins from
+# there). resolve_families survives as a pure catalog function for tests.
 
 
 # -- Initial prompt endpoint --------------------------------------------------
@@ -2739,10 +2525,9 @@ def create_app(app_state: AppState) -> Starlette:
         await _refresh_probe_state(app_state, broadcast=False)
         _push_initial_config_events(app_state)
 
-        # Eagerly populate the provider model overlay in the background.
-        # Non-blocking: an unreachable provider yields an empty overlay entry,
-        # never delays or crashes boot. The eager task must not be awaited here.
-        asyncio.create_task(_refresh_provider_models_eager(app_state))
+        # M2: eager provider-model overlay task deleted. Offerings are computed
+        # from the curated catalog in settings_listed, so there is no boot-time
+        # live listing need.
 
         # Open browser once after server is listening
         if app_state.server.open_browser:
@@ -2797,10 +2582,10 @@ def create_app(app_state: AppState) -> Starlette:
         Route("/api/artifacts/{path:path}", api_artifact_content),
         Route("/api/eval-harvest", api_eval_harvest, methods=["GET"]),
         Route("/api/run-status", api_run_status, methods=["GET"]),
-        Route("/api/probe", api_probe),
+        # /api/probe removed in M2: availability lives in settings_listed.
         # /api/profiles routes removed in M5: profile CRUD deleted.
         # /api/agents removed in M4: installation concept fully deleted.
-        Route("/api/settings/body", api_settings_body, methods=["GET"]),
+        # /api/settings/body removed in M2: frontend consumes the SSE snapshot.
         Route("/api/settings/scout-concurrency", api_settings_scout_concurrency, methods=["PUT"]),
         Route("/api/settings/retry", api_settings_retry, methods=["PUT"]),
         # /api/settings/profile-form removed in M5: profile form endpoints deleted.
@@ -2811,7 +2596,7 @@ def create_app(app_state: AppState) -> Starlette:
         Route("/api/config/connections/{id}", api_config_connection_delete, methods=["DELETE"]),
         Route("/api/config/connections/{id}/list-models", api_config_connection_list_models, methods=["POST"]),
         Route("/api/config/models", api_config_model_set, methods=["POST"]),
-        Route("/api/config/models/newest", api_config_model_newest, methods=["POST"]),
+        # /api/config/models/newest removed in M2: endpoint + resolver deleted.
         Route("/api/config/models/{id}", api_config_model_set, methods=["PUT"]),
         Route("/api/config/models/{id}", api_config_model_delete, methods=["DELETE"]),
         Route("/api/config/slots/{slot}", api_config_slot_set, methods=["PUT"]),

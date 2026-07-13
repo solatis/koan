@@ -17,7 +17,7 @@ from starlette.testclient import TestClient
 
 from koan.config import KoanConfig
 from koan.state import AppState
-from koan.types import ConnectionStatus, ModelRegistryEntry
+from koan.types import ConnectionStatus
 from koan.web.app import create_app
 
 
@@ -36,35 +36,8 @@ def _make_provider_status() -> list[ConnectionStatus]:
     ]
 
 
-def _make_model_registry() -> list[ModelRegistryEntry]:
-    """Build a minimal model registry for profile-CRUD tests.
-
-    Provides one entry per provider tier so that model-ID and thinking-mode
-    validation in _validate_profile_tiers can be exercised end-to-end.
-    """
-    return [
-        ModelRegistryEntry(
-            provider="google",
-            model="gemini-2.5-pro",
-            display_name="Gemini 2.5 Pro",
-            context_window=1_000_000,
-            thinking_modes=["low", "medium"],
-        ),
-        ModelRegistryEntry(
-            provider="google",
-            model="gemini-2.5-flash",
-            display_name="Gemini 2.5 Flash",
-            context_window=1_000_000,
-            thinking_modes=["low"],
-        ),
-        ModelRegistryEntry(
-            provider="google",
-            model="gemini-2.5-flash-lite",
-            display_name="Gemini 2.5 Flash Lite",
-            context_window=1_000_000,
-            thinking_modes=[],
-        ),
-    ]
+# _make_model_registry removed in M2: ModelRegistryEntry deleted; the model
+# registry was absorbed into settings_listed offerings_by_connection.
 
 
 # -- Fixtures -----------------------------------------------------------------
@@ -179,13 +152,13 @@ async def test_start_run_writes_run_config_yaml(tmp_path):
 
     # write_run_config writes to the real ~/.koan/runs/<id>/ directory; this is
     # intentional -- the test verifies the actual file path returned by the API.
-    # _push_model_capabilities is mocked because resolve_capabilities calls into
-    # the capability resolver (not relevant to the file-write behavior under test).
+    # _push_settings_listed is mocked because resolve_offering (called inside it)
+    # traverses the models package (not relevant to the file-write behavior under test).
     # CredentialStore.has is patched to avoid Fernet key I/O -- these tests cover
     # config freezing and file-write behavior, not credential validation.
     with patch("koan.driver.driver_main", new_callable=AsyncMock), \
          patch("koan.web.app._refresh_probe_state", side_effect=noop_refresh), \
-         patch("koan.web.app._push_model_capabilities"), \
+         patch("koan.web.app._push_settings_listed"), \
          patch("koan.credentials.CredentialStore.has", return_value=True):
         app = create_app(st)
         with TestClient(app) as client:
@@ -248,7 +221,7 @@ async def test_start_run_override_applies_to_frozen_config(tmp_path):
 
     with patch("koan.driver.driver_main", new_callable=AsyncMock), \
          patch("koan.web.app._refresh_probe_state", side_effect=noop_refresh), \
-         patch("koan.web.app._push_model_capabilities"), \
+         patch("koan.web.app._push_settings_listed"), \
          patch("koan.credentials.CredentialStore.has", return_value=True):
         app = create_app(st)
         with TestClient(app) as client:
@@ -299,7 +272,7 @@ async def test_start_run_no_overrides_uses_persisted_slots(tmp_path):
 
     with patch("koan.driver.driver_main", new_callable=AsyncMock), \
          patch("koan.web.app._refresh_probe_state", side_effect=noop_refresh), \
-         patch("koan.web.app._push_model_capabilities"), \
+         patch("koan.web.app._push_settings_listed"), \
          patch("koan.credentials.CredentialStore.has", return_value=True):
         app = create_app(st)
         with TestClient(app) as client:
@@ -537,7 +510,7 @@ def test_settings_provider_negative_presence(client, app_state):
 
 
 def test_settings_retry_accepts_valid_payload(client, app_state, monkeypatch):
-    """PUT /api/settings/retry persists valid bounds and emits retry_settings_changed."""
+    """PUT /api/settings/retry persists valid bounds and pushes settings_listed."""
     monkeypatch.setattr("koan.config._config_write_lock", None)
 
     resp = client.put("/api/settings/retry", json={"max_retry_attempts": 5, "max_retry_wait_seconds": 30})
@@ -545,10 +518,14 @@ def test_settings_retry_accepts_valid_payload(client, app_state, monkeypatch):
     assert resp.json() == {"ok": True}
     assert app_state.provider_config.config.max_retry_attempts == 5
     assert app_state.provider_config.config.max_retry_wait_seconds == 30.0
-    assert any(
-        e.event_type == "retry_settings_changed"
-        for e in app_state.projection_store.events
+    # M2: the retry handler pushes one settings_listed snapshot carrying the
+    # updated retry settings in its payload.
+    ev = next(
+        e for e in reversed(app_state.projection_store.events)
+        if e.event_type == "settings_listed"
     )
+    assert ev.payload["max_retry_attempts"] == 5
+    assert ev.payload["max_retry_wait_seconds"] == 30.0
 
 
 def test_settings_retry_rejects_invalid_attempts(client, app_state, monkeypatch):
@@ -573,15 +550,8 @@ def test_settings_retry_rejects_invalid_wait(client, app_state, monkeypatch):
     assert resp.status_code == 422
 
 
-def test_settings_body_includes_retry_fields(client, app_state):
-    """GET /api/settings/body includes maxRetryAttempts and maxRetryWaitSeconds."""
-    resp = client.get("/api/settings/body")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "maxRetryAttempts" in body, "expected maxRetryAttempts in settings body"
-    assert "maxRetryWaitSeconds" in body, "expected maxRetryWaitSeconds in settings body"
-    assert body["maxRetryAttempts"] == 10
-    assert body["maxRetryWaitSeconds"] == 60.0
+# test_settings_body_includes_retry_fields removed in M2: the /api/settings/body
+# endpoint is deleted (the frontend consumes the settings_listed SSE snapshot).
 
 
 def test_connection_set_accepts_openrouter(client, app_state):
@@ -696,7 +666,7 @@ def test_landing_with_connection_status(client, app_state):
 
 
 def test_landing_start_run_disabled_no_connections(client, app_state):
-    # After SPA migration, connection availability is checked client-side via /api/probe.
+    # After SPA migration, connection availability is read from the settings_listed snapshot.
     app_state.provider_config.provider_status = [
         ConnectionStatus(connection_id="c1", connection_type="openai", available=False),
     ]
@@ -709,22 +679,9 @@ def test_landing_start_run_disabled_no_connections(client, app_state):
 
 
 # -- Probe refresh ------------------------------------------------------------
-
-class TestProbeRefresh:
-    def test_probe_returns_connection_status(self, client, app_state):
-        """M5: /api/probe returns {connections: [...]} with per-connection availability."""
-        app_state.provider_config.provider_status = _make_provider_status()
-        resp = client.get("/api/probe")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "connections" in data
-        # 3 connections from _make_provider_status
-        assert len(data["connections"]) == 3
-        # Each connection has the required fields
-        for conn in data["connections"]:
-            assert "connection_id" in conn
-            assert "connection_type" in conn
-            assert "available" in conn
+# TestProbeRefresh removed in M2: the /api/probe endpoint is deleted.
+# Per-connection availability now lives on the connections in the
+# settings_listed snapshot; the eval runner health-checks via /api/run-status.
 
 
 
