@@ -5,29 +5,35 @@ import { devtools } from 'zustand/middleware'
 
 // Installation interface removed in M4: agent installation concept deleted.
 // M5: Profile interface removed -- profiles/default_profile deleted from the backend Settings projection.
-// M5: ProviderStatus (env-key per-type shape) replaced by ConnectionStatusInfo (per-connection).
+// M3: ConnectionStatusInfo removed -- per-connection availability now rides on ConnectionInfo.available.
 
-// ProviderType mirrors backend Literal["google","anthropic","openai","bedrock","openrouter","ollama-cloud","voyage"].
-// NOTE: this type is joined to ProviderBadge's ProviderType by an explicit cast in
-// components/organisms/modelConfig.ts (c.connectionType as ProviderType);
-// tsc will NOT catch divergence between the two. Both must be kept in sync manually.
-export type ProviderType = 'google' | 'anthropic' | 'openai' | 'bedrock' | 'openrouter' | 'ollama-cloud' | 'voyage'
+// ProviderType mirrors route IDs from koan/models/routes.py (anthropic,
+// openai, google, bedrock-converse, bedrock-mantle, openrouter, ollama-cloud, voyage) -- not
+// provider labels. Both ProviderType definitions (here and ProviderBadge.tsx)
+// use route IDs; the modelConfig cast (c.route as ProviderType) is exact.
+export type ProviderType = 'google' | 'anthropic' | 'openai' | 'bedrock-converse' | 'bedrock-mantle' | 'openrouter' | 'ollama-cloud' | 'voyage'
 
 /**
  * Wire: ConnectionWire (camelCase via to_camel alias).
- * Non-secret endpoint settings for one provider connection.
+ * Non-secret endpoint settings for one provider connection. `route` carries
+ * the route ID (e.g. 'bedrock-converse'); `locality` replaces the old `region`
+ * (geo-code format); `available` is credential-derived. `base_url` was dropped
+ * from the wire in M2 (adapter-internal, not UI-needed).
  */
 export interface ConnectionInfo {
   id: string
-  connectionType: ProviderType
-  baseUrl: string | null
-  region: string | null
+  route: ProviderType
+  locality: string | null
+  available: boolean
 }
 
 /**
  * Wire: ConfiguredModelWire (camelCase).
- * A (connection, model-id) pair in the global library.
- * Populated via the configured_models_listed SSE projection event.
+ * A (connection, model-id) pair in the global library, carried in the
+ * settings_listed full snapshot. `identity` is the resolved ModelIdentity
+ * (null when unresolved), `resolved` is whether resolve_offering returned a
+ * real identity vs an Unresolved passthrough, and `caps` is the route-aware
+ * capability snapshot (base catalog -> route overlay -> profile merge).
  */
 export interface ConfiguredModelInfo {
   id: string
@@ -36,6 +42,53 @@ export interface ConfiguredModelInfo {
   resolvedFrom: string | null
   /** Selected Voyage output dimension; null means use the catalog default. */
   embeddingDim: number | null
+  identity: IdentityInfo | null
+  resolved: boolean
+  caps: CapsInfo
+}
+
+/**
+ * Wire: IdentityWire (camelCase). Resolved model identity for a configured
+ * model or offering -- vendor + family + version lets the frontend derive
+ * newest-in-family pins without a separate families payload.
+ */
+export interface IdentityInfo {
+  vendor: string
+  family: string
+  version: string
+  snapshot: string | null
+  kind: string
+}
+
+/**
+ * Wire: CapsWire (camelCase). Route-aware capability snapshot for one
+ * configured model or offering. `thinkingLevels` mirrors caps.thinking.modes;
+ * `nativeTools` is a sorted list; `provenance` is a per-field dict of
+ * {source, date, detail} entries recording where each capability was
+ * resolved from (catalog, overlay, or profile).
+ */
+export interface CapsInfo {
+  kind: string
+  thinkingLevels: string[]
+  promptCaching: string
+  nativeTools: string[]
+  supportsTools: boolean
+  embeddingDims: number[] | null
+  resolved: boolean
+  provenance: Record<string, { source: string; date: string; detail: string }>
+}
+
+/**
+ * Wire: OfferingWire (camelCase). One curated catalog entry rendered through
+ * a connection's route codec with route-aware caps. `wireId` is the
+ * codec-rendered model id for that connection's route; picker content is
+ * `offeringsByConnection[connId].map(o => o.wireId)`.
+ */
+export interface OfferingInfo {
+  wireId: string
+  identity: IdentityInfo
+  displayName: string
+  caps: CapsInfo
 }
 
 /**
@@ -60,31 +113,11 @@ export interface PresetInfo {
   slots: Record<string, SlotAssignmentInfo>
 }
 
-/**
- * Wire: ConnectionStatusWire (camelCase).
- * Per-connection credential availability replacing the old per-type ProviderStatus.
- */
-export interface ConnectionStatusInfo {
-  connectionId: string
-  connectionType: ProviderType
-  available: boolean
-}
+// ConnectionStatusInfo deleted in M3: per-connection availability now lives
+// on ConnectionInfo.available (settings_listed full snapshot).
 
-/**
- * Wire: ResolvedCapabilitiesWire (camelCase).
- * Read-only resolved capability snapshot for one configured model.
- */
-export interface ModelCapabilityInfo {
-  configuredModelId: string
-  thinkingSupported: boolean
-  thinkingModes: string[]
-  thinkingShape: string
-  supportsWebSearch: boolean
-  supportsTools: boolean
-  supportsPromptCaching: boolean
-  recognized: boolean
-}
-
+// ModelCapabilityInfo deleted in M3: resolved caps now ride on
+// ConfiguredModelInfo.caps (settings_listed full snapshot).
 /**
  * Wire: memory_bindings dict (opaque snake_case on the wire -- NOT camelCase).
  * Only the embedding key is present; memory_llm and reflect_llm were removed.
@@ -98,48 +131,20 @@ export type MemoryBindingsInfo = {
   embedding?: MemoryBindingInfo
 } | null
 
-/** One entry from the all-providers model catalog surfaced via Settings.modelRegistry (M2/M3). */
-export interface ModelRegistryEntry {
-  provider: string
-  model: string
-  displayName: string
-  thinkingModes: string[]
-}
-
-/**
- * One entry in the per-connection dynamic model overlay (Settings.providerModels).
- * Lighter sibling of ModelRegistryEntry: no thinkingModes.
- * Populated by provider_models_listed events (eager startup + Test/save refresh).
- * connectionId scopes the entry to its originating connection so two connections
- * of the same provider type keep independent model lists.
- */
-export interface ProviderModel {
-  provider: string
-  model: string
-  displayName: string
-  connectionId: string
-}
-
-/**
- * Per-connection newest-in-family pin delivered via the projection (Settings channel).
- * Computed server-side from the live model list alongside providerModels; replace-all
- * semantics (each provider_models_listed event replaces the full families list).
- * connectionId scopes the pin to its originating connection.
- * camelCase wire of ProviderFamilyWire (projections.py).
- */
-export interface ProviderFamily {
-  provider: string
-  family: string
-  resolved: string
-  resolvedFrom: string
-  connectionId: string
-}
+// ModelRegistryEntry deleted in M3: the all-providers model catalog is
+// replaced by offerings_by_connection (curated catalog rendered per route).
 
 /**
  * Projection Settings -- typed sub-objects use camelCase (to_camel alias);
  * memoryBindings is opaque snake_case on the wire (stored as a raw dict).
- * Keep modelRegistry and providerModels: they are capability/listing surfaces
- * retained by M6 (brief decision 5).
+ *
+ * M3: the five per-field settings surfaces (providerStatus, modelCapabilities,
+ * modelRegistry, providerModels, providerFamilies) are replaced by the single
+ * settings_listed full-snapshot event. offeringsByConnection is the curated
+ * catalog rendered through each available connection's route codec with
+ * route-aware caps -- the sole picker-content surface. configuredModels carry
+ * identity + resolved + caps so the UI shows resolution status and
+ * route-aware capabilities without a separate join.
  */
 export interface Settings {
   // installations removed in M4: agent installation concept deleted.
@@ -147,29 +152,23 @@ export interface Settings {
   defaultScoutConcurrency: number
   maxRetryAttempts: number
   maxRetryWaitSeconds: number
-  workflows: WorkflowInfo[]   // populated once at startup by workflows_listed; static for the process lifetime
+  workflows: WorkflowInfo[]   // populated once at startup; static for the process lifetime
   connections: ConnectionInfo[]
   configuredModels: ConfiguredModelInfo[]
   presets: Record<string, PresetInfo>
   active: string
   memoryBindings: MemoryBindingsInfo
-  /** M5: per-connection availability (replaces per-type ProviderStatus from M2). */
-  providerStatus: ConnectionStatusInfo[]
-  modelCapabilities: ModelCapabilityInfo[]
-  /** M2/M3: all-providers model catalog, populated by model_registry_listed initial event. */
-  modelRegistry: ModelRegistryEntry[]
-  /** Dynamic per-provider model overlay; populated by provider_models_listed events. */
-  providerModels: ProviderModel[]
-  /** Newest-in-family pins per provider; populated alongside providerModels by
-   *  provider_models_listed events.  Read defensively as (providerFamilies ?? [])
-   *  at every consumption site: the SSE snapshot replaces settings wholesale over
-   *  an untyped boundary and a missing field reads as undefined, not []. */
-  providerFamilies: ProviderFamily[]
+  /** Curated catalog rendered per available connection's route codec (M3).
+   *  Keyed by connection id; picker content is offeringsByConnection[connId]
+   *  .map(o => o.wireId). Read defensively as (offeringsByConnection ?? {}):
+   *  the SSE snapshot replaces settings wholesale over an untyped boundary
+   *  and a missing field reads as undefined, not {}. */
+  offeringsByConnection: Record<string, OfferingInfo[]>
   /**
-   * Static Voyage embedding model catalog.  Populated once at startup by
-   * embedding_models_listed; static for the process lifetime.  Read defensively
-   * as (embeddingModels ?? []) -- the SSE snapshot replaces settings wholesale
-   * and a missing field reads as undefined, not [].
+   * Static Voyage embedding model catalog.  Populated once at startup;
+   * static for the process lifetime.  Read defensively as (embeddingModels ?? [])
+   *  -- the SSE snapshot replaces settings wholesale and a missing field
+   *  reads as undefined, not [].
    */
   embeddingModels: EmbeddingModelInfo[]
 }
@@ -567,11 +566,7 @@ export const useStore = create<KoanState>()(
         presets: {},
         active: '$last',
         memoryBindings: null,
-        providerStatus: [],
-        modelCapabilities: [],
-        modelRegistry: [],
-        providerModels: [],
-        providerFamilies: [],
+        offeringsByConnection: {},
         embeddingModels: [],
       },
       run: null,

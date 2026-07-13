@@ -10,8 +10,9 @@
  * survives unrelated SSE projection patches and genuine default changes on
  * sibling roles.
  *
- * Moved from App.tsx to this module in M5.  Shared helpers (toThinkingOptions,
- * buildConnectionViews, LISTING_CAPABLE_TYPES) imported from modelConfig.ts.
+ * Moved from App.tsx to this module in M5. Shared helpers (toThinkingOptions,
+ * buildConnectionViews) imported from modelConfig.ts. M3: thinking modes come
+ * from configuredModels[].caps.thinkingLevels (no modelCapabilities join).
  */
 
 import { useState, useEffect, useMemo, useRef } from 'react'
@@ -19,7 +20,7 @@ import { useNavigate } from 'react-router'
 import { useStore } from '../../store/index'
 import { useFileAttachment } from '../../hooks/useFileAttachment'
 import * as api from '../../api/client'
-import { buildConnectionViews, toThinkingOptions, LISTING_CAPABLE_TYPES } from './modelConfig'
+import { buildConnectionViews, toThinkingOptions } from './modelConfig'
 import { NewRunForm, type OverrideAssignment, type WorkflowRole, type ConfigReadiness } from './NewRunForm'
 
 export function ConnectedNewRunForm() {
@@ -34,30 +35,28 @@ export function ConnectedNewRunForm() {
   const [task, setTask] = useState('')
   const [projectDir, setProjectDir] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const [modelsLoading, setModelsLoading] = useState<Record<string, boolean>>({})
-
   // Seed projectDir from the backend once on mount.
   useEffect(() => {
     api.getInitialPrompt().then(r => { if (r.project_dir) setProjectDir(r.project_dir) })
   }, [])
 
-  const { connections, modelsByConnection } = buildConnectionViews(settings, modelsLoading)
+  const { connections, modelsByConnection } = buildConnectionViews(settings)
 
   // Default per-run overrides from the current $last slot assignments.
   const defaultOverrides = useMemo((): Record<WorkflowRole, OverrideAssignment> => {
     const cmById: Record<string, typeof settings.configuredModels[0]> = {}
     for (const cm of settings.configuredModels) cmById[cm.id] = cm
-    const capById: Record<string, typeof settings.modelCapabilities[0]> = {}
-    for (const cap of settings.modelCapabilities) capById[cap.configuredModelId] = cap
     const lastPreset = settings.presets['$last']
 
+    // makeOverride: thinking modes come from cm.caps.thinkingLevels (the
+    // settings_listed snapshot embeds route-aware caps on each configured
+    // model -- no separate modelCapabilities join).
     function makeOverride(slot: 'strong' | 'standard' | 'cheap'): OverrideAssignment {
       const sa = lastPreset?.slots[slot]
       if (!sa) return { connectionId: null, modelId: null, thinking: null, thinkingOptions: [] }
       const cm = cmById[sa.configuredModelId]
       if (!cm) return { connectionId: null, modelId: null, thinking: null, thinkingOptions: [] }
-      const cap = capById[sa.configuredModelId]
-      const rawModes = cap?.thinkingModes ?? []
+      const rawModes = cm.caps?.thinkingLevels ?? []
       const thinkingOptions = toThinkingOptions(rawModes)
       return { connectionId: cm.connectionId, modelId: cm.modelId, thinking: sa.thinking, thinkingOptions }
     }
@@ -70,8 +69,8 @@ export function ConnectedNewRunForm() {
   // after a settings save). Key on a VALUE signature, NOT defaultOverrides'
   // object identity: the SSE store replaces `settings` (and recomputes
   // defaultOverrides) on EVERY patch, so an identity-keyed effect would fire on
-  // the provider_models_listed patch that listConnectionModels triggers and
-  // clobber an in-progress connection-only override. Re-seed PER ROLE so a
+  // every settings_listed snapshot and clobber an in-progress connection-only
+  // override. Re-seed PER ROLE so a
   // genuine change to one role's default does not wipe an in-progress edit on
   // another role.
   const defaultOverridesSignature = useMemo(
@@ -118,24 +117,15 @@ export function ConnectedNewRunForm() {
     setOverrides(prev => {
       const current = prev[role]
       if (field === 'connection') {
-        // Only trigger model listing for listing-capable connection types;
-        // non-listing connections (voyage, bedrock) use the free-text picker.
-        const connType = settings.connections.find(c => c.id === value)?.connectionType
-        if (connType && LISTING_CAPABLE_TYPES.has(connType)) {
-          setModelsLoading(p => ({ ...p, [value]: true }))
-          api.listConnectionModels(value).then(res => {
-            setModelsLoading(p => ({ ...p, [value]: false }))
-            if (!res.ok) pushToast(res.message ?? 'Failed to load models', 'error')
-          })
-        }
+        // M3: no auto-list on connection select -- picker content comes from
+        // offeringsByConnection via settings_listed.
         return { ...prev, [role]: { connectionId: value, modelId: null, thinking: null, thinkingOptions: current.thinkingOptions } }
       }
       if (field === 'model') {
-        const cap = settings.modelCapabilities.find(c => {
-          const cm = settings.configuredModels.find(m => m.modelId === value && m.connectionId === current.connectionId)
-          return cm && c.configuredModelId === cm.id
-        })
-        const rawModes = cap?.thinkingModes ?? []
+        const cm = settings.configuredModels.find(
+          m => m.modelId === value && m.connectionId === current.connectionId
+        )
+        const rawModes = cm?.caps?.thinkingLevels ?? []
         const thinkingOptions = toThinkingOptions(rawModes)
         return { ...prev, [role]: { ...current, modelId: value, thinkingOptions } }
       }

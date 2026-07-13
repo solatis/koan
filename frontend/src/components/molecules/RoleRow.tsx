@@ -7,6 +7,10 @@
  * dependency is set. Presentational: auto-save, validation, and error toasts
  * live in the parent.
  *
+ * M3: shows an "unresolved" Badge when the configured model did not resolve to
+ * a known catalog identity, and a neutral Badge with the provenance source
+ * (e.g. "catalog") when resolved. Picker content comes from offerings.
+ *
  * RoleSlot is now 'strong' | 'standard' | 'cheap' | 'embedding';
  * 'memory-llm' and 'reflect-llm' were removed.
  */
@@ -45,11 +49,13 @@ export interface RoleRowProps {
   connectionId: string | null
   modelId: string | null
   thinking: string | null
-  connections: { id: string; listingCapable: boolean }[]
+  connections: { id: string }[]
   models: string[]
   families?: { family: string; resolved: string }[]
-  modelsLoading?: boolean
-  catalogSuggestions?: string[]
+  /** Whether the configured model resolved to a known catalog identity (M3). */
+  resolved?: boolean
+  /** First provenance source for the configured model's caps, or null. */
+  provenanceSource?: string | null
   /** When false, ModelPicker suppresses free-text entry (voyage whitelist mode). Default: true. */
   allowFreeText?: boolean
   /** {value, label} pairs: value is the native backend wire token, label is the
@@ -70,8 +76,8 @@ export function RoleRow({
   connections,
   models,
   families,
-  modelsLoading,
-  catalogSuggestions,
+  resolved,
+  provenanceSource,
   allowFreeText = true,
   thinkingOptions,
   onChange,
@@ -79,10 +85,6 @@ export function RoleRow({
 }: RoleRowProps) {
   const meta = ROLE_META[role]
   const broken = state === 'broken'
-
-  // listingCapable for the chosen connection; false when unset or broken (the
-  // dead id is not in the connections list).
-  const listingCapable = connections.find(c => c.id === connectionId)?.listingCapable ?? false
 
   const modelDisabled = connectionId == null || broken
   const thinkingEnabled = modelId != null && thinkingOptions.length > 0 && !broken
@@ -130,12 +132,15 @@ export function RoleRow({
             onChange={id => onChange('model', id)}
             models={models}
             families={families}
-            loading={modelsLoading}
-            listingCapable={listingCapable}
-            catalogSuggestions={catalogSuggestions}
             allowFreeText={allowFreeText}
             disabled={modelDisabled}
           />
+          {state === 'assigned' && resolved === false && (
+            <Badge variant="error">unresolved</Badge>
+          )}
+          {state === 'assigned' && resolved && provenanceSource && (
+            <Badge variant="neutral">{provenanceSource}</Badge>
+          )}
         </div>
 
         {showThinking && (

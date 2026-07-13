@@ -202,7 +202,7 @@ export function NewRunForm({
     )
   }
 
-  const roleConnections = connections.map(c => ({ id: c.id, listingCapable: c.listingCapable }))
+  const roleConnections = connections.map(c => ({ id: c.id }))
 
   // Overrides never render 'broken' — readiness gating handles that upstream.
   const overrideRow = (role: WorkflowRole) => {
@@ -220,8 +220,6 @@ export function NewRunForm({
         connections={roleConnections}
         models={m.models}
         families={m.families}
-        modelsLoading={m.loading}
-        catalogSuggestions={m.catalogSuggestions}
         thinkingOptions={o.thinkingOptions}
         onChange={(field, value) => onOverrideChange(role, field, value)}
       />

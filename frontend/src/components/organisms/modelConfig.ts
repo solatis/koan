@@ -7,16 +7,16 @@
  * App.tsx in M5 to avoid duplicating the join logic in both wrappers.
  */
 
-import type { Settings } from '../../store/index'
+import type { Settings, OfferingInfo } from '../../store/index'
 import type { ConnectionSummary, ModelsForConnection, RoleSlot } from './SettingsPage'
 import type { ProviderType } from '../atoms/ProviderBadge'
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-// Provider types that expose a live list-models endpoint.
-export const LISTING_CAPABLE_TYPES = new Set(['anthropic', 'openai', 'google', 'openrouter', 'ollama-cloud'])
+// Route ids whose connections expose a live list-models endpoint (Test button).
+// Local (not exported): only buildConnectionViews uses it to set
+// ConnectionSummary.listingCapable for the Settings Test-button gate.
+const LISTING_CAPABLE: ReadonlySet<string> = new Set([
+  'anthropic', 'openai', 'google', 'openrouter', 'ollama-cloud',
+])
 
 // Thinking display map -- connected layer only, so presentational components
 // stay store-free.  Maps backend wire tokens to the unified display scale:
@@ -46,65 +46,87 @@ export function toThinkingOptions(rawModes: string[]): { value: string; label: s
 // buildConnectionViews
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// versionKey / deriveFamilies
+// ---------------------------------------------------------------------------
+
 /**
- * Derive the ConnectionSummary list and modelsByConnection map consumed by
- * both ConnectedSettingsPage and ConnectedNewRunForm.  Extracted here to avoid
- * duplicating the join logic in both connected components.
+ * Extract numeric version segments from a version string for sort ordering.
+ * Splits on `.` and `-`, keeps digit tokens <=5 digits, returns a number
+ * array. Mirrors koan.models.identity.version_key for frontend family-pin
+ * derivation.
+ */
+function versionKey(version: string): number[] {
+  return version.replace(/[.-]/g, '-')
+    .split('-')
+    .filter(t => /^\d{1,5}$/.test(t))
+    .map(Number)
+}
+
+/**
+ * Derive newest-in-family pins from a connection's offerings by grouping
+ * on identity.family and picking the newest by versionKey. Returns
+ * {family, resolved}[] where resolved is the wireId of the newest offering.
+ */
+export function deriveFamilies(offerings: OfferingInfo[]): { family: string; resolved: string }[] {
+  const byFamily: Record<string, OfferingInfo[]> = {}
+  for (const o of offerings) {
+    if (o.identity) {
+      const f = o.identity.family
+      ;(byFamily[f] ??= []).push(o)
+    }
+  }
+  return Object.entries(byFamily).map(([family, items]) => {
+    const sorted = items.sort((a, b) => {
+      const ka = versionKey(a.identity.version)
+      const kb = versionKey(b.identity.version)
+      for (let i = 0; i < Math.max(ka.length, kb.length); i++) {
+        const av = ka[i] ?? -1
+        const bv = kb[i] ?? -1
+        if (bv !== av) return bv - av
+      }
+      return 0
+    })
+    return { family, resolved: sorted[0].wireId }
+  })
+}
+
+// ---------------------------------------------------------------------------
+// buildConnectionViews
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive the ConnectionSummary list and modelsByConnection map from the
+ * settings_listed payload. Picker content comes entirely from
+ * offeringsByConnection (curated catalog rendered through each connection's
+ * route codec). Family pins are derived from offering identity data.
  *
- * Model/family join is per-connection (by connectionId), not per provider type.
- * The static catalog (modelRegistry) is still provider-scoped since it is not
- * connection-specific.
+ * @param settings - The store Settings object (from settings_listed snapshot).
  */
 export function buildConnectionViews(
   settings: Settings,
-  modelsLoading: Record<string, boolean>,
 ): {
   connections: ConnectionSummary[]
   modelsByConnection: Record<string, ModelsForConnection>
 } {
-  const statusByConn: Record<string, boolean> = {}
-  for (const cs of settings.providerStatus) {
-    statusByConn[cs.connectionId] = cs.available
-  }
-
   const connections: ConnectionSummary[] = settings.connections.map(c => {
-    const available = statusByConn[c.id] ?? false
-    const region = c.region ? ` · ${c.region}` : ''
-    const url = c.baseUrl ? ` · ${c.baseUrl}` : ''
-    const keyState = available ? 'key set' : 'no key'
+    const locality = c.locality ? ` · ${c.locality}` : ''
+    const keyState = c.available ? 'key set' : 'no key'
     return {
-      type: c.connectionType as ProviderType,
+      type: c.route as ProviderType,
       id: c.id,
-      meta: `${c.connectionType}${region}${url} · ${keyState}`,
-      status: available ? 'configured' : 'not-set',
-      listingCapable: LISTING_CAPABLE_TYPES.has(c.connectionType),
+      meta: `${c.route}${locality} · ${keyState}`,
+      status: c.available ? 'configured' : 'not-set',
+      listingCapable: LISTING_CAPABLE.has(c.route),
     }
   })
 
   const modelsByConnection: Record<string, ModelsForConnection> = {}
   for (const conn of settings.connections) {
-    // Filtered by connection id: each connection carries its own model list so
-    // two connections of the same provider type do not overwrite each other.
-    const live = settings.providerModels
-      .filter(m => m.connectionId === conn.id)
-      .map(m => m.model)
-    const catalog = settings.modelRegistry
-      .filter(r => r.provider === conn.connectionType)
-      .map(r => r.model)
-    // Families are also per-connection (connectionId on the wire).
-    const rawFamilies = (settings.providerFamilies ?? []).filter(f => f.connectionId === conn.id)
-    const families = rawFamilies.map(f => ({ family: f.family, resolved: f.resolved }))
-    // For voyage connections, catalog suggestions come from the static Voyage
-    // embedding model catalog (embeddingModels), not the general model registry.
-    const voyageSuggestions = conn.connectionType === 'voyage'
-      ? (settings.embeddingModels ?? []).map(e => e.modelId)
-      : undefined
+    const offerings = settings.offeringsByConnection[conn.id] ?? []
+    const families = deriveFamilies(offerings)
     modelsByConnection[conn.id] = {
-      models: live.length > 0 ? live : catalog,
-      loading: modelsLoading[conn.id] ?? false,
-      catalogSuggestions: conn.connectionType === 'voyage'
-        ? voyageSuggestions
-        : (LISTING_CAPABLE_TYPES.has(conn.connectionType) ? undefined : catalog),
+      models: offerings.map(o => o.wireId),
       families: families.length > 0 ? families : undefined,
     }
   }

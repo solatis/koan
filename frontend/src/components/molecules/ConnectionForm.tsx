@@ -35,7 +35,8 @@ const PROVIDER_LABELS: Record<ProviderType, string> = {
   anthropic:     'Anthropic',
   openai:        'OpenAI',
   google:        'Google',
-  bedrock:       'AWS Bedrock',
+  'bedrock-converse': 'AWS Bedrock',
+  'bedrock-mantle': 'Bedrock Mantle',
   openrouter:    'OpenRouter',
   'ollama-cloud': 'Ollama Cloud',
   voyage:        'Voyage',
@@ -112,8 +113,8 @@ export function ConnectionForm({
   )
 
   const regionRow = () => (
-    <FormRow label="Region">
-      <TextInput value={draft.region} onChange={v => set({ region: v })} placeholder="us-east-1" />
+    <FormRow label="Locality">
+      <TextInput value={draft.region} onChange={v => set({ region: v })} placeholder="us" />
     </FormRow>
   )
 
@@ -125,14 +126,24 @@ export function ConnectionForm({
         return <>{apiKeyRow('sk-...')}{endpointRow('base URL override')}</>
       case 'google':
         return apiKeyRow('AIza...')
-      case 'bedrock':
+      case 'bedrock-converse':
         return (
           <>
             {apiKeyRow('bedrock api key')}
             {regionRow()}
             {endpointRow('base URL override')}
             <HelperLine>
-              Bedrock long-lived API key (required). Region is also required.
+              Bedrock long-lived API key (required). Locality is also required.
+            </HelperLine>
+          </>
+        )
+      case 'bedrock-mantle':
+        return (
+          <>
+            {apiKeyRow('anthropic api key')}
+            {regionRow()}
+            <HelperLine>
+              Bedrock Mantle endpoint — Anthropic API via AWS. API key and locality are required.
             </HelperLine>
           </>
         )

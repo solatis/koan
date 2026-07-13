@@ -140,7 +140,7 @@ export interface ConnectionBody {
   id: string
   type: string
   base_url?: string
-  region?: string
+  locality?: string
   azure_deployment?: string
   api_version?: string
   timeout?: number
@@ -165,7 +165,8 @@ export interface SlotBody {
 /**
  * Upsert a connection (POST /api/config/connections).
  * If 'secret' is present it is stored encrypted; omitting it leaves any
- * existing credential unchanged. Pushes connections_listed + provider_status_listed.
+ * existing credential unchanged. Pushes settings_listed (full snapshot).
+ * When base_url is omitted on edit, the backend preserves the existing value.
  */
 export async function setConnection(body: ConnectionBody): Promise<ConfigApiResult> {
   return post('/api/config/connections', body)

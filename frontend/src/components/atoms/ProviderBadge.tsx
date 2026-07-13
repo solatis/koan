@@ -13,11 +13,15 @@
 
 import './ProviderBadge.css'
 
+// Mirrors route IDs from koan/models/routes.py (not provider labels):
+// bedrock-converse is the route id; the display label stays 'AWS Bedrock'.
+// bedrock-mantle is the AWS Bedrock Mantle endpoint route id (Anthropic API via AWS).
 export type ProviderType =
   | 'anthropic'
   | 'openai'
   | 'google'
-  | 'bedrock'
+  | 'bedrock-converse'
+  | 'bedrock-mantle'
   | 'openrouter'
   | 'ollama-cloud'
   | 'voyage'
@@ -26,7 +30,8 @@ const CODES: Record<ProviderType, string> = {
   anthropic:     'AN',
   openai:        'OA',
   google:        'GO',
-  bedrock:       'BE',
+  'bedrock-converse': 'BE',
+  'bedrock-mantle': 'BM',
   openrouter:    'OR',
   'ollama-cloud': 'OC',
   voyage:        'VO',

@@ -35,8 +35,6 @@ export interface ConnectionSummary {
 export interface ModelsForConnection {
   models: string[]
   families?: { family: string; resolved: string }[]
-  loading?: boolean
-  catalogSuggestions?: string[]
 }
 
 export interface RoleAssignment {
@@ -50,6 +48,10 @@ export interface RoleAssignment {
   embeddingDim: number | null
   /** Available dimension options from the Voyage catalog for the selected model. [] = not applicable. */
   embeddingDimOptions: number[]
+  /** Whether the configured model resolved to a known catalog identity (M3). */
+  resolved: boolean
+  /** First provenance source for the configured model's caps (e.g. "catalog"), or null. */
+  provenanceSource: string | null
 }
 
 export interface SettingsPageProps {
@@ -163,7 +165,7 @@ export function SettingsPage({
   maxRetryWaitSeconds,
   onMaxRetryWaitSecondsChange,
 }: SettingsPageProps) {
-  const roleConnections = connections.map(c => ({ id: c.id, listingCapable: c.listingCapable }))
+  const roleConnections = connections.map(c => ({ id: c.id }))
 
   const connectionForm = (mode: 'add' | 'edit') =>
     connectionDraft && (
@@ -196,8 +198,8 @@ export function SettingsPage({
         connections={roleConnections}
         models={m.models}
         families={m.families}
-        modelsLoading={m.loading}
-        catalogSuggestions={m.catalogSuggestions}
+        resolved={a.resolved}
+        provenanceSource={a.provenanceSource}
         allowFreeText={allowFreeText}
         thinkingOptions={a.thinkingOptions}
         onChange={(field, value) => onRoleChange(slot, field, value)}

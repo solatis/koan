@@ -1,9 +1,11 @@
 /**
  * ConnectedSettingsPage -- store + API connector for the presentational SettingsPage.
  *
- * Reads connections, configuredModels, presets, memoryBindings, providerStatus,
- * modelCapabilities, modelRegistry, providerModels, and defaultScoutConcurrency
- * from the store.  Implements auto-save (per control) with revert-on-reject + toast.
+ * Reads connections, configuredModels (with identity + caps), presets,
+ * memoryBindings, offeringsByConnection, and runtime settings from the store
+ * (all carried in the single settings_listed full snapshot). Implements
+ * auto-save (per control) with revert-on-reject + toast. Thinking modes come
+ * from configuredModels[].caps.thinkingLevels (no separate capabilities join).
  * Connection test = save-then-list (no pre-save test endpoint exists).
  *
  * Holds a local interim assignments state seeded from the store-derived map.
@@ -14,16 +16,28 @@
  * unrelated projection patches nor persistence of a sibling role clobbers an
  * in-progress connection-only selection.
  *
- * Moved from App.tsx to this module in M5.  Shared helpers (toThinkingOptions,
- * buildConnectionViews, slotToMemoryKind, LISTING_CAPABLE_TYPES) extracted to
+ * Moved from App.tsx to this module in M5. Shared helpers (toThinkingOptions,
+ * buildConnectionViews, slotToMemoryKind, deriveFamilies) extracted to
  * modelConfig.ts to avoid duplicating join logic in ConnectedNewRunForm.
  */
 
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { useStore } from '../../store/index'
 import * as api from '../../api/client'
-import { buildConnectionViews, toThinkingOptions, slotToMemoryKind, LISTING_CAPABLE_TYPES } from './modelConfig'
+import { buildConnectionViews, toThinkingOptions, slotToMemoryKind, deriveFamilies } from './modelConfig'
+import type { CapsInfo } from '../../store/index'
 import { SettingsPage, type RoleAssignment, type RoleSlot, type ConnectionDraft, type TestState } from './SettingsPage'
+
+/**
+ * Extract a display label for the provenance of a configured model's caps.
+ * Returns the source of the first provenance entry (e.g. "catalog" or
+ * "profile"), or null when no provenance is recorded.
+ */
+function deriveProvenanceSource(caps: CapsInfo | undefined | null): string | null {
+  if (!caps?.provenance) return null
+  const entries = Object.values(caps.provenance)
+  return entries.length > 0 ? entries[0].source : null
+}
 
 export function ConnectedSettingsPage() {
   const settings = useStore(s => s.settings)
@@ -33,13 +47,12 @@ export function ConnectedSettingsPage() {
   const [connectionDraft, setConnectionDraft] = useState<ConnectionDraft | null>(null)
   const [connectionTestState, setConnectionTestState] = useState<TestState>({ kind: 'idle' })
   const [connectionSaving, setConnectionSaving] = useState(false)
-  const [modelsLoading, setModelsLoading] = useState<Record<string, boolean>>({})
   // Pending embedding dimension change: user picked a new dim but hasn't confirmed the re-embed yet.
   const [pendingRebuildDim, setPendingRebuildDim] = useState<number | null>(null)
   // True while the save/rebuild API call is in-flight after user confirms.
   const [rebuildInProgress, setRebuildInProgress] = useState(false)
 
-  const { connections, modelsByConnection } = buildConnectionViews(settings, modelsLoading)
+  const { connections, modelsByConnection } = buildConnectionViews(settings)
 
   // Build the full assignments map from presets ($last) + memoryBindings.
   // Named derivedAssignments to distinguish it from the local interim state below.
@@ -48,8 +61,6 @@ export function ConnectedSettingsPage() {
     for (const cm of settings.configuredModels) cmById[cm.id] = cm
     const connById: Record<string, typeof settings.connections[0]> = {}
     for (const c of settings.connections) connById[c.id] = c
-    const capById: Record<string, typeof settings.modelCapabilities[0]> = {}
-    for (const cap of settings.modelCapabilities) capById[cap.configuredModelId] = cap
 
     const lastPreset = settings.presets['$last']
 
@@ -57,14 +68,18 @@ export function ConnectedSettingsPage() {
     // embedding slots where the catalog lookup is not applicable).
     const EMBEDDING_DEFAULTS = { embeddingDim: null, embeddingDimOptions: [] }
 
+    // resolveSlot: thinking modes come from cm.caps.thinkingLevels (the
+    // settings_listed snapshot embeds route-aware caps on each configured
+    // model -- no separate modelCapabilities join). resolved/provenanceSource
+    // are derived from the ConfiguredModelInfo for the unresolved badge and
+    // provenance display.
     function resolveSlot(cmId: string | undefined, thinking: string | null): RoleAssignment {
-      if (!cmId) return { connectionId: null, modelId: null, thinking: null, state: 'unassigned', thinkingOptions: [], ...EMBEDDING_DEFAULTS }
+      if (!cmId) return { connectionId: null, modelId: null, thinking: null, state: 'unassigned', thinkingOptions: [], resolved: false, provenanceSource: null, ...EMBEDDING_DEFAULTS }
       const cm = cmById[cmId]
-      if (!cm) return { connectionId: null, modelId: null, thinking: null, state: 'broken', thinkingOptions: [], ...EMBEDDING_DEFAULTS }
+      if (!cm) return { connectionId: null, modelId: null, thinking: null, state: 'broken', thinkingOptions: [], resolved: false, provenanceSource: null, ...EMBEDDING_DEFAULTS }
       const conn = connById[cm.connectionId]
-      const cap = capById[cmId]
-      if (!conn) return { connectionId: cm.connectionId, modelId: cm.modelId, thinking, state: 'broken', thinkingOptions: [], ...EMBEDDING_DEFAULTS }
-      const rawModes = cap?.thinkingModes ?? []
+      if (!conn) return { connectionId: cm.connectionId, modelId: cm.modelId, thinking, state: 'broken', thinkingOptions: [], resolved: false, provenanceSource: null, ...EMBEDDING_DEFAULTS }
+      const rawModes = cm.caps?.thinkingLevels ?? []
       const thinkingOptions = toThinkingOptions(rawModes)
       return {
         connectionId: cm.connectionId,
@@ -72,6 +87,8 @@ export function ConnectedSettingsPage() {
         thinking,
         state: 'assigned',
         thinkingOptions,
+        resolved: cm.resolved,
+        provenanceSource: deriveProvenanceSource(cm.caps),
         ...EMBEDDING_DEFAULTS,
       }
     }
@@ -122,10 +139,9 @@ export function ConnectedSettingsPage() {
   // Value signature of the derived map. Re-sync keys on this, NOT on
   // derivedAssignments' object identity: the SSE store replaces `settings`
   // (and thus recomputes derivedAssignments) on EVERY patch, so an
-  // identity-keyed effect would fire on the provider_models_listed patch that
-  // listConnectionModels triggers and clobber an in-progress connection-only
-  // selection. The stringified values change only when an assignment actually
-  // changes (nothing here derives from providerModels).
+  // identity-keyed effect would fire on every settings_listed snapshot and
+  // clobber an in-progress connection-only selection. The stringified values
+  // change only when an assignment actually changes.
   const derivedSignature = useMemo(
     () => JSON.stringify(derivedAssignments),
     [derivedAssignments],
@@ -166,10 +182,10 @@ export function ConnectedSettingsPage() {
     // Seed draft from existing connection; name is fixed in edit mode.
     setConnectionDraft({
       name: conn.id,
-      type: conn.connectionType,
+      type: conn.route,
       apiKey: '',
-      endpoint: conn.baseUrl ?? '',
-      region: conn.region ?? '',
+      endpoint: '',
+      region: conn.locality ?? '',
     })
     setConnectionTestState({ kind: 'idle' })
   }
@@ -191,7 +207,7 @@ export function ConnectedSettingsPage() {
       id: connectionDraft.name,
       type: connectionDraft.type,
       ...(connectionDraft.endpoint ? { base_url: connectionDraft.endpoint } : {}),
-      ...(connectionDraft.region ? { region: connectionDraft.region } : {}),
+      ...(connectionDraft.region ? { locality: connectionDraft.region } : {}),
       ...(connectionDraft.apiKey ? { secret: connectionDraft.apiKey } : {}),
     })
     setConnectionSaving(false)
@@ -228,7 +244,7 @@ export function ConnectedSettingsPage() {
       id: connectionDraft.name,
       type: connectionDraft.type,
       ...(connectionDraft.endpoint ? { base_url: connectionDraft.endpoint } : {}),
-      ...(connectionDraft.region ? { region: connectionDraft.region } : {}),
+      ...(connectionDraft.region ? { locality: connectionDraft.region } : {}),
       ...(connectionDraft.apiKey ? { secret: connectionDraft.apiKey } : {}),
     })
     if (!saveRes.ok) {
@@ -265,9 +281,11 @@ export function ConnectedSettingsPage() {
     const isTierSlot = slot === 'strong' || slot === 'standard' || slot === 'cheap'
 
     if (field === 'connection') {
-      // Record the chosen connection locally and reset model/thinking before
-      // fetching models. A connection alone cannot be persisted (a saved role is
-      // a complete connection:model pair), so this stays in local state only.
+      // Record the chosen connection locally and reset model/thinking. A
+      // connection alone cannot be persisted (a saved role is a complete
+      // connection:model pair), so this stays in local state only. M3: no
+      // auto-list on connection select -- picker content comes from
+      // offeringsByConnection, fetched once at startup via settings_listed.
       setAssignments(prev => ({
         ...prev,
         [slot]: {
@@ -276,20 +294,12 @@ export function ConnectedSettingsPage() {
           thinking: null,
           state: 'unassigned',
           thinkingOptions: [],
+          resolved: false,
+          provenanceSource: null,
           embeddingDim: null,
           embeddingDimOptions: [],
         },
       }))
-      // Only call listConnectionModels for listing-capable connection types.
-      // Non-listing connections (voyage, bedrock) skip this call and render
-      // the ModelPicker free-text branch with no error toast.
-      const connType = settings.connections.find(c => c.id === value)?.connectionType
-      if (connType && LISTING_CAPABLE_TYPES.has(connType)) {
-        setModelsLoading(prev => ({ ...prev, [value]: true }))
-        const res = await api.listConnectionModels(value)
-        setModelsLoading(prev => ({ ...prev, [value]: false }))
-        if (!res.ok) pushToast(res.message ?? 'Failed to load models', 'error')
-      }
       return
     }
 
@@ -299,17 +309,17 @@ export function ConnectedSettingsPage() {
       const cmId = `${connId}:${value}`
       // When the selected value matches a family's resolved id it is a
       // newest-in-family pin; record its provenance so the ConfiguredModel
-      // carries resolved_from for audit and display purposes.  Benign if the
-      // user separately selects the same id from the flat list -- truthfully,
-      // it is the newest at this point in time.
-      const pin = (settings.providerFamilies ?? []).find(
-        f => f.connectionId === connId && f.resolved === value,
-      )
+      // carries resolved_from for audit and display purposes. M3: family pins
+      // are derived on the frontend from offerings identity data (no
+      // providerFamilies payload).
+      const offerings = settings.offeringsByConnection[connId] ?? []
+      const families = deriveFamilies(offerings)
+      const pin = families.find(f => f.resolved === value)
       const cmRes = await api.setConfiguredModel({
         id: cmId,
         connection_id: connId,
         model_id: value,
-        ...(pin ? { resolved_from: pin.resolvedFrom } : {}),
+        ...(pin ? { resolved_from: 'newest:' + pin.family } : {}),
         // Full-upsert clobber-safety: always carry embedding_dim so a concurrent
         // dim save is not lost.  For a model change, reset dim to null (use catalog
         // default for the new model).
