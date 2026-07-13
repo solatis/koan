@@ -180,9 +180,9 @@ async def test_list_models_for_connection_non_listing_type_raises(monkeypatch):
     from koan.agents.model_listing import ModelListingError, list_models_for_connection
     from koan.types import Connection
 
-    conn = Connection(id="bedrock-main", type="bedrock", region="us-east-1")
+    conn = Connection(id="bedrock-main", type="bedrock-converse", locality="us-east-1")
 
-    # No monkeypatch needed: list_provider_models already raises for bedrock.
+    # No monkeypatch needed: list_provider_models raises for bedrock-converse.
     with pytest.raises(ModelListingError, match="bedrock"):
         await list_models_for_connection(conn, None)
 

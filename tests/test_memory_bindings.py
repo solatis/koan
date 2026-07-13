@@ -33,6 +33,7 @@ from koan.types import (
     MemoryBindings,
     ModelSpec,
 )
+from koan.models.offering import resolve_offering
 
 
 # ---------------------------------------------------------------------------
@@ -274,8 +275,7 @@ class TestRequireMemoryModel:
     def test_returns_spec_when_not_none(self):
         """require_memory_model returns the spec unchanged when it is not None."""
         spec = ModelSpec(
-            provider="voyage",
-            model="voyage-4-large",
+            offering=resolve_offering("voyage", "voyage-4-large"),
             thinking="disabled",
             connection_id="voyage-1",
         )

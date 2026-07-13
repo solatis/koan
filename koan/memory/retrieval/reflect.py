@@ -255,7 +255,7 @@ def _build_agent(model: "ModelSpec") -> Agent[_Deps, None]:
 
     # Terminal text output IS the briefing -- no TextOutput wrapper.
     # The model writes the briefing as plain text after calling `cite`.
-    built_model = build_model(model, api_key=model.api_key, region=model.region, base_url=model.base_url)
+    built_model = build_model(model, api_key=model.api_key, region=None, base_url=model.base_url)
     agent: Agent[_Deps, str] = Agent(
         model=built_model,
         system_prompt=SYSTEM_PROMPT,

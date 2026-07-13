@@ -9,6 +9,7 @@ import pytest
 
 from koan.phases import PhaseContext, StepGuidance
 from koan.state import AgentState, AppState
+from koan.models.offering import resolve_offering
 
 
 # -- suggest_next_core unit tests ---------------------------------------------
@@ -109,7 +110,7 @@ async def test_loop_handback_consumes_and_clears_recorded_suggestions(tmp_path):
     recorded = [{"id": "plan", "label": "Write plan", "command": "plan", "recommended": True}]
     app_state.interactions.next_suggestions = list(recorded)
 
-    spec = ModelSpec(provider="google", model="gemini-2.0-flash", thinking="disabled")
+    spec = ModelSpec(offering=resolve_offering("google", "gemini-2.0-flash"), thinking="disabled")
     pai_agent = PydanticAIAgent(model_spec=spec, app_state=app_state, subagent_dir=str(tmp_path))
     options = AgentOptions(role="orchestrator", agent_id="sugg-test", model=None, thinking=None, system_prompt="")
 
@@ -184,7 +185,7 @@ async def test_loop_handback_falls_back_to_build_phase_suggestions(tmp_path):
     # No next_suggestions recorded.
     assert app_state.interactions.next_suggestions is None
 
-    spec = ModelSpec(provider="google", model="gemini-2.0-flash", thinking="disabled")
+    spec = ModelSpec(offering=resolve_offering("google", "gemini-2.0-flash"), thinking="disabled")
     pai_agent = PydanticAIAgent(model_spec=spec, app_state=app_state, subagent_dir=str(tmp_path))
     options = AgentOptions(role="orchestrator", agent_id="fallback-test", model=None, thinking=None, system_prompt="")
 

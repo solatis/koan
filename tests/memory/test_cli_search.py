@@ -14,6 +14,7 @@ from koan.memory.retrieval.types import SearchResult
 from koan.memory.store import MemoryStore
 from koan.memory.types import MemoryEntry
 from koan.types import ModelSpec
+from koan.models.offering import resolve_offering
 
 
 # ---------------------------------------------------------------------------
@@ -27,8 +28,7 @@ def ns(**kwargs) -> argparse.Namespace:
 def _fake_embedding_spec() -> ModelSpec:
     """Minimal ModelSpec for the embedding binding in tests."""
     return ModelSpec(
-        provider="voyage",
-        model="voyage-4-large",
+        offering=resolve_offering("voyage", "voyage-4-large"),
         thinking="disabled",
         connection_id="test-voyage",
         embedding_dim=1024,
@@ -44,8 +44,7 @@ def _fake_models() -> MemoryModels:
 def _fake_llm_spec() -> ModelSpec:
     """Minimal ModelSpec for the cheap/standard tier in cmd_rag tests (mocked)."""
     return ModelSpec(
-        provider="google",
-        model="gemini-flash-latest",
+        offering=resolve_offering("google", "gemini-flash-latest"),
         thinking="disabled",
         connection_id="test-google",
         api_key="fake-key",

@@ -16,6 +16,7 @@ from koan.memory.summarize import (
     regenerate_summary,
 )
 from koan.types import ModelSpec
+from koan.models.offering import resolve_offering
 
 
 # ---------------------------------------------------------------------------
@@ -25,8 +26,7 @@ from koan.types import ModelSpec
 def _fake_model() -> ModelSpec:
     """Minimal ModelSpec for unit tests that mock the LLM generate call."""
     return ModelSpec(
-        provider="google",
-        model="gemini-flash-lite-latest",
+        offering=resolve_offering("google", "gemini-flash-lite-latest"),
         thinking="disabled",
         connection_id="google-1",
         api_key=None,
@@ -206,8 +206,7 @@ class TestGenerateRouting:
         from koan.types import CachingPolicy, ModelSpec
 
         spec = ModelSpec(
-            provider="anthropic",
-            model="claude-sonnet-4-6",
+            offering=resolve_offering("anthropic", "claude-sonnet-4-6"),
             thinking="high",
             settings={"anthropic_thinking": {"type": "adaptive"}},
             caching=CachingPolicy(),

@@ -24,6 +24,7 @@ from koan.phases import PhaseContext, StepGuidance
 from koan.agents.events import StreamEvent
 from koan.state import AgentState, AppState
 from koan.types import CachingPolicy, ModelSpec
+from koan.models.offering import resolve_offering
 
 
 # -- Shared helpers -----------------------------------------------------------
@@ -129,8 +130,7 @@ class TestPydanticAIAgentGolden:
         # that would normally go to Gemini, then overriding the model object inside
         # PydanticAIAgent.run() via monkeypatching build_model.
         model_spec = ModelSpec(
-            provider="google",
-            model="gemini-2.0-flash",
+            offering=resolve_offering("google", "gemini-2.0-flash"),
             thinking="disabled",
         )
 
@@ -221,7 +221,7 @@ class TestPydanticAIAgentGolden:
             agent_id, phase_mod, str(tmp_path)
         )
 
-        model_spec = ModelSpec(provider="google", model="gemini-2.0-flash", thinking="disabled")
+        model_spec = ModelSpec(offering=resolve_offering("google", "gemini-2.0-flash"), thinking="disabled")
         pai_agent = PydanticAIAgent(model_spec=model_spec, app_state=app_state, subagent_dir=str(tmp_path))
 
         orig_bm = adapter_mod.build_model
@@ -261,7 +261,7 @@ class TestPydanticAIAgentGolden:
         phase_mod = _fake_phase_module()
         app_state, _ = _make_app_state_with_agent(agent_id, phase_mod, str(tmp_path))
 
-        model_spec = ModelSpec(provider="google", model="gemini-2.0-flash", thinking="disabled")
+        model_spec = ModelSpec(offering=resolve_offering("google", "gemini-2.0-flash"), thinking="disabled")
         pai_agent = PydanticAIAgent(model_spec=model_spec, app_state=app_state, subagent_dir=str(tmp_path))
 
         orig_bm = adapter_mod.build_model
@@ -317,7 +317,7 @@ class TestPydanticAIAgentGolden:
         # Set project_dir on app_state so the fallback path in pydantic_ai.py works.
         app_state.run.project_dir = str(project_dir)
 
-        model_spec = ModelSpec(provider="google", model="gemini-2.0-flash", thinking="disabled")
+        model_spec = ModelSpec(offering=resolve_offering("google", "gemini-2.0-flash"), thinking="disabled")
         pai_agent = PydanticAIAgent(
             model_spec=model_spec,
             app_state=app_state,
@@ -397,8 +397,7 @@ async def test_live_gemini_intake_turn_advances_step(tmp_path, real_credential_s
     # self._model_spec.api_key directly (de-globalize refactor); it no longer
     # resolves the key from frozen_credential_store at spawn time.
     model_spec = ModelSpec(
-        provider="google",
-        model="gemini-flash-latest",
+        offering=resolve_offering("google", "gemini-flash-latest"),
         thinking="disabled",
         connection_id="google-1",
         api_key=real_credential_store.resolve("google-1"),

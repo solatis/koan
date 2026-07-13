@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from koan.memory.retrieval import RetrievalIndex, run_reflect_agent, ReflectTraceEvent
+from koan.models.offering import resolve_offering
 
 _SKIP_NO_KEYS = pytest.mark.skipif(
     not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
@@ -115,8 +116,7 @@ async def test_reflect_cites_fixture_entries(mem_dir: Path, real_memory_models, 
     from koan.types import ModelSpec
     # Resolve a standard-tier Gemini model for the reflect LLM from the google-1 connection.
     standard = ModelSpec(
-        provider="google",
-        model="gemini-flash-latest",
+        offering=resolve_offering("google", "gemini-flash-latest"),
         thinking="disabled",
         connection_id="google-1",
         api_key=real_credential_store.resolve("google-1"),

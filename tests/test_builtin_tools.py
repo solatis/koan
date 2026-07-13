@@ -292,16 +292,15 @@ async def test_write_tool_executor_outside_run_dir_succeeds(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_bash_tool_orchestrator_wrong_phase_returns_error(tmp_path):
-    """bash_tool returns a recoverable Error string when orchestrator is in a non-bash phase.
+async def test_bash_tool_orchestrator_runs_in_any_phase(tmp_path):
+    """bash_tool runs normally regardless of phase (phase gate removed in 024efb1).
 
-    A plan-phase orchestrator is denied; the command is not executed.
+    Bash is always available for all roles; the former phase gate that denied
+    plan-phase orchestrators is deleted.
     """
     ctx = _make_ctx(role="orchestrator", run_dir=str(tmp_path), phase="plan")
-    result = await bash_tool(ctx, "echo should_not_run")
-    assert result.startswith("Error")
-    assert "bash" in result
-    assert "should_not_run" not in result
+    result = await bash_tool(ctx, "echo ok_from_plan")
+    assert "ok_from_plan" in result
 
 
 @pytest.mark.anyio

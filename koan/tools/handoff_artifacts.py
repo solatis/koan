@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 from pydantic_ai.messages import CachePoint, ModelRequest, UserPromptPart
 
 from .artifact_registry import LIVING_DOC_FAMILIES, parse_artifact_filename
-from ..agents.adapter import cache_ttl_for
+from ..agents.dialects import cache_ttl_for
 from ..types import cache_tier_for_role
 
 if TYPE_CHECKING:

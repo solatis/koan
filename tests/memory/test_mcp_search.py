@@ -17,10 +17,11 @@ from koan.memory.retrieval.types import SearchResult
 from koan.memory.types import MemoryEntry
 from koan.state import AgentState, AppState
 from koan.types import ModelSpec
+from koan.models.offering import resolve_offering
 
 
 def _fake_embed() -> ModelSpec:
-    return ModelSpec(provider="voyage", model="voyage-4-large", thinking="disabled",
+    return ModelSpec(offering=resolve_offering("voyage", "voyage-4-large"), thinking="disabled",
                      connection_id="v", embedding_dim=1024, api_key="k")
 
 

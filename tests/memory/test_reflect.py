@@ -16,6 +16,7 @@ from koan.memory.retrieval.reflect import (
 from koan.memory.retrieval.types import SearchResult
 from koan.memory.types import MemoryEntry
 from koan.types import CachingPolicy, ModelSpec
+from koan.models.offering import resolve_offering
 
 
 # ---------------------------------------------------------------------------
@@ -161,8 +162,7 @@ class TestBuildAgentRouting:
         from pydantic_ai.models.test import TestModel
 
         spec = ModelSpec(
-            provider="anthropic",
-            model="claude-sonnet-4-6",
+            offering=resolve_offering("anthropic", "claude-sonnet-4-6"),
             thinking="high",
             settings={"anthropic_thinking": {"type": "adaptive"}},
             caching=CachingPolicy(),

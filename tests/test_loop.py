@@ -34,6 +34,7 @@ from koan.agents.loop import (
 from koan.phases import PhaseContext, StepGuidance
 from koan.state import AgentState, AppState, ChatMessage
 from koan.types import ModelSpec
+from koan.models.offering import resolve_offering
 
 
 # -- Pure helpers --------------------------------------------------------------
@@ -274,7 +275,7 @@ def _test_model(call_tools):
 
 
 def _agent(app_state: AppState, tmp_path) -> PydanticAIAgent:
-    spec = ModelSpec(provider="google", model="gemini-2.0-flash", thinking="disabled")
+    spec = ModelSpec(offering=resolve_offering("google", "gemini-2.0-flash"), thinking="disabled")
     return PydanticAIAgent(model_spec=spec, app_state=app_state, subagent_dir=str(tmp_path))
 
 
@@ -650,7 +651,7 @@ async def test_loop_sentinel_resume_no_model_turn_done(tmp_path):
     )
     app_state.agents[agent_state.agent_id] = agent_state
 
-    spec = ModelSpec(provider="google", model="gemini-2.0-flash", thinking="disabled")
+    spec = ModelSpec(offering=resolve_offering("google", "gemini-2.0-flash"), thinking="disabled")
     pai_agent = PydanticAIAgent(model_spec=spec, app_state=app_state, subagent_dir=str(tmp_path))
     options = AgentOptions(role="orchestrator", agent_id="sentinel-done", model=None, thinking=None, system_prompt="")
 

@@ -7,14 +7,15 @@ import pytest
 
 from koan.memory.retrieval.rag import generate_queries, inject
 from koan.types import ModelSpec
+from koan.models.offering import resolve_offering
 
 
 def _fake_llm() -> ModelSpec:
-    return ModelSpec(provider="google", model="gemini", thinking="disabled", connection_id="g")
+    return ModelSpec(offering=resolve_offering("google", "gemini"), thinking="disabled", connection_id="g")
 
 
 def _fake_embed() -> ModelSpec:
-    return ModelSpec(provider="voyage", model="voyage-4-large", thinking="disabled",
+    return ModelSpec(offering=resolve_offering("voyage", "voyage-4-large"), thinking="disabled",
                      connection_id="v", embedding_dim=1024, api_key="k")
 
 

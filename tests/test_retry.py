@@ -111,6 +111,7 @@ from koan.config import KoanConfig
 from koan.phases import PhaseContext, StepGuidance
 from koan.state import AgentState, AppState
 from koan.types import ModelSpec
+from koan.models.offering import resolve_offering
 
 
 def _fake_phase_module() -> MagicMock:
@@ -171,7 +172,7 @@ def _function_model(stream_func):
 
 
 def _agent(app_state: AppState, tmp_path) -> PydanticAIAgent:
-    spec = ModelSpec(provider="google", model="gemini-2.0-flash", thinking="disabled")
+    spec = ModelSpec(offering=resolve_offering("google", "gemini-2.0-flash"), thinking="disabled")
     return PydanticAIAgent(model_spec=spec, app_state=app_state, subagent_dir=str(tmp_path))
 
 

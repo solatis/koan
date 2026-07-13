@@ -17,6 +17,7 @@ from koan.memory.retrieval.reflect import (
     ReflectResult,
     ReflectTraceEvent,
 )
+from koan.models.offering import resolve_offering
 
 
 # ---------------------------------------------------------------------------
@@ -55,14 +56,14 @@ def _fake_reflect_result() -> ReflectResult:
 def _fake_embed_spec() -> "ModelSpec":
     """Minimal embedding ModelSpec for cmd_reflect tests (run_reflect_agent is mocked)."""
     from koan.types import ModelSpec
-    return ModelSpec(provider="voyage", model="voyage-4-large", thinking="disabled",
+    return ModelSpec(offering=resolve_offering("voyage", "voyage-4-large"), thinking="disabled",
                      connection_id="v", embedding_dim=1024, api_key="k")
 
 
 def _fake_standard_spec() -> "ModelSpec":
     """Minimal standard-tier ModelSpec for cmd_reflect tests (run_reflect_agent is mocked)."""
     from koan.types import ModelSpec
-    return ModelSpec(provider="google", model="gemini-flash-latest", thinking="disabled",
+    return ModelSpec(offering=resolve_offering("google", "gemini-flash-latest"), thinking="disabled",
                      connection_id="g", api_key="k")
 
 

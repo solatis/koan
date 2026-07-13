@@ -42,7 +42,7 @@ async def _wait_for_server(base_url: str, max_wait: float = 60.0) -> None:
     async with httpx.AsyncClient() as client:
         while asyncio.get_event_loop().time() < deadline:
             try:
-                r = await client.get(f"{base_url}/api/probe", timeout=2.0)
+                r = await client.get(f"{base_url}/api/run-status", timeout=2.0)
                 if r.status_code < 500:
                     return
             except httpx.TransportError:

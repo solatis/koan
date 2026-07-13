@@ -38,7 +38,7 @@ async def generate(prompt: str, model: "ModelSpec", system: str = "") -> str:
         "generate provider=%s model=%s prompt_len=%d system_len=%d",
         model.provider, model.model, len(prompt), len(system),
     )
-    built_model = build_model(model, api_key=model.api_key, region=model.region, base_url=model.base_url)
+    built_model = build_model(model, api_key=model.api_key, region=None, base_url=model.base_url)
     agent: Agent[None, str] = Agent(
         model=built_model,
         model_settings=build_model_settings(model),

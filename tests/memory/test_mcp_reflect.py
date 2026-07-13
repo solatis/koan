@@ -12,6 +12,7 @@ import pytest
 
 from koan.memory.retrieval.reflect import Citation, IterationCapExceeded, ReflectResult
 from koan.state import AgentState, AppState
+from koan.models.offering import resolve_offering
 
 
 def _json(result: str) -> dict:
@@ -47,10 +48,10 @@ def mem_env(tmp_path):
     from koan.types import ModelSpec
     from koan.memory.bindings import MemoryModels
     app_state.run.memory_models = MemoryModels(embedding=ModelSpec(
-        provider="voyage", model="voyage-4-large", thinking="disabled",
+        offering=resolve_offering("voyage", "voyage-4-large"), thinking="disabled",
         connection_id="v", embedding_dim=1024, api_key="k"))
     app_state.run.frozen_models = {"standard": ModelSpec(
-        provider="google", model="gemini-flash-latest", thinking="disabled",
+        offering=resolve_offering("google", "gemini-flash-latest"), thinking="disabled",
         connection_id="g", api_key="k")}
 
     deps = ToolDeps(app_state=app_state, agent=agent)

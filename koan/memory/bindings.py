@@ -168,15 +168,14 @@ def build_memory_models(
             embedding_dim: int | None = None
             if conn.type == "voyage" and is_recognized_voyage_model(cm.model_id):
                 embedding_dim = resolve_voyage_embedding_dim(cm.model_id, cm.embedding_dim)
+            from koan.models.offering import resolve_offering
             specs[kind] = ModelSpec(
-                provider=conn.type,
-                model=cm.model_id,
+                offering=resolve_offering(conn.type, cm.model_id),
                 thinking="disabled",
                 settings={},
                 caching=binding.caching,
                 connection_id=conn.id,
                 base_url=conn.base_url,
-                region=conn.region,
                 embedding_dim=embedding_dim,
                 api_key=api_key,
             )

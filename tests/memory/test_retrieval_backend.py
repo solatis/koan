@@ -10,13 +10,13 @@ from koan.memory.retrieval.backend import _rrf_merge, rerank_results
 from koan.memory.retrieval.index import RetrievalIndex, _content_hash
 from koan.memory.retrieval.types import SearchResult
 from koan.types import ModelSpec
+from koan.models.offering import resolve_offering
 
 
 def _fake_rmm() -> ModelSpec:
     """Return a fake embedding ModelSpec for tests that mock VoyageAI calls."""
     return ModelSpec(
-        provider="voyage",
-        model="voyage-4-large",
+        offering=resolve_offering("voyage", "voyage-4-large"),
         thinking="disabled",
         connection_id="test-voyage-conn",
         embedding_dim=1024,
