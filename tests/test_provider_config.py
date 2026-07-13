@@ -201,7 +201,7 @@ class TestConfigRoundTrip:
         conn = Connection(
             id="anthropic-direct",
             type="anthropic",
-            region="us-east-1",
+            locality="us-east-1",
             base_url="https://example.test",
         )
         cm = ConfiguredModel(
@@ -233,7 +233,7 @@ class TestConfigRoundTrip:
         c = loaded.connections[0]
         assert c.id == "anthropic-direct"
         assert c.type == "anthropic"
-        assert c.region == "us-east-1"
+        assert c.locality == "us-east-1"
         assert c.base_url == "https://example.test"
 
         assert len(loaded.configured_models) == 1
@@ -329,14 +329,14 @@ class TestResolveProviderAuth:
         store.set(conn.id, secret)
         return store
 
-    def test_resolves_api_key_and_region_from_connection(self, koan_home):
-        """resolve_provider_auth returns api_key from store and region/base_url from Connection."""
+    def test_resolves_api_key_and_locality_from_connection(self, koan_home):
+        """resolve_provider_auth returns api_key from store and locality/base_url from Connection."""
         from koan.agents.adapter import ResolvedProviderAuth, resolve_provider_auth
 
         conn = Connection(
             id="bedrock-direct",
             type="bedrock",
-            region="us-east-1",
+            locality="us-east-1",
             base_url="https://ep",
         )
         store = self._make_store(conn, "tok", koan_home)
@@ -356,8 +356,8 @@ class TestResolveProviderAuth:
         assert result.region is None
         assert result.base_url is None
 
-    def test_connection_with_no_region_or_base_url(self, koan_home):
-        """Connection without region/base_url resolves Nones for those fields."""
+    def test_connection_with_no_locality_or_base_url(self, koan_home):
+        """Connection without locality/base_url resolves Nones for those fields."""
         from koan.agents.adapter import resolve_provider_auth
 
         conn = Connection(id="openai-direct", type="openai")

@@ -1,10 +1,8 @@
-# Unit tests for koan.agents.registry -- AgentRegistry and compute_balanced_profile.
+# Unit tests for koan.agents.registry -- AgentRegistry.
 #
-# NOTE: TestGetInstallation, TestResolveInstallation, TestResolveAgentConfigThinking,
-# and TestComputeBalancedProfile removed in M4 -- their subjects (ProbeResult,
-# AgentInstallation, ModelInfo, get_installation, resolve_installation,
-# resolve_agent_config, compute_balanced_profile probe path) are all deleted.
-# Replacement coverage lives in tests/test_provider_config.py.
+# M2: _best_supported_thinking and thinking clamping are deleted (D4: substrate
+# thinking vocabulary). Tests updated to verify passthrough behavior (no clamping).
+# max_tokens now comes from offering.caps.max_output.
 
 import asyncio
 
@@ -12,32 +10,14 @@ import pytest
 import yaml
 
 from koan.agents.base import AgentError
-from koan.agents.registry import AgentRegistry, _best_supported_thinking
+from koan.agents.registry import AgentRegistry
 from koan.config import KoanConfig, save_koan_config
 
 
-# -- _best_supported_thinking --------------------------------------------------
+# -- resolve_model_spec thinking passthrough -----------------------------------
 
-class TestBestSupportedThinking:
-    def test_desired_is_supported(self):
-        assert _best_supported_thinking(frozenset({"disabled", "high"}), "high") == "high"
-
-    def test_clamp_to_highest_below(self):
-        assert _best_supported_thinking(frozenset({"disabled", "low"}), "high") == "low"
-
-    def test_disabled_only(self):
-        assert _best_supported_thinking(frozenset({"disabled"}), "high") == "disabled"
-
-    def test_exact_medium(self):
-        assert _best_supported_thinking(frozenset({"disabled", "low", "medium"}), "medium") == "medium"
-
-
-
-
-# -- resolve_model_spec thinking clamp ----------------------------------------
-
-class TestResolveModelSpecThinkingClamp:
-    """Verify that resolve_model_spec clamps over-requested thinking modes and logs."""
+class TestResolveModelSpecThinking:
+    """Verify that resolve_model_spec passes thinking modes through without clamping (D4)."""
 
     def _make_config(self, thinking: str, model_id: str = "claude-opus-4-0", provider_type: str = "anthropic"):
         """Build a minimal KoanConfig with one connection, one model, and one slot."""
@@ -59,47 +39,67 @@ class TestResolveModelSpecThinkingClamp:
             active="$last",
         )
 
-    def test_thinking_clamped_when_above_supported_set(self, caplog):
-        """resolve_model_spec clamps 'xhigh' to 'high' for claude-opus-4-0 (max supported)."""
-        import logging
+    def test_thinking_passthrough_xhigh(self):
+        """resolve_model_spec passes 'xhigh' through unchanged (no clamping, D4).
+
+        The old code clamped xhigh to the highest supported mode; the new code
+        passes the raw mode through to pydantic-ai via apply_thinking.
+        """
         registry = AgentRegistry()
         config = self._make_config(thinking="xhigh")
-        with caplog.at_level(logging.INFO, logger="koan.agent_registry"):
-            spec = registry.resolve_model_spec("orchestrator", config, None)
-        # claude-opus-4-0 thinking_modes from MODEL_CAPABILITIES = ["medium", "high"]
-        assert spec.thinking == "high"
-        assert "clamped" in caplog.text
+        spec = registry.resolve_model_spec("orchestrator", config, None)
+        # claude-opus-4-0 supports up to high in the old catalog, but D4 says
+        # koan no longer clamps -- the substrate validates at call time.
+        assert spec.thinking == "xhigh"
+        assert spec.settings.get("thinking") == "xhigh"
 
-    def test_no_clamp_when_mode_is_supported(self, caplog):
+    def test_no_clamp_when_mode_is_supported(self):
         """resolve_model_spec passes through 'medium' unchanged for claude-opus-4-0."""
-        import logging
         registry = AgentRegistry()
         config = self._make_config(thinking="medium")
-        with caplog.at_level(logging.INFO, logger="koan.agent_registry"):
-            spec = registry.resolve_model_spec("orchestrator", config, None)
+        spec = registry.resolve_model_spec("orchestrator", config, None)
         assert spec.thinking == "medium"
-        assert "clamped" not in caplog.text
+        assert spec.settings.get("thinking") == "medium"
 
     def test_disabled_always_allowed(self):
-        """resolve_model_spec allows 'disabled' even when model has non-empty thinking_modes."""
+        """resolve_model_spec allows 'disabled' even when model has thinking modes."""
         registry = AgentRegistry()
         config = self._make_config(thinking="disabled")
         spec = registry.resolve_model_spec("orchestrator", config, None)
         assert spec.thinking == "disabled"
+        assert "thinking" not in spec.settings
 
-    def test_max_tokens_clamped_for_opus(self):
-        """spec.settings['max_tokens'] is clamped to 32000 for claude-opus-4-0."""
+    def test_max_tokens_for_opus(self):
+        """spec.settings['max_tokens'] is the caps.max_output for claude-opus-4-0."""
         registry = AgentRegistry()
         config = self._make_config(thinking="medium", model_id="claude-opus-4-0")
         spec = registry.resolve_model_spec("orchestrator", config, None)
+        # claude-opus-4-0 has max_output=32000 in the base catalog.
         assert spec.settings["max_tokens"] == 32000
 
-    def test_max_tokens_default_for_sonnet(self):
-        """spec.settings['max_tokens'] is the 32768 default for claude-sonnet-4-5."""
+    def test_max_tokens_for_sonnet(self):
+        """spec.settings['max_tokens'] is the caps.max_output for claude-sonnet-4-5."""
         registry = AgentRegistry()
         config = self._make_config(thinking="medium", model_id="claude-sonnet-4-5")
         spec = registry.resolve_model_spec("orchestrator", config, None)
+        # claude-sonnet-4-5 has max_output=32768 in the base catalog.
         assert spec.settings["max_tokens"] == 32768
+
+    def test_bedrock_anthropic_gains_thinking(self):
+        """Bedrock-Anthropic now gains thinking (D4 intentional behavior change).
+
+        The old code returned {} for bedrock thinking; the new code emits
+        {'thinking': mode} via apply_thinking for all dialects.
+        """
+        registry = AgentRegistry()
+        config = self._make_config(
+            thinking="medium",
+            model_id="eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            provider_type="bedrock-converse",
+        )
+        spec = registry.resolve_model_spec("orchestrator", config, None)
+        assert spec.settings.get("thinking") == "medium"
+        assert spec.provider == "bedrock-converse"
 
 
 # -- save_koan_config write lock -----------------------------------------------

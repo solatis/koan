@@ -21,7 +21,7 @@ def _utcnow() -> datetime:
 
 from .config import KoanConfig
 from .projections import ProjectionStore
-from .types import ModelSpec, WorkflowPhase, ConnectionStatus, ProviderModel, ModelRegistryEntry, SubagentRole
+from .types import ModelSpec, WorkflowPhase, ConnectionStatus, ProviderModel, SubagentRole
 
 
 @dataclass
@@ -212,23 +212,20 @@ class ProviderConfigState:
     """Mutable server-side provider configuration state.
 
     Renamed from RunnerConfigState (post-PydanticAI: 'runner' terminology retired).
-    M5: builtin_profiles removed (compute_builtin_profiles returns {}; the shim
-    is deleted); provider_status changed to list[ConnectionStatus] (per-connection
-    availability replaces per-type ProviderStatus, brief D3).
+    M5: builtin_profiles removed; provider_status is list[ConnectionStatus]
+    (per-connection availability, brief D3).
 
-    model_registry is additive -- populated at startup alongside provider_status
-    and surfaced to the frontend via Settings projection initial events.
-    credential_store is the decrypted, in-memory credential authority for the
-    web/agent path. Set at startup (cli/run.py) before any availability check.
-    provider_models is the per-provider dynamic model overlay (live per-connection),
-    keyed by provider name and populated by the eager startup task.
+    M2: model_registry removed -- the model_registry_listed event was absorbed
+    into settings_listed; offerings_by_connection is computed from the curated
+    catalog. credential_store is the decrypted, in-memory credential authority
+    for the web/agent path. Set at startup (cli/run.py) before any availability
+    check. provider_models is the per-connection dynamic model overlay (Test
+    endpoint storage only -- not projected; offerings come from the catalog).
     """
 
     config: KoanConfig = field(default_factory=KoanConfig)
     # M5: per-connection availability (replaces per-type ProviderStatus from M2).
     provider_status: list[ConnectionStatus] = field(default_factory=list)
-    # M2: all-providers model registry sourced from MODEL_CAPABILITIES + genai-prices.
-    model_registry: list[ModelRegistryEntry] = field(default_factory=list)
     config_write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # Decrypted credential store; None only during test setups that do not
     # exercise the credential path (provider_available returns False when None).

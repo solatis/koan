@@ -238,9 +238,10 @@ async def list_provider_models(
         # /v1/models listing path (Ollama Cloud exposes a /v1/models endpoint).
         if not api_key:
             raise ModelListingError("no api_key provided for ollama-cloud")
-        from .adapter import OLLAMA_CLOUD_BASE_URL
+        from koan.models.routes import get_route
+        ollama_endpoint = get_route("ollama-cloud").endpoint_template
         return await _list_openai_compatible_models(
-            "ollama-cloud", api_key, OLLAMA_CLOUD_BASE_URL, timeout
+            "ollama-cloud", api_key, ollama_endpoint, timeout
         )
 
     raise ModelListingError(

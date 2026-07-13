@@ -1,11 +1,10 @@
-# M7 provider fan-out: map_thinking / caching / build_model across all four
-# providers. The pure mapping functions are tested directly; build_model is
-# tested via a monkeypatched infer_model so no real provider credentials or
-# network are needed (only the prefix-selection logic is under test here).
+# M7 provider fan-out: build_model / build_model_settings / build_usage_limits
+# across all providers. The pure mapping functions (map_thinking, _caching_settings)
+# were deleted in M2 (superseded by dialects.apply_thinking / dialects.emit_cache_settings).
+# build_model is tested via a helper that constructs ModelSpec with a real Offering.
 #
-# M2: map_thinking and _caching_settings now take a ResolvedCapabilities argument;
-# tests are updated to pass a minimal caps stub rather than using the old two-arg
-# signature.
+# M2: _spec() helper now takes an offering (constructed via resolve_offering).
+# cache_ttl_for tests moved to test_dialects.py (function relocated to dialects.py).
 
 from __future__ import annotations
 
@@ -13,165 +12,45 @@ import pytest
 
 from koan.agents import adapter
 from koan.agents.base import AgentError
-from koan.types import CachingPolicy, ModelSpec, ResolvedCapabilities
+from koan.types import CachingPolicy, ModelSpec
 
 
-def _spec(provider, model="m", thinking="disabled", caching=None, settings=None):
-    """Build a minimal ModelSpec for adapter tests."""
+def _offering(route_id: str, model: str = "test-model"):
+    """Build a real Offering via resolve_offering for adapter tests."""
+    from koan.models.offering import resolve_offering
+    return resolve_offering(route_id, model)
+
+
+def _spec(route_id: str, model: str = "test-model", thinking="disabled",
+          caching=None, settings=None, offering=None):
+    """Build a minimal ModelSpec for adapter tests.
+
+    Uses resolve_offering to construct an Offering so the delegating provider/model
+    properties work. Pass offering=None + a fake route_id to create a spec with
+    no offering (for unknown-provider tests).
+    """
+    if offering is None:
+        try:
+            offering = _offering(route_id, model)
+        except Exception:
+            offering = None
     return ModelSpec(
-        provider=provider,
-        model=model,
+        offering=offering,
         thinking=thinking,
         settings=settings or {},
         caching=caching or CachingPolicy(),
     )
 
 
-def _caps(
-    thinking_shape="budget",
-    thinking_modes=None,
-    supports_prompt_caching=False,
-):
-    """Build a minimal ResolvedCapabilities stub for map_thinking / caching tests."""
-    return ResolvedCapabilities(
-        thinking_supported=thinking_shape != "none",
-        thinking_modes=list(thinking_modes if thinking_modes is not None else ["low", "medium", "high"]),
-        thinking_shape=thinking_shape,
-        supports_web_search=False,
-        supports_tools=True,
-        supports_prompt_caching=supports_prompt_caching,
-    )
-
-
-# -- map_thinking --------------------------------------------------------------
-
-
-def test_map_thinking_google_disabled_returns_empty():
-    """Disabled mode always returns {} -- the caller never needs a special disable path."""
-    caps = _caps("budget", thinking_modes=["low", "medium", "high"])
-    assert adapter.map_thinking("google", caps, "disabled") == {}
-
-
-def test_map_thinking_google_mode_not_in_caps_returns_empty():
-    """A thinking mode not in caps.thinking_modes returns {} (unsupported)."""
-    caps = _caps("budget", thinking_modes=["low"])
-    assert adapter.map_thinking("google", caps, "high") == {}
-
-
-def test_map_thinking_google_budget():
-    """Google budget shape emits google_thinking_config with the token budget."""
-    caps = _caps("budget", thinking_modes=["low", "medium", "high"])
-    out = adapter.map_thinking("google", caps, "high")
-    assert out["google_thinking_config"]["thinking_budget"] == 8192
-    assert out["google_thinking_config"]["include_thoughts"] is True
-
-
-def test_map_thinking_anthropic_budget():
-    """Anthropic budget shape emits anthropic_thinking with type=enabled and budget_tokens."""
-    caps = _caps("budget", thinking_modes=["medium", "high"])
-    assert adapter.map_thinking("anthropic", caps, "disabled") == {}
-    result = adapter.map_thinking("anthropic", caps, "medium")
-    assert result == {"anthropic_thinking": {"type": "enabled", "budget_tokens": 2048}}
-
-
-def test_map_thinking_anthropic_adaptive():
-    """Anthropic adaptive shape emits anthropic_thinking with type=adaptive (no budget)."""
-    caps = _caps("adaptive", thinking_modes=["low", "medium", "high"])
-    result = adapter.map_thinking("anthropic", caps, "medium")
-    assert result == {"anthropic_thinking": {"type": "adaptive"}}
-
-
-def test_map_thinking_openai_effort():
-    """OpenAI effort shape emits openai_reasoning_effort."""
-    caps = _caps("effort", thinking_modes=["low", "medium", "high", "xhigh", "max"])
-    assert adapter.map_thinking("openai", caps, "disabled") == {}
-    assert adapter.map_thinking("openai", caps, "low") == {"openai_reasoning_effort": "low"}
-    # xhigh/max collapse to high (OpenAI has no finer knob above high).
-    assert adapter.map_thinking("openai", caps, "xhigh") == {"openai_reasoning_effort": "high"}
-
-
-def test_map_thinking_bedrock_is_noop():
-    """Bedrock has no portable thinking knob -- map_thinking returns {} for any mode."""
-    caps = _caps("budget", thinking_modes=["high"])
-    assert adapter.map_thinking("bedrock", caps, "high") == {}
-
-
-def test_map_thinking_unknown_provider_returns_empty():
-    """Unrecognized providers fall through gracefully (brief D5) rather than raising."""
-    caps = _caps("budget", thinking_modes=["high"])
-    assert adapter.map_thinking("cohere", caps, "high") == {}
-
-
-# -- caching -------------------------------------------------------------------
+# -- caching (via build_model_settings, which is now a pass-through) -----------
 
 
 def test_caching_off_emits_nothing():
-    """CachingPolicy(mode='off') always suppresses cache settings."""
+    """CachingPolicy(mode='off') -- the settings dict is empty (no cache keys baked)."""
     s = adapter.build_model_settings(
         _spec("anthropic", model="claude-opus-4-0", caching=CachingPolicy(mode="off"))
     )
     assert not any(k.startswith("anthropic_cache") for k in s)
-
-
-def test_caching_anthropic_long_tier_emits_1h():
-    """Anthropic long tier: stable keys '1h' (instructions+tools), tail key '5m' (anthropic_cache)."""
-    caps = _caps(supports_prompt_caching=True)
-    s = adapter._caching_settings("anthropic", CachingPolicy(mode="auto"), "long", caps)
-    assert s["anthropic_cache"] == "5m"
-    assert s["anthropic_cache_instructions"] == "1h"
-    assert s["anthropic_cache_tool_definitions"] == "1h"
-
-
-def test_caching_anthropic_short_tier_emits_5m():
-    """Anthropic short tier: all three anthropic_cache* keys '5m' (uniform-short, no split)."""
-    caps = _caps(supports_prompt_caching=True)
-    s = adapter._caching_settings("anthropic", CachingPolicy(mode="auto"), "short", caps)
-    assert s["anthropic_cache"] == "5m"
-    assert s["anthropic_cache_instructions"] == "5m"
-    assert s["anthropic_cache_tool_definitions"] == "5m"
-
-
-def test_caching_bedrock_short_tier_emits_5m():
-    """Bedrock short tier: all three bedrock_cache* keys '5m' (uniform-short, no split)."""
-    caps = _caps(supports_prompt_caching=True)
-    s = adapter._caching_settings("bedrock", CachingPolicy(mode="auto"), "short", caps)
-    assert s["bedrock_cache_messages"] == "5m"
-    assert s["bedrock_cache_instructions"] == "5m"
-    assert s["bedrock_cache_tool_definitions"] == "5m"
-
-
-def test_caching_bedrock_long_tier_emits_1h():
-    """Bedrock long tier: stable keys '1h' (instructions+tools), tail key '5m' (bedrock_cache_messages)."""
-    caps = _caps(supports_prompt_caching=True)
-    s = adapter._caching_settings("bedrock", CachingPolicy(mode="auto"), "long", caps)
-    assert s["bedrock_cache_messages"] == "5m"
-    assert s["bedrock_cache_instructions"] == "1h"
-    assert s["bedrock_cache_tool_definitions"] == "1h"
-
-
-def test_caching_off_emits_nothing_per_transport():
-    """CachingPolicy(mode='off') returns {} for both explicit-cache transports."""
-    caps = _caps(supports_prompt_caching=True)
-    for provider in ("anthropic", "bedrock"):
-        s = adapter._caching_settings(provider, CachingPolicy(mode="off"), "long", caps)
-        assert s == {}
-
-
-def test_caching_unsupported_caps_emits_nothing():
-    """caps.supports_prompt_caching=False returns {} regardless of provider."""
-    caps = _caps(supports_prompt_caching=False)
-    s = adapter._caching_settings("anthropic", CachingPolicy(mode="auto"), "long", caps)
-    assert s == {}
-
-
-def test_caching_google_openai_noop():
-    """Google and OpenAI do not emit cache settings (they cache automatically server-side)."""
-    for provider in ("google", "openai"):
-        s = adapter.build_model_settings(
-            _spec(provider, caching=CachingPolicy(mode="auto"))
-        )
-        assert not any(k.startswith("anthropic_cache") for k in s)
-        assert not any(k.startswith("bedrock_cache") for k in s)
 
 
 def test_build_model_settings_merges_spec_settings_and_thinking():
@@ -180,12 +59,12 @@ def test_build_model_settings_merges_spec_settings_and_thinking():
     Thinking and caching are baked into spec.settings at flatten time by
     build_resolved_model; build_model_settings is a trivial pass-through.
     """
-    pre_baked = {"temperature": 0.2, "openai_reasoning_effort": "low"}
+    pre_baked = {"temperature": 0.2, "thinking": "low"}
     s = adapter.build_model_settings(
-        _spec("openai", model="o1-mini", thinking="low", settings=pre_baked)
+        _spec("openai", model="gpt-4o", thinking="low", settings=pre_baked)
     )
     assert s["temperature"] == 0.2
-    assert s["openai_reasoning_effort"] == "low"
+    assert s["thinking"] == "low"
 
 
 def test_build_model_settings_never_injects_temperature():
@@ -193,63 +72,71 @@ def test_build_model_settings_never_injects_temperature():
 
     Regression guard: Anthropic returns 400 ('temperature may only be set to 1
     when thinking is enabled or in adaptive mode') when temperature is forced
-    alongside an anthropic_thinking spec. build_model_settings must be a pure
-    pass-through that never adds temperature on its own.
+    alongside a thinking spec. build_model_settings must be a pure pass-through
+    that never adds temperature on its own.
     """
-    # Simulate a spec that has been flattened with adaptive thinking baked in
-    # but no temperature (the normal path for memory/reflect agents).
-    baked = {"anthropic_thinking": {"type": "adaptive"}}
+    baked = {"thinking": "medium"}
     s = adapter.build_model_settings(
-        _spec("anthropic", model="claude-sonnet-4-6", settings=baked)
+        _spec("anthropic", model="claude-sonnet-4-5", settings=baked)
     )
-    assert s["anthropic_thinking"] == {"type": "adaptive"}
+    assert s["thinking"] == "medium"
     assert "temperature" not in s
 
 
 # -- build_model ---------------------------------------------------------------
 
 
-def test_build_model_unknown_provider_raises_agenterror():
-    with pytest.raises(AgentError):
-        adapter.build_model(_spec("cohere"))
+def test_build_model_no_offering_raises_agenterror():
+    """build_model raises unknown_provider when the spec has no offering."""
+    spec = ModelSpec(offering=None, thinking="disabled")
+    with pytest.raises(AgentError) as exc:
+        adapter.build_model(spec)
+    assert exc.value.diagnostic.code == "unknown_provider"
 
 
 def test_build_model_key_requiring_provider_no_key_raises():
     """build_model raises missing_credentials for google/anthropic/openai without api_key."""
     for provider in ("google", "anthropic", "openai"):
         with pytest.raises(AgentError) as exc:
-            adapter.build_model(_spec(provider, model="m"))
+            adapter.build_model(_spec(provider, model="test-model"))
         assert exc.value.diagnostic.code == "missing_credentials"
 
 
 def test_build_model_bedrock_no_region_raises():
-    """build_model raises missing_region for bedrock when no region is supplied."""
+    """build_model raises missing_region for bedrock-converse when no region is supplied.
+
+    The offering's locality is None for a bedrock model id without a geo prefix,
+    so the missing_region gate fires.
+    """
     with pytest.raises(AgentError) as exc:
-        adapter.build_model(_spec("bedrock", model="m"))
+        adapter.build_model(_spec("bedrock-converse", model="anthropic.claude-opus-4-0-v1:0"))
     assert exc.value.diagnostic.code == "missing_region"
 
 
 def test_build_model_bedrock_no_key_raises_missing_credentials():
-    """build_model raises missing_credentials for bedrock when no api_key is supplied.
+    """build_model raises missing_credentials for bedrock-converse when no api_key is supplied.
 
-    Bedrock requires an explicit long-lived API key; the AWS credential chain
-    is not used.  A region without a key is not sufficient.
+    Bedrock requires an explicit long-lived API key; the AWS credential chains
+    is not used. A region without a key is not sufficient.
     """
     with pytest.raises(AgentError) as exc:
-        adapter.build_model(_spec("bedrock", model="us.amazon.nova-pro-v1:0"), region="us-east-1")
+        adapter.build_model(
+            _spec("bedrock-converse", model="us.amazon.nova-pro-v1:0"),
+            region="us-east-1",
+        )
     assert exc.value.diagnostic.code == "missing_credentials"
 
 
 @pytest.mark.parametrize(
-    "provider,model_cls_path",
+    "route_id,model_cls_path",
     [
         ("google", "pydantic_ai.models.google.GoogleModel"),
         ("anthropic", "pydantic_ai.models.anthropic.AnthropicModel"),
         ("openai", "pydantic_ai.models.openai.OpenAIChatModel"),
-        ("bedrock", "pydantic_ai.models.bedrock.BedrockConverseModel"),
+        ("bedrock-converse", "pydantic_ai.models.bedrock.BedrockConverseModel"),
     ],
 )
-def test_build_model_with_api_key_builds_explicit_model(provider, model_cls_path):
+def test_build_model_with_api_key_builds_explicit_model(route_id, model_cls_path):
     """build_model with api_key constructs a provider-typed model (no infer_model).
 
     region='us-east-1' is passed for all providers to satisfy the bedrock
@@ -257,7 +144,7 @@ def test_build_model_with_api_key_builds_explicit_model(provider, model_cls_path
     """
     import importlib
     model = adapter.build_model(
-        _spec(provider, model="test-model"),
+        _spec(route_id, model="test-model"),
         api_key="test-key",
         region="us-east-1",
     )
@@ -286,7 +173,7 @@ def test_build_model_threads_region_and_base_url_bedrock(monkeypatch):
     monkeypatch.setattr("pydantic_ai.providers.bedrock.BedrockProvider", _FakeProvider)
     monkeypatch.setattr("pydantic_ai.models.bedrock.BedrockConverseModel", _FakeModel)
     adapter.build_model(
-        _spec("bedrock", model="m"),
+        _spec("bedrock-converse", model="us.anthropic.claude-opus-4-0-v1:0"),
         api_key="k",
         region="us-west-2",
         base_url="https://ep",
@@ -312,7 +199,7 @@ def test_build_model_threads_base_url_openai(monkeypatch):
     monkeypatch.setattr("pydantic_ai.providers.openai.OpenAIProvider", _FakeProvider)
     monkeypatch.setattr("pydantic_ai.models.openai.OpenAIChatModel", _FakeModel)
     adapter.build_model(
-        _spec("openai", model="gpt-4"),
+        _spec("openai", model="gpt-4o"),
         api_key="sk-test",
         base_url="https://proxy.example.com",
     )
@@ -331,7 +218,7 @@ def test_build_model_openrouter_constructs_openrouter_model():
     """
     from pydantic_ai.models.openrouter import OpenRouterModel
     model = adapter.build_model(
-        _spec("openrouter", model="anthropic/claude-3.5-sonnet"),
+        _spec("openrouter", model="anthropic/claude-sonnet-4-5"),
         api_key="sk-or-test",
     )
     assert isinstance(model, OpenRouterModel)
@@ -340,19 +227,8 @@ def test_build_model_openrouter_constructs_openrouter_model():
 def test_build_model_openrouter_missing_key_raises():
     """build_model raises missing_credentials for openrouter when api_key is None."""
     with pytest.raises(AgentError) as exc_info:
-        adapter.build_model(_spec("openrouter", model="anthropic/claude-3.5-sonnet"))
+        adapter.build_model(_spec("openrouter", model="anthropic/claude-sonnet-4-5"))
     assert exc_info.value.diagnostic.code == "missing_credentials"
-
-
-def test_map_thinking_openrouter_returns_empty():
-    """openrouter has conservative capabilities (thinking_modes=[]) -- map_thinking returns {}.
-
-    The empty thinking_modes list triggers the first-line guard in map_thinking,
-    so no explicit openrouter branch is needed (and none exists).
-    """
-    caps = _caps("none", thinking_modes=[])
-    assert adapter.map_thinking("openrouter", caps, "medium") == {}
-    assert adapter.map_thinking("openrouter", caps, "disabled") == {}
 
 
 # -- Gateway unit tests --------------------------------------------------------
@@ -376,29 +252,3 @@ def test_cache_tier_for_role_unknown_defaults_to_long():
     """Any unmapped role falls back to 'long' (safe default for unknown roles)."""
     from koan.types import cache_tier_for_role
     assert cache_tier_for_role("unknown-future-role") == "long"  # type: ignore[arg-type]
-
-
-def test_cache_ttl_for_anthropic():
-    """cache_ttl_for maps anthropic short->'5m' and long->'1h'."""
-    from koan.agents.adapter import cache_ttl_for
-    assert cache_ttl_for("anthropic", "short") == "5m"
-    assert cache_ttl_for("anthropic", "long") == "1h"
-
-
-def test_cache_ttl_for_bedrock():
-    """cache_ttl_for maps bedrock short->'5m' and long->'1h'."""
-    from koan.agents.adapter import cache_ttl_for
-    assert cache_ttl_for("bedrock", "short") == "5m"
-    assert cache_ttl_for("bedrock", "long") == "1h"
-
-
-def test_cache_ttl_for_google_returns_none():
-    """cache_ttl_for returns None for google (no koan-managed explicit cache)."""
-    from koan.agents.adapter import cache_ttl_for
-    assert cache_ttl_for("google", "long") is None
-
-
-def test_cache_ttl_for_openrouter_returns_none():
-    """cache_ttl_for returns None for openrouter (no koan-managed explicit cache)."""
-    from koan.agents.adapter import cache_ttl_for
-    assert cache_ttl_for("openrouter", "short") is None

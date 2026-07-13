@@ -7,6 +7,8 @@
 # -> connection into a ModelSpec.  Built-in Gemini profile constants and
 # compute_builtin_profiles static profiles removed (brief D12 -- koan ships
 # no default models; unconfigured state fails fast with a clear error).
+# M2: build_resolved_model uses resolve_offering + dialects; thinking clamping
+# deleted (D4: substrate thinking vocabulary, substrate budget values).
 
 from __future__ import annotations
 
@@ -31,23 +33,6 @@ if TYPE_CHECKING:
 log = get_logger("agent_registry")
 
 
-# -- Thinking-mode helpers ------------------------------------------------------
-
-_THINKING_RANK: list[ThinkingMode] = ["disabled", "low", "medium", "high", "xhigh", "max"]
-
-
-def _best_supported_thinking(
-    supported: frozenset[ThinkingMode], desired: ThinkingMode
-) -> ThinkingMode:
-    """Return the highest supported thinking mode at or below *desired*."""
-    desired_idx = _THINKING_RANK.index(desired) if desired in _THINKING_RANK else 0
-    best: ThinkingMode = "disabled"
-    for mode in _THINKING_RANK:
-        if mode in supported and _THINKING_RANK.index(mode) <= desired_idx:
-            best = mode
-    return best
-
-
 # -- build_resolved_model ------------------------------------------------------
 
 def build_resolved_model(
@@ -61,22 +46,22 @@ def build_resolved_model(
 ) -> ModelSpec:
     """Build a fully resolved ModelSpec from a Connection + ConfiguredModel.
 
-    Calls resolve_capabilities once to clamp thinking to what the model
-    supports and to compute caching settings. The resolved thinking + caching
-    settings are baked into ModelSpec.settings so no per-spawn capability
-    lookup is needed. base_url, region, embedding_dim, and api_key are inlined
-    from the Connection, ConfiguredModel, and credential store at flatten time.
+    M2: resolves an Offering via resolve_offering (the models package), then bakes
+    thinking + caching settings via the dialects module. The offering carries
+    the route, wire_id, ref, caps, price, and locality. provider/model are
+    delegating properties on ModelSpec (offering.route.id / offering.wire_id).
 
-    The resolved max_tokens output budget (clamped to the model's hard cap via
-    max_output_tokens_for) is also baked into ModelSpec.settings here, ensuring
-    a high output floor for all agent roles and the memory LLM without relying
-    on a low provider default.
+    Thinking mode is passed through to pydantic-ai's unified ``thinking`` setting
+    via ``apply_thinking`` -- koan no longer clamps to what the model supports
+    (D4). Cache settings are emitted via ``emit_cache_settings`` which dispatches
+    on the route's dialect. The resolved max_tokens output budget comes from
+    ``offering.caps.max_output``.
 
-    cache_tier is the koan-level cache duration class (default 'long'),
-    selected by the caller from the agent role via cache_tier_for_role or
-    set explicitly for memory LLM operations.  It is resolved here once and
-    baked into settings, preserving the byte-stable cacheable-prefix invariant
-    (the class must not change between turns).
+    cache_tier is the koan-level cache duration class (default 'long'), selected
+    by the caller from the agent role via cache_tier_for_role or set explicitly
+    for memory LLM operations.  It is resolved here once and baked into settings,
+    preserving the byte-stable cacheable-prefix invariant (the class must not
+    change between turns).
 
     api_key is the credential baked in at flatten time from the caller's
     credential store. It is in-memory only and must never be serialized.
@@ -85,38 +70,24 @@ def build_resolved_model(
     agent resolution) and by build_memory_models / api_start_run's eager-flatten
     for tier slots.
     """
-    from .adapter import _caching_settings, map_thinking
-    from .capability_resolver import resolve_capabilities
-    from .model_catalog import max_output_tokens_for
+    from koan.agents.dialects import apply_thinking, emit_cache_settings
+    from koan.models.offering import resolve_offering
 
-    caps = resolve_capabilities(conn.type, cm.model_id)
-    clamped = _best_supported_thinking(frozenset(caps.thinking_modes), thinking)
-    if clamped != thinking:
-        log.info(
-            "thinking mode clamped for model '%s': requested '%s' -> supported '%s'",
-            cm.model_id, thinking, clamped,
-        )
+    offering = resolve_offering(conn.type, cm.model_id)
 
-    # Bake thinking + caching settings once so build_model_settings is trivial.
-    # _caching_settings is transport-dispatched: Anthropic and Bedrock emit
-    # different key families (anthropic_cache* vs bedrock_cache*).
     settings: dict = {}
-    settings.update(map_thinking(conn.type, caps, clamped))
-    settings.update(_caching_settings(conn.type, caching, cache_tier, caps))
-    # Explicit output-token budget (clamped to the model's hard cap). Without
-    # this, providers apply a low default (4096 for Anthropic) that adaptive
-    # thinking can exhaust before emitting any response.
-    settings["max_tokens"] = max_output_tokens_for(conn.type, cm.model_id)
+    settings.update(apply_thinking(thinking))
+    if caching.mode != "off":
+        settings.update(emit_cache_settings(offering.route.dialect, offering.caps, cache_tier))
+    settings["max_tokens"] = offering.caps.max_output
 
     return ModelSpec(
-        provider=conn.type,
-        model=cm.model_id,
-        thinking=clamped,
+        offering=offering,
+        thinking=thinking,
         settings=settings,
         caching=caching,
         connection_id=conn.id,
         base_url=conn.base_url,
-        region=conn.region,
         embedding_dim=embedding_dim,
         api_key=api_key,
     )

@@ -11,11 +11,19 @@
 # is observed and does not detect mid-run regressions after caching has worked.
 # This is intentional: the dominant failure class is "caching never started",
 # not "caching stopped mid-run".
+#
+# M2: reads spec.cache_expectation instead of the deleted cache_read_expected
+# function. The cache expectation is derived at flatten time from
+# offering.caps.prompt_caching and stamped on the ModelSpec.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from .base import AgentDiagnostic, AgentError
-from .model_catalog import cache_read_expected
+
+if TYPE_CHECKING:
+    from ..types import ModelSpec
 
 # Minimum number of model requests before the guard fires.
 # Two requests means the prefix has been re-sent at least once, which is the
@@ -31,8 +39,7 @@ CACHE_GUARD_MIN_INPUT_TOKENS: int = 50_000
 
 
 def check_cache_effectiveness(
-    provider: str,
-    model: str,
+    spec: "ModelSpec",
     caching_mode: str,
     cumulative_input_tokens: int,
     cumulative_cache_read_tokens: int,
@@ -42,8 +49,9 @@ def check_cache_effectiveness(
 
     Early-return conditions (no raise):
       - caching_mode == "off": caching deliberately disabled; nothing to check.
-      - cache_read_expected(provider, model) is False: route is not cache-expected
-        (OpenRouter, Voyage, Bedrock-Nova, or unknown provider).
+      - spec.cache_expectation == "none": route is not cache-expected
+        (dialect has no _CACHE_TIER_TTL entry: OpenRouter, Ollama, Voyage,
+        Google, OpenAI; or unknown route).
       - cumulative_requests < CACHE_GUARD_MIN_REQUESTS: warmup; the prefix has
         not yet been re-sent, so zero cache reads are expected.
       - cumulative_input_tokens < CACHE_GUARD_MIN_INPUT_TOKENS: prefix is small
@@ -56,8 +64,7 @@ def check_cache_effectiveness(
       silently ignoring a cache setting) that risks rapid budget burn.
 
     Args:
-        provider: koan transport type (e.g. "anthropic", "bedrock", "google").
-        model: resolved model id (e.g. "claude-sonnet-4-5").
+        spec: the resolved ModelSpec (carries cache_expectation via offering.caps).
         caching_mode: CachingPolicy.mode string ("auto" or "off").
         cumulative_input_tokens: total input tokens accumulated across turns so far.
         cumulative_cache_read_tokens: total cache_read_tokens accumulated so far.
@@ -66,7 +73,7 @@ def check_cache_effectiveness(
     if caching_mode == "off":
         return
 
-    if not cache_read_expected(provider, model):
+    if spec.cache_expectation == "none":
         return
 
     if cumulative_requests < CACHE_GUARD_MIN_REQUESTS:
@@ -80,10 +87,10 @@ def check_cache_effectiveness(
 
     raise AgentError(AgentDiagnostic(
         code="prompt_cache_ineffective",
-        agent=provider,
+        agent=spec.provider,
         stage="run_agent_loop",
         message=(
-            f"Prompt caching produced zero cache reads for {provider}/{model} "
+            f"Prompt caching produced zero cache reads for {spec.provider}/{spec.model} "
             f"after {cumulative_requests} requests and {cumulative_input_tokens} "
             f"input tokens. Caching is expected on this route; a silent miss risks "
             f"rapid budget burn. Check the cacheable-prefix byte-stability and the "

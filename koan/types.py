@@ -2,8 +2,10 @@
 # Python port of src/planner/types.ts -- kept in sync manually.
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Any, Literal
 
+if TYPE_CHECKING:
+    from koan.models.offering import Offering
 WorkflowPhase = Literal[
     # Final 8-phase set (brief 5.4, M6 cutover).
     # M1: legacy literals removed (plan-spec, milestone-spec, tech-plan-spec,
@@ -53,15 +55,16 @@ StoryStatus = Literal[
 
 DEFAULT_MAX_RETRIES = 2
 
-ThinkingMode = Literal["disabled", "low", "medium", "high", "xhigh", "max"]
+ThinkingMode = Literal["disabled", "minimal", "low", "medium", "high", "xhigh"]
 
 
 # ModelInfo removed in M4: the CLI binary probe that populated it is deleted.
-# The all-providers model catalog uses ModelRegistryEntry (koan/types.py) and
-# koan/agents/model_catalog.py instead.
+# The all-providers model catalog is the curated _BASE_CATALOG in
+# koan/models/capabilities.py (M2: ModelRegistryEntry deleted; offerings are
+# computed from the catalog via settings_listed).
 
 
-# -- Provider availability and model registry (M2) ----------------------------
+# -- Provider availability (M2) -----------------------------------------------
 # Defined before ProfileTier (book order: dependencies before use).
 
 
@@ -79,33 +82,25 @@ class ConnectionStatus:
     available: bool
 
 
-@dataclass
-class ModelRegistryEntry:
-    """One entry in the all-providers model catalog, surfaced via Settings projection.
-
-    Describes a curated (provider, model) pair with capability annotations.
-    Sources: model lists from genai-prices bundled snapshot; thinking_modes
-    from the koan capability table in model_catalog.py.
-    """
-
-    provider: str
-    model: str
-    display_name: str
-    thinking_modes: list[ThinkingMode] = field(default_factory=list)
+# ModelRegistryEntry removed in M2: the model_registry_listed event was
+# absorbed into settings_listed; offerings_by_connection is computed from the
+# curated catalog (koan.models.capabilities._BASE_CATALOG), not from a registry.
 
 
 @dataclass
 class ProviderModel:
-    """One entry in the per-provider dynamic model overlay, retrieved live.
+    """One entry in the per-connection dynamic model overlay, retrieved live.
 
-    Lighter sibling of ModelRegistryEntry: no thinking_modes because
-    these models are not in the static catalog. Surfaced via Settings.provider_models
-    (projection channel), distinct from the static model_registry.
+    Returned by list_provider_models for the connection Test endpoint
+    (api_config_connection_list_models). Not projected to the frontend; the
+    projection uses offerings_by_connection from the curated catalog instead.
     """
 
     provider: str
     model: str
     display_name: str
+
+
 
 
 # -- Provider config types (M1: config schema reshape) ------------------------
@@ -129,60 +124,70 @@ class CachingPolicy:
 class ModelSpec:
     """Unified denormalized resolved-model construct for one provider+model selection.
 
-    Used by both workflow agents and the memory subsystem. Built eagerly at run
-    start by build_resolved_model (registry.py); capability resolution (thinking
-    clamping, caching settings) is baked into 'settings' at construction time so
-    no per-spawn capability lookup is needed. base_url, region, and embedding_dim are
-    inlined from the Connection/ConfiguredModel at flatten time so the spawn path
-    never needs to look up the Connection again.
+    M2: carries the Offering object (route, wire_id, ref, caps, price, locality) plus
+    delegating provider/model properties so existing call sites compile unchanged. Thinking
+    and caching settings are baked into 'settings' at construction time via the dialects
+    module. base_url and embedding_dim are inlined from the Connection/ConfiguredModel at
+    flatten time. region is no longer stored -- the offering carries locality.
 
     api_key is the credential resolved at flatten time from the per-run frozen
     credential store. It is in-memory only and must never be serialized, logged,
     or written to run-config.yaml, subagent task.json, or any projection event.
     """
 
-    provider: str
-    model: str
-    thinking: ThinkingMode
+    # The resolved Offering from koan.models.offering. Set at flatten time by
+    # build_resolved_model. Carries route, wire_id, ref, caps, price, locality.
+    offering: Any = field(default=None)  # Offering from koan.models.offering
+    thinking: ThinkingMode = "disabled"
     settings: dict = field(default_factory=dict)
     caching: CachingPolicy = field(default_factory=CachingPolicy)
     # connection_id is the credential-store key; empty string for legacy paths.
     connection_id: str = ""
     # Inlined endpoint settings from the Connection, set at flatten time.
     base_url: str | None = None
-    region: str | None = None
-    # Resolved embedding output dimension; None for non-voyage or non-embedding.
+    # Resolved embedding output dimension; None for non-embedding models.
     embedding_dim: int | None = None
     # Resolved credential, baked once at flatten time from the per-run frozen
     # credential store. None for keyless providers and test paths.
     api_key: str | None = None
 
+    @property
+    def provider(self) -> str:
+        """Route id from the offering (delegating property for backward compat)."""
+        return self.offering.route.id if self.offering else ""
 
-@dataclass(frozen=True)
-class ResolvedCapabilities:
-    """Resolved per (connection.type, model), read-only, never persisted, never asked (brief D4/D5).
+    @property
+    def model(self) -> str:
+        """Wire id from the offering (delegating property for backward compat)."""
+        return self.offering.wire_id if self.offering else ""
 
-    Assembled from three sources: PydanticAI model profile (thinking-shape, web-search,
-    tool/json), koan's bundled knowledge (prompt-caching), and the thin recognition parse
-    (family/version). Computed on demand; never stored.
-    """
+    @property
+    def cache_expectation(self) -> str:
+        """Cache expectation consistent with emit_cache_settings' actual output.
 
-    thinking_supported: bool
-    thinking_modes: list[ThinkingMode]
-    # "budget"   -> discrete token budget (google, older anthropic)
-    # "effort"   -> named effort string (openai reasoning)
-    # "adaptive" -> anthropic adaptive form (no explicit budget)
-    # "none"     -> provider/model has no thinking knob
-    thinking_shape: Literal["budget", "effort", "adaptive", "none"]
-    supports_web_search: bool
-    supports_tools: bool
-    supports_prompt_caching: bool
-    # From the recognition parse (recognition.py).
-    family: str | None = None
-    version: str | None = None
-    # False when the model id is not in the recognition table -- capabilities
-    # are still populated but may be less precise (brief D5 graceful fallthrough).
-    recognized: bool = True
+        Returns 'explicit', 'automatic', or 'none'.  When the route dialect has no
+        _CACHE_TIER_TTL entry (google-genai, openai-chat, voyage-embeddings),
+        emit_cache_settings returns {} regardless of caps.prompt_caching, so this
+        property also returns 'none' to stay consistent.  Read by the cache guard
+        (cache_guard.py) instead of the deleted cache_read_expected function.
+        """
+        if self.offering is None:
+            return "none"
+        pc = self.offering.caps.prompt_caching
+        if pc == "none":
+            return "none"
+        # Lazy import: koan.types is imported by koan.agents.base, so a module-level
+        # import would cycle. _CACHE_TIER_TTL is the authoritative set of dialects
+        # for which flatten emits cache settings (emit_cache_settings returns {} for
+        # dialects not in this map), so cache_expectation must mirror that gate.
+        from koan.agents.dialects import _CACHE_TIER_TTL
+        if self.offering.route.dialect not in _CACHE_TIER_TTL:
+            return "none"
+        return pc
+
+
+# ResolvedCapabilities removed in M2: superseded by Capabilities in koan/models/capabilities.py.
+# All capability facts now come from offering.caps (the merged, provenance-carrying record).
 
 
 # ProviderAuth, Profile, ProfileTier, BUILTIN_PROFILE_NAMES removed in M5:
@@ -232,16 +237,13 @@ def cache_tier_for_role(role: SubagentRole) -> CacheTier:
 # -- New config entity types (M1: connection / configured-model / preset) -----
 # Placed after the legacy types they coexist with during the shim period.
 
-# ProviderType drives the adapter dialect, the price/capability lookup, and the
-# PydanticAI provider class.  Multiple connections of the same type are allowed.
-ProviderType = Literal["google", "anthropic", "openai", "bedrock", "openrouter", "ollama-cloud", "voyage"]
+# ProviderType removed in M2: superseded by route ids from koan.models.routes.
+# Connection.type now holds a route id string (e.g. "anthropic", "bedrock-converse").
 
 # RoleSlot mirrors ModelTier; kept as a separate alias so the intent is explicit.
 RoleSlot = Literal["strong", "standard", "cheap"]
 
-ALL_PROVIDER_TYPES: tuple[ProviderType, ...] = (
-    "google", "anthropic", "openai", "bedrock", "openrouter", "ollama-cloud", "voyage"
-)
+# ALL_PROVIDER_TYPES removed in M2: route ids come from koan.models.routes.route_ids().
 
 # Keyless providers authenticate via a configured base_url rather than a stored
 # secret.  Availability is True when a Connection of that type has a base_url.
@@ -254,15 +256,18 @@ KEYLESS_PROVIDER_TYPES: frozenset[str] = frozenset()
 class Connection:
     """One provider connection instance.  Endpoint settings only -- the secret
     lives in the credential store keyed by this connection's id (brief D3).
+
+    M2: type holds a route id (e.g. "anthropic", "bedrock-converse"); locality
+    replaces the old region field. Dead fields (azure_deployment, api_version,
+    timeout) are removed.
     """
 
     id: str
-    type: ProviderType
+    type: str  # route id from koan.models.routes
     base_url: str | None = None
-    region: str | None = None          # AWS region (bedrock)
-    azure_deployment: str | None = None
-    api_version: str | None = None
-    timeout: float | None = None
+    # Geo/region locality for this connection (e.g. 'eu' for bedrock-converse).
+    # Replaces the old region field.
+    locality: str | None = None
 
 
 @dataclass

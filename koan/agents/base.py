@@ -105,8 +105,8 @@ class Agent(Protocol):
     interrupt or compact must be prepared for NotImplementedError.
 
     M4: list_models removed -- the probe path that called it is deleted.
-    The in-process path resolves the model catalog via model_catalog.py, not
-    by shelling out to a binary.
+    The in-process path resolves models via the koan.models package (offering,
+    capabilities, codecs), not by shelling out to a binary.
     """
 
     name: str  # 'pydantic_ai' or 'fake' in tests

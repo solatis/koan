@@ -773,8 +773,7 @@ async def run_agent_loop(
             cache_write_total += run_usage.cache_write_tokens
             output_total += run_usage.output_tokens
             check_cache_effectiveness(
-                provider=model_spec.provider,
-                model=model_spec.model,
+                spec=model_spec,
                 caching_mode=model_spec.caching.mode,
                 cumulative_input_tokens=cache_input_total,
                 cumulative_cache_read_tokens=cache_read_total,

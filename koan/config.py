@@ -24,7 +24,6 @@ from .types import (
     MemoryBinding,
     MemoryBindings,
     Preset,
-    ProviderType,
     RoleSlot,
     SlotAssignment,
     ThinkingMode,
@@ -113,10 +112,7 @@ def _parse_connections(raw: object) -> list[Connection]:
             id=conn_id,
             type=conn_type,
             base_url=entry.get("base_url") or None,
-            region=entry.get("region") or None,
-            azure_deployment=entry.get("azure_deployment") or None,
-            api_version=entry.get("api_version") or None,
-            timeout=float(entry["timeout"]) if entry.get("timeout") is not None else None,
+            locality=entry.get("locality") or None,
         ))
     return results
 
@@ -357,10 +353,7 @@ def _config_to_dict(config: "KoanConfig") -> dict:
             "id": c.id,
             "type": c.type,
             **({"base_url": c.base_url} if c.base_url else {}),
-            **({"region": c.region} if c.region else {}),
-            **({"azure_deployment": c.azure_deployment} if c.azure_deployment else {}),
-            **({"api_version": c.api_version} if c.api_version else {}),
-            **({"timeout": c.timeout} if c.timeout is not None else {}),
+            **({"locality": c.locality} if c.locality else {}),
         }
         for c in config.connections
     ]

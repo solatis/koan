@@ -226,3 +226,36 @@ def test_exec_review_module_deleted() -> None:
     import pytest
     with pytest.raises((ImportError, ModuleNotFoundError)):
         importlib.import_module("koan.phases.exec_review")
+
+# ---------------------------------------------------------------------------
+# Event-type / fold-case drift guard (M2)
+# ---------------------------------------------------------------------------
+
+def test_every_event_type_has_fold_case_and_vice_versa() -> None:
+    """Every EventType literal has a fold case, and every fold case is in EventType.
+
+    Drift guard: a new event type without a fold case (or a fold case for a
+    removed event) is caught here rather than at runtime. The regex extracts all
+    quoted strings from `case` lines so combined patterns like
+    `case "A" | "B":` register both alternatives.
+    """
+    import re
+    import inspect
+    from typing import get_args
+    from koan.projections import EventType, fold
+
+    declared = set(get_args(EventType))
+    fold_src = inspect.getsource(fold)
+    # Extract all quoted strings from lines containing 'case' -- handles
+    # combined patterns like: case "A" | "B":
+    fold_cases: set[str] = set()
+    for line in fold_src.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("case ") or stripped.startswith("case\t"):
+            fold_cases.update(re.findall(r'"([^"]+)"', stripped))
+
+    undeclared = fold_cases - declared
+    assert not undeclared, f"Fold cases not in EventType: {undeclared}"
+
+    missing_fold = declared - fold_cases
+    assert not missing_fold, f"EventType values without fold case: {missing_fold}"

@@ -221,7 +221,7 @@ class PydanticAIAgent:
             model = _adapter_mod.build_model(
                 self._model_spec,
                 api_key,
-                region=self._model_spec.region,
+                region=None,
                 base_url=self._model_spec.base_url,
             )
             model_settings = _adapter_mod.build_model_settings(self._model_spec)
