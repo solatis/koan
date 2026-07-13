@@ -1,0 +1,13 @@
+---
+title: Settings projection consolidated to one settings_listed full-snapshot event
+  with replace-all semantics, replacing 13 individual settings events
+type: decision
+created: '2026-07-13T08:29:09Z'
+modified: '2026-07-13T08:29:09Z'
+related:
+- 0290-bidirectional-vocabulary-drift-guard-catches-dead.md
+- 0127-frontend-read-shared-state-surfaces-via-the.md
+- 0245-removing-event-sourced-projection-fields-with.md
+---
+
+koan's Settings projection — the orchestrator consolidated 13 individual settings projection events into one `settings_listed` full-snapshot event carrying the entire Settings state (connections, offerings_by_connection, configured_models, presets, memory_bindings, active, embedding_models, default_scout_concurrency, retry settings, workflows). The event is pushed at startup via `_push_initial_config_events` and after every config mutation via `_push_settings_listed(st)` in `koan/web/app.py`. The fold case in `koan/projections.py` constructs a complete `Settings` object and replaces `projection.settings` entirely (replace-all semantics). The 13 deleted events are: four explicit settings events (model_capabilities_listed, provider_models_listed, model_registry_listed, provider_status_listed) and nine absorbed events (connections_listed, configured_models_listed, presets_listed, active_changed, memory_bindings_listed, embedding_models_listed, default_scout_concurrency_changed, retry_settings_changed, workflows_listed), along with their `build_*` functions in `koan/events.py`, their `EventType` entries and fold cases, and their wire types (ConnectionStatusWire, ModelRegistryEntryWire, ProviderModelWire, ProviderFamilyWire, ResolvedCapabilitiesWire). The `push_event` parameter type was tightened from `str` to `EventType` and a bidirectional vocabulary-drift test (`test_every_event_type_has_fold_case_and_vice_versa`) asserts every EventType literal has a fold case and vice versa. Rationale: a 13-event fan-out for a single Settings object creates vocabulary-drift risk (an event declared but never folded, or folded but never declared) and forces every mutation handler to push multiple events in the right order. One consolidated snapshot eliminates the fan-out, makes every mutation handler a single `_push_settings_listed(st)` call, and lets the bidirectional drift guard police the single remaining event. Alternatives rejected: settings_listed carries only five listed components with other events surviving separately — rejected because "replace-all semantics" implies full state replacement and leaving per-field events alongside a full snapshot is redundant and re-introduces the drift surface. Decision surfaced when planning the providers refactor; the user confirmed full-snapshot semantics.
