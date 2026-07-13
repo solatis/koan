@@ -161,53 +161,9 @@ class TestFoldRunLifecycle:
 
 
 # ---------------------------------------------------------------------------
-# fold: workflows_listed (Settings.workflows)
-# ---------------------------------------------------------------------------
-
-_WORKFLOW_ENTRY_A = {
-    "id": "plan",
-    "description": "Plan and execute",
-    "phases": [{"id": "intake", "description": "Gather requirements"}],
-    "initial_phase": "intake",
-}
-_WORKFLOW_ENTRY_B = {
-    "id": "milestones",
-    "description": "Phased delivery",
-    "phases": [{"id": "milestone", "description": "Define milestones"}],
-    "initial_phase": "milestone",
-}
-
-
-class TestFoldWorkflowsListed:
-
-    def test_workflows_listed_populates_settings_workflows(self):
-        """workflows_listed fold sets Settings.workflows from the payload entries."""
-        p = Projection()
-        r = fold(p, _e("workflows_listed", {"workflows": [_WORKFLOW_ENTRY_A, _WORKFLOW_ENTRY_B]}))
-        assert len(r.settings.workflows) == 2
-        assert r.settings.workflows[0].id == "plan"
-        assert r.settings.workflows[0].description == "Plan and execute"
-        assert len(r.settings.workflows[0].phases) == 1
-        assert r.settings.workflows[0].phases[0].id == "intake"
-        assert r.settings.workflows[0].initial_phase == "intake"
-        assert r.settings.workflows[1].id == "milestones"
-
-    def test_workflows_listed_overwrites_previous_list(self):
-        """A second workflows_listed event replaces the first list entirely."""
-        p = Projection()
-        r = fold(p, _e("workflows_listed", {"workflows": [_WORKFLOW_ENTRY_A]}))
-        assert len(r.settings.workflows) == 1
-        r2 = fold(r, _e("workflows_listed", {"workflows": [_WORKFLOW_ENTRY_B]}))
-        assert len(r2.settings.workflows) == 1
-        assert r2.settings.workflows[0].id == "milestones"
-
-    def test_workflows_listed_with_empty_list_clears_field(self):
-        """workflows_listed with an empty list clears Settings.workflows."""
-        p = Projection()
-        r = fold(p, _e("workflows_listed", {"workflows": [_WORKFLOW_ENTRY_A]}))
-        assert len(r.settings.workflows) == 1
-        r2 = fold(r, _e("workflows_listed", {"workflows": []}))
-        assert r2.settings.workflows == []
+# fold: settings_listed (Settings full snapshot, M2) -- tests at end of file.
+# M2: the 13 individual settings fold cases are consolidated into one
+# settings_listed full-snapshot case. Tests for the deleted cases are removed.
 
 
 # ---------------------------------------------------------------------------
@@ -938,61 +894,9 @@ class TestFoldFocus:
         assert isinstance(r.run.focus, ConversationFocus)
         assert r.run.focus.agent_id == "a1"
 
-    def test_connections_listed(self):
-        """M5: connections_listed replaces profile_created for config entity surfaces."""
-        p = Projection()
-        r = fold(p, _e("connections_listed", {"connections": [
-            {"id": "g1", "connection_type": "google", "base_url": None, "region": None},
-        ]}))
-        assert len(r.settings.connections) == 1
-        assert r.settings.connections[0].id == "g1"
-        assert r.settings.connections[0].connection_type == "google"
-
-    def test_configured_models_listed(self):
-        p = Projection()
-        r = fold(p, _e("configured_models_listed", {"configured_models": [
-            {"id": "cm1", "connection_id": "g1", "model_id": "gemini-pro"},
-        ]}))
-        assert len(r.settings.configured_models) == 1
-        assert r.settings.configured_models[0].id == "cm1"
-
-    def test_presets_listed(self):
-        p = Projection()
-        r = fold(p, _e("presets_listed", {"presets": {
-            "$last": {"slots": {"strong": {"configured_model_id": "cm1", "thinking": "high"}}},
-        }}))
-        assert "$last" in r.settings.presets
-        assert "strong" in r.settings.presets["$last"].slots
-
-    def test_active_changed(self):
-        p = Projection()
-        r = fold(p, _e("active_changed", {"active": "my-preset"}))
-        assert r.settings.active == "my-preset"
-
-    def test_default_scout_concurrency_changed(self):
-        p = Projection()
-        r = fold(p, _e("default_scout_concurrency_changed", {"value": 16}))
-        assert r.settings.default_scout_concurrency == 16
-
-    def test_retry_settings_changed(self):
-        p = Projection()
-        r = fold(p, _e("retry_settings_changed", {"max_retry_attempts": 5, "max_retry_wait_seconds": 30.0}))
-        assert r.settings.max_retry_attempts == 5
-        assert r.settings.max_retry_wait_seconds == 30.0
-
-    def test_retry_settings_changed_defaults_on_missing_payload(self):
-        """Missing keys in payload fall back to dataclass defaults."""
-        p = Projection()
-        r = fold(p, _e("retry_settings_changed", {}))
-        assert r.settings.max_retry_attempts == 10
-        assert r.settings.max_retry_wait_seconds == 60.0
-
-    def test_settings_events_do_not_touch_run(self):
-        """Settings events must not modify run state."""
-        p = _proj_with_run()
-        r = fold(p, _e("active_changed", {"active": "custom-preset"}))
-        assert r.run is not None
-        assert r.run.config == p.run.config
+    # M2: connections_listed/configured_models_listed/presets_listed/active_changed/
+    # default_scout_concurrency_changed/retry_settings_changed fold tests removed --
+    # these events are consolidated into settings_listed (tests at end of file).
 
 
 # ---------------------------------------------------------------------------
@@ -1234,15 +1138,9 @@ class TestJSONPatchPaths:
         # pendingThinking must be camelCase
         assert "pendingThinking" in all_paths
 
-    def test_patch_active_changed_camelcase(self):
-        """M5: active_changed replaces default_profile_changed; patch path is /settings/active."""
-        store = ProjectionStore()
-        q = store.subscribe()
-        store.push_event("active_changed", {"active": "my-preset"})
-        msg = q.get_nowait()
-        ops = msg["patch"]
-        all_paths = " ".join(op["path"] for op in ops)
-        assert "/settings/active" in all_paths
+    # M2: test_patch_active_changed_camelcase removed -- active_changed is
+    # consolidated into settings_listed (camelcase patch covered by the
+    # settings_listed patch test at end of file).
 
     def test_run_cleared_produces_run_replace_patch(self):
         # run_cleared must emit at least one patch op touching /run.
@@ -1609,182 +1507,11 @@ class TestFoldToolAttachments:
 
 
 # ---------------------------------------------------------------------------
-# provider_status_listed fold (M3)
-# ---------------------------------------------------------------------------
-
-class TestProviderStatusListedFold:
-
-    def test_provider_status_listed_per_connection(self):
-        """M5: provider_status_listed carries per-connection {connection_id, connection_type, available}.
-
-        Replaces the old per-type {provider, available, region, base_url} shape.
-        """
-        from koan.projections import ConnectionStatusWire
-        p = Projection()
-        connections = [
-            {
-                "connection_id": "bedrock-direct",
-                "connection_type": "bedrock",
-                "available": True,
-            },
-            {
-                "connection_id": "google-direct",
-                "connection_type": "google",
-                "available": False,
-            },
-        ]
-        r = fold(p, _e("provider_status_listed", {"connections": connections}))
-        ps = {entry.connection_id: entry for entry in r.settings.provider_status}
-
-        assert ps["bedrock-direct"].connection_type == "bedrock"
-        assert ps["bedrock-direct"].available is True
-        assert ps["google-direct"].available is False
-
-
-# ---------------------------------------------------------------------------
-# provider_models_listed fold
-# ---------------------------------------------------------------------------
-
-class TestProviderModelsListedFold:
-
-    def test_provider_models_listed_populates_settings(self):
-        """Fold provider_models_listed; Settings.provider_models is populated.
-
-        The event carries a flat cross-provider model list. The fold replaces
-        Settings.provider_models entirely (same replace-all semantics as
-        model_registry_listed). display_name and context_window are threaded
-        through via the ProviderModelWire alias mapping.
-        """
-        p = Projection()
-        models = [
-            {
-                "provider": "openrouter",
-                "model": "anthropic/claude-3-5-sonnet",
-                "display_name": "Claude 3.5 Sonnet",
-                "context_window": 200000,
-            },
-            {
-                "provider": "openai",
-                "model": "gpt-4o",
-                "display_name": "GPT-4o",
-                "context_window": 128000,
-            },
-        ]
-        r = fold(p, _e("provider_models_listed", {"models": models}))
-        assert len(r.settings.provider_models) == 2
-
-        by_model = {pm.model: pm for pm in r.settings.provider_models}
-        assert by_model["anthropic/claude-3-5-sonnet"].provider == "openrouter"
-        assert by_model["anthropic/claude-3-5-sonnet"].display_name == "Claude 3.5 Sonnet"
-        assert by_model["gpt-4o"].provider == "openai"
-
-    def test_provider_models_listed_replaces_previous(self):
-        """A second event replaces the first list entirely (no append)."""
-        p = Projection()
-        p = fold(p, _e("provider_models_listed", {"models": [
-            {"provider": "openai", "model": "gpt-4", "display_name": "GPT-4", "context_window": 8192},
-        ]}))
-        r = fold(p, _e("provider_models_listed", {"models": [
-            {"provider": "openrouter", "model": "meta-llama/llama-3", "display_name": "Llama 3", "context_window": 8192},
-        ]}))
-        assert len(r.settings.provider_models) == 1
-        assert r.settings.provider_models[0].model == "meta-llama/llama-3"
-
-    def test_provider_models_listed_empty_payload_clears(self):
-        """Empty models list clears the overlay."""
-        p = Projection()
-        p = fold(p, _e("provider_models_listed", {"models": [
-            {"provider": "openai", "model": "gpt-4", "display_name": "GPT-4", "context_window": 8192},
-        ]}))
-        r = fold(p, _e("provider_models_listed", {"models": []}))
-        assert r.settings.provider_models == []
-
-    def test_provider_models_listed_does_not_touch_run(self):
-        """provider_models_listed must not modify run state."""
-        p = _proj_with_run()
-        r = fold(p, _e("provider_models_listed", {"models": [
-            {"provider": "openrouter", "model": "meta-llama/llama-3b", "display_name": "Llama 3B", "context_window": 4096},
-        ]}))
-        assert r.run is not None
-        assert r.run.config == p.run.config
-
-    def test_provider_models_listed_populates_families(self):
-        """Fold provider_models_listed with families; Settings.provider_families is populated."""
-        from koan.projections import ProviderFamilyWire
-
-        p = Projection()
-        families = [
-            {
-                "provider": "anthropic",
-                "family": "claude-sonnet",
-                "resolved": "claude-sonnet-4-5",
-                "resolved_from": "newest(claude-sonnet)@2026-06-10 -> claude-sonnet-4-5",
-            },
-            {
-                "provider": "anthropic",
-                "family": "claude-haiku",
-                "resolved": "claude-haiku-4-0",
-                "resolved_from": "newest(claude-haiku)@2026-06-10 -> claude-haiku-4-0",
-            },
-        ]
-        r = fold(p, _e("provider_models_listed", {"models": [], "families": families}))
-        assert len(r.settings.provider_families) == 2
-        by_family = {pf.family: pf for pf in r.settings.provider_families}
-        assert by_family["claude-sonnet"].resolved == "claude-sonnet-4-5"
-        assert by_family["claude-sonnet"].provider == "anthropic"
-        assert "2026-06-10" in by_family["claude-haiku"].resolved_from
-
-    def test_provider_models_listed_families_absent_yields_empty(self):
-        """Fold with no families key leaves provider_families empty."""
-        p = Projection()
-        r = fold(p, _e("provider_models_listed", {"models": []}))
-        assert r.settings.provider_families == []
-
-    def test_provider_models_listed_families_replaces_previous(self):
-        """A second event replaces the families list entirely."""
-        p = Projection()
-        p = fold(p, _e("provider_models_listed", {"models": [], "families": [
-            {"provider": "anthropic", "family": "claude-opus", "resolved": "claude-opus-4-0", "resolved_from": ""},
-        ]}))
-        r = fold(p, _e("provider_models_listed", {"models": [], "families": [
-            {"provider": "openai", "family": "gpt-4o", "resolved": "gpt-4o-2024-11-20", "resolved_from": ""},
-        ]}))
-        assert len(r.settings.provider_families) == 1
-        assert r.settings.provider_families[0].family == "gpt-4o"
-
-    def test_provider_models_listed_connection_id_round_trips(self):
-        """connection_id on models and families dicts survives the fold round-trip.
-
-        Verifies the D4 wire-shape change: both ProviderModelWire and
-        ProviderFamilyWire carry connectionId so the frontend can join per-connection
-        without collision between same-type connections.
-        """
-        p = Projection()
-        models = [
-            {
-                "provider": "openai",
-                "model": "gpt-4o",
-                "display_name": "GPT-4o",
-                "context_window": 128000,
-                "connection_id": "openai-work",
-            },
-        ]
-        families = [
-            {
-                "provider": "openai",
-                "family": "gpt-4o",
-                "resolved": "gpt-4o-2024-11-20",
-                "resolved_from": "",
-                "connection_id": "openai-work",
-            },
-        ]
-        r = fold(p, _e("provider_models_listed", {"models": models, "families": families}))
-
-        assert len(r.settings.provider_models) == 1
-        assert r.settings.provider_models[0].connection_id == "openai-work"
-
-        assert len(r.settings.provider_families) == 1
-        assert r.settings.provider_families[0].connection_id == "openai-work"
+# M2: TestProviderStatusListedFold and TestProviderModelsListedFold removed --
+# provider_status_listed, provider_models_listed, model_registry_listed, and
+# model_capabilities_listed are consolidated into settings_listed. The deleted
+# wire types (ConnectionStatusWire, ProviderModelWire, ProviderFamilyWire,
+# ModelRegistryEntryWire, ResolvedCapabilitiesWire) no longer exist.
 
 
 # ---------------------------------------------------------------------------
@@ -1919,3 +1646,162 @@ class TestKoanInputSanitize:
         entry = r.run.agents["a1"].conversation.entries[0]
         assert entry.tool_input == ti
         assert entry.args == ti
+
+
+# ---------------------------------------------------------------------------
+# fold: settings_listed (Settings full snapshot, M2)
+# ---------------------------------------------------------------------------
+
+_SETTINGS_LISTED_PAYLOAD = {
+    "connections": [
+        {"id": "anthropic-1", "route": "anthropic", "locality": None, "available": True},
+        {"id": "openai-1", "route": "openai", "locality": None, "available": False},
+    ],
+    "configured_models": [
+        {
+            "id": "cm-sonnet", "connection_id": "anthropic-1", "model_id": "claude-sonnet-4-5",
+            "resolved_from": None, "embedding_dim": None,
+            "identity": {"vendor": "anthropic", "family": "claude-sonnet", "version": "4.5", "snapshot": None, "kind": "chat"},
+            "resolved": True,
+            "caps": {"kind": "chat", "thinking_levels": ["low", "medium"], "prompt_caching": "explicit", "native_tools": ["web_fetch", "web_search"], "supports_tools": True, "embedding_dims": None, "resolved": True, "provenance": {}},
+        },
+        {
+            "id": "cm-unknown", "connection_id": "openai-1", "model_id": "some-unknown-model",
+            "resolved_from": None, "embedding_dim": None,
+            "identity": None, "resolved": False,
+            "caps": {"kind": "chat", "thinking_levels": [], "prompt_caching": "none", "native_tools": [], "supports_tools": True, "embedding_dims": None, "resolved": False, "provenance": {}},
+        },
+    ],
+    "offerings_by_connection": {
+        "anthropic-1": [
+            {
+                "wire_id": "claude-sonnet-4-5",
+                "identity": {"vendor": "anthropic", "family": "claude-sonnet", "version": "4.5", "snapshot": None, "kind": "chat"},
+                "display_name": "anthropic/claude-sonnet-4.5",
+                "caps": {"kind": "chat", "thinking_levels": ["low", "medium"], "prompt_caching": "explicit", "native_tools": ["web_fetch", "web_search"], "supports_tools": True, "embedding_dims": None, "resolved": True, "provenance": {}},
+            },
+        ],
+    },
+    "presets": {
+        "$last": {"slots": {"strong": {"configured_model_id": "cm-sonnet", "thinking": "high"}}},
+    },
+    "active": "$last",
+    "memory_bindings": {"embedding": {"configured_model_id": "cm-sonnet"}},
+    "default_scout_concurrency": 12,
+    "max_retry_attempts": 7,
+    "max_retry_wait_seconds": 45.0,
+    "workflows": [
+        {"id": "plan", "description": "Plan and execute", "phases": [{"id": "intake", "description": "Gather requirements"}], "initial_phase": "intake"},
+    ],
+    "embedding_models": [
+        {"model_id": "voyage-4-large", "dimensions": [256, 512, 1024, 2048], "default_dimension": 1024},
+    ],
+}
+
+
+class TestSettingsListedFold:
+
+    def test_settings_listed_populates_all_fields(self):
+        """settings_listed fold sets every Settings field from the payload."""
+        from koan.projections import OfferingWire, IdentityWire
+        p = Projection()
+        r = fold(p, _e("settings_listed", _SETTINGS_LISTED_PAYLOAD))
+        s = r.settings
+        # connections (reshaped: route replaces connection_type, available added)
+        assert len(s.connections) == 2
+        assert s.connections[0].id == "anthropic-1"
+        assert s.connections[0].route == "anthropic"
+        assert s.connections[0].available is True
+        assert s.connections[1].available is False
+        # configured_models (with identity + caps)
+        assert len(s.configured_models) == 2
+        cm0 = s.configured_models[0]
+        assert cm0.id == "cm-sonnet"
+        assert cm0.resolved is True
+        assert cm0.identity is not None
+        assert cm0.caps["prompt_caching"] == "explicit"
+        cm1 = s.configured_models[1]
+        assert cm1.resolved is False
+        assert cm1.identity is None
+        # offerings_by_connection
+        assert "anthropic-1" in s.offerings_by_connection
+        assert len(s.offerings_by_connection["anthropic-1"]) == 1
+        off = s.offerings_by_connection["anthropic-1"][0]
+        assert isinstance(off, OfferingWire)
+        assert off.wire_id == "claude-sonnet-4-5"
+        assert isinstance(off.identity, IdentityWire)
+        assert off.identity.family == "claude-sonnet"
+        # presets / active / memory_bindings / scalars / workflows / embedding_models
+        assert "$last" in s.presets
+        assert s.presets["$last"].slots["strong"].configured_model_id == "cm-sonnet"
+        assert s.active == "$last"
+        assert s.memory_bindings == {"embedding": {"configured_model_id": "cm-sonnet"}}
+        assert s.default_scout_concurrency == 12
+        assert s.max_retry_attempts == 7
+        assert s.max_retry_wait_seconds == 45.0
+        assert len(s.workflows) == 1
+        assert s.workflows[0].id == "plan"
+        assert len(s.embedding_models) == 1
+        assert s.embedding_models[0].model_id == "voyage-4-large"
+
+    def test_settings_listed_replaces_previous(self):
+        """A second settings_listed event replaces the first entirely."""
+        p = Projection()
+        r = fold(p, _e("settings_listed", _SETTINGS_LISTED_PAYLOAD))
+        assert len(r.settings.connections) == 2
+        # Second snapshot with a single connection replaces the whole list.
+        r2 = fold(r, _e("settings_listed", {
+            "connections": [{"id": "solo", "route": "openai", "locality": None, "available": True}],
+            "configured_models": [], "offerings_by_connection": {}, "presets": {},
+            "active": "$last", "memory_bindings": None, "default_scout_concurrency": 8,
+            "max_retry_attempts": 10, "max_retry_wait_seconds": 60.0, "workflows": [], "embedding_models": [],
+        }))
+        assert len(r2.settings.connections) == 1
+        assert r2.settings.connections[0].id == "solo"
+        # Offerings cleared by the replace.
+        assert r2.settings.offerings_by_connection == {}
+
+    def test_settings_listed_with_empty_payload_clears_fields(self):
+        """An empty settings_listed payload clears all list/dict fields to defaults."""
+        p = Projection()
+        p = fold(p, _e("settings_listed", _SETTINGS_LISTED_PAYLOAD))
+        r = fold(p, _e("settings_listed", {
+            "connections": [], "configured_models": [], "offerings_by_connection": {}, "presets": {},
+            "active": "$last", "memory_bindings": None, "default_scout_concurrency": 8,
+            "max_retry_attempts": 10, "max_retry_wait_seconds": 60.0, "workflows": [], "embedding_models": [],
+        }))
+        assert r.settings.connections == []
+        assert r.settings.configured_models == []
+        assert r.settings.offerings_by_connection == {}
+        assert r.settings.presets == {}
+        assert r.settings.workflows == []
+        assert r.settings.embedding_models == []
+
+    def test_settings_listed_does_not_touch_run(self):
+        """settings_listed must not modify run state."""
+        p = _proj_with_run()
+        r = fold(p, _e("settings_listed", _SETTINGS_LISTED_PAYLOAD))
+        assert r.run is not None
+        assert r.run.config == p.run.config
+
+    def test_settings_listed_camelcase_patch(self):
+        """The settings_listed JSON patch uses camelCase paths (alias_generator)."""
+        store = ProjectionStore()
+        q = store.subscribe()
+        store.push_event("settings_listed", _SETTINGS_LISTED_PAYLOAD)
+        msg = q.get_nowait()
+        ops = msg["patch"]
+        all_paths = " ".join(op["path"] for op in ops)
+        # offeringsByConnection is camelCase on the wire.
+        assert "/settings/offeringsByConnection" in all_paths
+        # configuredModels is camelCase.
+        assert "/settings/configuredModels" in all_paths
+
+    def test_settings_listed_offerings_by_connection(self):
+        """offerings_by_connection is populated from the payload (replace-all)."""
+        p = Projection()
+        r = fold(p, _e("settings_listed", _SETTINGS_LISTED_PAYLOAD))
+        assert "anthropic-1" in r.settings.offerings_by_connection
+        offerings = r.settings.offerings_by_connection["anthropic-1"]
+        assert len(offerings) == 1
+        assert offerings[0].caps.prompt_caching == "explicit"

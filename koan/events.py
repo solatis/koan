@@ -276,118 +276,39 @@ def build_yield_started(suggestions: list[dict]) -> dict:
 # build_probe_completed removed in M4: CLI binary probe and installation concept
 # deleted; provider credential availability uses build_provider_status_listed.
 
-def build_provider_status_listed(connections: list[dict]) -> dict:
-    """Build provider_status_listed payload.
+def build_settings_listed(
+    connections: list[dict],
+    configured_models: list[dict],
+    offerings_by_connection: dict[str, list[dict]],
+    presets: dict,
+    active: str,
+    memory_bindings: dict | None,
+    default_scout_concurrency: int,
+    max_retry_attempts: int,
+    max_retry_wait_seconds: float,
+    workflows: list[dict],
+    embedding_models: list[dict],
+) -> dict:
+    """Assemble the full settings_listed snapshot payload.
 
-    M5: reshaped from per-type {provider, available, ...} to per-connection
-    {connection_id, connection_type, available}.  One entry per configured
-    connection; replaces the old per-provider-type list (brief D3).
-
-    Args:
-        connections: list of {connection_id, connection_type, available} dicts.
+    Carries the entire Settings state. Pushed at startup and after every config
+    mutation with replace-all semantics (the fold constructs a complete Settings
+    object from this payload). Replaces the 13 former individual settings events
+    deleted in M2.
     """
-    return {"connections": connections}
-
-
-def build_model_registry_listed(models: list[dict]) -> dict:
-    """Build model_registry_listed payload.
-
-    Args:
-        models: list of {provider, model, display_name, thinking_modes}
-                dicts -- one per MODEL_CAPABILITIES entry.
-    """
-    return {"models": models}
-
-
-def build_provider_models_listed(models: list[dict], families: list[dict]) -> dict:
-    """Build provider_models_listed payload.
-
-    Args:
-        models: flat cross-provider list of {provider, model, display_name,
-                connection_id} dicts (snake_case; consumed by the fold).
-                connection_id scopes each model to its originating
-                connection so same-type connections keep independent lists.
-                Replace-all semantics: each event replaces the entire overlay.
-        families: flat list of {provider, family, resolved, resolved_from,
-                  connection_id} dicts representing the newest-in-family pins
-                  per connection.  connection_id mirrors the models keying.
-                  Replace-all semantics (same as models).
-    """
-    return {"models": models, "families": families}
-
-
-# build_installation_created/modified/removed removed in M4: installation
-# concept deleted; no callers remain after app.py cleanup.
-# build_profile_created/modified/removed/default_profile_changed removed in M5:
-# profile types deleted; projection reshaped to connections/presets (plan-milestone-5.md).
-
-
-def build_connections_listed(connections: list[dict]) -> dict:
-    """Build connections_listed payload.
-
-    Each dict: {id, connection_type, base_url, region}.  Replace-all semantics;
-    one event per startup/refresh reflects the full connections list.
-    """
-    return {"connections": connections}
-
-
-def build_configured_models_listed(configured_models: list[dict]) -> dict:
-    """Build configured_models_listed payload.
-
-    Each dict: {id, connection_id, model_id, resolved_from}.  Replace-all.
-    """
-    return {"configured_models": configured_models}
-
-
-def build_embedding_models_listed(models: list[dict]) -> dict:
-    """Build embedding_models_listed payload.
-
-    Payload is a list of {model_id, dimensions, default_dimension} dicts -- one
-    per recognized Voyage embedding model.  Replace-all semantics:
-    each event replaces the entire Settings.embeddingModels list on the frontend.
-    Pushed once at startup; the list is static for the process lifetime.
-    """
-    return {"models": models}
-
-
-def build_presets_listed(presets: dict) -> dict:
-    """Build presets_listed payload.
-
-    presets is a dict of preset_name -> {slots: {slot_name: {configured_model_id,
-    thinking}}}.  Replace-all semantics.
-    """
-    return {"presets": presets}
-
-
-def build_active_changed(active: str) -> dict:
-    """Build active_changed payload.  active is the active preset name."""
-    return {"active": active}
-
-
-def build_memory_bindings_listed(memory_bindings: dict | None) -> dict:
-    """Build a memory_bindings_listed event payload.
-
-    memory_bindings is a dict containing only the 'embedding' key (memory_llm
-    and reflect_llm were removed). Each binding entry carries only
-    'configured_model_id'; the 'thinking' field was removed.
-    """
-    return {"memory_bindings": memory_bindings}
-
-
-def build_model_capabilities_listed(capabilities: list[dict]) -> dict:
-    """Build model_capabilities_listed payload (M6).
-
-    Each dict in capabilities is a ResolvedCapabilitiesWire-shaped entry keyed by
-    configured_model_id.  Replace-all semantics: each event replaces the entire
-    Settings.model_capabilities list.
-
-    Args:
-        capabilities: list of {configured_model_id, thinking_supported, thinking_modes,
-                      thinking_shape, supports_web_search, supports_tools,
-                      supports_prompt_caching, recognized} dicts.
-    """
-    return {"capabilities": capabilities}
-
+    return {
+        "connections": connections,
+        "configured_models": configured_models,
+        "offerings_by_connection": offerings_by_connection,
+        "presets": presets,
+        "active": active,
+        "memory_bindings": memory_bindings,
+        "default_scout_concurrency": default_scout_concurrency,
+        "max_retry_attempts": max_retry_attempts,
+        "max_retry_wait_seconds": max_retry_wait_seconds,
+        "workflows": workflows,
+        "embedding_models": embedding_models,
+    }
 
 def build_steering_queued(content: str, timestamp_ms: int) -> dict:
     """Build steering_queued event payload.
@@ -422,31 +343,6 @@ def build_steering_delivered(
         "enqueue_ts_ms_list": enqueue_ts_ms_list,
         "delivery_ts_ms": delivery_ts_ms,
     }
-
-
-def build_default_scout_concurrency_changed(value: int) -> dict:
-    return {"value": value}
-
-
-def build_retry_settings_changed(max_retry_attempts: int, max_retry_wait_seconds: float) -> dict:
-    return {
-        "max_retry_attempts": max_retry_attempts,
-        "max_retry_wait_seconds": max_retry_wait_seconds,
-    }
-
-
-def build_workflows_listed(workflows: list[dict]) -> dict:
-    """Build workflows_listed event payload.
-
-    Each entry in workflows is a dict shaped as the WorkflowInfo wire model
-    with snake_case keys: {id, description, phases, initial_phase}. The fold
-    reconstructs WorkflowInfo via WorkflowInfo(**entry).
-
-    Snake_case is used here (not camelCase) because the payload consumer is
-    the Python fold, not the wire -- matching the same convention used by
-    build_profile_created passing read_only straight to Profile(read_only=...).
-    """
-    return {"workflows": workflows}
 
 
 # Memory curation event builders (build_memory_curation_started /

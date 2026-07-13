@@ -58,7 +58,8 @@ EventType = Literal[
     "tool_result",
     "tool_failed",
     "tool_result_captured",
-    "tool_aggregate",
+    # tool_aggregate removed: dead EventType entry (never emitted via push_event;
+    # the ToolAggregateEntry.type discriminator is a separate entry-type tag).
     # Domain events correlated by agent_id (not call_id): target the in-flight
     # tool entry for the agent. reflect_inline_trace carries thinking deltas,
     # text streaming, search lifecycle, and metadata; tool_attachments
@@ -99,21 +100,14 @@ EventType = Literal[
     # CLI binary probe deleted; provider credentials are the availability model.
     # profile_created/modified/removed/default_profile_changed removed in M5:
     # profile types deleted; replaced by connections/presets config events.
-    "default_scout_concurrency_changed",
-    "retry_settings_changed",
-    "workflows_listed",
-    # M2: model catalog initial event (kept; provider_status_listed reshaped M5)
-    "model_registry_listed",
-    # Dynamic per-provider model overlay (live per-connection)
-    "provider_models_listed",
-    # M5: new config entity events (replace profile events)
-    "connections_listed",
-    "configured_models_listed",
-    "presets_listed",
-    "active_changed",
-    "memory_bindings_listed",
-    # M5: provider_status_listed retained but reshaped to per-connection
-    "provider_status_listed",
+    # M2: 13 individual settings events consolidated into one settings_listed
+    # full-snapshot event (replace-all semantics). The 13 deleted events:
+    # default_scout_concurrency_changed, retry_settings_changed,
+    # workflows_listed, model_registry_listed, provider_models_listed,
+    # connections_listed, configured_models_listed, presets_listed,
+    # active_changed, memory_bindings_listed, provider_status_listed,
+    # model_capabilities_listed, embedding_models_listed.
+    "settings_listed",
     # memory_curation_started / memory_curation_cleared removed in M7:
     # koan_memory_propose gate retired; no blocking curation events.
     # Memory mutation — emitted by koan_memorize / koan_forget / koan_memory_status
@@ -128,8 +122,7 @@ EventType = Literal[
     "reflect_cancelled",
     "reflect_failed",
     "reflect_cleared",
-    # Static Voyage embedding model catalog; pushed once at startup.
-    "embedding_models_listed",
+    # Static Voyage embedding model catalog absorbed into settings_listed in M2.
 ]
 
 
@@ -560,41 +553,30 @@ class Agent(KoanBaseModel):
 # Installation model removed in M4: the agent installation concept is deleted.
 # CLI binary configurations are replaced by provider credential availability.
 # ProfileTierWire, Profile (wire), ProviderStatusWire removed in M5: profile
-# types deleted; replaced by ConnectionWire, ConnectionStatusWire, etc. (plan-milestone-5.md).
-
-
-class ConnectionStatusWire(KoanBaseModel):
-    """Wire representation of per-connection availability (M5).
-
-    Replaces ProviderStatusWire (which was per-type).  Payload shape:
-    {connections: [{connection_id, connection_type, available}, ...]}.
-    Fold sets Settings.provider_status from the connections list.
-    """
-
-    connection_id: str
-    connection_type: str
-    available: bool
+# types deleted; replaced by ConnectionWire, etc. (M2: ConnectionStatusWire
+# removed in favor of the available flag on ConnectionWire).
 
 
 class ConnectionWire(KoanBaseModel):
-    """Wire representation of a Connection from config (M5).
+    """Wire representation of a Connection with availability.
 
-    Carries non-secret endpoint settings only; the credential lives in the
-    credential store keyed by connection_id (brief D3).
+    `route` replaces the old `connection_type` (same value -- conn.type IS the
+    route id). `base_url` is dropped (adapter-internal, not UI-needed). `available`
+    is credential-derived from ProviderConfigState.provider_status.
     """
 
     id: str
-    connection_type: str
-    base_url: str | None = None
-    region: str | None = None
-
+    route: str
+    locality: str | None = None
+    available: bool = False
 
 class ConfiguredModelWire(KoanBaseModel):
-    """Wire representation of a ConfiguredModel from config (M5).
+    """Wire representation of a ConfiguredModel with resolved identity and caps.
 
-    A (connection, model-id) pair; global, referenced by slot assignments.
-    embedding_dim is the selected Voyage output dimension; None means use the
-    model's catalog default.
+    identity is the resolved ModelIdentity (IdentityWire-shaped dict) or null
+    when the model is unresolved. resolved is whether resolve_offering returned
+    a ModelIdentity vs an Unresolved passthrough. caps is the route-aware
+    CapsWire dict (base catalog -> route overlay -> profile merge).
     """
 
     id: str
@@ -603,26 +585,51 @@ class ConfiguredModelWire(KoanBaseModel):
     resolved_from: str | None = None
     # Selected Voyage output dimension; None = use catalog default.
     embedding_dim: int | None = None
+    identity: dict | None = None    # IdentityWire or null when unresolved
+    resolved: bool = False
+    caps: dict = {}                 # CapsWire
 
 
-class ResolvedCapabilitiesWire(KoanBaseModel):
-    """Read-only resolved capability snapshot for one configured model (M6).
+class IdentityWire(KoanBaseModel):
+    """Wire representation of a ModelIdentity (vendor, family, version, snapshot, kind)."""
 
-    Populated by resolve_capabilities(conn.type, cm.model_id) and surfaced via
-    Settings.model_capabilities.  Never persisted and never asked -- computed
-    from the PydanticAI profile + koan bundled knowledge + recognition parse
-    (brief D4/D5).  Keyed by configured_model_id so the UI can join against the
-    configured_models list without an extra lookup.
+    vendor: str
+    family: str
+    version: str
+    snapshot: str | None = None
+    kind: str = "chat"
+
+
+class CapsWire(KoanBaseModel):
+    """Wire representation of resolved Capabilities for one configured model or offering.
+
+    kind is "embedding" when caps.embedding_dims is non-empty, else "chat".
+    thinking_levels mirrors caps.thinking.modes. native_tools is a sorted list.
+    provenance is a per-field dict of {source, date, detail} entries.
     """
 
-    configured_model_id: str
-    thinking_supported: bool = False
-    thinking_modes: list[str] = []
-    thinking_shape: str = "none"
-    supports_web_search: bool = False
+    kind: str = "chat"
+    thinking_levels: list[str] = []
+    prompt_caching: str = "none"
+    native_tools: list[str] = []
     supports_tools: bool = True
-    supports_prompt_caching: bool = False
-    recognized: bool = True
+    embedding_dims: list[int] | None = None
+    resolved: bool = False
+    provenance: dict = {}
+
+
+class OfferingWire(KoanBaseModel):
+    """Wire representation of one catalog offering rendered for a connection.
+
+    wire_id is the codec-rendered model id for the connection's route. identity
+    is the resolved ModelIdentity. display_name is the canonical display string.
+    caps is the route-aware CapsWire (overlay + profile merge applied).
+    """
+
+    wire_id: str
+    identity: IdentityWire
+    display_name: str
+    caps: CapsWire
 
 
 class SlotAssignmentWire(KoanBaseModel):
@@ -641,24 +648,11 @@ class PresetWire(KoanBaseModel):
     slots: dict[str, SlotAssignmentWire] = {}
 
 
-class ModelRegistryEntryWire(KoanBaseModel):
-    """Wire representation of ModelRegistryEntry pushed by the model_registry_listed event.
-
-    Payload shape: {models: [{provider, model, display_name, thinking_modes}, ...]}.  Fold sets Settings.model_registry from the models list.
-    """
-
-    provider: str
-    model: str
-    display_name: str
-    thinking_modes: list[str] = []
-
-
 class EmbeddingModelWire(KoanBaseModel):
     """Wire representation of one recognized Voyage embedding model (camelCase via to_camel).
 
-    Payload shape: {models: [{model_id, dimensions, default_dimension}, ...]}.
-    Fold sets Settings.embedding_models from the models list on the
-    embedding_models_listed event; replace-all semantics.
+    Carried inside the settings_listed full snapshot (embedding_models key).
+    Static for the process lifetime; populated once at startup.
     """
 
     model_id: str
@@ -667,79 +661,36 @@ class EmbeddingModelWire(KoanBaseModel):
     default_dimension: int = 0
 
 
-class ProviderModelWire(KoanBaseModel):
-    """Wire representation of ProviderModel pushed by the provider_models_listed event.
-
-    Payload shape: {models: [{provider, model, display_name, connection_id}, ...]}.
-    The alias_generator=to_camel emits displayName and connectionId on the wire.
-    Fold sets Settings.provider_models from the flat cross-provider models list;
-    replace-all semantics (same as model_registry_listed). The frontend overlay
-    join is per-connection (by connectionId), not per provider type.
-    """
-
-    provider: str
-    model: str
-    display_name: str
-    connection_id: str = ""
-
-
-class ProviderFamilyWire(KoanBaseModel):
-    """Wire representation of a per-provider newest-in-family pin.
-
-    Payload shape: {families: [{provider, family, resolved, resolved_from,
-    connection_id}, ...]}.  Delivered alongside provider_models in the
-    provider_models_listed event.  Replace-all semantics: each event replaces
-    the full families list.  connection_id scopes the pin to its originating
-    connection so same-type connections carry independent family sets.
-    resolved_from is optional on the wire (defaults to ""); callers may omit it.
-    """
-
-    provider: str
-    family: str
-    resolved: str
-    resolved_from: str = ""
-    connection_id: str = ""
-
-
 class Settings(KoanBaseModel):
-    """Top-level projection settings populated at server startup.
+    """Top-level projection settings, populated by the settings_listed full snapshot.
 
-    workflows is static for the process lifetime: it is populated once by the
-    workflows_listed initial event and never updated after that. It is placed
-    here (rather than on Run) so the frontend can read it before any run starts.
+    settings_listed carries the entire Settings state and is pushed at startup
+    and after every config mutation with replace-all semantics: the fold
+    constructs a complete Settings object from the payload and replaces this
+    field entirely. workflows is static for the process lifetime (populated
+    once at startup, never updated). It lives here (not on Run) so the frontend
+    can read it before any run starts.
 
-    M5: profiles/default_profile removed; replaced by connections, configured_models,
-    presets, active, memory_bindings (the new config entity surfaces).
-    provider_status reshaped to per-connection ConnectionStatusWire (brief D3).
-    model_registry and provider_models kept; they are capability/listing surfaces
-    owned by M6.
+    offerings_by_connection is the curated catalog rendered through each
+    available connection's route codec with route-aware caps -- the picker
+    content surface (replaces provider_models/provider_families/model_registry).
+    configured_models carry identity + resolved + caps so the UI can show
+    resolution status and route-aware capabilities without a separate join.
     """
-    # M5: new config entity surfaces (replace profiles/default_profile)
+
     connections: list[ConnectionWire] = []
     configured_models: list[ConfiguredModelWire] = []
+    offerings_by_connection: dict[str, list[OfferingWire]] = {}
     presets: dict[str, PresetWire] = {}
     active: str = "$last"
-    # memory_bindings stored as opaque dict; M6 will add a typed wire shape.
+    # memory_bindings stored as opaque dict.
     memory_bindings: dict | None = None
-    # M5: per-connection availability (replaces per-type provider_status from M2)
-    provider_status: list[ConnectionStatusWire] = []
     default_scout_concurrency: int = 8
     max_retry_attempts: int = 10
     max_retry_wait_seconds: float = 60.0
-    workflows: list[WorkflowInfo] = []            # populated once by workflows_listed at startup
-    # M2: all-providers model registry (capability/listing surface; M6 owns reshape)
-    model_registry: list[ModelRegistryEntryWire] = []
-    # Dynamic per-provider model overlay; populated by provider_models_listed events.
-    provider_models: list[ProviderModelWire] = []
-    # Newest-in-family pins; populated alongside provider_models by provider_models_listed.
-    provider_families: list[ProviderFamilyWire] = []
-    # M6: read-only per-configured-model capability snapshot; populated by
-    # model_capabilities_listed.  Recomputed on startup and on any mutation
-    # that touches connections or configured_models (a connection's type
-    # determines its models' resolved capabilities).
-    model_capabilities: list[ResolvedCapabilitiesWire] = []
+    workflows: list[WorkflowInfo] = []            # populated once at startup; static
     # Static catalog of recognized Voyage embedding models; populated once at
-    # startup by embedding_models_listed and never updated after that.
+    # startup and never updated after that.
     embedding_models: list[EmbeddingModelWire] = []
 
 
@@ -870,7 +821,7 @@ class PhaseInfo(KoanBaseModel):
 class WorkflowInfo(KoanBaseModel):
     """A workflow entry used in two contexts:
     - Settings.workflows: static list populated once at server startup via
-      the workflows_listed initial event; read by NewRunForm for selection
+      the settings_listed startup snapshot; read by NewRunForm for selection
       and by App.tsx for the /workflow:<name> command palette.
     - Previously also populated per-run in Run.available_workflows; that
       field was removed -- the registry now lives exclusively at Settings.workflows.
@@ -888,7 +839,7 @@ class Run(KoanBaseModel):
     workflow: str = ""    # active workflow name
     available_phases: list[PhaseInfo] = []      # populated on workflow_selected; drives the / command palette
     # available_workflows removed: the workflows registry now lives at Settings.workflows,
-    # populated once by the workflows_listed initial event.
+    # populated once by the settings_listed startup snapshot.
     agents: dict[str, Agent] = {}          # all agents by ID — queued, running, done, failed
     focus: Focus | None = None             # None before first agent spawns
     artifacts: dict[str, ArtifactInfo] = {}
@@ -1112,7 +1063,7 @@ def _derive_usage(conv: "Conversation", agent: "Agent", usage: dict) -> "Convers
     # Wrapped in try/except so an unresolvable model never raises in the fold.
     if agent.provider and agent.model:
         try:
-            from .agents.model_catalog import price_for_usage
+            from koan.models.pricing import price_for_usage
             total_cost = float(price_for_usage(
                 agent.provider,
                 agent.model,
@@ -1354,7 +1305,7 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                         for p in workflow.available_phases
                     ]
                 # Workflows registry now lives at Settings.workflows, populated once
-                # by the workflows_listed initial event -- no longer rebuilt here.
+                # by the settings_listed startup snapshot -- no longer rebuilt here.
                 new_run = projection.run.model_copy(update={
                     "workflow": workflow_name,
                     "available_phases": available_phases,
@@ -2679,30 +2630,28 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
 
             # ── Settings ──────────────────────────────────────────────────
 
-            # probe_completed / installation_* fold cases removed in M4:
-            # installation concept and CLI binary probe deleted.
-            # profile_created/modified/removed/default_profile_changed removed in M5:
-            # profile types deleted; replaced by connections/presets fold cases below.
-
-            case "connections_listed":
-                # Replace-all: {connections: [{id, connection_type, base_url, region}, ...]}.
-                raw_conns = payload.get("connections", [])
+            # M2: 13 individual settings fold cases consolidated into one
+            # settings_listed full-snapshot case (replace-all semantics). The
+            # fold constructs a complete Settings object from the payload and
+            # replaces projection.settings entirely. Deleted cases:
+            # connections_listed, configured_models_listed, presets_listed,
+            # active_changed, memory_bindings_listed,
+            # default_scout_concurrency_changed, retry_settings_changed,
+            # workflows_listed, provider_status_listed, model_registry_listed,
+            # provider_models_listed, model_capabilities_listed,
+            # embedding_models_listed.
+            case "settings_listed":
+                # Full snapshot: replace entire Settings.
+                s = payload
                 new_conns = [
                     ConnectionWire(
                         id=c.get("id", ""),
-                        connection_type=c.get("connection_type", ""),
-                        base_url=c.get("base_url"),
-                        region=c.get("region"),
+                        route=c.get("route", ""),
+                        locality=c.get("locality"),
+                        available=c.get("available", False),
                     )
-                    for c in raw_conns
+                    for c in s.get("connections", [])
                 ]
-                new_settings = projection.settings.model_copy(update={"connections": new_conns})
-                return projection.model_copy(update={"settings": new_settings})
-
-            case "configured_models_listed":
-                # Replace-all: {configured_models: [{id, connection_id, model_id,
-                # resolved_from, embedding_dim}, ...]}.
-                raw_cms = payload.get("configured_models", [])
                 new_cms = [
                     ConfiguredModelWire(
                         id=m.get("id", ""),
@@ -2710,15 +2659,25 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                         model_id=m.get("model_id", ""),
                         resolved_from=m.get("resolved_from"),
                         embedding_dim=m.get("embedding_dim"),
+                        identity=m.get("identity"),
+                        resolved=m.get("resolved", False),
+                        caps=m.get("caps", {}),
                     )
-                    for m in raw_cms
+                    for m in s.get("configured_models", [])
                 ]
-                new_settings = projection.settings.model_copy(update={"configured_models": new_cms})
-                return projection.model_copy(update={"settings": new_settings})
-
-            case "presets_listed":
-                # Replace-all: {presets: {name: {slots: {slot_name: {configured_model_id, thinking}}}}}.
-                raw_presets = payload.get("presets", {})
+                new_offerings: dict[str, list[OfferingWire]] = {}
+                for cid, offerings in s.get("offerings_by_connection", {}).items():
+                    new_offerings[cid] = [
+                        OfferingWire(
+                            wire_id=o.get("wire_id", ""),
+                            identity=IdentityWire(**o.get("identity", {})),
+                            display_name=o.get("display_name", ""),
+                            caps=CapsWire(**o.get("caps", {})),
+                        )
+                        for o in offerings
+                    ]
+                # Presets (same logic as the old presets_listed fold).
+                raw_presets = s.get("presets", {})
                 new_presets: dict[str, PresetWire] = {}
                 for preset_name, preset_raw in raw_presets.items():
                     if not isinstance(preset_raw, dict):
@@ -2732,138 +2691,37 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
                                 thinking=slot_raw.get("thinking", "disabled"),
                             )
                     new_presets[preset_name] = PresetWire(slots=slots)
-                new_settings = projection.settings.model_copy(update={"presets": new_presets})
-                return projection.model_copy(update={"settings": new_settings})
-
-            case "active_changed":
-                # Payload {active: str}: update the active preset pointer.
-                new_settings = projection.settings.model_copy(update={
-                    "active": payload.get("active", "$last"),
-                })
-                return projection.model_copy(update={"settings": new_settings})
-
-            case "memory_bindings_listed":
-                # Payload {memory_bindings: dict | None}: stored opaque for now;
-                # M6 may add a proper wire subtype when the mutation surface lands.
-                new_settings = projection.settings.model_copy(update={
-                    "memory_bindings": payload.get("memory_bindings"),
-                })
-                return projection.model_copy(update={"settings": new_settings})
-
-            case "default_scout_concurrency_changed":
-                new_settings = projection.settings.model_copy(update={
-                    "default_scout_concurrency": payload.get("value", 8),
-                })
-                return projection.model_copy(update={"settings": new_settings})
-
-            case "retry_settings_changed":
-                new_settings = projection.settings.model_copy(update={
-                    "max_retry_attempts": payload.get("max_retry_attempts", 10),
-                    "max_retry_wait_seconds": payload.get("max_retry_wait_seconds", 60.0),
-                })
-                return projection.model_copy(update={"settings": new_settings})
-
-            case "workflows_listed":
-                # Build the WorkflowInfo list from the payload. The payload uses
-                # snake_case keys (id, description, phases, initial_phase) so that
-                # WorkflowInfo(**entry) constructs cleanly without alias resolution.
-                raw_workflows = payload.get("workflows", [])
+                # Workflows (same logic as the old workflows_listed fold).
+                raw_workflows = s.get("workflows", [])
                 new_workflows: list[WorkflowInfo] = []
                 for entry in raw_workflows:
                     try:
                         new_workflows.append(WorkflowInfo(**entry))
                     except Exception:
-                        log.warning("fold workflows_listed: skipping malformed entry %r", entry)
-                new_settings = projection.settings.model_copy(update={"workflows": new_workflows})
-                return projection.model_copy(update={"settings": new_settings})
-
-            case "provider_status_listed":
-                # M5: payload reshaped from {providers: [{provider, available, ...}]} to
-                # {connections: [{connection_id, connection_type, available}]}.
-                raw_conns = payload.get("connections", [])
-                new_ps = [
-                    ConnectionStatusWire(
-                        connection_id=c.get("connection_id", ""),
-                        connection_type=c.get("connection_type", ""),
-                        available=c.get("available", False),
+                        log.warning("fold settings_listed: skipping malformed workflow entry %r", entry)
+                # Embedding models (same logic as the old embedding_models_listed fold).
+                raw_emb = s.get("embedding_models", [])
+                new_emb = [
+                    EmbeddingModelWire(
+                        model_id=m.get("model_id", ""),
+                        dimensions=m.get("dimensions", []),
+                        default_dimension=m.get("default_dimension", 0),
                     )
-                    for c in raw_conns
+                    for m in raw_emb
                 ]
-                new_settings = projection.settings.model_copy(update={"provider_status": new_ps})
-                return projection.model_copy(update={"settings": new_settings})
-
-            case "model_registry_listed":
-                # Payload: {models: [{provider, model, display_name, thinking_modes}, ...]}.
-                # Populates the all-providers model catalog in the Settings projection.
-                raw_models = payload.get("models", [])
-                new_mr = [
-                    ModelRegistryEntryWire(
-                        provider=m.get("provider", ""),
-                        model=m.get("model", ""),
-                        display_name=m.get("display_name", ""),
-                        thinking_modes=m.get("thinking_modes", []),
-                    )
-                    for m in raw_models
-                ]
-                new_settings = projection.settings.model_copy(update={"model_registry": new_mr})
-                return projection.model_copy(update={"settings": new_settings})
-
-            case "provider_models_listed":
-                # Payload: {models: [{provider, model, display_name, connection_id}, ...],
-                #           families: [{provider, family, resolved, resolved_from,
-                #                       connection_id}, ...]}.
-                # Flat cross-provider list; replace-all semantics (same as model_registry_listed).
-                # Populated by the eager startup task and refreshed on Test/save.
-                # connection_id scopes each model/family to its originating connection
-                # so same-type connections keep independent lists on the frontend.
-                raw_pm = payload.get("models", [])
-                new_pm = [
-                    ProviderModelWire(
-                        provider=m.get("provider", ""),
-                        model=m.get("model", ""),
-                        display_name=m.get("display_name", ""),
-                        connection_id=m.get("connection_id", ""),
-                    )
-                    for m in raw_pm
-                ]
-                # Families are a pass-through: the fold stays a dumb dict->wire mapping;
-                # family/version recognition logic lives in the app layer (app.py).
-                raw_pf = payload.get("families", [])
-                new_pf = [
-                    ProviderFamilyWire(
-                        provider=f.get("provider", ""),
-                        family=f.get("family", ""),
-                        resolved=f.get("resolved", ""),
-                        resolved_from=f.get("resolved_from", ""),
-                        connection_id=f.get("connection_id", ""),
-                    )
-                    for f in raw_pf
-                ]
-                new_settings = projection.settings.model_copy(
-                    update={"provider_models": new_pm, "provider_families": new_pf}
+                new_settings = Settings(
+                    connections=new_conns,
+                    configured_models=new_cms,
+                    offerings_by_connection=new_offerings,
+                    presets=new_presets,
+                    active=s.get("active", "$last"),
+                    memory_bindings=s.get("memory_bindings"),
+                    default_scout_concurrency=s.get("default_scout_concurrency", 8),
+                    max_retry_attempts=s.get("max_retry_attempts", 10),
+                    max_retry_wait_seconds=s.get("max_retry_wait_seconds", 60.0),
+                    workflows=new_workflows,
+                    embedding_models=new_emb,
                 )
-                return projection.model_copy(update={"settings": new_settings})
-
-            case "model_capabilities_listed":
-                # Replace-all: {capabilities: [{configured_model_id, thinking_supported,
-                # thinking_modes, thinking_shape, supports_web_search, supports_tools,
-                # supports_prompt_caching, recognized}, ...]}.
-                # Recomputed on startup and on any connection/configured-model mutation.
-                raw_caps = payload.get("capabilities", [])
-                new_caps = [
-                    ResolvedCapabilitiesWire(
-                        configured_model_id=c.get("configured_model_id", ""),
-                        thinking_supported=c.get("thinking_supported", False),
-                        thinking_modes=c.get("thinking_modes", []),
-                        thinking_shape=c.get("thinking_shape", "none"),
-                        supports_web_search=c.get("supports_web_search", False),
-                        supports_tools=c.get("supports_tools", True),
-                        supports_prompt_caching=c.get("supports_prompt_caching", False),
-                        recognized=c.get("recognized", True),
-                    )
-                    for c in raw_caps
-                ]
-                new_settings = projection.settings.model_copy(update={"model_capabilities": new_caps})
                 return projection.model_copy(update={"settings": new_settings})
 
             case "yield_started":
@@ -2994,21 +2852,8 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
             case "reflect_cleared":
                 return projection.model_copy(update={"reflect": None})
 
-            case "embedding_models_listed":
-                # Replace-all: {models: [{model_id, dimensions, default_dimension}, ...]}.
-                # Pushed once at startup; static for the process lifetime.
-                # The frontend uses this to populate the dimension selector.
-                raw_models = payload.get("models", [])
-                new_ems = [
-                    EmbeddingModelWire(
-                        model_id=m.get("model_id", ""),
-                        dimensions=m.get("dimensions", []),
-                        default_dimension=m.get("default_dimension", 0),
-                    )
-                    for m in raw_models
-                ]
-                new_settings = projection.settings.model_copy(update={"embedding_models": new_ems})
-                return projection.model_copy(update={"settings": new_settings})
+            # embedding_models_listed fold removed in M2: absorbed into
+            # settings_listed (embedding_models key in the full snapshot).
 
             case _:
                 log.warning("fold: unknown event_type=%r", event_type)
@@ -3048,7 +2893,7 @@ class ProjectionStore:
 
     def push_event(
         self,
-        event_type: str,
+        event_type: EventType,
         payload: dict,
         agent_id: str | None = None,
     ) -> VersionedEvent:
