@@ -318,7 +318,10 @@ async def _stream_model_request_with_retry(
       - "proceed_unreviewed" (reviewer role only) -> raise AgentError(reviewer_proceeded_unreviewed)
 
     Unexpected errors fail fast: re-raised unchanged after emitting a full
-    stack trace to the logger.
+    stack trace to the logger. Fail-fast is limited to programming errors
+    (TypeError etc.), pydantic-ai UserError, and cancellation/exit signals --
+    every other error, including all ModelHTTPError status codes, is
+    considered transient and retried (see classify_provider_error).
 
     Yields pydantic-ai stream events (PartStartEvent / PartDeltaEvent /
     PartEndEvent) so the caller can translate them into StreamEvents as before.
@@ -389,7 +392,7 @@ async def _stream_model_request_with_retry(
 
         question = {
             "question": (
-                f"Provider is unresponsive after {attempt - 1} retry attempts. "
+                f"Provider requests keep failing after {attempt - 1} retry attempts. "
                 "What would you like to do?"
             ),
             "options": options_list,

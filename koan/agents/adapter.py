@@ -92,9 +92,10 @@ def build_usage_limits() -> UsageLimits:
     """Return the shared usage-limits policy for all koan agent invocations.
 
     Sets request_limit=None to disable pydantic_ai's default cap of 50 model
-    requests per agent run. That default fails fast with no recovery path
-    (classify_provider_error treats UsageLimitExceeded as 'unexpected'); removing
-    it lets long-running orchestrator and scout loops complete naturally. All other
+    requests per agent run. That cap would trip UsageLimitExceeded mid-run
+    (now retried and eventually escalated by the retry loop, but pointlessly
+    -- the limit does not reset between attempts); removing it lets
+    long-running orchestrator and scout loops complete naturally. All other
     UsageLimits fields (input_tokens_limit, output_tokens_limit, total_tokens_limit,
     tool_calls_limit) remain at their None defaults (disabled). This is the single
     chokepoint for the usage-limits policy -- no call site inlines UsageLimits.
