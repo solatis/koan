@@ -16,13 +16,20 @@ dependencies = [
     "pydantic-ai-slim[anthropic,bedrock,google,openai,duckduckgo]==2.0.0",
     "genai-prices>=0.0.68",
     "mcp",
+    "beartype>=0.22.9",
 ]
 
 [project.scripts]
 koan = "koan.__main__:main"
 
 [dependency-groups]
-dev = ["pytest>=8.0", "anyio>=4.0", "httpx", "deepeval>=3.9.7"]
+dev = [
+    "pytest>=8.0",
+    "anyio>=4.0",
+    "httpx",
+    "deepeval>=3.9.7",
+    "pyright[nodejs]>=1.1.411",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -34,3 +41,31 @@ packages = ["koan"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--ignore=tests/evals"
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+include = ["koan"]
+# Ratchet list: files with pre-existing errors, excluded until burned down
+# (error count at exclusion time in parens). Rules: never add a file here;
+# when you touch an excluded file, prefer shrinking its errors and removing
+# it from this list. Everything not listed is enforced by CI.
+exclude = [
+    "koan/audit/fold.py",             # (210) untyped audit-event fold
+    "koan/agents/adapter.py",         # (9) provider client kwargs vs stubs
+    "koan/agents/dialects.py",        # (2) voyageai private import, return type
+    "koan/agents/loop.py",            # (1) pydantic_ai._agent_graph private import
+    "koan/agents/pydantic_ai.py",     # (3) Agent() overloads, private import
+    "koan/cli/memory.py",             # (1) arg-type; undefined-name NameErrors fixed
+    "koan/driver.py",                 # (1) event_type str vs EventType literal
+    "koan/memory/llm.py",             # (12) Agent() overloads
+    "koan/memory/retrieval/backend.py",  # (1) voyageai private import
+    "koan/memory/retrieval/index.py",    # (3) voyageai private import, dim None
+    "koan/memory/retrieval/reflect.py",  # (6) Agent() overloads, tool signatures
+    "koan/state.py",                  # (2) undefined names in annotations
+    "koan/subagent.py",               # (5) Optional member access
+    "koan/tools/builtin_tools.py",    # (1) Optional into write_text
+    "koan/tools/handoff_artifacts.py",   # (1) ttl literal type
+    "koan/tools/koan_tools.py",       # (1) Optional arg; ValidationError import fixed
+    "koan/web/uploads.py",            # (1) stale ActiveCurationBatch import (removed M7)
+]
