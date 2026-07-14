@@ -18,12 +18,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    from ..state import AgentState, AppState
-
-
+from ..state import AgentState, AppState
+# Module-level so the ValidationError annotation on _permission_error_result
+# resolves at runtime (artifact_registry imports nothing back from this module).
+from .artifact_registry import ValidationError
 @dataclass
 class ToolDeps:
     """Per-run dependency object passed to pydantic-ai agent.iter(deps=...).
@@ -1060,7 +1060,7 @@ def _resolve_artifact_path(deps: ToolDeps, filename: str) -> Path:
 
 
 async def _spawn_reviewer(
-    app_state: "AppState",
+    app_state: AppState,
     run_dir: str,
     target_name: str,
     reviewer_prompt: str,
@@ -1119,7 +1119,7 @@ async def _spawn_reviewer(
 
 
 async def _spawn_executor(
-    app_state: "AppState",
+    app_state: AppState,
     run_dir: str,
     artifacts: list[str],
     instructions: str = "",
@@ -1167,7 +1167,7 @@ async def _spawn_executor(
     return (result.final_response or "", result.exit_code)
 
 
-def _current_step_name(agent: "AgentState") -> str | None:
+def _current_step_name(agent: AgentState) -> str | None:
     """Resolve the current step's stable name from the agent's phase module.
 
     Returns STEP_NAMES[agent.step] from the phase module set on the agent, or
@@ -1184,7 +1184,7 @@ def _current_step_name(agent: "AgentState") -> str | None:
     return step_names.get(getattr(agent, "step", 0))
 
 
-def _permission_error_result(err: "ValidationError") -> str:
+def _permission_error_result(err: ValidationError) -> str:
     """Shape a recoverable registry ValidationError into the uniform tool-result envelope.
 
     Returns a JSON string {"ok": false, "error": {...}} that is passed directly
@@ -1205,7 +1205,7 @@ def _permission_error_result(err: "ValidationError") -> str:
     })
 
 
-def _tool_phase_gate_result(deps: "ToolDeps", tool_name: str) -> str | None:
+def _tool_phase_gate_result(deps: ToolDeps, tool_name: str) -> str | None:
     """Return a recoverable error envelope when tool_name is barred in the current phase.
 
     Reads the calling agent's role and the run's current phase from deps,
@@ -1434,10 +1434,11 @@ async def artifact_read_core(
     if not target.is_file():
         raise ValueError(f"not_found: {filename} not found")
 
-    # limit=None is load-bearing: artifact reads are trusted and return full
-    # content (brief.md Decision 6). read_tool passes None to render_anchored
-    # which returns all lines.
-    return await read_tool(_DepsCtx(deps), str(target), offset, limit)
+    # limit=None and max_bytes=None are load-bearing: artifact reads are
+    # trusted and return full content (brief.md Decision 6). read_tool passes
+    # None to render_anchored which returns all lines, and skips the byte
+    # budget applied to untrusted reads.
+    return await read_tool(_DepsCtx(deps), str(target), offset, limit, max_bytes=None)
 
 
 # -- Interaction tool cores ----------------------------------------------------
@@ -1505,7 +1506,7 @@ async def ask_question_core(deps: ToolDeps, questions: list[dict]) -> str:
 async def spawn_tracked_subagent(
     app_state: AppState,
     task: dict,
-    semaphore: "Any | None" = None,
+    semaphore: Any | None = None,
 ):
     """Run spawn_subagent as a tracked, crash-contained asyncio task.
 
@@ -1601,7 +1602,7 @@ async def request_scouts_core(deps: ToolDeps, questions: list[dict] | None) -> s
 
 
 async def request_executor_core(
-    deps: "ToolDeps",
+    deps: ToolDeps,
     plan_file: str | None = None,
     instructions: str | None = None,
 ) -> str:
@@ -1690,7 +1691,7 @@ async def request_executor_core(
 # -- Full koan toolset builder -------------------------------------------------
 
 
-def build_koan_toolset(allowed_names: "frozenset[str] | None" = None) -> Any:
+def build_koan_toolset(allowed_names: frozenset[str] | None = None) -> Any:
     """Build a koan FunctionToolset with all implemented koan tools.
 
     Registers koan_set_phase, koan_suggest_next, koan_set_workflow, the 5

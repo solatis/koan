@@ -35,6 +35,7 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .byte_budget import DEFAULT_TOOL_RESULT_MAX_BYTES, ByteBudget, truncate_to_budget
 from .line_anchors import apply_anchored_edit, render_anchored
 
 if TYPE_CHECKING:
@@ -51,9 +52,12 @@ _PLANNING_ROLES: frozenset[str] = frozenset({
 })
 
 # Default output record cap for untrusted tools. The LLM can override via the
-# limit parameter. The pre-emptive limit is the only bound; there is no
-# post-hoc size check. Defined here (above the tool implementations) so the
-# tool signatures can use it as a default value.
+# limit parameter. Two bounds coexist: the record cap (this constant) shapes
+# execution, and the cumulative byte budget (DEFAULT_TOOL_RESULT_MAX_BYTES in
+# byte_budget.py) bounds size -- whichever fires first stops processing. The
+# ByteBudgetToolset ceiling backstops both at the toolset boundary. Defined
+# here (above the tool implementations) so the tool signatures can use it as
+# a default value.
 DEFAULT_LIMIT: int = 500
 
 
@@ -155,6 +159,7 @@ async def read_tool(
     # limit=None returns all lines -- used only by trusted wrappers
     # (koan_artifact_read) that are exempt from the output cap.
     limit: int | None = DEFAULT_LIMIT,
+    max_bytes: int | None = DEFAULT_TOOL_RESULT_MAX_BYTES,
 ) -> str:
     """Read a file and return its contents in anchored line format.
 
@@ -175,8 +180,14 @@ async def read_tool(
         limit: Maximum number of lines to return (default DEFAULT_LIMIT). None
             returns all lines -- used only by trusted wrappers
             (koan_artifact_read) that are exempt from the output cap. The output
-            is sliced to `limit` lines via render_anchored; there is no second
-            size check.
+            is sliced to `limit` lines via render_anchored.
+        max_bytes: Cumulative byte budget for the rendered output (default
+            DEFAULT_TOOL_RESULT_MAX_BYTES). Anchors must be computed over the
+            whole file, so the bound is applied post-render (no early-stop win
+            exists here, unlike grep/bash). None skips the byte cap -- used
+            only by trusted wrappers (koan_artifact_read). A byte truncation
+            can cut mid anchored row; the partial anchor fails loudly at edit
+            validation, so a stale-anchor edit cannot silently corrupt a file.
     """
     deps = getattr(ctx, "deps", None)
     resolved = _resolve_path(file_path, deps)
@@ -193,6 +204,13 @@ async def read_tool(
     # Anchored output: "{lineno}\t{anchor}§{content}". The anchor lets edit
     # target this line without exact-string-match (see docs/tools.md).
     rendered = render_anchored(content, offset, limit)
+    if max_bytes is not None:
+        rendered = truncate_to_budget(
+            rendered,
+            max_bytes,
+            f"... [truncated: output exceeded {max_bytes} byte budget"
+            " -- use offset/limit to read the file in pages]",
+        )
     # Native metrics side channel: the agent loop reads and clears this after
     # the tool returns, avoiding fragile text-output parsing.
     if deps is not None and getattr(deps, 'agent', None) is not None:
@@ -306,10 +324,13 @@ _IGNORED_DIRS: frozenset[str] = frozenset({
     "dist", "build", ".next", ".cache", ".idea", ".vscode",
 })
 
-# Pre-emptive output cap for untrusted tools. read/grep/glob/bash stop
-# processing as soon as `limit` output records are collected. Capped
-# results are returned with a truncation note; no total count is computed.
-# The pre-emptive limit is the only bound -- no second check. The constant
+# Pre-emptive output caps for untrusted tools. read/grep/glob/bash stop
+# processing as soon as `limit` output records are collected OR the
+# cumulative byte budget (max_bytes) is exhausted -- whichever fires first.
+# Capped results are returned with a truncation note; no total count is
+# computed. The record cap alone is not a size bound: a single record can be
+# arbitrarily long (a minified sourcemap is one multi-MB line), which is why
+# each record is also counted against a ByteBudget. The constant
 # DEFAULT_LIMIT lives with the path helpers near the top of the module so the
 # tool signatures below can use it as a default value.
 
@@ -329,23 +350,31 @@ def _is_ignored(path: Path, root: Path) -> bool:
     return any(part in _IGNORED_DIRS for part in rel.parts)
 
 
-# Untrusted tool output is capped pre-emptively via the `limit` parameter on
-# each tool (read/grep/glob/bash). There is no post-hoc size check -- the
-# pre-emptive limit is the only bound.
+# Untrusted tool output is capped pre-emptively via the `limit` (records) and
+# `max_bytes` (cumulative size) parameters on each tool (read/grep/glob/bash).
+# The ByteBudgetToolset ceiling in byte_budget.py backstops both at the
+# toolset boundary.
 
 
-async def glob_tool(ctx: Any, pattern: str, path: str | None = None, limit: int = DEFAULT_LIMIT) -> str:
+async def glob_tool(
+    ctx: Any,
+    pattern: str,
+    path: str | None = None,
+    limit: int = DEFAULT_LIMIT,
+    max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
+) -> str:
     """Find files matching a glob pattern.
 
     Returns a "Found N files" header followed by one matching path per line.
     glob matches are file-per-match since each path IS the match. Ignored
     directories (e.g. .git, node_modules, .venv) are excluded to keep results
     focused on source. Processing is generator-style: iteration stops as soon
-    as `limit` paths are collected, so remaining matches are not enumerated and
-    results come in filesystem traversal order (not sorted -- sorting would
-    require collecting all matches before capping). Capped results are returned
-    with a truncation note; no total count is computed. After listing, the search
-    root is recorded for context-file injection.
+    as `limit` paths are collected or the byte budget is exhausted, so
+    remaining matches are not enumerated and results come in filesystem
+    traversal order (not sorted -- sorting would require collecting all
+    matches before capping). Capped results are returned with a truncation
+    note; no total count is computed. After listing, the search root is
+    recorded for context-file injection.
 
     Args:
         ctx: PydanticAI RunContext with ToolDeps as deps.
@@ -354,6 +383,10 @@ async def glob_tool(ctx: Any, pattern: str, path: str | None = None, limit: int 
         limit: Maximum number of file paths to return (default DEFAULT_LIMIT).
             Stops iterating as soon as `limit` paths are collected; remaining
             matches are not enumerated.
+        max_bytes: Cumulative byte budget across all returned paths (default
+            DEFAULT_TOOL_RESULT_MAX_BYTES). Paths are short, so this exists
+            for consistency of the size invariant rather than as the
+            expected stop.
     """
     deps = getattr(ctx, "deps", None)
     if path is not None:
@@ -363,14 +396,17 @@ async def glob_tool(ctx: Any, pattern: str, path: str | None = None, limit: int 
         search_root = Path(run_dir) if run_dir else Path.cwd()
 
     # Generator-style: iterate the glob lazily and stop as soon as `limit`
-    # paths are collected. No sorted() -- sorting requires collecting all
-    # matches first, defeating the early-stop goal; results come in
-    # filesystem traversal order.
+    # paths are collected or the byte budget fills. No sorted() -- sorting
+    # requires collecting all matches first, defeating the early-stop goal;
+    # results come in filesystem traversal order.
+    budget = ByteBudget(max_bytes)
     try:
         matches: list[str] = []
         for p in search_root.glob(pattern):
             if _is_ignored(p, search_root):
                 continue
+            if not budget.add(str(p)):
+                break
             matches.append(str(p))
             if len(matches) >= limit:
                 break
@@ -385,6 +421,11 @@ async def glob_tool(ctx: Any, pattern: str, path: str | None = None, limit: int 
         result += "\n" + "\n".join(matches)
     if truncated:
         result += f"\nResults capped at {limit} files — narrow the pattern or path to see more."
+    elif budget.exhausted:
+        result += (
+            f"\nResults capped at {max_bytes} bytes"
+            " -- narrow the pattern or path to see more."
+        )
 
     if deps is not None:
         _record_path_for_context_injection(deps, search_root)
@@ -404,6 +445,7 @@ async def grep_tool(
     path: str | None = None,
     glob: str | None = None,
     limit: int = DEFAULT_LIMIT,
+    max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
 ) -> str:
     """Search file contents for a regex pattern.
 
@@ -411,11 +453,11 @@ async def grep_tool(
     "file:line_number:content" format. Ignored directories (e.g. .git,
     node_modules, .venv) are excluded from the candidate file set. Searching is
     generator-style: file reads and line scans stop as soon as `limit` match
-    lines are collected -- remaining files are not read or searched. Capped
-    results are returned with a truncation note; no total count is computed.
-    Candidate file enumeration (discovery + sort) is eager, but the dominant
-    cost (reading files and searching line-by-line) is bounded by the early
-    stop.
+    lines are collected or the cumulative byte budget is exhausted --
+    remaining files are not read or searched. Capped results are returned
+    with a truncation note; no total count is computed. Candidate file
+    enumeration (discovery + sort) is eager, but the dominant cost (reading
+    files and searching line-by-line) is bounded by the early stop.
 
     Args:
         ctx: PydanticAI RunContext with ToolDeps as deps.
@@ -425,6 +467,13 @@ async def grep_tool(
         limit: Maximum number of match lines to return (default DEFAULT_LIMIT).
             Stops searching as soon as `limit` match lines are collected --
             remaining files are not read or searched.
+        max_bytes: Cumulative byte budget across all match lines (default
+            DEFAULT_TOOL_RESULT_MAX_BYTES). A single match line can be
+            arbitrarily long (minified/sourcemap files are one multi-MB
+            line), so the record cap alone is not a size bound. The
+            overflowing record is clipped to the remaining budget -- its
+            "file:lineno:" prefix stays visible so the model can exclude
+            that file and retry.
     """
     deps = getattr(ctx, "deps", None)
     if path is not None:
@@ -454,11 +503,13 @@ async def grep_tool(
 
     match_lines: list[str] = []
     files_with_matches: set[str] = set()
+    budget = ByteBudget(max_bytes)
 
     # Generator-style: break out of both the file loop and the line loop as
-    # soon as `limit` match lines are collected, so remaining files are not
-    # read. Candidate enumeration + sort stays eager (a larger refactor for
-    # lazy discovery is out of scope); only reads and line scans are bounded.
+    # soon as `limit` match lines are collected or the byte budget fills, so
+    # remaining files are not read. Candidate enumeration + sort stays eager
+    # (a larger refactor for lazy discovery is out of scope); only reads and
+    # line scans are bounded.
     truncated = False
     for candidate in sorted(candidates):
         if len(match_lines) >= limit:
@@ -470,12 +521,22 @@ async def grep_tool(
             continue
         for lineno, line in enumerate(text.splitlines(), start=1):
             if compiled.search(line):
-                match_lines.append(f"{candidate}:{lineno}:{line}")
+                record = f"{candidate}:{lineno}:{line}"
+                if not budget.add(record):
+                    # Clip the overflowing record to the remaining budget:
+                    # its "file:lineno:" prefix stays visible so the model
+                    # can exclude that file and retry.
+                    clipped = budget.clip(record)
+                    if clipped:
+                        match_lines.append(clipped)
+                        files_with_matches.add(str(candidate))
+                    break
+                match_lines.append(record)
                 files_with_matches.add(str(candidate))
                 if len(match_lines) >= limit:
                     truncated = True
                     break
-        if truncated:
+        if truncated or budget.exhausted:
             break
 
     n_matches = len(match_lines)
@@ -486,6 +547,12 @@ async def grep_tool(
         result += "\n" + "\n".join(match_lines)
     if truncated:
         result += f"\nResults capped at {limit} match lines — narrow the pattern or path to see more."
+    elif budget.exhausted:
+        result += (
+            f"\nResults capped at {max_bytes} bytes"
+            " -- narrow the pattern or path (or exclude large generated files)"
+            " to see more."
+        )
 
     if deps is not None:
         _record_path_for_context_injection(deps, search_root)
@@ -505,6 +572,7 @@ async def bash_tool(
     command: str,
     timeout: int | None = None,
     limit: int = DEFAULT_LIMIT,
+    max_bytes: int = DEFAULT_TOOL_RESULT_MAX_BYTES,
 ) -> str:
     """Execute a shell command and return stdout + stderr combined.
 
@@ -512,10 +580,11 @@ async def bash_tool(
     exempt from context-file injection (no single canonical path argument).
     Output is streamed line-by-line via Popen with stderr merged into stdout
     (stderr=STDOUT interleaves the two streams into one). The process is killed
-    when `limit` output lines are read or when the timeout expires (whichever
-    fires first). Capped results are returned with a truncation note; no total
-    count is computed. The deadline-aware read uses select.select so the timeout
-    fires even when the process produces no output.
+    when `limit` output lines are read, when the cumulative byte budget is
+    exhausted, or when the timeout expires (whichever fires first). Capped
+    results are returned with a truncation note; no total count is computed.
+    The deadline-aware read uses select.select so the timeout fires even when
+    the process produces no output.
 
     Args:
         ctx: PydanticAI RunContext with ToolDeps as deps.
@@ -526,6 +595,11 @@ async def bash_tool(
         limit: Maximum number of output lines to return (default DEFAULT_LIMIT).
             Streams output line-by-line; the process is killed when `limit`
             lines are read.
+        max_bytes: Cumulative byte budget across all output lines (default
+            DEFAULT_TOOL_RESULT_MAX_BYTES). A single line can be arbitrarily
+            long (e.g. cat of a minified file), so the line cap alone is not
+            a size bound. The overflowing line is clipped to the remaining
+            budget and the process is killed.
     """
     deps = getattr(ctx, "deps", None)
     run_dir = getattr(getattr(deps, "agent", None), "run_dir", None) if deps else None
@@ -550,6 +624,7 @@ async def bash_tool(
 
     output_lines: list[str] = []
     truncated = False
+    budget = ByteBudget(max_bytes)
     deadline = (time.monotonic() + timeout) if timeout else None
 
     try:
@@ -577,7 +652,16 @@ async def bash_tool(
             if not line:
                 # EOF -- process closed stdout (normally because it exited).
                 break
-            output_lines.append(line.rstrip("\n"))
+            record = line.rstrip("\n")
+            if not budget.add(record):
+                # Clip the overflowing line to the remaining budget; the
+                # truncated flag drives the same kill path as the line cap.
+                clipped = budget.clip(record)
+                if clipped:
+                    output_lines.append(clipped)
+                truncated = True
+                break
+            output_lines.append(record)
 
         if truncated:
             proc.kill()
@@ -604,7 +688,12 @@ async def bash_tool(
     # added when the process exited on its own with a nonzero status.
     if not truncated and returncode != 0:
         combined = f"Exit code: {returncode}\n{combined}" if combined else f"Exit code: {returncode}"
-    if truncated:
+    if truncated and budget.exhausted:
+        combined += (
+            f"\nOutput capped at {max_bytes} bytes"
+            " -- scope the command (e.g. head, specific paths) to see more."
+        )
+    elif truncated:
         combined += f"\nOutput capped at {limit} lines — scope the command (e.g. head, specific paths) to see more."
 
     # output_lines counts only collected process output (excluding the Exit
@@ -722,9 +811,11 @@ def build_builtin_toolset() -> Any:
     ts: FunctionToolset[Any] = FunctionToolset()
 
     # -- read ------------------------------------------------------------------
-    # _read exposes limit (default DEFAULT_LIMIT) to the model. The trusted
-    # koan_artifact_read wrapper calls read_tool directly with limit=None to
-    # return full content (trusted exemption for koan-authored artifacts).
+    # _read exposes limit (default DEFAULT_LIMIT) to the model; max_bytes is
+    # internal-only so the tool schema stays byte-stable. The trusted
+    # koan_artifact_read wrapper calls read_tool directly with limit=None and
+    # max_bytes=None to return full content (trusted exemption for
+    # koan-authored artifacts).
     async def _read(ctx, file_path: str, offset: int = 0, limit: int = DEFAULT_LIMIT) -> str:
         """Read a file and return anchored, line-numbered content for precise editing."""
         return await read_tool(ctx, file_path, offset, limit)

@@ -43,14 +43,12 @@
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING, Any, AsyncIterator
+from typing import Any, AsyncIterator
 
 from .base import AgentDiagnostic, AgentError, AgentOptions
 from .events import StreamEvent
 from ..logger import get_logger
-
-if TYPE_CHECKING:
-    from ..types import ModelSpec
+from ..types import ModelSpec
 
 log = get_logger("pydantic_ai")
 
@@ -266,12 +264,20 @@ class PydanticAIAgent:
         koan_toolset = build_koan_toolset(allowed_names=allowed)
         builtin_toolset = build_builtin_toolset()
 
+        # The builtin (untrusted) toolset is wrapped in a byte ceiling: no
+        # result above TOOL_RESULT_CEILING_BYTES ever enters message history,
+        # regardless of per-tool bounds (docs/tool-output-limits.md). The
+        # koan toolset stays unwrapped -- trusted tools are bound by
+        # construction. WrapperToolset delegates get_tools/get_instructions,
+        # so tool schemas and the cache-stable prefix are untouched.
+        from ..tools.byte_budget import ByteBudgetToolset
+
         # Construct pydantic-ai Agent with instructions (v2 prefers instructions
         # over system_prompt for the byte-stable cache prefix).
         pai_agent: PAIAgent[ToolDeps, str] = PAIAgent(
             model=model,
             instructions=options.system_prompt,
-            toolsets=[koan_toolset, builtin_toolset],
+            toolsets=[koan_toolset, ByteBudgetToolset(wrapped=builtin_toolset)],
             model_settings=model_settings,
             capabilities=capabilities,
         )

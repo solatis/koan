@@ -440,3 +440,67 @@ async def test_live_gemini_intake_turn_advances_step(tmp_path, real_credential_s
     # turn_complete should carry real usage.
     tc = turn_completes[-1]
     assert tc.usage is not None, "live run turn_complete must carry RequestUsage"
+
+
+# -- byte-budget ceiling on the builtin toolset -------------------------------- #
+
+
+class TestByteBudgetWrapper:
+    """The builtin (untrusted) toolset is wrapped in a ByteBudgetToolset ceiling
+    at agent assembly, so no builtin tool result above the ceiling can enter
+    message history. Exercises the real builtin toolset through the real
+    WrapperToolset.call_tool path (no agent loop needed)."""
+
+    @staticmethod
+    def _run_ctx(tmp_path):
+        from types import SimpleNamespace
+
+        from pydantic_ai._run_context import RunContext
+        from pydantic_ai.models.test import TestModel
+        from pydantic_ai.usage import RunUsage
+
+        agent = SimpleNamespace(
+            role="executor",
+            run_dir=str(tmp_path),
+            injected_context_files=set(),
+            pending_context_files=[],
+        )
+        deps = SimpleNamespace(
+            agent=agent,
+            app_state=SimpleNamespace(run=SimpleNamespace(project_dir="", phase="execute")),
+        )
+        return RunContext(deps=deps, model=TestModel(), usage=RunUsage())
+
+    @pytest.mark.anyio
+    async def test_builtin_read_result_capped_by_ceiling(self, tmp_path):
+        from koan.tools.builtin_tools import build_builtin_toolset
+        from koan.tools.byte_budget import ByteBudgetToolset, ceiling_suffix
+
+        big = tmp_path / "big.txt"
+        big.write_text("line of text\n" * 500)
+
+        wrapper = ByteBudgetToolset(wrapped=build_builtin_toolset(), max_bytes=800)
+        ctx = self._run_ctx(tmp_path)
+        tools = await wrapper.get_tools(ctx)
+        result = await wrapper.call_tool(
+            "read", {"file_path": str(big)}, ctx, tools["read"]
+        )
+        assert len(result.encode("utf-8")) <= 800
+        assert result.endswith(ceiling_suffix(800))
+
+    @pytest.mark.anyio
+    async def test_builtin_short_result_passes_unchanged(self, tmp_path):
+        from koan.tools.builtin_tools import build_builtin_toolset
+        from koan.tools.byte_budget import ByteBudgetToolset
+
+        small = tmp_path / "small.txt"
+        small.write_text("hello\n")
+
+        wrapper = ByteBudgetToolset(wrapped=build_builtin_toolset())
+        ctx = self._run_ctx(tmp_path)
+        tools = await wrapper.get_tools(ctx)
+        result = await wrapper.call_tool(
+            "read", {"file_path": str(small)}, ctx, tools["read"]
+        )
+        assert "hello" in result
+        assert "[truncated" not in result

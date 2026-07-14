@@ -622,3 +622,84 @@ async def test_grep_skips_ignored_dirs(tmp_path):
     assert "real.py" in result
     # node_modules content must not appear.
     assert "dep.js" not in result
+
+
+# -- byte budgets ------------------------------------------------------------- #
+
+
+@pytest.mark.anyio
+async def test_grep_clips_huge_single_line(tmp_path):
+    """A multi-MB single-line file (the sourcemap incident shape) is clipped.
+
+    The result stays within the byte budget and the clipped record keeps its
+    "file:lineno:" prefix so the model can identify the offending file.
+    """
+    huge = tmp_path / "bundle.js.map"
+    huge.write_text("needle " + "x" * 100_000)
+
+    ctx = _make_ctx(run_dir=str(tmp_path))
+    result = await grep_tool(ctx, "needle", str(tmp_path), max_bytes=2000)
+    assert len(result.encode("utf-8")) < 3000  # budget + header + note
+    assert f"{huge}:1:" in result
+    assert "byte budget" in result
+    assert "capped at 2000 bytes" in result
+
+
+@pytest.mark.anyio
+async def test_grep_byte_cap_fires_before_record_cap(tmp_path):
+    """Many small matches exhaust the byte budget before the record limit."""
+    f = tmp_path / "many.txt"
+    f.write_text("\n".join(f"needle {i} " + "y" * 100 for i in range(100)))
+
+    ctx = _make_ctx(run_dir=str(tmp_path))
+    result = await grep_tool(ctx, "needle", str(tmp_path), limit=500, max_bytes=1000)
+    assert len(result.encode("utf-8")) < 2000
+    assert "capped at 1000 bytes" in result
+    assert "capped at 500 match lines" not in result
+
+
+@pytest.mark.anyio
+async def test_bash_clips_huge_line_and_kills_process(tmp_path):
+    """A single huge output line is clipped and the process is killed."""
+    ctx = _make_ctx(run_dir=str(tmp_path), phase="execute")
+    result = await bash_tool(
+        ctx, "python3 -c \"print('z' * 200000); print('never')\"", max_bytes=2000
+    )
+    assert len(result.encode("utf-8")) < 3000
+    assert "capped at 2000 bytes" in result
+    assert "never" not in result
+
+
+@pytest.mark.anyio
+async def test_read_clips_huge_single_line(tmp_path):
+    """read_tool bounds a single-line multi-byte file with a paging note."""
+    huge = tmp_path / "big.map"
+    huge.write_text("a" * 100_000)
+
+    ctx = _make_ctx(run_dir=str(tmp_path))
+    result = await read_tool(ctx, str(huge), max_bytes=2000)
+    assert len(result.encode("utf-8")) <= 2000
+    assert "offset/limit" in result
+
+
+@pytest.mark.anyio
+async def test_read_max_bytes_none_returns_full_content(tmp_path):
+    """max_bytes=None (trusted artifact path) skips the byte cap."""
+    huge = tmp_path / "artifact.md"
+    huge.write_text("b" * 100_000)
+
+    ctx = _make_ctx(run_dir=str(tmp_path))
+    result = await read_tool(ctx, str(huge), limit=None, max_bytes=None)
+    assert len(result) > 100_000  # full content plus anchor prefix
+
+
+@pytest.mark.anyio
+async def test_glob_byte_budget_caps_paths(tmp_path):
+    """glob_tool stops enumerating when the byte budget fills."""
+    for i in range(50):
+        (tmp_path / f"file_with_a_rather_long_name_{i:03d}.py").write_text("x")
+
+    ctx = _make_ctx(run_dir=str(tmp_path))
+    result = await glob_tool(ctx, "*.py", str(tmp_path), max_bytes=500)
+    assert len(result.encode("utf-8")) < 1500
+    assert "capped at 500 bytes" in result
