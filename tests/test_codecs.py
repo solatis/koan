@@ -229,15 +229,43 @@ class TestOpenRouterCodec:
 
 
 class TestOllamaCloudCodec:
-    def test_parse_any_string_unresolved(self) -> None:
-        """OllamaCloudCodec treats any id as opaque -> Unresolved."""
+    def test_parse_uncurated_string_unresolved(self) -> None:
+        """Ids outside the curated table stay opaque -> Unresolved (still invocable)."""
         ref, _ = CODECS["ollama-cloud"].parse("llama3.3:70b")
         assert isinstance(ref, Unresolved)
 
-    def test_render_family_verbatim(self) -> None:
-        """render returns the identity's family field verbatim."""
+    def test_render_uncurated_identity_none(self) -> None:
+        """render is the vendor filter: identities without a curated cloud tag render to None."""
         ident = ModelIdentity("ollama", "llama3.3:70b", "1")
-        assert CODECS["ollama-cloud"].render(ident, None) == "llama3.3:70b"
+        assert CODECS["ollama-cloud"].render(ident, None) is None
+        # Foreign-vendor identities do not leak onto the ollama route either.
+        claude = ModelIdentity("anthropic", "claude-sonnet", "4.5")
+        assert CODECS["ollama-cloud"].render(claude, None) is None
+
+    def test_parse_curated_cloud_tags(self) -> None:
+        """Every curated :cloud tag resolves to its ModelIdentity."""
+        from koan.models.codecs import _OLLAMA_CLOUD_IDENTITIES
+        for wire_id, expected in _OLLAMA_CLOUD_IDENTITIES.items():
+            ref, locality = CODECS["ollama-cloud"].parse(wire_id)
+            assert ref == expected, wire_id
+            assert locality is None
+
+    def test_curated_round_trip(self) -> None:
+        """render(parse(wire_id)) reproduces the wire_id for every curated tag."""
+        from koan.models.codecs import _OLLAMA_CLOUD_IDENTITIES
+        for wire_id, ident in _OLLAMA_CLOUD_IDENTITIES.items():
+            assert CODECS["ollama-cloud"].render(ident, None) == wire_id
+
+    def test_parse_glm_cloud(self) -> None:
+        ref, _ = CODECS["ollama-cloud"].parse("glm-5.2:cloud")
+        assert ref == ModelIdentity("zai", "glm", "5.2")
+
+    def test_curated_tags_have_catalog_entries(self) -> None:
+        """Every curated cloud tag is backed by a curated _BASE_CATALOG entry."""
+        from koan.models.capabilities import _BASE_CATALOG
+        from koan.models.codecs import _OLLAMA_CLOUD_IDENTITIES
+        for wire_id, i in _OLLAMA_CLOUD_IDENTITIES.items():
+            assert (i.vendor, i.family, i.version) in _BASE_CATALOG, wire_id
 
 
 class TestVoyageCodec:
@@ -303,3 +331,31 @@ class TestRoundTrip:
         assert loc == locality
         if isinstance(ref, ModelIdentity):
             assert codec.render(ref, loc) == wire_id
+
+class TestCatalogRenderParseRoundTrip:
+    def test_every_catalog_entry_renders_resolvable_or_none(self) -> None:
+        """Offerings are resolved-by-construction: for every catalog entry and
+        every route codec, render either returns None (not offered on that
+        route) or a wire_id whose own codec parses it back to a resolved
+        identity. A codec that renders ids it cannot recognize would emit
+        unresolved offerings -- the exact contradiction behind the
+        settings_listed identity=None incident.
+        """
+        from koan.models.capabilities import _BASE_CATALOG
+
+        for (vendor, family, version), caps in _BASE_CATALOG.items():
+            kind = "embedding" if caps.embedding_dims else "chat"
+            ident = ModelIdentity(vendor, family, version, kind=kind)
+            for route_naming, codec in CODECS.items():
+                # Mirror the offerings kind filter: the voyage route only
+                # renders embedding entries; chat routes only chat entries.
+                if (route_naming == "voyage") != (kind == "embedding"):
+                    continue
+                wire_id = codec.render(ident, None)
+                if wire_id is None:
+                    continue
+                ref, _ = codec.parse(wire_id)
+                assert isinstance(ref, ModelIdentity), (
+                    f"{route_naming} renders {wire_id!r} for {vendor}/{family}-{version} "
+                    f"but cannot parse it back"
+                )

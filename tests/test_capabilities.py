@@ -72,6 +72,26 @@ class TestMergeCapabilities:
         # Overlay still wins for fields the profile does not touch.
         assert merged.prompt_caching == "explicit"
 
+    def test_profile_thinking_does_not_clobber_base_modes(self) -> None:
+        """Profile ThinkingSupport refines supported/shape; the base catalog owns modes.
+
+        pydantic-ai profiles never enumerate modes, so a supported=True profile
+        arrives with modes=(). A whole-field replacement would silently erase
+        the curated levels for every profiled model (claude, gemini).
+        """
+        from koan.models.capabilities import ThinkingSupport
+        base = _base()  # curated modes: ("low", "medium"), shape "adaptive"
+        profile = {"thinking": ThinkingSupport(True, (), "effort")}
+        merged = merge_capabilities(base, None, profile, resolved=True)
+        assert merged.thinking.supported is True
+        assert merged.thinking.shape == "effort"       # profile refinement kept
+        assert merged.thinking.modes == ("low", "medium")  # curated modes kept
+        # A profile that declares thinking unsupported still wins outright.
+        off = {"thinking": ThinkingSupport(False, (), "none")}
+        merged_off = merge_capabilities(base, None, off, resolved=True)
+        assert merged_off.thinking.supported is False
+        assert merged_off.thinking.modes == ()
+
     def test_resolved_false_uses_conservative_defaults(self) -> None:
         """With resolved=False, caps stay conservative with unknown provenance."""
         base = _conservative_caps(resolved=False, prov_source="unknown")
@@ -128,6 +148,11 @@ class TestBaseCatalogCoverage:
             "openai": "openai",
             "amazon": "bedrock-converse",
             "voyage": "voyage",
+            # Ollama Cloud curated vendors: only the ollama-cloud codec knows them.
+            "zai": "ollama-cloud",
+            "deepseek": "ollama-cloud",
+            "minimax": "ollama-cloud",
+            "qwen": "ollama-cloud",
         }
         # Hardcoded wire ids for vendors where render is partial (returns None).
         hardcoded_wire = {
@@ -135,9 +160,15 @@ class TestBaseCatalogCoverage:
             ("amazon", "amazon-nova-lite", "1"): "us.amazon.nova-lite-v1:0",
             ("amazon", "amazon-nova-micro", "1"): "us.amazon.nova-micro-v1:0",
         }
+        # gpt-oss carries vendor "openai" but is not served by the OpenAI API;
+        # its wire ids live on the ollama-cloud route.
+        entry_route_override = {
+            ("openai", "gpt-oss-20b", "1"): "ollama-cloud",
+            ("openai", "gpt-oss-120b", "1"): "ollama-cloud",
+        }
         unresolvable: list[tuple[str, str, str]] = []
         for (vendor, family, version), _caps in _BASE_CATALOG.items():
-            route_id = vendor_to_route.get(vendor)
+            route_id = entry_route_override.get((vendor, family, version)) or vendor_to_route.get(vendor)
             if route_id is None:
                 unresolvable.append((vendor, family, version))
                 continue

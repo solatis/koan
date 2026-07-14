@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import re
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from .identity import ModelIdentity, ModelRef, Unresolved
 
 
+# runtime_checkable so annotations like `dict[str, NamingCodec]` stay
+# isinstance-checkable under --debug runtime type enforcement (beartype).
+@runtime_checkable
 class NamingCodec(Protocol):
     """One codec per route.
 
@@ -65,6 +68,11 @@ def split_bedrock_model_id(model_id: str) -> tuple[str | None, str]:
 # now native to this module after the M2 backend cutover deleted recognition.py) --
 # Patterns are compiled once at import time. Recognized forms produce ModelIdentity;
 # everything else degrades to Unresolved (T1: parse is total, never raises).
+#
+# The patterns are deliberately generous (claude-sonnet-99 parses fine): acceptance
+# here is what admits an identity into the `inferred` caps tier in resolve_offering.
+# That tier never guesses model intrinsics, so a false resolution over-claims only
+# advisory route-level fields and fails honestly at the provider on invocation.
 
 _RE_CLAUDE_NEW = re.compile(
     r"^claude-(?P<family>opus|sonnet|haiku|3-haiku|fable)-(?P<version>\d+[-\d]*)$"
@@ -300,6 +308,10 @@ class OpenAICodec:
         """Render `gpt-{family}` (no snapshot). Returns None for o-series / non-openai."""
         if ident.vendor != "openai":
             return None
+        if ident.family.startswith("gpt-oss"):
+            # Open-weights family: not served by the OpenAI API. Reachable via
+            # the ollama-cloud route's curated tags.
+            return None
         if ident.family.startswith("gpt-"):
             return ident.family
         return None
@@ -339,23 +351,23 @@ class OpenRouterCodec:
     def parse(self, wire_id: str) -> tuple[ModelRef, str | None]:
         """Parse `{vendor}/{model}` form.
 
-        Strips the vendor prefix, converts dots to dashes in the version segment
-        (OpenRouter uses `claude-sonnet-4.5` while AnthropicCodec expects `4-5`), then
-        delegates to the vendor codec. The result's vendor is the OpenRouter-namespaced
-        vendor. Returns Unresolved when the vendor is unknown. Locality None.
+        Strips the vendor prefix and delegates to the vendor codec. For anthropic
+        only, dots are converted to dashes first (OpenRouter uses `claude-sonnet-4.5`
+        while AnthropicCodec expects `4-5`); the openai and google codecs expect
+        dotted versions (`gpt-4.1-nano`, `gemini-3.1-pro`), so their ids pass
+        through verbatim. The result's vendor is the OpenRouter-namespaced vendor.
+        Returns Unresolved when the vendor is unknown. Locality None.
         """
         if not wire_id or "/" not in wire_id:
             return Unresolved(wire_id, "openrouter"), None
         vendor, _, model = wire_id.partition("/")
-        # OpenRouter uses dots in the version; normalize to dashes for the vendor codec.
-        normalized = model.replace(".", "-")
         ref: ModelRef
         if vendor == "anthropic":
-            ref, _ = AnthropicCodec().parse(normalized)
+            ref, _ = AnthropicCodec().parse(model.replace(".", "-"))
         elif vendor == "openai":
-            ref, _ = OpenAICodec().parse(normalized)
+            ref, _ = OpenAICodec().parse(model)
         elif vendor == "google":
-            ref, _ = GoogleCodec().parse(normalized)
+            ref, _ = GoogleCodec().parse(model)
         else:
             return Unresolved(wire_id, "openrouter"), None
         if isinstance(ref, ModelIdentity):
@@ -374,6 +386,10 @@ class OpenRouterCodec:
             if short is None:
                 return None
             return f"anthropic/claude-{short}-{ident.version.replace('-', '.')}"
+        if ident.vendor == "openai" and ident.family.startswith("gpt-oss"):
+            # parse() cannot resolve gpt-oss back (it delegates to OpenAICodec),
+            # so rendering it would break the render/parse round-trip.
+            return None
         if ident.vendor == "openai" and ident.family.startswith("gpt-"):
             return f"openai/{ident.family}"
         if ident.vendor == "google":
@@ -384,16 +400,45 @@ class OpenRouterCodec:
         return None
 
 
+# Curated Ollama Cloud tags: wire_id <-> identity. Kept in lockstep with the
+# matching _BASE_CATALOG entries in capabilities.py (the round-trip test in
+# test_codecs.py enforces the pairing). Ids outside this table stay opaque:
+# invocable as Unresolved, never offered.
+_OLLAMA_CLOUD_IDENTITIES: dict[str, ModelIdentity] = {
+    "glm-5.2:cloud": ModelIdentity("zai", "glm", "5.2"),
+    "deepseek-v4-pro:cloud": ModelIdentity("deepseek", "deepseek-pro", "4"),
+    "deepseek-v4-flash:cloud": ModelIdentity("deepseek", "deepseek-flash", "4"),
+    "minimax-m2.5:cloud": ModelIdentity("minimax", "minimax-m", "2.5"),
+    "qwen3.5:cloud": ModelIdentity("qwen", "qwen", "3.5"),
+    "gpt-oss:20b-cloud": ModelIdentity("openai", "gpt-oss-20b", "1"),
+    "gpt-oss:120b-cloud": ModelIdentity("openai", "gpt-oss-120b", "1"),
+}
+
+_OLLAMA_CLOUD_WIRE_IDS: dict[tuple[str, str, str], str] = {
+    (i.vendor, i.family, i.version): wire_id
+    for wire_id, i in _OLLAMA_CLOUD_IDENTITIES.items()
+}
+
+
 class OllamaCloudCodec:
-    """Codec for the `ollama-cloud` route (opaque family-name ids)."""
+    """Codec for the `ollama-cloud` route (curated :cloud tags; opaque otherwise).
+
+    Curated tags resolve via `_OLLAMA_CLOUD_IDENTITIES`; every other id parses
+    to Unresolved -- still invocable verbatim, but never offered (offerings are
+    resolved-by-construction). render is the vendor filter for this route: it
+    returns None for any identity without a curated cloud tag.
+    """
 
     def parse(self, wire_id: str) -> tuple[ModelRef, str | None]:
-        """Treat the wire_id as an opaque string. Always Unresolved; locality None."""
+        """Resolve curated :cloud tags; treat everything else as opaque. Locality None."""
+        ident = _OLLAMA_CLOUD_IDENTITIES.get(wire_id)
+        if ident is not None:
+            return ident, None
         return Unresolved(wire_id, "ollama-cloud"), None
 
     def render(self, ident: ModelIdentity, locality: str | None) -> str | None:
-        """Return the identity's family field verbatim (ollama ids ARE the family name)."""
-        return ident.family
+        """Return the curated :cloud tag for this identity, or None when not curated."""
+        return _OLLAMA_CLOUD_WIRE_IDS.get((ident.vendor, ident.family, ident.version))
 
 
 # Voyage identities: vendor=voyage, family=model_id, version=1, kind=embedding.

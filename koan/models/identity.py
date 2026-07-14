@@ -1,5 +1,4 @@
 # Koan's typed model layer — identity, codecs, routes, capabilities, offerings, and pricing.
-# Built dark: nothing in the runtime path imports this package yet.
 
 from __future__ import annotations
 

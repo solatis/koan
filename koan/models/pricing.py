@@ -4,12 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    # Referenced only for typing; imported at runtime via duck-typed attribute access
-    # to avoid a circular import (offering.py imports price_for/PriceRef from here).
-    from .offering import Offering
+# Real import so the `Offering` annotation resolves under --debug runtime type
+# enforcement (beartype). The old circular import is broken on the other side:
+# offering.py defers its price_for import into resolve_offering.
+from .offering import Offering
 
 
 @dataclass(frozen=True)
@@ -29,7 +27,7 @@ class PriceRef:
 
 
 def price_for(
-    offering: "Offering",
+    offering: Offering,
     input_tokens: int = 0,
     output_tokens: int = 0,
     cache_read_tokens: int = 0,

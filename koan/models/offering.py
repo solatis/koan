@@ -15,7 +15,24 @@ from .capabilities import (
 )
 from .codecs import CODECS, render_bare_id
 from .identity import ModelIdentity, ModelRef, Unresolved
-from .pricing import PriceRef, price_for
+# pricing.py imports Offering (defined below) at module level, so this side of
+# the pair must import lazily: PriceRef only for typing, price_for inside
+# resolve_offering. Runtime type enforcement (--debug beartype) resolves
+# pricing's `Offering` annotation for real, which is why pricing gets the true
+# import and offering the deferred one.
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .pricing import PriceRef
+
+
+def __getattr__(name: str):
+    # PEP 562: --debug runtime type enforcement (beartype) resolves the
+    # Offering.price field's PriceRef annotation via getattr on this module at
+    # Offering construction time, when pricing is safely importable.
+    if name == "PriceRef":
+        from .pricing import PriceRef
+        return PriceRef
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 from .routes import Route, get_route
 
 
@@ -59,6 +76,23 @@ def resolve_offering(route_id: str, model_string: str) -> Offering:
     codec = CODECS[route.naming]
     ref, locality = codec.parse(model_string)
 
+    # Trust ladder. Per-field provenance records which tier supplied each value:
+    #
+    #   curated  -- base-catalog intrinsics. The ONLY tier that raises model
+    #               intrinsics (context window, max output, thinking modes).
+    #   inferred -- identity parsed but not curated. Intrinsics stay at the
+    #               conservative floor; only the route overlay (endpoint-scoped
+    #               facts, per route) and the pydantic-ai profile (substrate
+    #               facts, per vendor/model) raise fields. Nothing is ever
+    #               guessed from the model name.
+    #   unknown  -- Unresolved ref. Floor everything, no overlay/profile; the
+    #               wire_id stays invocable but koan claims nothing about it.
+    #
+    # Entry into the inferred tier is gated by the codec parse regexes, which
+    # accept more than reality contains (a typo like claude-sonnet-99 resolves).
+    # A false resolution displays as resolved with route-level caps, but every
+    # behavior-affecting field stays floored and invocation fails honestly at
+    # the provider -- the blast radius is selection/display only.
     if isinstance(ref, ModelIdentity):
         base = base_catalog_lookup(ref.vendor, ref.family, ref.version)
         resolved = True
@@ -70,18 +104,31 @@ def resolve_offering(route_id: str, model_string: str) -> Offering:
             base = _conservative_caps(resolved=True, prov_source="inferred")
         overlay = route_overlay_for(route.capability_overlay)
         # Profile facts only for chat models; embeddings have no pydantic-ai profile.
+        # Profiles are substrate facts about the vendor's own API, so they apply
+        # only when the identity has a vendor-native bare id (render_bare_id).
+        # Without one -- gpt-oss and the other Ollama Cloud vendors -- a lookup
+        # would hit the vendor's generic-defaults profile and clobber curated
+        # intrinsics with facts about an API the model is not served by.
         profile_caps = None
         if ref.kind == "chat":
-            bare_id = render_bare_id(ref) or model_string
-            profile = get_pydantic_ai_profile(route.dialect, ref.vendor, bare_id)
-            if profile:
-                profile_caps = profile_to_caps(profile)
+            bare_id = render_bare_id(ref)
+            if bare_id is None and route.dialect == "bedrock-converse":
+                # Bedrock wire ids ARE the vendor-native form (amazon nova has
+                # no dedicated vendor codec); the bedrock profile loader parses
+                # them directly.
+                bare_id = model_string
+            if bare_id is not None:
+                profile = get_pydantic_ai_profile(route.dialect, ref.vendor, bare_id)
+                if profile:
+                    profile_caps = profile_to_caps(profile)
         caps = merge_capabilities(base, overlay, profile_caps, resolved)
     else:
         # Unresolved: conservative defaults, all-unknown provenance, resolved=False.
         from .capabilities import _conservative_caps
         base = _conservative_caps(resolved=False, prov_source="unknown")
         caps = merge_capabilities(base, None, None, resolved=False)
+
+    from .pricing import price_for
 
     offering = Offering(route=route, wire_id=model_string, ref=ref, caps=caps, price=None, locality=locality)
     # Price lookup is a separate step so an unstable snapshot never invalidates the

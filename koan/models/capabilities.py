@@ -251,6 +251,43 @@ _BASE_CATALOG: dict[tuple[str, str, str], Capabilities] = {
     ("amazon", "amazon-nova-micro", "1"): _curated(
         context_window=300_000, max_output=5_120, thinking_modes=(),
     ),
+    # Ollama Cloud (curated :cloud tags; wire ids in codecs._OLLAMA_CLOUD_IDENTITIES,
+    # kept in lockstep -- the round-trip test in test_codecs.py enforces the pairing).
+    # Context windows are decoded from ollama.com's binary-K display (976K ->
+    # 1,000,000; 1M -> 1,048,576; 198K -> 202,752; 256K -> 262,144; 128K ->
+    # 131,072). max_output is not published on ollama.com: 32,768 is a curation
+    # assumption, not a verified spec. Thinking: gpt-oss and deepseek-v4-pro
+    # document discrete effort levels; the others expose on/off thinking,
+    # modeled as the single "medium" mode.
+    ("zai", "glm", "5.2"): _curated(
+        context_window=1_000_000, max_output=32_768,
+        thinking_modes=("medium",),
+    ),
+    ("deepseek", "deepseek-pro", "4"): _curated(
+        context_window=1_048_576, max_output=32_768,
+        thinking_modes=("low", "medium", "high"),
+    ),
+    ("deepseek", "deepseek-flash", "4"): _curated(
+        context_window=1_048_576, max_output=32_768,
+        thinking_modes=("medium",),
+    ),
+    ("minimax", "minimax-m", "2.5"): _curated(
+        context_window=202_752, max_output=32_768,
+        thinking_modes=("medium",),
+    ),
+    ("qwen", "qwen", "3.5"): _curated(
+        context_window=262_144, max_output=32_768,
+        thinking_modes=("medium",),
+        input_modalities=frozenset({"text", "image"}),
+    ),
+    ("openai", "gpt-oss-20b", "1"): _curated(
+        context_window=131_072, max_output=32_768,
+        thinking_modes=("low", "medium", "high"),
+    ),
+    ("openai", "gpt-oss-120b", "1"): _curated(
+        context_window=131_072, max_output=32_768,
+        thinking_modes=("low", "medium", "high"),
+    ),
     # Voyage embedding models: chat fields at conservative defaults, embedding dims set.
     ("voyage", "voyage-4-large", "1"): _embedding_catalog(
         dims=(256, 512, 1024, 2048), default_dim=1024,
@@ -270,6 +307,15 @@ _BASE_CATALOG: dict[tuple[str, str, str], Capabilities] = {
 # for any resolved model on that route. Mirrors the verified feature matrix (analysis §1.2,
 # design §5): anthropic-direct gets native tools + batches + files + listing; bedrock-converse
 # strips them; caching semantics differ per route.
+# Route overlays are endpoint-scoped truths ("this API supports explicit prompt
+# caching"), applied to EVERY resolved identity on the route -- including
+# inferred (uncatalogued) ones, since they describe the endpoint, not the model.
+# They may over-claim per-model exceptions (an old model predating web_fetch
+# still gets the route's native_tools); that is acceptable because the
+# over-claimable fields are advisory -- koan invokes its own local tools and
+# never relies on them for correctness. Model-intrinsic fields (context window,
+# thinking modes, cache_minimum_tokens) are never set here; those belong to the
+# curated catalog and stay at the conservative floor for inferred identities.
 _ROUTE_OVERLAYS: dict[str, dict[str, Any]] = {
     "anthropic": {
         "prompt_caching": "explicit",
@@ -343,8 +389,11 @@ def _profile_to_dict(profile: object) -> dict:
         return {}
     if isinstance(profile, dict):
         return profile
-    if hasattr(profile, "model_dump"):
-        return profile.model_dump()
+    dump = getattr(profile, "model_dump", None)
+    if callable(dump):
+        result = dump()
+        if isinstance(result, dict):
+            return result
     return vars(profile)
 
 
@@ -462,6 +511,11 @@ def merge_capabilities(
             merged_prov[k] = Provenance(source="curated", detail=f"overlay:{k}")
     if profile:
         for k, v in profile.items():
+            if k == "thinking" and isinstance(v, ThinkingSupport) and v.supported and not v.modes:
+                # The profile refines `supported` and `shape` but never
+                # enumerates modes -- the base catalog owns those. Whole-field
+                # replacement would clobber curated modes with ().
+                v = replace(v, modes=base.thinking.modes)
             merged_values[k] = v
             merged_prov[k] = Provenance(source="profile")
 
