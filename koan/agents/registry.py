@@ -12,7 +12,6 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
 
 from ..logger import get_logger
 from ..types import (
@@ -25,23 +24,21 @@ from ..types import (
 )
 from .base import AgentDiagnostic, AgentError
 
-if TYPE_CHECKING:
-    from ..config import KoanConfig
-    from ..credentials import CredentialStore
-    from ..types import ConfiguredModel, Connection, SubagentRole
-
+from ..config import KoanConfig
+from ..credentials import CredentialStore
+from ..types import ConfiguredModel, Connection, SubagentRole
 log = get_logger("agent_registry")
 
 
 # -- build_resolved_model ------------------------------------------------------
 
 def build_resolved_model(
-    conn: "Connection",
-    cm: "ConfiguredModel",
+    conn: Connection,
+    cm: ConfiguredModel,
     thinking: ThinkingMode,
     caching: CachingPolicy,
-    embedding_dim: "int | None",
-    api_key: "str | None",
+    embedding_dim: int | None,
+    api_key: str | None,
     cache_tier: CacheTier = "long",
 ) -> ModelSpec:
     """Build a fully resolved ModelSpec from a Connection + ConfiguredModel.
@@ -70,13 +67,14 @@ def build_resolved_model(
     agent resolution) and by build_memory_models / api_start_run's eager-flatten
     for tier slots.
     """
-    from koan.agents.dialects import apply_thinking, emit_cache_settings
+    from koan.agents.dialects import apply_thinking, emit_cache_settings, emit_reasoning_off
     from koan.models.offering import resolve_offering
 
     offering = resolve_offering(conn.type, cm.model_id)
 
     settings: dict = {}
     settings.update(apply_thinking(thinking))
+    settings.update(emit_reasoning_off(offering.route.id, thinking))
     if caching.mode != "off":
         settings.update(emit_cache_settings(offering.route.dialect, offering.caps, cache_tier))
     settings["max_tokens"] = offering.caps.max_output
@@ -106,9 +104,9 @@ class AgentRegistry:
 
     def resolve_model_spec(
         self,
-        role: "SubagentRole",
-        config: "KoanConfig",
-        credential_store: "CredentialStore | None",
+        role: SubagentRole,
+        config: KoanConfig,
+        credential_store: CredentialStore | None,
     ) -> ModelSpec:
         """Resolve a ModelSpec for a role via the active preset's slot mapping.
 

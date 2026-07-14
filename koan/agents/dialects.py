@@ -3,12 +3,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from koan.models.capabilities import Capabilities
-
-
+from koan.models.capabilities import Capabilities
 def apply_thinking(mode: str) -> dict:
     """Translate koan ThinkingMode to pydantic-ai's unified `thinking` setting.
 
@@ -25,6 +21,28 @@ def apply_thinking(mode: str) -> dict:
     return {"thinking": mode}
 
 
+def emit_reasoning_off(route_id: str, mode: str) -> dict:
+    """Route-specific override to actually turn thinking OFF where omission fails.
+
+    Ollama Cloud serves several models (deepseek-v4-flash, others) with
+    server-side thinking always on; omitting the thinking setting (D4's
+    'disabled' semantics) leaves it on. The model can then put its entire
+    answer in the `reasoning` field with empty `content` -- pydantic-ai's
+    output-validation retry then replays that assistant message as
+    `content: null`, which Ollama rejects with 400 "invalid message content
+    type: <nil>" (observed 2026-07-14 in memory query generation).
+
+    `reasoning_effort: "none"` is the only /v1 switch Ollama honors
+    (`think: false` is silently ignored), emitted via pydantic-ai's
+    `openai_reasoning_effort` setting. Keyed on route id, not dialect: the
+    quirk is Ollama's, and the shared openai-chat dialect must not leak
+    `reasoning_effort` to OpenAI models that reject it.
+    """
+    if mode == "disabled" and route_id == "ollama-cloud":
+        return {"openai_reasoning_effort": "none"}
+    return {}
+
+
 # Per-dialect cache tier -> TTL mapping. Anthropic-messages and bedrock-converse use
 # the same 5m/1h tiers but different setting-key families (Constraint 10: dispatch on
 # dialect, not route_id). This is the single place to change a dialect's mapping.
@@ -34,7 +52,7 @@ _CACHE_TIER_TTL: dict[str, dict[str, str]] = {
 }
 
 
-def emit_cache_settings(dialect: str, caps: "Capabilities", cache_tier: str) -> dict:
+def emit_cache_settings(dialect: str, caps: Capabilities, cache_tier: str) -> dict:
     """Emit per-dialect cache settings for one request.
 
     Dispatches on `dialect` (not route_id -- T3: routes are data, dialects are code):

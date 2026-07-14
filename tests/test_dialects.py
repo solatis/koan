@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from koan.agents.dialects import apply_thinking, emit_cache_settings, voyage_embed, cache_ttl_for
+from koan.agents.dialects import apply_thinking, emit_cache_settings, emit_reasoning_off, voyage_embed, cache_ttl_for
 from koan.models.capabilities import (
     Capabilities,
     Provenance,
@@ -56,6 +56,26 @@ class TestApplyThinking:
         assert apply_thinking("minimal") == {"thinking": "minimal"}
 
 
+class TestEmitReasoningOff:
+    """Ollama Cloud needs an explicit reasoning_effort='none' to disable
+    server-side thinking; omission (D4 disabled semantics) leaves it on and
+    the answer can land in `reasoning` with empty content."""
+
+    def test_ollama_cloud_disabled_emits_none(self) -> None:
+        assert emit_reasoning_off("ollama-cloud", "disabled") == {
+            "openai_reasoning_effort": "none"
+        }
+
+    def test_ollama_cloud_enabled_emits_nothing(self) -> None:
+        assert emit_reasoning_off("ollama-cloud", "medium") == {}
+
+    def test_other_routes_emit_nothing(self) -> None:
+        """openai shares the openai-chat dialect but rejects reasoning_effort
+        on non-reasoning models -- the override must stay route-scoped."""
+        for route_id in ("openai", "openrouter", "anthropic", "google"):
+            assert emit_reasoning_off(route_id, "disabled") == {}
+
+
 class TestEmitCacheSettings:
     def test_anthropic_long_tier_split(self) -> None:
         """anthropic-messages long tier: tail short, stable keys long."""
@@ -101,7 +121,7 @@ class TestVoyageEmbed:
         not os.environ.get("VOYAGE_API_KEY"),
         reason="requires VOYAGE_API_KEY to call the real voyageai API",
     )
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_voyage_embed_dimensions(self) -> None:
         """voyage_embed returns embeddings whose dimension matches the model default."""
         o = resolve_offering("voyage", "voyage-4-large")
