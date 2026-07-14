@@ -1,7 +1,13 @@
-# Pure error classification and backoff for transient provider errors.
+# Pure error classification and backoff for provider errors.
 #
 # classify_provider_error determines whether an exception is worth retrying
 # (transient) or should propagate immediately (unexpected/fail-fast).
+#
+# The classification is a fail-fast denylist: only programming errors and
+# cancellation/exit signals propagate; everything else -- every ModelHTTPError
+# status code, connection failures, parse errors, unknown exceptions -- is
+# retried. A wasted retry cycle that eventually escalates to the user is far
+# less disruptive than a fail-fast that destroys the whole workflow run.
 #
 # compute_backoff_seconds implements exponential backoff with a ceiling so
 # the caller knows how long to sleep before the next attempt.
@@ -14,40 +20,48 @@ from __future__ import annotations
 from typing import Literal
 
 
-# HTTP status codes that indicate a transient provider condition worth retrying.
-# 401/403 are included because some providers return them transiently under
-# load or token-bucket exhaustion before issuing a 429.
-TRANSIENT_STATUS_CODES: frozenset[int] = frozenset({429, 500, 502, 503, 504, 401, 403})
+# Programming errors: a retry cannot fix a bug in the code, so these fail
+# fast with a full traceback instead of being silently absorbed by the retry
+# loop. ValueError is deliberately absent -- json.JSONDecodeError subclasses
+# it, and a truncated stream from an overloaded provider surfaces as exactly
+# that.
+PROGRAMMING_ERRORS: tuple[type[Exception], ...] = (
+    TypeError,
+    AttributeError,
+    NameError,
+    KeyError,
+    IndexError,
+    AssertionError,
+    NotImplementedError,
+)
 
 
 def classify_provider_error(err: BaseException) -> Literal["transient", "unexpected"]:
     """Classify a provider exception as transient (retry) or unexpected (fail-fast).
 
-    Transient conditions:
-      - asyncio.TimeoutError: request timed out waiting for the provider.
-      - httpx.TimeoutException and subclasses: connect/read/write/pool timeouts.
-      - httpx.ConnectError: TCP-level connection refused or reset.
-      - httpx.RemoteProtocolError: server closed or spoke invalid HTTP.
-      - pydantic_ai.exceptions.ModelHTTPError with status_code in TRANSIENT_STATUS_CODES.
+    Fail-fast (unexpected):
+      - Non-Exception BaseExceptions (asyncio.CancelledError, KeyboardInterrupt,
+        SystemExit, GeneratorExit): intentional control flow, never retried.
+        The retry loop catches BaseException, so this guard is load-bearing
+        for task cancellation.
+      - PROGRAMMING_ERRORS: bugs in the code; retrying cannot help.
+      - pydantic_ai.exceptions.UserError: pydantic-ai misconfiguration, which
+        is a programming error on our side.
 
-    Everything else is unexpected: unknown errors fail fast so they are not
-    silently swallowed by the retry loop.
+    Everything else is transient and retried -- all ModelHTTPError status
+    codes (including 400s), httpx errors, timeouts, ValueError, RuntimeError,
+    and unknown exceptions. Persistent failures still surface: the retry loop
+    escalates to the user once the attempt budget is exhausted.
     """
-    import asyncio
+    from pydantic_ai.exceptions import UserError
 
-    import httpx
-    from pydantic_ai.exceptions import ModelHTTPError
-
-    if isinstance(err, asyncio.TimeoutError):
-        return "transient"
-    if isinstance(err, httpx.TimeoutException):
-        return "transient"
-    if isinstance(err, (httpx.ConnectError, httpx.RemoteProtocolError)):
-        return "transient"
-    if isinstance(err, ModelHTTPError):
-        if err.status_code in TRANSIENT_STATUS_CODES:
-            return "transient"
-    return "unexpected"
+    if not isinstance(err, Exception):
+        return "unexpected"
+    if isinstance(err, PROGRAMMING_ERRORS):
+        return "unexpected"
+    if isinstance(err, UserError):
+        return "unexpected"
+    return "transient"
 
 
 def compute_backoff_seconds(attempt: int, cap_seconds: float, base: float = 1.0) -> float:
