@@ -8,8 +8,7 @@
  * live in the parent.
  *
  * M3: shows an "unresolved" Badge when the configured model did not resolve to
- * a known catalog identity, and a neutral Badge with the provenance source
- * (e.g. "catalog") when resolved. Picker content comes from offerings.
+ * a known catalog identity. Picker content comes from offerings.
  *
  * RoleSlot is now 'strong' | 'standard' | 'cheap' | 'embedding';
  * 'memory-llm' and 'reflect-llm' were removed.
@@ -54,8 +53,6 @@ export interface RoleRowProps {
   families?: { family: string; resolved: string }[]
   /** Whether the configured model resolved to a known catalog identity (M3). */
   resolved?: boolean
-  /** First provenance source for the configured model's caps, or null. */
-  provenanceSource?: string | null
   /** When false, ModelPicker suppresses free-text entry (voyage whitelist mode). Default: true. */
   allowFreeText?: boolean
   /** {value, label} pairs: value is the native backend wire token, label is the
@@ -77,7 +74,6 @@ export function RoleRow({
   models,
   families,
   resolved,
-  provenanceSource,
   allowFreeText = true,
   thinkingOptions,
   onChange,
@@ -137,9 +133,6 @@ export function RoleRow({
           />
           {state === 'assigned' && resolved === false && (
             <Badge variant="error">unresolved</Badge>
-          )}
-          {state === 'assigned' && resolved && provenanceSource && (
-            <Badge variant="neutral">{provenanceSource}</Badge>
           )}
         </div>
 

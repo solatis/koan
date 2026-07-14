@@ -50,8 +50,6 @@ export interface RoleAssignment {
   embeddingDimOptions: number[]
   /** Whether the configured model resolved to a known catalog identity (M3). */
   resolved: boolean
-  /** First provenance source for the configured model's caps (e.g. "catalog"), or null. */
-  provenanceSource: string | null
 }
 
 export interface SettingsPageProps {
@@ -199,7 +197,6 @@ export function SettingsPage({
         models={m.models}
         families={m.families}
         resolved={a.resolved}
-        provenanceSource={a.provenanceSource}
         allowFreeText={allowFreeText}
         thinkingOptions={a.thinkingOptions}
         onChange={(field, value) => onRoleChange(slot, field, value)}

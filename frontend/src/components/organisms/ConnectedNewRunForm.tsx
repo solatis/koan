@@ -23,6 +23,22 @@ import * as api from '../../api/client'
 import { buildConnectionViews, toThinkingOptions } from './modelConfig'
 import { NewRunForm, type OverrideAssignment, type WorkflowRole, type ConfigReadiness } from './NewRunForm'
 
+/**
+ * Gated thinking-options builder for the New Run override rows. Returns an
+ * empty array (which RoleRow renders as its disabled placeholder) when the
+ * model is an always-on ollama-cloud model whose only thinking mode is
+ * "medium" — pydantic-ai never propagates a thinking mode to these models,
+ * so the selector has nothing to choose. Otherwise delegates to
+ * toThinkingOptions.
+ */
+function gatedThinkingOptions(route: string, rawModes: string[]): { value: string; label: string }[] {
+  // Always-on ollama-cloud models expose a single ("medium",) mode that the
+  // backend applies unconditionally; the selector would be a no-op, so gate
+  // it to the disabled placeholder by returning [].
+  if (route === 'ollama-cloud' && rawModes.length === 1 && rawModes[0] === 'medium') return []
+  return toThinkingOptions(rawModes)
+}
+
 export function ConnectedNewRunForm() {
   const settings = useStore(s => s.settings)
   const lastCompletion = useStore(s => s.lastCompletion)
@@ -46,18 +62,25 @@ export function ConnectedNewRunForm() {
   const defaultOverrides = useMemo((): Record<WorkflowRole, OverrideAssignment> => {
     const cmById: Record<string, typeof settings.configuredModels[0]> = {}
     for (const cm of settings.configuredModels) cmById[cm.id] = cm
+    const connById: Record<string, typeof settings.connections[0]> = {}
+    for (const c of settings.connections) connById[c.id] = c
     const lastPreset = settings.presets['$last']
 
     // makeOverride: thinking modes come from cm.caps.thinkingLevels (the
     // settings_listed snapshot embeds route-aware caps on each configured
-    // model -- no separate modelCapabilities join).
+    // model -- no separate modelCapabilities join). Thinking options are
+    // gated for always-on ollama-cloud models (single "medium" mode).
     function makeOverride(slot: 'strong' | 'standard' | 'cheap'): OverrideAssignment {
       const sa = lastPreset?.slots[slot]
       if (!sa) return { connectionId: null, modelId: null, thinking: null, thinkingOptions: [] }
       const cm = cmById[sa.configuredModelId]
       if (!cm) return { connectionId: null, modelId: null, thinking: null, thinkingOptions: [] }
       const rawModes = cm.caps?.thinkingLevels ?? []
-      const thinkingOptions = toThinkingOptions(rawModes)
+      // Gate thinking options: always-on ollama-cloud (single "medium" mode)
+      // renders the disabled placeholder via empty thinkingOptions. conn may be
+      // undefined if the connection was removed; '' falls through to normal.
+      const conn = connById[cm.connectionId]
+      const thinkingOptions = gatedThinkingOptions(conn?.route ?? '', rawModes)
       return { connectionId: cm.connectionId, modelId: cm.modelId, thinking: sa.thinking, thinkingOptions }
     }
     return { strong: makeOverride('strong'), standard: makeOverride('standard'), cheap: makeOverride('cheap') }
@@ -126,7 +149,10 @@ export function ConnectedNewRunForm() {
           m => m.modelId === value && m.connectionId === current.connectionId
         )
         const rawModes = cm?.caps?.thinkingLevels ?? []
-        const thinkingOptions = toThinkingOptions(rawModes)
+        // Gate thinking options for always-on ollama-cloud (single "medium")
+        // models; conn lookup inline is fine -- this is a per-change handler.
+        const conn = settings.connections.find(c => c.id === current.connectionId)
+        const thinkingOptions = gatedThinkingOptions(conn?.route ?? '', rawModes)
         return { ...prev, [role]: { ...current, modelId: value, thinkingOptions } }
       }
       // 'thinking'

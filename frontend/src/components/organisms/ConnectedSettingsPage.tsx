@@ -25,18 +25,21 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import { useStore } from '../../store/index'
 import * as api from '../../api/client'
 import { buildConnectionViews, toThinkingOptions, slotToMemoryKind, deriveFamilies } from './modelConfig'
-import type { CapsInfo } from '../../store/index'
 import { SettingsPage, type RoleAssignment, type RoleSlot, type ConnectionDraft, type TestState } from './SettingsPage'
 
 /**
- * Extract a display label for the provenance of a configured model's caps.
- * Returns the source of the first provenance entry (e.g. "catalog" or
- * "profile"), or null when no provenance is recorded.
+ * Gated thinking-options builder for the Settings role rows. Returns an empty
+ * array (which RoleRow renders as its disabled placeholder) when the model is
+ * an always-on ollama-cloud model whose only thinking mode is "medium" —
+ * pydantic-ai never propagates a thinking mode to these models, so the
+ * selector has nothing to choose. Otherwise delegates to toThinkingOptions.
  */
-function deriveProvenanceSource(caps: CapsInfo | undefined | null): string | null {
-  if (!caps?.provenance) return null
-  const entries = Object.values(caps.provenance)
-  return entries.length > 0 ? entries[0].source : null
+function gatedThinkingOptions(route: string, rawModes: string[]): { value: string; label: string }[] {
+  // Always-on ollama-cloud models expose a single ("medium",) mode that the
+  // backend applies unconditionally; the selector would be a no-op, so gate
+  // it to the disabled placeholder by returning [].
+  if (route === 'ollama-cloud' && rawModes.length === 1 && rawModes[0] === 'medium') return []
+  return toThinkingOptions(rawModes)
 }
 
 export function ConnectedSettingsPage() {
@@ -70,17 +73,17 @@ export function ConnectedSettingsPage() {
 
     // resolveSlot: thinking modes come from cm.caps.thinkingLevels (the
     // settings_listed snapshot embeds route-aware caps on each configured
-    // model -- no separate modelCapabilities join). resolved/provenanceSource
-    // are derived from the ConfiguredModelInfo for the unresolved badge and
-    // provenance display.
+    // model -- no separate modelCapabilities join). resolved is derived from
+    // the ConfiguredModelInfo for the unresolved badge. Thinking options are
+    // gated for always-on ollama-cloud models (single "medium" mode).
     function resolveSlot(cmId: string | undefined, thinking: string | null): RoleAssignment {
-      if (!cmId) return { connectionId: null, modelId: null, thinking: null, state: 'unassigned', thinkingOptions: [], resolved: false, provenanceSource: null, ...EMBEDDING_DEFAULTS }
+      if (!cmId) return { connectionId: null, modelId: null, thinking: null, state: 'unassigned', thinkingOptions: [], resolved: false, ...EMBEDDING_DEFAULTS }
       const cm = cmById[cmId]
-      if (!cm) return { connectionId: null, modelId: null, thinking: null, state: 'broken', thinkingOptions: [], resolved: false, provenanceSource: null, ...EMBEDDING_DEFAULTS }
+      if (!cm) return { connectionId: null, modelId: null, thinking: null, state: 'broken', thinkingOptions: [], resolved: false, ...EMBEDDING_DEFAULTS }
       const conn = connById[cm.connectionId]
-      if (!conn) return { connectionId: cm.connectionId, modelId: cm.modelId, thinking, state: 'broken', thinkingOptions: [], resolved: false, provenanceSource: null, ...EMBEDDING_DEFAULTS }
+      if (!conn) return { connectionId: cm.connectionId, modelId: cm.modelId, thinking, state: 'broken', thinkingOptions: [], resolved: false, ...EMBEDDING_DEFAULTS }
       const rawModes = cm.caps?.thinkingLevels ?? []
-      const thinkingOptions = toThinkingOptions(rawModes)
+      const thinkingOptions = gatedThinkingOptions(conn.route, rawModes)
       return {
         connectionId: cm.connectionId,
         modelId: cm.modelId,
@@ -88,7 +91,6 @@ export function ConnectedSettingsPage() {
         state: 'assigned',
         thinkingOptions,
         resolved: cm.resolved,
-        provenanceSource: deriveProvenanceSource(cm.caps),
         ...EMBEDDING_DEFAULTS,
       }
     }
@@ -295,7 +297,6 @@ export function ConnectedSettingsPage() {
           state: 'unassigned',
           thinkingOptions: [],
           resolved: false,
-          provenanceSource: null,
           embeddingDim: null,
           embeddingDimOptions: [],
         },
