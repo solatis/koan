@@ -12,7 +12,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from koan.agents.retry import classify_provider_error, compute_backoff_seconds
+from koan.agents.retry import (
+    classify_provider_error,
+    compute_backoff_seconds,
+    summarize_error,
+)
 
 
 # -- classify_provider_error ---------------------------------------------------
@@ -131,6 +135,32 @@ def test_backoff_custom_base():
 def test_backoff_cap_less_than_base():
     # cap=0.5, attempt=1 -> min(2.0, 0.5) = 0.5
     assert compute_backoff_seconds(1, 0.5) == 0.5
+
+
+# -- summarize_error -----------------------------------------------------------
+
+
+def test_summarize_error_format():
+    assert summarize_error(ValueError("bad input")) == "ValueError: bad input"
+
+
+def test_summarize_error_collapses_newlines():
+    err = RuntimeError("line one\nline two\n\tindented")
+    assert summarize_error(err) == "RuntimeError: line one line two indented"
+
+
+def test_summarize_error_caps_huge_message():
+    # A "prompt too long" 400 can echo megabytes of the rejected prompt.
+    err = RuntimeError("x" * 1_000_000)
+    out = summarize_error(err)
+    assert len(out) < 400
+    assert "[truncated" in out
+
+
+def test_summarize_error_respects_custom_cap():
+    out = summarize_error(ValueError("y" * 100), max_chars=20)
+    assert out.startswith("ValueError: yyy")
+    assert "[truncated" in out
 
 
 # -- Loop-level integration tests ---------------------------------------------
@@ -294,10 +324,20 @@ async def test_http_400_retried_then_succeeds(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_budget_exhausted_abort_raises_agent_error(tmp_path):
-    """When retry budget is exhausted and the user chooses abort, AgentError is raised."""
+async def test_budget_exhausted_abort_raises_agent_error(tmp_path, caplog):
+    """When retry budget is exhausted and the user chooses abort, AgentError is raised.
+
+    Also locks the error-visibility contract: every retry WARNING carries a
+    one-line error summary, the full stack trace is logged exactly once at
+    escalation, the escalation question carries the summary as context, and
+    the abort diagnostic records it in details.
+    """
+    import logging
+
     import httpx
     from koan.agents.base import AgentError
+
+    caplog.set_level(logging.WARNING, logger="koan.loop.retry")
 
     async def always_fail(messages, info):
         raise httpx.ConnectError("always fails")
@@ -332,6 +372,11 @@ async def test_budget_exhausted_abort_raises_agent_error(tmp_path):
             e.event_type == "questions_asked" for e in app_state.projection_store.events
         ), "expected questions_asked event"
 
+        # The escalation question carries the error summary as context.
+        question = active.payload["questions"][0]
+        assert "ConnectError" in question["context"]
+        assert "always fails" in question["context"]
+
         # User chooses abort.
         active.future.set_result({"answers": [{"answer": "abort"}]})
 
@@ -339,6 +384,19 @@ async def test_budget_exhausted_abort_raises_agent_error(tmp_path):
             await asyncio.wait_for(task, timeout=10)
 
     assert exc_info.value.diagnostic.code == "provider_retry_aborted"
+    assert "ConnectError" in exc_info.value.diagnostic.details["last_error"]
+
+    # Every retry WARNING carries the one-line summary; the stack trace is
+    # emitted exactly once, on the exhaustion (yield-back) record.
+    retry_warnings = [
+        r for r in caplog.records if "transient provider error" in r.message
+    ]
+    assert retry_warnings, "expected transient retry warnings"
+    assert all("ConnectError" in r.getMessage() for r in retry_warnings)
+    assert all(r.exc_info is None for r in retry_warnings)
+    exhausted = [r for r in caplog.records if "retry budget exhausted" in r.message]
+    assert len(exhausted) == 1
+    assert exhausted[0].exc_info is not None
 
 
 @pytest.mark.anyio

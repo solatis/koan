@@ -40,7 +40,7 @@ class ChatMessage:
 
 @dataclass
 class PendingInteraction:
-    type: Literal["ask"]
+    type: Literal["ask", "retry_escalation"]
     agent_id: str
     future: asyncio.Future
     payload: dict
@@ -145,8 +145,8 @@ class RunState:
     # reads these instead of live global config so mid-run settings changes
     # never affect an active run.  Both are cleared by finalize_workflow_end
     # at workflow end (done-receipt or driver failure exit).
-    frozen_config: "KoanConfig | None" = None
-    frozen_credential_store: "CredentialStore | None" = None
+    frozen_config: KoanConfig | None = None
+    frozen_credential_store: CredentialStore | None = None
     # Eager-flattened ModelSpec constructs for all tier slots.
     # Built by api_start_run so capability resolution (thinking clamping, caching
     # settings) runs once per model at run start, not once per spawn.
@@ -155,7 +155,7 @@ class RunState:
     # Per-run self-contained memory model bundle, built at api_start_run and
     # cleared by finalize_workflow_end at workflow end. Each spec carries its baked api_key so the
     # memory subsystem never reads a module global during a run.
-    memory_models: "MemoryModels | None" = None
+    memory_models: MemoryModels | None = None
 
 
 @dataclass
@@ -229,7 +229,7 @@ class ProviderConfigState:
     config_write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # Decrypted credential store; None only during test setups that do not
     # exercise the credential path (provider_available returns False when None).
-    credential_store: "CredentialStore | None" = None
+    credential_store: CredentialStore | None = None
     # Dynamic model overlay: connection_id -> list of live-retrieved ProviderModel.
     # Keyed by connection id so same-type connections keep independent model lists.
     # Populated by the eager startup background task; refreshed on save/test.
@@ -240,8 +240,8 @@ class ProviderConfigState:
 class MemoryServices:
     # Eagerly constructed once project_dir is known, via init_memory_services().
     # Using string forward references to avoid import-time cost of loading ML models.
-    memory_store: "MemoryStore | None" = None
-    retrieval_index: "RetrievalIndex | None" = None
+    memory_store: MemoryStore | None = None
+    retrieval_index: RetrievalIndex | None = None
 
 
 @dataclass

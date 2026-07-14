@@ -19,16 +19,13 @@ from __future__ import annotations
 import asyncio
 import time
 import json
-from typing import TYPE_CHECKING, Any, AsyncIterator
+from typing import Any, AsyncIterator
 
-if TYPE_CHECKING:
-    from ..agents.base import AgentOptions
-    from .events import StreamEvent
-    from ..state import AgentState, AppState
-    from ..tools.koan_tools import ToolDeps
-    from ..types import ModelSpec
-
-
+from ..agents.base import AgentOptions
+from .events import StreamEvent
+from ..state import AgentState, AppState
+from ..tools.koan_tools import ToolDeps
+from ..types import ModelSpec
 # -- Pure yolo/directed helpers -----------------------------------------------
 # Relocated verbatim from koan/web/mcp_endpoint.py; keeping them here makes
 # both the loop hand-back and the in-process koan_ask_question core importable
@@ -201,9 +198,9 @@ def assemble_resume_prompt(
 
 
 async def resolve_turn_outcome(
-    agent_state: "AgentState",
-    app_state: "AppState",
-) -> "tuple[str, str | None]":
+    agent_state: AgentState,
+    app_state: AppState,
+) -> tuple[str, str | None]:
     """Determine what happens after each turn ends (the End node is reached).
 
     Returns one of three outcomes:
@@ -299,14 +296,18 @@ def _normalize_tool_args(raw_args: Any) -> dict | None:
 async def _stream_model_request_with_retry(
     node: Any,
     agent_run: Any,
-    agent_state: "AgentState",
-    app_state: "AppState",
-) -> "AsyncIterator[Any]":
+    agent_state: AgentState,
+    app_state: AppState,
+) -> AsyncIterator[Any]:
     """Wrap ModelRequestNode.stream in bounded exponential-backoff retry.
 
     On a transient provider error (classify_provider_error returns "transient"),
     the helper sleeps compute_backoff_seconds(attempt, cap) and retries up to
-    max_retry_attempts times. Retry bounds are read from
+    max_retry_attempts times. Each retry WARNING carries a one-line
+    summarize_error summary (no stack trace); the full traceback is logged
+    exactly once at escalation, and the escalation question carries the
+    summary as Markdown context so the user sees which error is failing.
+    Retry bounds are read from
     app_state.provider_config.config at retry time (live config, not frozen) so
     a user can adjust them mid-run via "Wait longer" at the escalation prompt.
 
@@ -329,13 +330,17 @@ async def _stream_model_request_with_retry(
     import asyncio
 
     from ..logger import get_logger
-    from .retry import classify_provider_error, compute_backoff_seconds
+    from .retry import classify_provider_error, compute_backoff_seconds, summarize_error
     from ..agents.base import AgentDiagnostic, AgentError
     from ..web.interactions import enqueue_interaction
 
     log = get_logger("loop.retry")
 
     attempt = 0
+    # The caught exception, retained across iterations: `except ... as err`
+    # unbinds `err` when the except block exits, so the transient path below
+    # and the escalation block could not otherwise see what failed.
+    last_err: BaseException | None = None
 
     while True:
         try:
@@ -354,30 +359,38 @@ async def _stream_model_request_with_retry(
                     exc_info=True,
                 )
                 raise
+            last_err = err
 
         # Transient error path.
         attempt += 1
         cfg = app_state.provider_config.config
         max_attempts = cfg.max_retry_attempts
         cap = cfg.max_retry_wait_seconds
+        summary = summarize_error(last_err) if last_err is not None else "unknown error"
 
         if attempt <= max_attempts:
             wait = compute_backoff_seconds(attempt, cap)
+            # One-line summary only -- no stack trace while retrying; the
+            # full traceback is printed once at escalation.
             log.warning(
-                "transient provider error on attempt %d/%d -- sleeping %.1fs | agent=%s",
+                "transient provider error on attempt %d/%d -- sleeping %.1fs | agent=%s err=%s",
                 attempt,
                 max_attempts,
                 wait,
                 agent_state.agent_id[:8],
+                summary,
             )
             await asyncio.sleep(wait)
             continue
 
-        # Budget exhausted -- escalate to the user.
+        # Budget exhausted -- escalate to the user. This is the yield-back
+        # moment, so the full stack trace is printed exactly once here.
         log.warning(
-            "retry budget exhausted after %d attempts -- escalating | agent=%s",
+            "retry budget exhausted after %d attempts -- escalating | agent=%s err=%s",
             attempt - 1,
             agent_state.agent_id[:8],
+            summary,
+            exc_info=last_err,
         )
 
         is_reviewer = (agent_state.role == "reviewer")
@@ -395,6 +408,9 @@ async def _stream_model_request_with_retry(
                 f"Provider requests keep failing after {attempt - 1} retry attempts. "
                 "What would you like to do?"
             ),
+            # Rendered as Markdown in the elicitation context panel; fenced so
+            # underscores/brackets in error text cannot be mangled.
+            "context": f"Last error:\n\n```\n{summary}\n```",
             "options": options_list,
         }
 
@@ -432,7 +448,11 @@ async def _stream_model_request_with_retry(
             code="provider_retry_aborted",
             agent=agent_state.agent_id,
             stage="stream",
-            message=f"provider_retry_aborted: user aborted after {attempt - 1} retry attempts",
+            message=(
+                f"provider_retry_aborted: user aborted after {attempt - 1} retry"
+                f" attempts; last error: {summary}"
+            ),
+            details={"last_error": summary},
         ))
 
 
@@ -445,7 +465,7 @@ async def run_agent_loop(
     options: AgentOptions,
     app_state: AppState,
     agent_state: AgentState,
-    model_spec: "ModelSpec",
+    model_spec: ModelSpec,
 ) -> AsyncIterator[StreamEvent]:
     """Drive the multi-turn agent loop, yielding StreamEvents for spawn_subagent.
 

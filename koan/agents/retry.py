@@ -64,6 +64,21 @@ def classify_provider_error(err: BaseException) -> Literal["transient", "unexpec
     return "transient"
 
 
+def summarize_error(err: BaseException, max_chars: int = 300) -> str:
+    """One-line error summary for retry logs: "TypeName: message", capped.
+
+    The cap matters: a ModelHTTPError from a "prompt too long" 400 can echo
+    megabytes of the rejected prompt in its body -- an uncapped summary would
+    re-poison the very log meant to diagnose it. Newlines are collapsed so
+    the summary stays a single log line.
+    """
+    text = f"{type(err).__name__}: {err}"
+    text = " ".join(text.split())
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + f"... [truncated {len(text) - max_chars} chars]"
+
+
 def compute_backoff_seconds(attempt: int, cap_seconds: float, base: float = 1.0) -> float:
     """Exponential backoff with ceiling.
 
