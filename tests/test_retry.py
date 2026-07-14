@@ -39,30 +39,65 @@ def test_classify_httpx_remote_protocol_error():
     assert classify_provider_error(httpx.RemoteProtocolError("bad frame")) == "transient"
 
 
-def test_classify_model_http_error_transient_codes():
+def test_classify_model_http_error_all_codes_transient():
     from pydantic_ai.exceptions import ModelHTTPError
-    for code in (429, 500, 502, 503, 504, 401, 403):
+    for code in (400, 401, 403, 404, 422, 429, 500, 502, 503, 504):
         err = ModelHTTPError(code, "model")
         assert classify_provider_error(err) == "transient", f"expected transient for {code}"
 
 
-def test_classify_model_http_error_non_transient_codes():
-    from pydantic_ai.exceptions import ModelHTTPError
-    for code in (400, 404, 422):
-        err = ModelHTTPError(code, "model")
-        assert classify_provider_error(err) == "unexpected", f"expected unexpected for {code}"
+def test_classify_value_error_is_transient():
+    assert classify_provider_error(ValueError("bad")) == "transient"
 
 
-def test_classify_value_error_is_unexpected():
-    assert classify_provider_error(ValueError("bad")) == "unexpected"
+def test_classify_runtime_error_is_transient():
+    assert classify_provider_error(RuntimeError("oops")) == "transient"
 
 
-def test_classify_runtime_error_is_unexpected():
-    assert classify_provider_error(RuntimeError("oops")) == "unexpected"
+def test_classify_json_decode_error_is_transient():
+    import json
+    err = json.JSONDecodeError("truncated stream", "{", 1)
+    assert classify_provider_error(err) == "transient"
 
 
-def test_classify_key_error_is_unexpected():
-    assert classify_provider_error(KeyError("k")) == "unexpected"
+def test_classify_usage_limit_exceeded_is_transient():
+    from pydantic_ai.exceptions import UsageLimitExceeded
+    assert classify_provider_error(UsageLimitExceeded("limit hit")) == "transient"
+
+
+def test_classify_agent_error_is_transient():
+    from koan.agents.base import AgentDiagnostic, AgentError
+    err = AgentError(AgentDiagnostic(
+        code="run_failed", agent="a", stage="stream", message="boom",
+    ))
+    assert classify_provider_error(err) == "transient"
+
+
+def test_classify_programming_errors_are_unexpected():
+    for err in (
+        TypeError("t"),
+        AttributeError("a"),
+        NameError("n"),
+        KeyError("k"),
+        IndexError("i"),
+        AssertionError("as"),
+        NotImplementedError("ni"),
+    ):
+        assert classify_provider_error(err) == "unexpected", (
+            f"expected unexpected for {type(err).__name__}"
+        )
+
+
+def test_classify_user_error_is_unexpected():
+    from pydantic_ai.exceptions import UserError
+    assert classify_provider_error(UserError("misconfigured")) == "unexpected"
+
+
+def test_classify_cancellation_and_exit_signals_are_unexpected():
+    for err in (asyncio.CancelledError(), KeyboardInterrupt(), SystemExit(1)):
+        assert classify_provider_error(err) == "unexpected", (
+            f"expected unexpected for {type(err).__name__}"
+        )
 
 
 # -- compute_backoff_seconds ---------------------------------------------------
@@ -210,23 +245,52 @@ async def test_transient_error_retried_then_succeeds(tmp_path):
 
 @pytest.mark.anyio
 async def test_unexpected_error_fails_fast(tmp_path):
-    """An unexpected (non-transient) error propagates without retrying."""
+    """A programming error propagates without retrying.
+
+    The raw TypeError escapes the retry loop unchanged, then PydanticAIAgent.run
+    wraps it into AgentError(run_failed) -- so assert on the wrapper.
+    """
+    from koan.agents.base import AgentError
+
     call_count = 0
 
     async def bad_stream(messages, info):
         nonlocal call_count
         call_count += 1
-        raise RuntimeError("unexpected internal error")
+        raise TypeError("unexpected programming error")
         yield  # make it an async generator
 
     app_state, _ = _make("retry-fast-fail", str(tmp_path))
 
     with _function_model(bad_stream):
-        with pytest.raises(RuntimeError, match="unexpected internal error"):
+        with pytest.raises(AgentError, match="unexpected programming error"):
             _ = [ev async for ev in _agent(app_state, tmp_path).run(_options("retry-fast-fail"))]
 
     # Model called exactly once (no retries for unexpected).
     assert call_count == 1
+
+
+@pytest.mark.anyio
+async def test_http_400_retried_then_succeeds(tmp_path):
+    """A ModelHTTPError 400 (formerly fail-fast) is now retried and can recover."""
+    from pydantic_ai.exceptions import ModelHTTPError
+
+    call_count = 0
+
+    async def flaky_stream(messages, info):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise ModelHTTPError(400, "deepseek-v4-pro", "Bad Request")
+        yield "done"
+
+    app_state, _ = _make("retry-400", str(tmp_path))
+
+    with _function_model(flaky_stream):
+        events = [ev async for ev in _agent(app_state, tmp_path).run(_options("retry-400"))]
+
+    assert any(e.type == "turn_complete" for e in events), "expected turn_complete"
+    assert call_count == 2
 
 
 @pytest.mark.anyio
