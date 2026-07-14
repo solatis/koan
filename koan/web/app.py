@@ -13,7 +13,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from ..logger import get_logger, set_log_dir, truncate_payload
 
@@ -22,14 +22,27 @@ log = get_logger("web.app")
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
-from starlette.routing import Mount, Route
+from starlette.routing import BaseRoute, Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.responses import StreamingResponse
 
 from ..artifacts import list_artifacts
 from ..run_state import atomic_write_json
 from ..lib.task_json import current_workflow, make_initial_workflow_history
-from ..projections import _primary_agent_id
+from ..projections import (
+    _primary_agent_id,
+    CapsWire,
+    ConfiguredModelWire,
+    ConnectionWire,
+    EmbeddingModelWire,
+    IdentityWire,
+    OfferingWire,
+    PhaseInfo,
+    PresetWire,
+    Settings,
+    SlotAssignmentWire,
+    WorkflowInfo,
+)
 from ..state import ChatMessage
 from ..types import ModelSpec, ConnectionStatus, ProviderModel
 from .interactions import activate_next_interaction
@@ -38,8 +51,9 @@ from ..events import (
     # build_probe_completed removed in M4: CLI binary probe deleted.
     # build_installation_created/modified/removed removed in M4: installation concept deleted.
     # build_profile_*/build_default_profile_changed removed in M5: profile types deleted.
-    # M2: 13 individual settings builders deleted; consolidated into build_settings_listed.
-    build_settings_listed,
+    # M2: 13 individual settings builders deleted; consolidated into build_settings_listed,
+    # itself replaced by producer-side construction of the typed Settings model
+    # (see _push_settings_listed).
     build_run_started,
     build_steering_queued,
     build_steering_delivered,
@@ -53,9 +67,8 @@ from ..memory.timestamps import iso_to_ms as _iso_to_ms
 from ..memory import MEMORY_TYPES
 from ..memory.retrieval.backend import search as memory_search
 
-if TYPE_CHECKING:
-    from ..state import AgentState, AppState
-
+from ..config import KoanConfig
+from ..state import AgentState, AppState
 NOT_IMPL = Response("Not Implemented", status_code=501)
 
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -241,6 +254,21 @@ async def api_start_run_preflight(r: Request) -> Response:
     })
 
 
+def _log_driver_task_exception(task: "asyncio.Task") -> None:
+    """Done-callback for st.run.driver_task: log an escaped exception.
+
+    The driver task is retained on RunState, so asyncio's "exception was
+    never retrieved" GC warning never fires for it; without this callback an
+    exception that escapes driver_main kills the run with no log output at
+    all (the UI just stops progressing).
+    """
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        log.error("driver task died with unhandled exception", exc_info=exc)
+
+
 async def api_start_run(r: Request) -> Response:
     """Handle POST /api/start-run.
 
@@ -418,7 +446,7 @@ async def api_start_run(r: Request) -> Response:
     from ..memory.bindings import build_memory_models
     from ..types import ModelSpec as _ModelSpec
 
-    frozen_models: dict[str, "_ModelSpec"] = {}
+    frozen_models: dict[str, _ModelSpec] = {}
 
     # Tier slots: one ModelSpec per configured slot. api_key is baked in.
     for slot_name, slot in preset.slots.items():
@@ -514,6 +542,11 @@ async def api_start_run(r: Request) -> Response:
     # continues to intercept this call from its new spawn site.
     from ..driver import driver_main
     st.run.driver_task = asyncio.create_task(driver_main(st))
+    # The task reference is retained on st.run, so an escaped exception is
+    # never GC-surfaced by asyncio's never-retrieved warning -- the run just
+    # silently stops (observed 2026-07-14: a beartype violation in the spawn
+    # path killed the driver with zero log output). Log it explicitly.
+    st.run.driver_task.add_done_callback(_log_driver_task_exception)
 
     return JSONResponse({"ok": True, "run_dir": str(run_dir)})
 
@@ -1435,45 +1468,38 @@ async def _refresh_probe_state(st: AppState, broadcast: bool = True) -> None:
         _push_settings_listed(st)
 
 
-def _serialize_connection(conn, available: bool) -> dict:
-    """Serialize a Connection to a settings_listed wire dict.
+def _serialize_connection(conn, available: bool) -> ConnectionWire:
+    """Serialize a Connection to its settings_listed wire model.
 
     `route` replaces the old `connection_type` (same value -- conn.type IS the
     route id). `base_url` is dropped (adapter-internal). `available` is
     credential-derived from ProviderConfigState.provider_status.
     """
-    return {
-        "id": conn.id,
-        "route": conn.type,
-        "locality": conn.locality,
-        "available": available,
-    }
-    """Serialize a Connection to a settings_listed wire dict."""
-    return {
-        "id": conn.id,
-        "connection_type": conn.type,
-        "base_url": conn.base_url,
-        "locality": conn.locality,
-    }
+    return ConnectionWire(
+        id=conn.id,
+        route=conn.type,
+        locality=conn.locality,
+        available=available,
+    )
 
 
-def _serialize_identity(ident) -> dict:
-    """Map a ModelIdentity to a wire dict for IdentityWire construction.
+def _serialize_identity(ident) -> IdentityWire:
+    """Map a ModelIdentity to its wire model.
 
-    Returns {vendor, family, version, snapshot, kind}. The kind comes from the
-    identity (chat/embedding); snapshot is None when absent.
+    The kind comes from the identity (chat/embedding); snapshot is None when
+    absent.
     """
-    return {
-        "vendor": ident.vendor,
-        "family": ident.family,
-        "version": ident.version,
-        "snapshot": ident.snapshot,
-        "kind": ident.kind,
-    }
+    return IdentityWire(
+        vendor=ident.vendor,
+        family=ident.family,
+        version=ident.version,
+        snapshot=ident.snapshot,
+        kind=ident.kind,
+    )
 
 
-def _serialize_caps(caps) -> dict:
-    """Map a Capabilities dataclass to a wire dict for CapsWire construction.
+def _serialize_caps(caps) -> CapsWire:
+    """Map a Capabilities dataclass to its wire model.
 
     kind is "embedding" when caps.embedding_dims is non-empty, else "chat".
     thinking_levels mirrors caps.thinking.modes. native_tools is a sorted list.
@@ -1485,19 +1511,19 @@ def _serialize_caps(caps) -> dict:
     prov = {}
     for k, p in caps.provenance.items():
         prov[k] = {"source": p.source, "date": p.date, "detail": p.detail}
-    return {
-        "kind": kind,
-        "thinking_levels": [str(m) for m in caps.thinking.modes],
-        "prompt_caching": caps.prompt_caching,
-        "native_tools": sorted(caps.native_tools),
-        "supports_tools": True,
-        "embedding_dims": list(caps.embedding_dims) if caps.embedding_dims else None,
-        "resolved": caps.resolved,
-        "provenance": prov,
-    }
+    return CapsWire(
+        kind=kind,
+        thinking_levels=[str(m) for m in caps.thinking.modes],
+        prompt_caching=caps.prompt_caching,
+        native_tools=sorted(caps.native_tools),
+        supports_tools=True,
+        embedding_dims=list(caps.embedding_dims) if caps.embedding_dims else None,
+        resolved=caps.resolved,
+        provenance=prov,
+    )
 
 
-def _compute_offerings_by_connection(st: "AppState") -> dict[str, list[dict]]:
+def _compute_offerings_by_connection(st: AppState) -> dict[str, list[OfferingWire]]:
     """Compute offerings for each available connection.
 
     For each available connection, iterate _BASE_CATALOG entries, build a
@@ -1509,6 +1535,12 @@ def _compute_offerings_by_connection(st: "AppState") -> dict[str, list[dict]]:
     from caps.embedding_dims (non-empty tuple -> embedding). Only connections with
     a stored credential get entries; unavailable connections are absent from the
     result dict (per Decision 2).
+
+    Offerings are resolved-by-construction: entries whose route codec cannot
+    parse back its own render output are skipped, never emitted with a null
+    identity. Opaque-naming routes (ollama-cloud) therefore contribute no
+    catalog offerings -- their models must come from live listing, not from
+    rendering the curated catalog through a codec that cannot recognize it.
     """
     from koan.models.capabilities import _BASE_CATALOG
     from koan.models.codecs import CODECS
@@ -1520,7 +1552,7 @@ def _compute_offerings_by_connection(st: "AppState") -> dict[str, list[dict]]:
     if not cfg:
         return {}
     available_by_conn = {cs.connection_id: cs.available for cs in st.provider_config.provider_status}
-    result: dict[str, list[dict]] = {}
+    result: dict[str, list[OfferingWire]] = {}
     for conn in cfg.connections:
         if not available_by_conn.get(conn.id, False):
             continue
@@ -1529,7 +1561,7 @@ def _compute_offerings_by_connection(st: "AppState") -> dict[str, list[dict]]:
         if codec is None:
             continue
         is_embedding_route = route.naming == "voyage"
-        offerings: list[dict] = []
+        offerings: list[OfferingWire] = []
         for (vendor, family, version), caps in _BASE_CATALOG.items():
             kind = "embedding" if caps.embedding_dims else "chat"
             # Kind filter: embedding route gets only embedding entries; chat
@@ -1544,65 +1576,68 @@ def _compute_offerings_by_connection(st: "AppState") -> dict[str, list[dict]]:
             # applies the route overlay + profile merge, yielding route-aware caps
             # (e.g. anthropic -> prompt_caching="explicit" with web tools).
             offering = resolve_offering(conn.type, wire_id)
-            ref_ident = offering.ref if isinstance(offering.ref, ModelIdentity) else None
-            offerings.append({
-                "wire_id": wire_id,
-                "identity": _serialize_identity(ref_ident) if ref_ident is not None else None,
-                "display_name": canonical(ref_ident) if ref_ident is not None else wire_id,
-                "caps": _serialize_caps(offering.caps),
-            })
+            if not isinstance(offering.ref, ModelIdentity):
+                # render/parse round-trip failed: not a real catalog offering
+                # for this route (see docstring).
+                continue
+            offerings.append(OfferingWire(
+                wire_id=wire_id,
+                identity=_serialize_identity(offering.ref),
+                display_name=canonical(offering.ref),
+                caps=_serialize_caps(offering.caps),
+            ))
         if offerings:
             result[conn.id] = offerings
     return result
 
 
-def _serialize_configured_model(cm, conn) -> dict:
+def _serialize_configured_model(cm, conn) -> ConfiguredModelWire:
     """Serialize a ConfiguredModel with resolved identity and caps.
 
     Resolves the offering via resolve_offering(conn.type, cm.model_id) so the
-    wire entry carries identity (or null when unresolved), resolved (bool), and
+    wire entry carries identity (or None when unresolved), resolved (bool), and
     route-aware caps. A missing connection should be filtered by the caller
     (the assembler skips configured_models whose connection_id is not in config).
     """
     from koan.models.offering import resolve_offering
-    from koan.models.identity import ModelIdentity, canonical
+    from koan.models.identity import ModelIdentity
 
     offering = resolve_offering(conn.type, cm.model_id)
     ref_ident = offering.ref if isinstance(offering.ref, ModelIdentity) else None
-    return {
-        "id": cm.id,
-        "connection_id": cm.connection_id,
-        "model_id": cm.model_id,
-        "resolved_from": getattr(cm, "resolved_from", None),
-        "embedding_dim": getattr(cm, "embedding_dim", None),
-        "identity": _serialize_identity(ref_ident) if ref_ident is not None else None,
-        "resolved": isinstance(offering.ref, ModelIdentity),
-        "caps": _serialize_caps(offering.caps),
-    }
+    return ConfiguredModelWire(
+        id=cm.id,
+        connection_id=cm.connection_id,
+        model_id=cm.model_id,
+        resolved_from=getattr(cm, "resolved_from", None),
+        embedding_dim=getattr(cm, "embedding_dim", None),
+        identity=_serialize_identity(ref_ident) if ref_ident is not None else None,
+        resolved=ref_ident is not None,
+        caps=_serialize_caps(offering.caps),
+    )
 
 
-def _serialize_workflows() -> list[dict]:
-    """Serialize the static workflow registry into settings_listed-shaped dicts.
+def _serialize_workflows() -> list[WorkflowInfo]:
+    """Serialize the static workflow registry into settings_listed wire models.
 
-    Returns one dict per workflow: {id, description, phases, initial_phase}.
-    Static for the process lifetime; populated once at startup.
+    Returns one WorkflowInfo per workflow. Static for the process lifetime;
+    populated once at startup.
     """
     from ..lib.workflows import WORKFLOWS as _WORKFLOWS
-    out: list[dict] = []
+    out: list[WorkflowInfo] = []
     for wf in _WORKFLOWS.values():
-        out.append({
-            "id": wf.name,
-            "description": wf.description,
-            "phases": [
-                {"id": p, "description": wf.phase_descriptions.get(p, "")}
+        out.append(WorkflowInfo(
+            id=wf.name,
+            description=wf.description,
+            phases=[
+                PhaseInfo(id=p, description=wf.phase_descriptions.get(p, ""))
                 for p in wf.available_phases
             ],
-            "initial_phase": wf.initial_phase,
-        })
+            initial_phase=wf.initial_phase,
+        ))
     return out
 
 
-def _push_settings_listed(st: "AppState") -> None:
+def _push_settings_listed(st: AppState) -> None:
     """Push a full settings_listed snapshot to the projection store.
 
     Assembles the complete Settings state: connections (with available),
@@ -1611,46 +1646,48 @@ def _push_settings_listed(st: "AppState") -> None:
     memory_bindings, scout/retry settings, workflows, embedding_models. Called
     at startup and after every config mutation. Replace-all semantics: the fold
     replaces the entire Settings object.
-    """
-    from koan.models.identity import ModelIdentity, canonical
 
+    The payload is the typed projections.Settings model constructed here at
+    the producer -- the same model the fold validates back. An invalid value
+    (e.g. a null offering identity) raises HERE, in the request handler that
+    caused it, not later in the fold. model_dump(mode="json") keeps the stored
+    event payload snake_case and JSON-safe, identical in shape to the old
+    dict-built payloads.
+    """
     cfg = st.provider_config.config
     if not cfg:
         return
     avail_by_conn = {cs.connection_id: cs.available for cs in st.provider_config.provider_status}
     conn_by_id = {c.id: c for c in cfg.connections}
-    st.projection_store.push_event(
-        "settings_listed",
-        build_settings_listed(
-            connections=[_serialize_connection(c, avail_by_conn.get(c.id, False)) for c in cfg.connections],
-            configured_models=[
-                _serialize_configured_model(cm, conn_by_id[cm.connection_id])
-                for cm in cfg.configured_models
-                if cm.connection_id in conn_by_id
-            ],
-            offerings_by_connection=_compute_offerings_by_connection(st),
-            presets={name: _serialize_preset(p) for name, p in cfg.presets.items()},
-            active=cfg.active,
-            memory_bindings=_serialize_memory_bindings(cfg.memory),
-            default_scout_concurrency=cfg.scout_concurrency,
-            max_retry_attempts=cfg.max_retry_attempts,
-            max_retry_wait_seconds=cfg.max_retry_wait_seconds,
-            workflows=_serialize_workflows(),
-            embedding_models=_serialize_embedding_models(),
-        ),
+    settings = Settings(
+        connections=[_serialize_connection(c, avail_by_conn.get(c.id, False)) for c in cfg.connections],
+        configured_models=[
+            _serialize_configured_model(cm, conn_by_id[cm.connection_id])
+            for cm in cfg.configured_models
+            if cm.connection_id in conn_by_id
+        ],
+        offerings_by_connection=_compute_offerings_by_connection(st),
+        presets={name: _serialize_preset(p) for name, p in cfg.presets.items()},
+        active=cfg.active,
+        memory_bindings=_serialize_memory_bindings(cfg.memory),
+        default_scout_concurrency=cfg.scout_concurrency,
+        max_retry_attempts=cfg.max_retry_attempts,
+        max_retry_wait_seconds=cfg.max_retry_wait_seconds,
+        workflows=_serialize_workflows(),
+        embedding_models=_serialize_embedding_models(),
     )
+    st.projection_store.push_event("settings_listed", settings.model_dump(mode="json"))
 
 
-def _serialize_preset(preset) -> dict:
-    """Serialize a Preset to a wire dict for the settings_listed snapshot."""
-    """Serialize a Preset to a settings_listed wire dict."""
+def _serialize_preset(preset) -> PresetWire:
+    """Serialize a Preset to its settings_listed wire model."""
     slots = {}
     for slot_name, slot in preset.slots.items():
-        slots[slot_name] = {
-            "configured_model_id": slot.configured_model_id,
-            "thinking": slot.thinking if hasattr(slot, "thinking") else "disabled",
-        }
-    return {"slots": slots}
+        slots[slot_name] = SlotAssignmentWire(
+            configured_model_id=slot.configured_model_id,
+            thinking=slot.thinking if hasattr(slot, "thinking") else "disabled",
+        )
+    return PresetWire(slots=slots)
 
 
 def _serialize_memory_bindings(bindings) -> dict | None:
@@ -1678,25 +1715,25 @@ def _serialize_memory_bindings(bindings) -> dict | None:
     return result or None
 
 
-def _serialize_embedding_models() -> list[dict]:
-    """Build the embedding_models payload for the settings_listed snapshot.
+def _serialize_embedding_models() -> list[EmbeddingModelWire]:
+    """Build the embedding_models entries for the settings_listed snapshot.
 
-    Returns one dict per recognized Voyage embedding model, shaped as the
-    EmbeddingModelWire wire type.  The list is static for the process lifetime
-    and is pushed once at startup inside the settings_listed snapshot.
+    Returns one EmbeddingModelWire per recognized Voyage embedding model.  The
+    list is static for the process lifetime and is pushed once at startup
+    inside the settings_listed snapshot.
     """
     from ..memory.bindings import voyage_embedding_models
     return [
-        {
-            "model_id": m.model_id,
-            "dimensions": list(m.dimensions),
-            "default_dimension": m.default_dimension,
-        }
+        EmbeddingModelWire(
+            model_id=m.model_id,
+            dimensions=list(m.dimensions),
+            default_dimension=m.default_dimension,
+        )
         for m in voyage_embedding_models()
     ]
 
 
-def _effective_embedding_identity(cfg) -> "tuple[str, int] | None":
+def _effective_embedding_identity(cfg) -> tuple[str, int] | None:
     """Return (model_id, resolved_dim) for the active embedding binding, or None.
 
     Pure, non-raising: returns None when no embedding binding is configured,
@@ -1726,7 +1763,7 @@ def _effective_embedding_identity(cfg) -> "tuple[str, int] | None":
     return (cm.model_id, dim)
 
 
-async def _rebuild_embedding_index(st: "AppState") -> dict:
+async def _rebuild_embedding_index(st: AppState) -> dict:
     """Trigger a force rebuild of the LanceDB vector index.
 
     Fully defensive: never raises into the caller.  Returns {"ok": True} on
@@ -1802,7 +1839,7 @@ from koan.models.routes import ROUTES as _ROUTES_FOR_LISTING
 LISTING_CAPABLE: frozenset[str] = frozenset(r.id for r in _ROUTES_FOR_LISTING if r.listing is not None)
 
 async def _refresh_one_provider_models(
-    st: "AppState",
+    st: AppState,
     connection_id: str,
     provider: str,
     *,
@@ -1925,7 +1962,7 @@ _VALID_SLOT_NAMES = {"strong", "standard", "cheap"}
 _VALID_MEMORY_KINDS = {"embedding"}
 
 
-def _build_frozen_run_config(cfg: "KoanConfig", overrides: dict) -> "KoanConfig":
+def _build_frozen_run_config(cfg: KoanConfig, overrides: dict) -> KoanConfig:
     """Return a deep-copied KoanConfig with per-run slot overrides applied.
 
     Overrides are baked into the frozen copy's $last preset via ephemeral
@@ -1964,7 +2001,7 @@ def _build_frozen_run_config(cfg: "KoanConfig", overrides: dict) -> "KoanConfig"
     return frozen
 
 
-def _push_connection_events(st: "AppState") -> None:
+def _push_connection_events(st: AppState) -> None:
     """Push a settings_listed snapshot after a connection mutation.
 
     Recomputes provider availability from the credential store so a
@@ -2038,8 +2075,9 @@ async def api_config_connection_set(r: Request) -> Response:
     # credential_store.set() updates both the in-memory cache and the config
     # credentials envelope so save_koan_config writes the encrypted envelope.
     secret = body.get("secret")
-    if secret and isinstance(secret, str):
-        st.provider_config.credential_store.set(conn_id, secret)
+    store = st.provider_config.credential_store
+    if secret and isinstance(secret, str) and store is not None:
+        store.set(conn_id, secret)
 
     await save_koan_config(cfg, Path(st.server.koan_home))
     _push_connection_events(st)
@@ -2069,7 +2107,9 @@ async def api_config_connection_delete(r: Request) -> Response:
         return JSONResponse({"error": "not_found", "message": f"connection '{conn_id}' not found"}, status_code=404)
 
     cfg.connections = [c for c in cfg.connections if c.id != conn_id]
-    st.provider_config.credential_store.remove(conn_id)
+    store = st.provider_config.credential_store
+    if store is not None:
+        store.remove(conn_id)
 
     await save_koan_config(cfg, Path(st.server.koan_home))
     _push_connection_events(st)
@@ -2560,7 +2600,7 @@ def create_app(app_state: AppState) -> Starlette:
         # in-flight request that still holds a record path has time to finish.
         shutdown_upload_state(app_state.uploads)
 
-    routes = [
+    routes: list[BaseRoute] = [
         # /mcp removed: tools run in-process via the koan FunctionToolset.
         Route("/api/start-run", api_start_run, methods=["POST"]),
         # /api/run/clear removed: run clearing is server-authoritative at

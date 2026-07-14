@@ -976,30 +976,28 @@ class TestFoldSafety:
         assert r1 == r2
         assert p.run.phase == ""  # original unchanged
 
-    def test_fold_exception_returns_unchanged(self, monkeypatch):
-        """If fold raises internally, projection stays unchanged."""
+    def test_fold_exception_propagates_and_store_stays_consistent(self, monkeypatch):
+        """A fold failure propagates (fail fast) and commits nothing.
+
+        Every folded event is produced in-process, so a fold failure is a
+        producer bug; swallowing it froze the projection silently (the
+        settings_listed identity=None incident). The store must fail before
+        committing: no version bump, no appended event, projection unchanged.
+        """
+        import pytest
         import koan.projections as proj_mod
 
-        call_count = [0]
-        original_fold = proj_mod.fold
+        def always_raise(projection, event):
+            raise RuntimeError("simulated fold failure")
 
-        def raise_once(projection, event):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                raise RuntimeError("simulated fold failure")
-            return original_fold(projection, event)
-
-        # Test the store's exception handling
-        store = ProjectionStore()
-        store.push_event("run_started", {"active_preset": "$last", "scout_concurrency": 8})
-        assert store.projection.run is not None
-
-        monkeypatch.setattr(proj_mod, "fold", raise_once)
-        store2 = proj_mod.ProjectionStore()
-        prev = store2.projection
-        store2.push_event("run_started", {"active_preset": "$last", "scout_concurrency": 8})
-        # fold raised — projection unchanged
-        assert store2.projection == prev
+        monkeypatch.setattr(proj_mod, "fold", always_raise)
+        store = proj_mod.ProjectionStore()
+        prev = store.projection
+        with pytest.raises(RuntimeError, match="simulated fold failure"):
+            store.push_event("run_started", {"active_preset": "$last", "scout_concurrency": 8})
+        assert store.projection == prev
+        assert store.version == 0
+        assert store.events == []
 
 
 # ---------------------------------------------------------------------------
@@ -1719,7 +1717,7 @@ class TestSettingsListedFold:
         assert cm0.id == "cm-sonnet"
         assert cm0.resolved is True
         assert cm0.identity is not None
-        assert cm0.caps["prompt_caching"] == "explicit"
+        assert cm0.caps.prompt_caching == "explicit"
         cm1 = s.configured_models[1]
         assert cm1.resolved is False
         assert cm1.identity is None

@@ -4,13 +4,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from .agents.base import AgentDiagnostic
-    from .state import AgentState
-
-
+from .agents.base import AgentDiagnostic
+from .state import AgentState
 def build_run_started(
     active_preset: str,
     scout_concurrency: int,
@@ -276,39 +272,11 @@ def build_yield_started(suggestions: list[dict]) -> dict:
 # build_probe_completed removed in M4: CLI binary probe and installation concept
 # deleted; provider credential availability uses build_provider_status_listed.
 
-def build_settings_listed(
-    connections: list[dict],
-    configured_models: list[dict],
-    offerings_by_connection: dict[str, list[dict]],
-    presets: dict,
-    active: str,
-    memory_bindings: dict | None,
-    default_scout_concurrency: int,
-    max_retry_attempts: int,
-    max_retry_wait_seconds: float,
-    workflows: list[dict],
-    embedding_models: list[dict],
-) -> dict:
-    """Assemble the full settings_listed snapshot payload.
-
-    Carries the entire Settings state. Pushed at startup and after every config
-    mutation with replace-all semantics (the fold constructs a complete Settings
-    object from this payload). Replaces the 13 former individual settings events
-    deleted in M2.
-    """
-    return {
-        "connections": connections,
-        "configured_models": configured_models,
-        "offerings_by_connection": offerings_by_connection,
-        "presets": presets,
-        "active": active,
-        "memory_bindings": memory_bindings,
-        "default_scout_concurrency": default_scout_concurrency,
-        "max_retry_attempts": max_retry_attempts,
-        "max_retry_wait_seconds": max_retry_wait_seconds,
-        "workflows": workflows,
-        "embedding_models": embedding_models,
-    }
+# build_settings_listed removed: the settings_listed payload is now the
+# model_dump of the typed projections.Settings model, constructed at the
+# producer (koan/web/app.py:_push_settings_listed) and validated back by the
+# fold. A dict builder here would re-erase the types at exactly the boundary
+# where the payload/fold schema once drifted apart (identity=None fold crash).
 
 def build_steering_queued(content: str, timestamp_ms: int) -> dict:
     """Build steering_queued event payload.

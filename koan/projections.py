@@ -570,26 +570,6 @@ class ConnectionWire(KoanBaseModel):
     locality: str | None = None
     available: bool = False
 
-class ConfiguredModelWire(KoanBaseModel):
-    """Wire representation of a ConfiguredModel with resolved identity and caps.
-
-    identity is the resolved ModelIdentity (IdentityWire-shaped dict) or null
-    when the model is unresolved. resolved is whether resolve_offering returned
-    a ModelIdentity vs an Unresolved passthrough. caps is the route-aware
-    CapsWire dict (base catalog -> route overlay -> profile merge).
-    """
-
-    id: str
-    connection_id: str
-    model_id: str
-    resolved_from: str | None = None
-    # Selected Voyage output dimension; None = use catalog default.
-    embedding_dim: int | None = None
-    identity: dict | None = None    # IdentityWire or null when unresolved
-    resolved: bool = False
-    caps: dict = {}                 # CapsWire
-
-
 class IdentityWire(KoanBaseModel):
     """Wire representation of a ModelIdentity (vendor, family, version, snapshot, kind)."""
 
@@ -618,12 +598,39 @@ class CapsWire(KoanBaseModel):
     provenance: dict = {}
 
 
+class ConfiguredModelWire(KoanBaseModel):
+    """Wire representation of a ConfiguredModel with resolved identity and caps.
+
+    identity is the resolved IdentityWire, or None when the model is unresolved
+    -- users may configure wire ids koan cannot recognize (fine-tunes, o-series,
+    releases newer than the catalog), and those stay invocable. resolved mirrors
+    whether resolve_offering returned a ModelIdentity vs an Unresolved
+    passthrough; identity is None exactly when resolved is False. caps is the
+    route-aware CapsWire (base catalog -> route overlay -> profile merge).
+    """
+
+    id: str
+    connection_id: str
+    model_id: str
+    resolved_from: str | None = None
+    # Selected Voyage output dimension; None = use catalog default.
+    embedding_dim: int | None = None
+    identity: IdentityWire | None = None
+    resolved: bool = False
+    caps: CapsWire = CapsWire()
+
+
 class OfferingWire(KoanBaseModel):
     """Wire representation of one catalog offering rendered for a connection.
 
-    wire_id is the codec-rendered model id for the connection's route. identity
-    is the resolved ModelIdentity. display_name is the canonical display string.
-    caps is the route-aware CapsWire (overlay + profile merge applied).
+    wire_id is the codec-rendered model id for the connection's route.
+    display_name is the canonical display string. caps is the route-aware
+    CapsWire (overlay + profile merge applied).
+
+    identity is REQUIRED, unlike ConfiguredModelWire.identity: offerings are
+    rendered FROM the catalog, so an unresolved offering is a contradiction --
+    the producer must skip entries whose codec cannot round-trip its own
+    render output rather than emit identity=None.
     """
 
     wire_id: str
@@ -1035,7 +1042,7 @@ def _update_agent_conversation(run: Run, agent_id: str, new_conv: Conversation, 
 # by membership in KOAN_MCP_TOOLS (imported from koan.agents.events).
 
 
-def _derive_usage(conv: "Conversation", agent: "Agent", usage: dict) -> "Conversation":
+def _derive_usage(conv: Conversation, agent: Agent, usage: dict) -> Conversation:
     """Accumulate cache token facts and derive total_cost_usd.
 
     Called from both agent_exited and agent_step_advanced usage blocks so the
@@ -1268,11 +1275,18 @@ def _apply_exploration_metrics(child: BaseToolEntry, metrics: dict) -> dict:
 # Fold
 # ---------------------------------------------------------------------------
 
-def fold(projection: Projection, event: VersionedEvent) -> Projection:
+# The ~60-case match below exceeds pyright's complexity budget, so type
+# inference inside this function is degraded and the diagnostic is suppressed.
+# Splitting the match into per-domain handlers (run lifecycle, conversation,
+# settings, memory, reflect) would restore full checking.
+def fold(projection: Projection, event: VersionedEvent) -> Projection:  # pyright: ignore[reportGeneralTypeIssues]
     """Pure fold: (Projection, VersionedEvent) → Projection.
 
     Unknown event types return projection unchanged with a logged warning.
-    Any exception returns projection unchanged with the exception logged.
+    Exceptions propagate (fail fast): every folded event is produced in-process
+    from typed state, so a fold failure is a producer bug, not bad input --
+    swallowing it here turns a schema mismatch into a silently frozen
+    projection (the settings_listed identity=None incident).
     """
     event_type = event.event_type
     payload = event.payload
@@ -2641,88 +2655,14 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
             # provider_models_listed, model_capabilities_listed,
             # embedding_models_listed.
             case "settings_listed":
-                # Full snapshot: replace entire Settings.
-                s = payload
-                new_conns = [
-                    ConnectionWire(
-                        id=c.get("id", ""),
-                        route=c.get("route", ""),
-                        locality=c.get("locality"),
-                        available=c.get("available", False),
-                    )
-                    for c in s.get("connections", [])
-                ]
-                new_cms = [
-                    ConfiguredModelWire(
-                        id=m.get("id", ""),
-                        connection_id=m.get("connection_id", ""),
-                        model_id=m.get("model_id", ""),
-                        resolved_from=m.get("resolved_from"),
-                        embedding_dim=m.get("embedding_dim"),
-                        identity=m.get("identity"),
-                        resolved=m.get("resolved", False),
-                        caps=m.get("caps", {}),
-                    )
-                    for m in s.get("configured_models", [])
-                ]
-                new_offerings: dict[str, list[OfferingWire]] = {}
-                for cid, offerings in s.get("offerings_by_connection", {}).items():
-                    new_offerings[cid] = [
-                        OfferingWire(
-                            wire_id=o.get("wire_id", ""),
-                            identity=IdentityWire(**o.get("identity", {})),
-                            display_name=o.get("display_name", ""),
-                            caps=CapsWire(**o.get("caps", {})),
-                        )
-                        for o in offerings
-                    ]
-                # Presets (same logic as the old presets_listed fold).
-                raw_presets = s.get("presets", {})
-                new_presets: dict[str, PresetWire] = {}
-                for preset_name, preset_raw in raw_presets.items():
-                    if not isinstance(preset_raw, dict):
-                        continue
-                    slots_raw = preset_raw.get("slots", {})
-                    slots: dict[str, SlotAssignmentWire] = {}
-                    for slot_name, slot_raw in (slots_raw.items() if isinstance(slots_raw, dict) else []):
-                        if isinstance(slot_raw, dict):
-                            slots[slot_name] = SlotAssignmentWire(
-                                configured_model_id=slot_raw.get("configured_model_id", ""),
-                                thinking=slot_raw.get("thinking", "disabled"),
-                            )
-                    new_presets[preset_name] = PresetWire(slots=slots)
-                # Workflows (same logic as the old workflows_listed fold).
-                raw_workflows = s.get("workflows", [])
-                new_workflows: list[WorkflowInfo] = []
-                for entry in raw_workflows:
-                    try:
-                        new_workflows.append(WorkflowInfo(**entry))
-                    except Exception:
-                        log.warning("fold settings_listed: skipping malformed workflow entry %r", entry)
-                # Embedding models (same logic as the old embedding_models_listed fold).
-                raw_emb = s.get("embedding_models", [])
-                new_emb = [
-                    EmbeddingModelWire(
-                        model_id=m.get("model_id", ""),
-                        dimensions=m.get("dimensions", []),
-                        default_dimension=m.get("default_dimension", 0),
-                    )
-                    for m in raw_emb
-                ]
-                new_settings = Settings(
-                    connections=new_conns,
-                    configured_models=new_cms,
-                    offerings_by_connection=new_offerings,
-                    presets=new_presets,
-                    active=s.get("active", "$last"),
-                    memory_bindings=s.get("memory_bindings"),
-                    default_scout_concurrency=s.get("default_scout_concurrency", 8),
-                    max_retry_attempts=s.get("max_retry_attempts", 10),
-                    max_retry_wait_seconds=s.get("max_retry_wait_seconds", 60.0),
-                    workflows=new_workflows,
-                    embedding_models=new_emb,
+                # Full snapshot: replace entire Settings. The payload is the
+                # model_dump of a typed Settings built at the producer
+                # (app._push_settings_listed), so this validation is a schema
+                # re-check, not a defensive parse -- a mismatch is a producer
+                # bug and propagates via the fail-fast policy above.
+                return projection.model_copy(
+                    update={"settings": Settings.model_validate(payload)}
                 )
-                return projection.model_copy(update={"settings": new_settings})
 
             case "yield_started":
                 if projection.run is None or not agent_id:
@@ -2864,7 +2804,7 @@ def fold(projection: Projection, event: VersionedEvent) -> Projection:
             "fold: exception handling event_type=%r version=%d",
             event_type, event.version,
         )
-        return projection
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -2902,25 +2842,24 @@ class ProjectionStore:
             "push_event: type=%s agent_id=%s",
             event_type, (agent_id or "")[:8],
         )
-        self.version += 1
         event = VersionedEvent(
-            version=self.version,
+            version=self.version + 1,
             event_type=event_type,
             timestamp=_utcnow(),
             agent_id=agent_id,
             payload=payload,
         )
+        # Fold before committing to the log, and let exceptions propagate: a
+        # fold failure is a producer bug, and catching it here is how a schema
+        # mismatch once became a silently frozen projection. Failing first
+        # also keeps the event log consistent -- no event is recorded that the
+        # projection never applied.
+        new_projection = fold(self.projection, event)
+        self.version += 1
         self.events.append(event)
+        self.projection = new_projection
 
         old_state = self.prev_state
-        try:
-            self.projection = fold(self.projection, event)
-        except Exception:
-            log.exception(
-                "ProjectionStore: fold raised for event version=%d type=%r",
-                self.version, event_type,
-            )
-
         new_state = self.projection.to_wire()
         self.prev_state = new_state
 
