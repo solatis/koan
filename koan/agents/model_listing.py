@@ -14,13 +14,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
-
-from ..types import ProviderModel
-
-if TYPE_CHECKING:
-    from ..credentials import CredentialStore
-    from ..types import Connection
+from ..credentials import CredentialStore
+from ..types import Connection, ProviderModel
 
 log = logging.getLogger("koan.model_listing")
 
@@ -251,8 +246,8 @@ async def list_provider_models(
 
 
 async def list_models_for_connection(
-    connection: "Connection",
-    store: "CredentialStore | None",
+    connection: Connection,
+    store: CredentialStore | None,
     timeout: float = 8.0,
 ) -> list[ProviderModel]:
     """Retrieve the live model list for a connection, resolving auth from the store.

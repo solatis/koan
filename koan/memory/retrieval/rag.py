@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from koan.logger import get_logger
 from koan.memory.llm import generate as llm_generate
 
@@ -9,8 +7,7 @@ from .backend import rerank_results, search_candidates
 from .index import RetrievalIndex
 from .types import SearchResult
 
-if TYPE_CHECKING:
-    from koan.types import ModelSpec
+from koan.types import ModelSpec
 
 log = get_logger("memory.retrieval.rag")
 
@@ -22,7 +19,7 @@ _QUERY_GEN_SYSTEM = (
 )
 
 
-async def generate_queries(directive: str, anchor: str, model: "ModelSpec") -> list[str]:
+async def generate_queries(directive: str, anchor: str, model: ModelSpec) -> list[str]:
     """Ask the memory LLM for 1-3 search queries relevant to the directive.
 
     The memory_llm model/key arrive via the explicit model parameter;
@@ -47,8 +44,8 @@ _generate_queries = generate_queries
 
 async def inject(
     index: RetrievalIndex,
-    embed: "ModelSpec",
-    llm: "ModelSpec",
+    embed: ModelSpec,
+    llm: ModelSpec,
     directive: str,
     anchor: str,
     k: int = 5,

@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from pydantic_ai.messages import CachePoint, ModelRequest, UserPromptPart
 
@@ -29,11 +28,22 @@ from .artifact_registry import LIVING_DOC_FAMILIES, parse_artifact_filename
 from ..agents.dialects import cache_ttl_for
 from ..types import cache_tier_for_role
 
+from ..phases import PhaseContext
+from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from ..phases import PhaseContext
     from ..state import AgentState, AppState
 
 
+def __getattr__(name: str):
+    # PEP 562: resolve the state types lazily. This module sits inside
+    # state.py's own import chain (state -> projections -> workflows -> phases
+    # -> executor -> here), so a top-level state import is circular. --debug
+    # runtime type enforcement (beartype) resolves annotation names via
+    # getattr on this module at call time, when koan.state is fully loaded.
+    if name in ("AgentState", "AppState"):
+        from .. import state
+        return getattr(state, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 def format_handoff_message(name: str, content: str, error: bool = False) -> str:
     """Wrap artifact content in a <handoff_artifact> envelope.
 
@@ -133,7 +143,7 @@ def living_artifacts(names: list[str]) -> list[str]:
     return result
 
 
-def subagent_candidates(ctx: "PhaseContext") -> tuple[str, ...]:
+def subagent_candidates(ctx: PhaseContext) -> tuple[str, ...]:
     """Return the candidate artifact filenames for a subagent.
 
     The immutable filter (select_immutable_handovers) is applied later;
@@ -170,7 +180,7 @@ def subagent_candidates(ctx: "PhaseContext") -> tuple[str, ...]:
     return ()
 
 
-def preseed_pending_artifacts(agent: "AgentState", app_state: "AppState") -> None:
+def preseed_pending_artifacts(agent: AgentState, app_state: AppState) -> None:
     """Drain pending_artifacts and pre-seed each as a <handoff_artifact> message.
 
     Drain-read-wrap-append-mark cycle:
@@ -231,7 +241,7 @@ def preseed_pending_artifacts(agent: "AgentState", app_state: "AppState") -> Non
         agent.injected_artifacts.add(name)
 
 
-def reset_phase_context(agent: "AgentState") -> None:
+def reset_phase_context(agent: AgentState) -> None:
     # Clear the agent's accumulated conversation and all injection-dedup /
     # pending state at phase entry, so the next phase rebuilds a minimal
     # context (artifacts + listing + guidance) instead of accumulating on top
@@ -248,7 +258,7 @@ def reset_phase_context(agent: "AgentState") -> None:
     agent.pending_listing = None
 
 
-def preseed_pending_listing(agent: "AgentState") -> None:
+def preseed_pending_listing(agent: AgentState) -> None:
     # Drain pending_listing and append it as its own read-on-demand user
     # message, after the handover-artifact messages and before the step
     # guidance. A no-op when pending_listing is empty/None. Appended as a
@@ -261,7 +271,7 @@ def preseed_pending_listing(agent: "AgentState") -> None:
     agent.message_history.append(ModelRequest(parts=[UserPromptPart(content=listing)]))
 
 
-def apply_artifact_cache_point(agent: "AgentState", target_index: int) -> None:
+def apply_artifact_cache_point(agent: AgentState, target_index: int) -> None:
     """Attach the ``cache_artifacts`` long-TTL CachePoint to a preseeded message.
 
     Realizes the ``cache_artifacts`` semantic breakpoint by attaching a

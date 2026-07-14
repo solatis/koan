@@ -214,7 +214,9 @@ ROLE_MODEL_TIER: dict[SubagentRole, ModelTier] = {
 # long-running operation (reviews, exploration); long = everything else.
 # intake/planner are not spawned as subagents but are included for total
 # type coverage and are default-aligned (long).
-ROLE_CACHE_TIER: dict[SubagentRole, CacheTier] = {
+# Keyed `str` (not SubagentRole) to match cache_tier_for_role's defensive
+# contract: unknown roles look up cleanly and default to "long".
+ROLE_CACHE_TIER: dict[str, CacheTier] = {
     "intake":       "long",
     "scout":        "short",
     "orchestrator": "long",
@@ -224,8 +226,12 @@ ROLE_CACHE_TIER: dict[SubagentRole, CacheTier] = {
 }
 
 
-def cache_tier_for_role(role: SubagentRole) -> CacheTier:
+def cache_tier_for_role(role: str) -> CacheTier:
     """Single gateway: resolve an agent role to its cache tier; defaults to long.
+
+    `role` is deliberately `str`, not SubagentRole: the documented contract
+    below accepts unmapped/future roles and defaults them -- a Literal would
+    contradict it.
 
     Returns 'long' for any unmapped role so new roles are safe by default
     (a long-tier cache write costs more per write but avoids re-encode on

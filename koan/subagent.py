@@ -9,7 +9,6 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import aiofiles
 
@@ -34,9 +33,7 @@ from .lib.workflows import get_workflow
 from .phases import PHASE_MODULE_MAP, PhaseContext
 from .prompts import AGENT_TYPE_PROMPTS
 
-if TYPE_CHECKING:
-    from .state import AppState
-
+from .state import AppState
 log = get_logger("subagent")
 
 

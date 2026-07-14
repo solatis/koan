@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from .config import KoanConfig
 
@@ -34,6 +34,9 @@ LOCAL_PROVIDERS: dict[str, str] = {}
 # Key backend abstraction
 # ---------------------------------------------------------------------------
 
+# runtime_checkable so KeyBackend-annotated signatures stay isinstance-checkable
+# under --debug runtime type enforcement (beartype).
+@runtime_checkable
 class KeyBackend(Protocol):
     """Protocol for master-key sources.
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import voyageai
 
@@ -11,9 +10,7 @@ from ..parser import parse_entry
 from .index import RetrievalIndex, _embed_query
 from .types import SearchResult
 
-if TYPE_CHECKING:
-    from koan.types import ModelSpec
-
+from koan.types import ModelSpec
 log = get_logger("memory.retrieval.backend")
 
 
@@ -46,7 +43,7 @@ def _rrf_merge(dense_hits: list[dict], fts_hits: list[dict]) -> list[dict]:
 
 
 async def _voyage_rerank(
-    query: str, candidates: list[dict], k: int, model: "ModelSpec"
+    query: str, candidates: list[dict], k: int, model: ModelSpec
 ) -> list[dict]:
     """Rerank candidates using the voyage reranker (model='rerank-2.5').
 
@@ -76,7 +73,7 @@ async def _voyage_rerank(
 # Without the split, the RAG path would run the Voyage reranker N times
 # (once per query) or duplicate the reranker logic.
 async def search_candidates(
-    index: RetrievalIndex, query: str, model: "ModelSpec", n: int = 20
+    index: RetrievalIndex, query: str, model: ModelSpec, n: int = 20
 ) -> list[dict]:
     """Gather candidates by embedding the query and running hybrid search.
 
@@ -95,7 +92,7 @@ async def rerank_results(
     query: str,
     candidates: list[dict],
     k: int,
-    model: "ModelSpec",
+    model: ModelSpec,
     type_filter: str | None = None,
 ) -> list[SearchResult]:
     """Rerank candidates using the voyage reranker and return top k results.
@@ -125,7 +122,7 @@ async def rerank_results(
 async def search(
     index: RetrievalIndex,
     query: str,
-    model: "ModelSpec",
+    model: ModelSpec,
     k: int = 5,
     type_filter: str | None = None,
 ) -> list[SearchResult]:

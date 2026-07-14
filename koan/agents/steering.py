@@ -14,14 +14,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from mcp.types import ContentBlock
-
-    from ..state import AgentState, AppState, ChatMessage
-
-
+from mcp.types import ContentBlock
+from ..state import AgentState, AppState, ChatMessage
 def drain_for_primary(
     app_state: AppState,
     agent: AgentState | None,

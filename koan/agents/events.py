@@ -18,6 +18,16 @@ if TYPE_CHECKING:
     from pydantic_ai.usage import RequestUsage
 
 
+def __getattr__(name: str):
+    # PEP 562: keep the pydantic_ai import lazy (heavy) while letting --debug
+    # runtime type enforcement (beartype) resolve the StreamEvent.usage
+    # annotation at construction time.
+    if name == "RequestUsage":
+        from pydantic_ai.usage import RequestUsage
+        return RequestUsage
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 @dataclass(kw_only=True)
 class StreamEvent:
     type: Literal[

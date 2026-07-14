@@ -18,12 +18,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from .base import AgentDiagnostic, AgentError
-
-if TYPE_CHECKING:
-    from ..types import ModelSpec
+from ..types import ModelSpec
 
 # Minimum number of model requests before the guard fires.
 # Two requests means the prefix has been re-sent at least once, which is the
@@ -39,7 +35,7 @@ CACHE_GUARD_MIN_INPUT_TOKENS: int = 50_000
 
 
 def check_cache_effectiveness(
-    spec: "ModelSpec",
+    spec: ModelSpec,
     caching_mode: str,
     cumulative_input_tokens: int,
     cumulative_cache_read_tokens: int,

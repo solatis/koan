@@ -16,7 +16,12 @@ MEMORY_TYPES: tuple[MemoryType, ...] = (
 @dataclass
 class MemoryEntry:
     title: str
-    type: MemoryType
+    # Deliberately `str`, not MemoryType: MemoryEntry is a pre-validation
+    # container (entries arrive from disk and tool input with arbitrary type
+    # strings); validate_entry is the gate that enforces the MemoryType
+    # vocabulary. A Literal here would reject exactly the invalid entries the
+    # validation path exists to report on.
+    type: str
     body: str
     created: str = ""        # ISO 8601 timestamp; set automatically on write
     modified: str = ""       # ISO 8601 timestamp; set automatically on write

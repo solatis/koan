@@ -4,13 +4,9 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
-
 from .store import MemoryStore
 from .types import MEMORY_TYPES
-
-if TYPE_CHECKING:
-    from ..types import ModelSpec
+from ..types import ModelSpec
 
 log = logging.getLogger(__name__)
 
@@ -132,7 +128,7 @@ def forget(
 
 async def status(
     store: MemoryStore,
-    model: "ModelSpec | None",
+    model: ModelSpec | None,
     type: str | None = None,
     regenerate: bool = True,
 ) -> dict:

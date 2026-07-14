@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
 
 from .artifacts import list_artifacts
 from .run_state import ensure_subagent_directory
@@ -12,9 +11,7 @@ from .lib.task_json import make_initial_workflow_history
 from .logger import get_logger
 from .subagent import spawn_subagent
 
-if TYPE_CHECKING:
-    from .state import AppState
-
+from .state import AppState
 log = get_logger("driver")
 
 

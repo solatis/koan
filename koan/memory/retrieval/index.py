@@ -4,7 +4,6 @@ import asyncio
 import hashlib
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import lancedb
 import pyarrow as pa
@@ -13,9 +12,7 @@ from lancedb.index import FTS
 
 from ..parser import parse_entry
 
-if TYPE_CHECKING:
-    from ...types import ModelSpec
-
+from ...types import ModelSpec
 TABLE_NAME = "entries"
 _ENTRY_PATTERN = re.compile(r"^(\d{4})-.*\.md$")
 
@@ -31,7 +28,7 @@ def _entry_id_from_name(name: str) -> int | None:
     return int(m.group(1))
 
 
-async def _embed_texts(texts: list[str], input_type: str, model: "ModelSpec") -> list[list[float]]:
+async def _embed_texts(texts: list[str], input_type: str, model: ModelSpec) -> list[list[float]]:
     """Embed texts using the voyage provider via the explicit embedding ModelSpec.
 
     The embedding model/key arrive via the explicit model parameter; no module
@@ -52,7 +49,7 @@ async def _embed_texts(texts: list[str], input_type: str, model: "ModelSpec") ->
     return result.embeddings
 
 
-async def _embed_query(text: str, model: "ModelSpec") -> list[float]:
+async def _embed_query(text: str, model: ModelSpec) -> list[float]:
     """Embed a single query text via the explicit embedding ModelSpec."""
     result = await _embed_texts([text], "query", model)
     return result[0]
@@ -86,7 +83,7 @@ class RetrievalIndex:
         self._lock: asyncio.Lock = asyncio.Lock()
         self._synced: bool = False
 
-    async def ensure_synced(self, model: "ModelSpec") -> None:
+    async def ensure_synced(self, model: ModelSpec) -> None:
         """Ensure the vector index is up to date using the explicit embedding model."""
         async with self._lock:
             await self._sync(model)
@@ -111,7 +108,7 @@ class RetrievalIndex:
                 return field.type.list_size
         return None
 
-    async def _sync(self, model: "ModelSpec") -> None:
+    async def _sync(self, model: ModelSpec) -> None:
         """Sync on-disk memory entries into the LanceDB vector index.
 
         Uses the explicit embedding model for dimension and embedding calls;
@@ -200,7 +197,7 @@ class RetrievalIndex:
             await table.create_index("body", config=FTS(), replace=True)
             await table.create_index("title", config=FTS(), replace=True)
 
-    async def rebuild(self, model: "ModelSpec") -> None:
+    async def rebuild(self, model: ModelSpec) -> None:
         """Force-rebuild the vector index: drop the existing table and re-embed all entries.
 
         Acquires the non-reentrant self._lock and calls _sync() directly (NOT

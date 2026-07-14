@@ -4,15 +4,12 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import TYPE_CHECKING
 
 from .llm import generate
 from .store import MemoryStore
 from .types import MemoryEntry
 
-if TYPE_CHECKING:
-    from ..types import ModelSpec
-
+from ..types import ModelSpec
 log = logging.getLogger("koan.memory.summarize")
 
 
@@ -50,7 +47,7 @@ def _seq_number(entry: MemoryEntry) -> int:
 
 async def generate_summary(
     store: MemoryStore,
-    model: "ModelSpec",
+    model: ModelSpec,
     project_name: str = "",
 ) -> str:
     """Generate summary.md by reading all entries directly.
@@ -92,7 +89,7 @@ async def generate_summary(
 
 async def regenerate_summary(
     store: MemoryStore,
-    model: "ModelSpec",
+    model: ModelSpec,
     project_name: str = "",
 ) -> None:
     """Regenerate the project summary after entries change.

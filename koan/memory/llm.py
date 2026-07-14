@@ -6,19 +6,16 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
 
 from pydantic_ai import Agent
 
 from ..logger import get_logger
 
-if TYPE_CHECKING:
-    from ..types import ModelSpec
-
+from ..types import ModelSpec
 log = get_logger("memory.llm")
 
 
-async def generate(prompt: str, model: "ModelSpec", system: str = "") -> str:
+async def generate(prompt: str, model: ModelSpec, system: str = "") -> str:
     """Call the LLM and return the text response.
 
     Model selection: the passed memory_llm ModelSpec, self-contained with its

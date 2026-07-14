@@ -14,14 +14,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from mcp.types import ContentBlock, TextContent
 
-if TYPE_CHECKING:
-    from . import StepGuidance
-
-
+from . import StepGuidance
 DEFAULT_INVOKE = (
     "WHEN DONE: end your turn once this step's work is complete -- a turn that"
     " ends with no further tool call advances you to the next step automatically."

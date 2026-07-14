@@ -338,7 +338,7 @@ def _serialize_slot_assignment(slot: SlotAssignment) -> dict:
     }
 
 
-def _config_to_dict(config: "KoanConfig") -> dict:
+def _config_to_dict(config: KoanConfig) -> dict:
     """Serialize a KoanConfig to a snake_case dict suitable for YAML output.
 
     Pure function: produces the dict without any I/O side-effects.
@@ -407,7 +407,7 @@ def _config_to_dict(config: "KoanConfig") -> dict:
     return data
 
 
-async def write_run_config(config: "KoanConfig", run_dir: "str | Path") -> None:
+async def write_run_config(config: KoanConfig, run_dir: str | Path) -> None:
     """Serialize the frozen per-run config to <run_dir>/run-config.yaml.
 
     Written once at /api/start-run time as the durable, auditable record of

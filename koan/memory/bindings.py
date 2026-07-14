@@ -15,11 +15,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
-if TYPE_CHECKING:
-    from ..config import KoanConfig
-    from ..credentials import CredentialStore
+from ..config import KoanConfig
+from ..credentials import CredentialStore
 
 from ..types import CachingPolicy, ModelSpec, ThinkingMode
 
@@ -115,8 +114,8 @@ class MemoryModels:
 
 
 def build_memory_models(
-    config: "KoanConfig",
-    credential_store: "CredentialStore | None",
+    config: KoanConfig,
+    credential_store: CredentialStore | None,
 ) -> MemoryModels:
     """Build a MemoryModels bundle by resolving only the embedding binding.
 
@@ -183,7 +182,7 @@ def build_memory_models(
     return MemoryModels(embedding=specs.get("embedding"))
 
 
-def require_memory_model(spec: "ModelSpec | None", kind: str) -> "ModelSpec":
+def require_memory_model(spec: ModelSpec | None, kind: str) -> ModelSpec:
     """Return spec when non-None; otherwise raise RuntimeError.
 
     Preserves today's error contract at point of use: callers that need a

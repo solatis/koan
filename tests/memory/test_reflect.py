@@ -87,7 +87,8 @@ class TestDispatchSearch:
     async def test_invalid_type_returns_error_no_raise(self):
         """Returns error payload without raising; no index call needed."""
         from unittest.mock import MagicMock
-        index = MagicMock()
+        from koan.memory.retrieval.index import RetrievalIndex
+        index = MagicMock(spec=RetrievalIndex)
         retrieved: dict = {}
         payload = await _dispatch_search(index, {"query": "x", "type": "invalid"}, retrieved, model=None)
         assert "error" in payload
@@ -98,7 +99,8 @@ class TestDispatchSearch:
     async def test_updates_retrieved_dict(self):
         """_dispatch_search should add all returned entries to the retrieved dict."""
         from unittest.mock import MagicMock
-        index = MagicMock()
+        from koan.memory.retrieval.index import RetrievalIndex
+        index = MagicMock(spec=RetrievalIndex)
         results = [_make_result(3), _make_result(7)]
         retrieved: dict = {}
 
@@ -118,7 +120,8 @@ class TestDispatchSearch:
     async def test_caps_k_at_20(self):
         """k values above 20 are clamped to 20 before hitting the index."""
         from unittest.mock import MagicMock, call
-        index = MagicMock()
+        from koan.memory.retrieval.index import RetrievalIndex
+        index = MagicMock(spec=RetrievalIndex)
 
         captured_kwargs: dict = {}
 
@@ -135,7 +138,8 @@ class TestDispatchSearch:
     async def test_runtime_error_returns_error_payload(self):
         """A RuntimeError from the index (e.g. missing API key) returns an error dict."""
         from unittest.mock import MagicMock
-        index = MagicMock()
+        from koan.memory.retrieval.index import RetrievalIndex
+        index = MagicMock(spec=RetrievalIndex)
 
         with patch(
             "koan.memory.retrieval.reflect.retrieval_search",

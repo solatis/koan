@@ -165,9 +165,17 @@ def _make_deps(tmp_path: Path) -> SimpleNamespace:
     return SimpleNamespace(agent=agent)
 
 
-def _make_run_ctx(messages: list) -> SimpleNamespace:
-    """Build a minimal RunContext-like namespace for processor tests."""
-    return SimpleNamespace(messages=messages)
+def _make_run_ctx(messages: list):
+    """Build a RunContext double for processor tests.
+
+    spec'd MagicMock rather than SimpleNamespace so the double passes the
+    isinstance check under --debug runtime type enforcement (beartype).
+    """
+    from unittest.mock import MagicMock
+    from pydantic_ai import RunContext
+    ctx = MagicMock(spec=RunContext)
+    ctx.messages = messages
+    return ctx
 
 
 @pytest.mark.anyio

@@ -8,10 +8,11 @@ import json
 import sys
 from pathlib import Path
 
-from ..config import load_koan_config, save_koan_config
+from ..config import KoanConfig, load_koan_config, save_koan_config
 from ..credentials import CredentialStore, get_key_backend
-from ..memory.bindings import build_memory_models, require_memory_model
+from ..memory.bindings import MemoryModels, build_memory_models, require_memory_model
 from ..memory import ops
+from ..types import ModelSpec
 from ..memory.retrieval import RetrievalIndex, search as retrieval_search, inject as rag_inject
 from ..memory.retrieval import (
     IterationCapExceeded,
@@ -32,10 +33,10 @@ def _make_index(store: MemoryStore) -> RetrievalIndex:
 
 
 def _resolve_tier_model(
-    config: "KoanConfig",
-    credential_store: "CredentialStore",
+    config: KoanConfig,
+    credential_store: CredentialStore,
     tier: str,
-) -> "ModelSpec | None":
+) -> ModelSpec | None:
     """Resolve a ModelSpec for a tier slot from the active preset.
 
     Returns None when the preset, slot, configured model, or connection is
@@ -75,7 +76,7 @@ def _die(msg: str) -> None:
     sys.exit(1)
 
 
-def _has_cheap_model(cheap_spec: "ModelSpec | None") -> bool:
+def _has_cheap_model(cheap_spec: ModelSpec | None) -> bool:
     """True when a cheap ModelSpec has been resolved (cheap slot is configured).
 
     Does not check whether api_key is non-None; keyless providers are valid.
@@ -134,7 +135,7 @@ def cmd_forget(args: argparse.Namespace) -> None:
     print(json.dumps(result))
 
 
-def cmd_status(args: argparse.Namespace, cheap_spec: "ModelSpec | None") -> None:
+def cmd_status(args: argparse.Namespace, cheap_spec: ModelSpec | None) -> None:
     """Print memory status. Skips regeneration when the cheap model spec is not
     resolved (cheap slot not configured in the active preset)."""
     store = _make_store()
@@ -192,7 +193,7 @@ def cmd_search(args: argparse.Namespace, models: MemoryModels) -> None:
             print(sep)
 
 
-def cmd_rag(args: argparse.Namespace, embed_spec: "ModelSpec", cheap_spec: "ModelSpec") -> None:
+def cmd_rag(args: argparse.Namespace, embed_spec: ModelSpec, cheap_spec: ModelSpec) -> None:
     """Run the RAG injection pipeline. Requires resolved embed and cheap ModelSpecs."""
     store = _make_store()
     index = _make_index(store)
@@ -241,7 +242,7 @@ def cmd_rag(args: argparse.Namespace, embed_spec: "ModelSpec", cheap_spec: "Mode
             print(sep)
 
 
-def cmd_reflect(args: argparse.Namespace, embed_spec: "ModelSpec", standard_spec: "ModelSpec") -> None:
+def cmd_reflect(args: argparse.Namespace, embed_spec: ModelSpec, standard_spec: ModelSpec) -> None:
     """Run the reflection loop. Requires resolved embed and standard ModelSpecs."""
     store = _make_store()
     index = _make_index(store)

@@ -5,14 +5,10 @@
 from __future__ import annotations
 
 from copy import copy
-from typing import TYPE_CHECKING
 
 from .events import FATAL_DIAGNOSTIC_CODES, Projection
 
-if TYPE_CHECKING:
-    from .events import AuditEvent
-
-
+from .events import AuditEvent
 # -- Helpers -------------------------------------------------------------------
 
 FILE_TOOLS = frozenset({"read", "edit", "write"})

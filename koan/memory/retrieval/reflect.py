@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable, Literal
+from typing import Callable, Literal
 
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.messages import (
@@ -29,9 +29,7 @@ from .backend import search as retrieval_search
 from .index import RetrievalIndex
 from .types import SearchResult
 
-if TYPE_CHECKING:
-    from ...types import ModelSpec
-
+from ...types import ModelSpec
 log = get_logger("memory.retrieval.reflect")
 
 MAX_ITERATIONS = 10
@@ -117,7 +115,7 @@ Suppose the pool across these calls is:
   [#31] "Python style: ruff default config (2026-01-15)"          context
 
 Draft claims mapped to backing entries:
-  "Session tokens live in Redis 7.x."           -> backed by #12
+  Session tokens live in Redis 7.x.           -> backed by #12
   "JWT-in-cookies was rejected on 2026-02-10."  -> backed by #18
   "A prior incident hardcoded tokens in the
    compose file; watch for this in IaC diffs."  -> backed by #24
@@ -230,7 +228,7 @@ class _Deps:
     iteration: int = 0
     cited_ids: list[int] | None = None
     accumulated_answer: str = ""
-    embedding: "ModelSpec | None" = None
+    embedding: ModelSpec | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +238,7 @@ class _Deps:
 # Agent is constructed lazily inside run_reflect_agent so the model spec
 # is resolved at call time via the explicit MemoryModels bundle.
 
-def _build_agent(model: "ModelSpec") -> Agent[_Deps, None]:
+def _build_agent(model: ModelSpec) -> Agent[_Deps, None]:
     """Build the reflect agent using the explicit `model` ModelSpec (the reflect LLM).
 
     The model/key arrive via the explicit model parameter; no module global
@@ -376,7 +374,7 @@ async def _dispatch_search(
     index: RetrievalIndex,
     args: dict,
     retrieved: dict[int, MemoryEntry],
-    model: "ModelSpec | None",
+    model: ModelSpec | None,
 ) -> dict:
     """Execute one search tool call. Mutates retrieved; returns JSON-serializable payload for the LLM.
 
@@ -429,8 +427,8 @@ async def _dispatch_search(
 
 async def run_reflect_agent(
     index: RetrievalIndex,
-    model: "ModelSpec",
-    embed: "ModelSpec",
+    model: ModelSpec,
+    embed: ModelSpec,
     question: str,
     context: str | None = None,
     *,

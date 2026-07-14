@@ -10,17 +10,14 @@ import os
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import aiofiles
 
 from .events import AgentDiagnosticEvent, Projection
 from .fold import fold
 
-if TYPE_CHECKING:
-    from ..agents.base import AgentDiagnostic
-
-
+from ..agents.base import AgentDiagnostic
 # -- Helpers -------------------------------------------------------------------
 
 def _now() -> str:

@@ -44,7 +44,7 @@ def test_is_chat_model_id_rejects_non_chat():
 # -- _list_openai_compatible_models (unit: filter + provider label) -----------
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_list_openai_compatible_models_filters_and_labels(monkeypatch):
     """_list_openai_compatible_models keeps chat ids, excludes embeddings, stamps provider.
 
@@ -86,7 +86,7 @@ async def test_list_openai_compatible_models_filters_and_labels(monkeypatch):
     assert all(m.provider == "openrouter" for m in result)
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_list_openai_compatible_models_openai_returns_chat_models(monkeypatch):
     """_list_openai_compatible_models filters to chat models for provider='openai'."""
     model_ids = ["gpt-4o", "gpt-4o-mini"]
@@ -120,7 +120,7 @@ async def test_list_openai_compatible_models_openai_returns_chat_models(monkeypa
 # -- list_provider_models unsupported provider --------------------------------
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_list_provider_models_raises_for_unsupported():
     """list_provider_models raises ModelListingError for unsupported providers."""
     from koan.agents.model_listing import list_provider_models, ModelListingError
@@ -143,7 +143,7 @@ async def test_list_provider_models_raises_for_unsupported():
 # -- list_models_for_connection -----------------------------------------------
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_list_models_for_connection_listing_capable(monkeypatch):
     """list_models_for_connection returns live ProviderModels for a listing-capable type."""
     from koan.agents.model_listing import list_models_for_connection
@@ -166,15 +166,16 @@ async def test_list_models_for_connection_listing_capable(monkeypatch):
     )
 
     # Minimal fake credential store: resolve returns a dummy key.
-    class _FakeStore:
-        def resolve(self, conn_id: str) -> str | None:
-            return "fake-key"
+    from unittest.mock import MagicMock
+    from koan.credentials import CredentialStore
+    store = MagicMock(spec=CredentialStore)
+    store.resolve.return_value = "fake-key"
 
-    result = await list_models_for_connection(conn, _FakeStore())
+    result = await list_models_for_connection(conn, store)
     assert result == fake_models
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_list_models_for_connection_non_listing_type_raises(monkeypatch):
     """list_models_for_connection raises ModelListingError for bedrock (non-listing)."""
     from koan.agents.model_listing import ModelListingError, list_models_for_connection
@@ -187,7 +188,7 @@ async def test_list_models_for_connection_non_listing_type_raises(monkeypatch):
         await list_models_for_connection(conn, None)
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_list_models_for_connection_voyage_raises(monkeypatch):
     """list_models_for_connection raises ModelListingError for voyage (embedding-only)."""
     from koan.agents.model_listing import ModelListingError, list_models_for_connection
@@ -202,7 +203,7 @@ async def test_list_models_for_connection_voyage_raises(monkeypatch):
 # -- openrouter listing -------------------------------------------------------
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_list_provider_models_openrouter_delegates(monkeypatch):
     """list_provider_models for openrouter delegates to _list_openai_compatible_models.
 
@@ -232,7 +233,7 @@ async def test_list_provider_models_openrouter_delegates(monkeypatch):
     assert captured["base_url"] == _OPENROUTER_BASE_URL
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_list_provider_models_openrouter_no_key_raises():
     """list_provider_models raises ModelListingError for openrouter when api_key is None."""
     from koan.agents.model_listing import list_provider_models, ModelListingError

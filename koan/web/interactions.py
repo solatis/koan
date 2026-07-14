@@ -7,17 +7,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 # Queue-full is a runtime constraint violation raised to the in-process tool core;
 # RuntimeError is appropriate.
 
 from ..state import PendingInteraction
 
-if TYPE_CHECKING:
-    from ..state import AgentState, AppState
-
-
+from ..state import AgentState, AppState
 # -- Request event emitter ----------------------------------------------------
 
 def _emit_interaction_request(app_state: AppState, interaction: PendingInteraction) -> None:

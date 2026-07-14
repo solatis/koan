@@ -19,15 +19,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 from pydantic_ai.usage import UsageLimits
 
 from ..agents.base import AgentDiagnostic, AgentError
+from ..credentials import CredentialStore
 from ..types import CachingPolicy, Connection, ModelSpec
-
-if TYPE_CHECKING:
-    from ..credentials import CredentialStore
 
 
 @dataclass
@@ -43,7 +40,7 @@ class ResolvedProviderAuth:
     base_url: str | None
 
 
-def provider_available(provider: str, store: "CredentialStore | None" = None) -> bool:
+def provider_available(provider: str, store: CredentialStore | None = None) -> bool:
     """True when the credential store has a secret for the provider.
 
     The store is the sole credential authority; availability is no longer
@@ -54,8 +51,8 @@ def provider_available(provider: str, store: "CredentialStore | None" = None) ->
 
 
 def resolve_provider_auth(
-    connection: "Connection | None",
-    store: "CredentialStore | None",
+    connection: Connection | None,
+    store: CredentialStore | None,
 ) -> ResolvedProviderAuth:
     """Join the decrypted secret with endpoint settings from a Connection.
 
