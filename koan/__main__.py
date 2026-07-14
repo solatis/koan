@@ -6,6 +6,17 @@ from __future__ import annotations
 import argparse
 import sys
 
+# Runtime type enforcement (--debug): the beartype import hook instruments
+# modules AT IMPORT TIME, so it must be installed before any koan submodule
+# import below -- and argparse cannot run until those imports are done, hence
+# the raw sys.argv pre-scan. Once installed, every annotated koan function
+# raises BeartypeCallHintViolation when called with values that contradict
+# its annotations (typed-Python enforcement, on top of pydantic's wire-layer
+# validation). Opt-in only: without --debug, zero overhead.
+if "--debug" in sys.argv:
+    from beartype.claw import beartype_package
+    beartype_package("koan")
+
 from .home import resolve_koan_home, was_home_explicit
 from .logger import setup_logging
 from .memory.types import MEMORY_TYPES
@@ -18,7 +29,8 @@ from .cli.run import cmd_run
 # default-clobbering bug).  An absent attribute falls through to env/default.
 _common = argparse.ArgumentParser(add_help=False)
 _common.add_argument("--debug", action="store_true", default=argparse.SUPPRESS,
-                     help="Enable debug logging")
+                     help="Enable debug logging and runtime type enforcement "
+                          "(beartype: annotation violations raise)")
 _common.add_argument("--home", default=argparse.SUPPRESS, metavar="PATH",
                      help="koan state directory (default: ~/.koan; overrides KOAN_HOME). "
                           "Holds config.yaml, master.key, runs/.")
